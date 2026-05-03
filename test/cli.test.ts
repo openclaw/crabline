@@ -4,6 +4,9 @@ import { runCli } from "../src/cli/program.js";
 import { captureWrites, createTempDir, disposeTempDir, writeText } from "./test-helpers.js";
 
 const directories: string[] = [];
+const ansiPattern = new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, "g");
+
+const stripAnsi = (value: string): string => value.replace(ansiPattern, "");
 
 afterEach(async () => {
   process.exitCode = 0;
@@ -95,7 +98,7 @@ describe("cli", () => {
       captured.restore();
     }
 
-    const stdout = captured.stdout.join("");
+    const stdout = stripAnsi(captured.stdout.join(""));
     expect(stdout).toContain("doctor ok");
     expect(stdout).toContain("PASS roundtrip-fixture");
     expect(stdout).toContain("suite 2/2 passed");

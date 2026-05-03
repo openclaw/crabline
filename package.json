@@ -14,42 +14,45 @@
   ],
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsgo -p tsconfig.json",
     "clean": "rm -rf dist coverage",
     "dev": "tsx src/bin/multipass.ts",
     "doctor": "tsx src/bin/multipass.ts doctor",
     "fixtures": "tsx src/bin/multipass.ts fixtures",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "lint": "oxlint .",
+    "lint": "pnpm format:check && pnpm typecheck && oxlint --deny-warnings --allow vitest/require-mock-type-parameters --type-aware --tsconfig tsconfig.json src test",
     "run": "tsx src/bin/multipass.ts run",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "verify": "pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm format:check"
+    "typecheck": "tsgo --noEmit -p tsconfig.json",
+    "verify": "pnpm lint && pnpm test:coverage",
+    "check": "pnpm verify"
   },
   "dependencies": {
     "@beeper/chat-adapter-matrix": "^0.1.0",
-    "@chat-adapter/discord": "^4.20.1",
-    "@chat-adapter/shared": "^4.20.1",
-    "@chat-adapter/slack": "^4.20.1",
-    "@chat-adapter/state-memory": "^4.20.1",
-    "chat": "^4.20.1",
+    "@chat-adapter/discord": "^4.27.0",
+    "@chat-adapter/shared": "^4.27.0",
+    "@chat-adapter/slack": "^4.27.0",
+    "@chat-adapter/state-memory": "^4.27.0",
+    "chat": "^4.27.0",
     "chat-adapter-imessage": "^0.1.1",
     "commander": "^14.0.3",
     "picocolors": "^1.1.1",
-    "yaml": "^2.8.2",
-    "zod": "^4.3.6"
+    "yaml": "^2.8.4",
+    "zod": "^4.4.2"
   },
   "devDependencies": {
-    "@types/node": "^25.5.0",
-    "@vitest/coverage-v8": "^4.1.0",
-    "oxfmt": "^0.40.0",
-    "oxlint": "^1.55.0",
+    "@types/node": "^25.6.0",
+    "@typescript/native-preview": "7.0.0-dev.20260503.1",
+    "@vitest/coverage-v8": "^4.1.5",
+    "oxfmt": "^0.47.0",
+    "oxlint": "^1.62.0",
+    "oxlint-tsgolint": "^0.22.1",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.0"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
   },
   "engines": {
     "node": ">=22"

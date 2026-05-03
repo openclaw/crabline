@@ -3,6 +3,10 @@ import { MultipassError, ensureErrorMessage } from "../src/core/errors.js";
 import { EXIT_CODES } from "../src/core/exit-codes.js";
 import { formatJson, formatRunResultText } from "../src/core/reporters.js";
 
+const ansiPattern = new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, "g");
+
+const stripAnsi = (value: string): string => value.replace(ansiPattern, "");
+
 describe("errors and reporters", () => {
   it("maps failure kinds to exit codes", () => {
     const error = new MultipassError("boom", { kind: "auth" });
@@ -32,8 +36,8 @@ describe("errors and reporters", () => {
       totalPassed: 1,
     });
 
-    expect(single).toContain("PASS");
-    expect(suite).toContain("suite 1/1 passed");
+    expect(stripAnsi(single)).toContain("PASS");
+    expect(stripAnsi(suite)).toContain("suite 1/1 passed");
     expect(formatJson({ ok: true })).toContain('"ok": true');
   });
 });
