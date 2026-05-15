@@ -1,6 +1,8 @@
-# multipass
+# 🧪 multipass
 
-Standalone CLI for deterministic messaging-provider tests. `multipass` is config-driven, CI-friendly, and deliberately has no `openclaw` dependency. It now models the full OpenClaw messaging matrix: `bluebubbles`, `discord`, `feishu`, `googlechat`, `imessage`, `irc`, `line`, `matrix`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `slack`, `synologychat`, `telegram`, `tlon`, `twitch`, `webchat`, `whatsapp`, `zalo`, `zalouser`.
+Deterministic messaging-provider tests for OpenClaw.
+
+`multipass` is config-driven, CI-friendly, and deliberately has no `openclaw` dependency. It now models the full OpenClaw messaging matrix: `bluebubbles`, `discord`, `feishu`, `googlechat`, `imessage`, `irc`, `line`, `matrix`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `slack`, `synologychat`, `telegram`, `tlon`, `twitch`, `webchat`, `whatsapp`, `zalo`, `zalouser`.
 
 The v1 shape is:
 
