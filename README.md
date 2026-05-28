@@ -1,3 +1,5 @@
+![multipass banner](docs/assets/readme-banner.jpg)
+
 # 🧪 multipass
 
 Deterministic messaging-provider tests for OpenClaw.
