@@ -100,6 +100,40 @@ describe("registry", () => {
     expect(provider.status).toBe("ready");
   });
 
+  it("resolves local channel providers", () => {
+    const channelManifest: ManifestDefinition = {
+      ...manifest,
+      fixtures: [
+        {
+          ...manifest.fixtures[0]!,
+          id: "telegram-fixture",
+          provider: "telegram",
+          target: { id: "user-123", metadata: {} },
+        },
+      ],
+      providers: {
+        telegram: {
+          adapter: "channel",
+          capabilities: ["probe", "send", "roundtrip", "agent"],
+          channel: {
+            botUserName: "crabline_bot",
+            driver: "telegram-local-v1",
+            qaResponse: { mode: "ack" },
+          },
+          env: [],
+          platform: "telegram",
+          status: "active",
+        },
+      },
+    };
+
+    const registry = createRegistry(channelManifest, "/tmp/crabline.yaml");
+    const provider = registry.resolve("telegram", "telegram-fixture");
+    expect(provider.id).toBe("telegram");
+    expect(provider.platform).toBe("telegram");
+    expect(provider.status).toBe("ready");
+  });
+
   it("resolves native discord, matrix, and imessage providers", () => {
     const nativeManifest: ManifestDefinition = {
       ...manifest,

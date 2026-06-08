@@ -1,5 +1,6 @@
 import { CrablineError } from "../core/errors.js";
 import type { ManifestDefinition } from "../config/schema.js";
+import { LocalChannelProviderAdapter } from "./builtin/channel.js";
 import { DiscordProviderAdapter } from "./builtin/discord.js";
 import { IMessageProviderAdapter } from "./builtin/imessage.js";
 import { LoopbackProviderAdapter } from "./builtin/loopback.js";
@@ -42,6 +43,10 @@ export function createRegistry(manifest: ManifestDefinition, manifestPath: strin
 
       if (config.adapter === "loopback") {
         return new LoopbackProviderAdapter(providerId, config, manifest.userName);
+      }
+
+      if (config.adapter === "channel") {
+        return new LocalChannelProviderAdapter(providerId, config);
       }
 
       if (config.adapter === "discord") {

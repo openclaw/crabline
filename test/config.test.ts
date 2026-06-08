@@ -164,4 +164,45 @@ describe("manifest schema", () => {
       }),
     ).toThrow(/discord adapter must use platform=discord/u);
   });
+
+  it("parses the local Telegram channel driver config", () => {
+    const manifest = ManifestSchema.parse({
+      configVersion: 1,
+      fixtures: [
+        {
+          id: "telegram-local-dm",
+          mode: "roundtrip",
+          provider: "telegram-local",
+          target: { id: "user-123" },
+        },
+      ],
+      providers: {
+        "telegram-local": {
+          adapter: "channel",
+          channel: {
+            qaResponse: { mode: "ack" },
+          },
+          platform: "telegram",
+        },
+      },
+    });
+
+    expect(manifest.providers["telegram-local"]?.channel?.driver).toBe("telegram-local-v1");
+    expect(manifest.providers["telegram-local"]?.channel?.qaResponse.mode).toBe("ack");
+  });
+
+  it("rejects channel adapters on non-Telegram platforms until a driver exists", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          discord: {
+            adapter: "channel",
+            platform: "discord",
+          },
+        },
+      }),
+    ).toThrow(/channel adapter currently supports platform=telegram/u);
+  });
 });

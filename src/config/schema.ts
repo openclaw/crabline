@@ -5,6 +5,7 @@ export const INBOUND_AUTHORS = ["assistant", "user", "system", "any"] as const;
 export const INBOUND_STRATEGIES = ["contains", "exact", "regex"] as const;
 export const INBOUND_NONCE_MODES = ["contains", "exact", "ignore"] as const;
 export const BUILTIN_ADAPTERS = [
+  "channel",
   "discord",
   "imessage",
   "loopback",
@@ -145,10 +146,21 @@ const IMessageConfigSchema = z.object({
   serverUrl: z.string().url().optional(),
 });
 
+const ChannelConfigSchema = z.object({
+  botUserName: z.string().min(1).default("multipass_telegram_bot"),
+  driver: z.literal("telegram-local-v1").default("telegram-local-v1"),
+  qaResponse: z
+    .object({
+      mode: z.enum(["ack", "echo", "none"]).default("none"),
+    })
+    .default({ mode: "none" }),
+});
+
 export const ProviderConfigSchema = z
   .object({
     adapter: z.enum(BUILTIN_ADAPTERS),
     capabilities: z.array(z.enum(FIXTURE_MODES)).default(["probe", "send", "roundtrip", "agent"]),
+    channel: ChannelConfigSchema.optional(),
     discord: DiscordConfigSchema.optional(),
     env: z.array(z.string().min(1)).default([]),
     imessage: IMessageConfigSchema.optional(),
@@ -205,6 +217,14 @@ export const ProviderConfigSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "imessage adapter must use platform=imessage",
+        path: ["platform"],
+      });
+    }
+
+    if (value.adapter === "channel" && value.platform !== "telegram") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "channel adapter currently supports platform=telegram",
         path: ["platform"],
       });
     }

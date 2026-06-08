@@ -1,4 +1,6 @@
 import { Command } from "commander";
+import { LOCAL_CHANNEL_DRIVER_MATRIX } from "../channels/matrix.js";
+import { TELEGRAM_LOCAL_DRIVER_METADATA } from "../channels/telegram.js";
 import { loadManifest } from "../config/load.js";
 import { createRegistry } from "../providers/registry.js";
 import { formatJson, formatRunResultText } from "../core/reporters.js";
@@ -49,6 +51,18 @@ export function createProgram(): Command {
         support: registry.catalog,
       };
       print(options.json ? formatJson(payload) : renderProvidersText(payload));
+    });
+
+  program
+    .command("channel-matrix")
+    .description("List deterministic local channel driver capabilities")
+    .action(() => {
+      const options = program.opts() as GlobalOptions;
+      const payload = {
+        drivers: [TELEGRAM_LOCAL_DRIVER_METADATA],
+        matrix: LOCAL_CHANNEL_DRIVER_MATRIX,
+      };
+      print(options.json ? formatJson(payload) : renderChannelMatrixText(payload));
     });
 
   program
@@ -216,6 +230,38 @@ function renderProvidersText(payload: {
     lines.push(
       `  ${entry.platform} status=${entry.status} supports=${entry.supports.join(",")} ${entry.notes}`,
     );
+  }
+
+  return lines.join("\n");
+}
+
+function renderChannelMatrixText(payload: {
+  drivers: ReadonlyArray<{
+    channel: string;
+    channelLive: false;
+    deterministic: true;
+    driverId: string;
+    status: string;
+  }>;
+  matrix: ReadonlyArray<{
+    capabilityId: string;
+    channel: string;
+    driverId?: string | undefined;
+    notes: string;
+    status: string;
+  }>;
+}): string {
+  const lines = ["local channel drivers:"];
+  for (const driver of payload.drivers) {
+    lines.push(
+      `  ${driver.driverId} channel=${driver.channel} live=${String(driver.channelLive)} deterministic=${String(driver.deterministic)} status=${driver.status}`,
+    );
+  }
+
+  lines.push("capability matrix:");
+  for (const row of payload.matrix) {
+    const driver = row.driverId ? ` driver=${row.driverId}` : "";
+    lines.push(`  ${row.channel} ${row.capabilityId} status=${row.status}${driver} ${row.notes}`);
   }
 
   return lines.join("\n");

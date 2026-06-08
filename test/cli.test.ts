@@ -61,6 +61,24 @@ describe("cli", () => {
     expect(captured.stdout.join("")).toContain("roundtrip-fixture");
   });
 
+  it("lists local channel driver metadata", async () => {
+    const captured = captureWrites();
+
+    try {
+      expect(await runCli(["node", "crabline", "channel-matrix"])).toBe(0);
+      expect(await runCli(["node", "crabline", "--json", "channel-matrix"])).toBe(0);
+    } finally {
+      captured.restore();
+    }
+
+    const stdout = captured.stdout.join("");
+    expect(stdout).toContain("telegram-local-v1");
+    expect(stdout).toContain("telegram.dm.text");
+    expect(JSON.parse(stdout.slice(stdout.indexOf("{")))).toMatchObject({
+      drivers: [expect.objectContaining({ driverId: "telegram-local-v1" })],
+    });
+  });
+
   it("runs doctor, probe, send, roundtrip, and suite commands", async () => {
     const configPath = await createConfig();
     const captured = captureWrites();
