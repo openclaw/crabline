@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MultipassError } from "../src/core/errors.js";
+import { CrablineError } from "../src/core/errors.js";
 import { computeExitCode, runFixtureCommand, runSuite } from "../src/core/run.js";
 import type { ManifestDefinition } from "../src/config/schema.js";
 import { OPENCLAW_SUPPORT_CATALOG } from "../src/providers/catalog.js";
@@ -30,7 +30,7 @@ const manifest: ManifestDefinition = {
       status: "active",
     },
   },
-  userName: "multipass",
+  userName: "crabline",
 };
 
 const withAllCapabilities = (value: ManifestDefinition): ManifestDefinition => ({
@@ -72,7 +72,7 @@ describe("run behavior", () => {
       runFixtureCommand({
         fixtureId: "missing",
         manifest,
-        manifestPath: "/tmp/multipass.yaml",
+        manifestPath: "/tmp/crabline.yaml",
         registry: buildRegistry(provider),
       }),
     ).rejects.toThrow(/Unknown fixture/);
@@ -95,7 +95,7 @@ describe("run behavior", () => {
     const unsupported = await runFixtureCommand({
       fixtureId: "fixture",
       manifest,
-      manifestPath: "/tmp/multipass.yaml",
+      manifestPath: "/tmp/crabline.yaml",
       registry: buildRegistry(provider),
     });
     expect(unsupported.failureKind).toBe("config");
@@ -107,7 +107,7 @@ describe("run behavior", () => {
     const missingEnv = await runFixtureCommand({
       fixtureId: "fixture",
       manifest: withEnv,
-      manifestPath: "/tmp/multipass.yaml",
+      manifestPath: "/tmp/crabline.yaml",
       registry: buildRegistry(provider),
     });
     expect(missingEnv.failureKind).toBe("config");
@@ -123,7 +123,7 @@ describe("run behavior", () => {
         return { id: target.id, metadata: target.metadata };
       },
       probe: async () => {
-        throw new MultipassError("bad auth", { kind: "auth" });
+        throw new CrablineError("bad auth", { kind: "auth" });
       },
       send: async () => {
         throw new Error("send exploded");
@@ -141,7 +141,7 @@ describe("run behavior", () => {
     const probe = await runFixtureCommand({
       fixtureId: "fixture",
       manifest: withAllCapabilities(manifest),
-      manifestPath: "/tmp/multipass.yaml",
+      manifestPath: "/tmp/crabline.yaml",
       modeOverride: "probe",
       registry: buildRegistry(provider),
     });
@@ -150,7 +150,7 @@ describe("run behavior", () => {
     const roundtrip = await runFixtureCommand({
       fixtureId: "fixture",
       manifest: withAllCapabilities(manifest),
-      manifestPath: "/tmp/multipass.yaml",
+      manifestPath: "/tmp/crabline.yaml",
       registry: buildRegistry(provider),
     });
     expect(roundtrip.failureKind).toBe("assertion");
@@ -180,7 +180,7 @@ describe("run behavior", () => {
     const suite = await runSuite({
       fixtureIds: ["fixture"],
       manifest: withAllCapabilities(manifest),
-      manifestPath: "/tmp/multipass.yaml",
+      manifestPath: "/tmp/crabline.yaml",
       registry: buildRegistry(provider),
     });
 

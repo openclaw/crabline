@@ -44,7 +44,7 @@ const manifest: ManifestDefinition = {
       status: "active",
     },
   },
-  userName: "multipass",
+  userName: "crabline",
 };
 
 describe("loopback e2e", () => {
@@ -52,8 +52,8 @@ describe("loopback e2e", () => {
     const result = await runFixtureCommand({
       fixtureId: "loopback-roundtrip",
       manifest,
-      manifestPath: "/tmp/multipass.yaml",
-      registry: createRegistry(manifest, "/tmp/multipass.yaml"),
+      manifestPath: "/tmp/crabline.yaml",
+      registry: createRegistry(manifest, "/tmp/crabline.yaml"),
     });
 
     expect(result.ok).toBe(true);
@@ -63,8 +63,8 @@ describe("loopback e2e", () => {
     const result = await runFixtureCommand({
       fixtureId: "loopback-agent",
       manifest,
-      manifestPath: "/tmp/multipass.yaml",
-      registry: createRegistry(manifest, "/tmp/multipass.yaml"),
+      manifestPath: "/tmp/crabline.yaml",
+      registry: createRegistry(manifest, "/tmp/crabline.yaml"),
     });
 
     expect(result.ok).toBe(true);

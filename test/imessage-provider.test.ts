@@ -55,9 +55,9 @@ function createIMessageContext(config: ProviderConfig): ProviderContext {
       target: { id: "chat-guid", metadata: {} },
       timeoutMs: 500,
     },
-    manifestPath: "/tmp/multipass.yaml",
+    manifestPath: "/tmp/crabline.yaml",
     providerId: "imessage-native",
-    userName: "multipass",
+    userName: "crabline",
   };
 }
 
@@ -152,7 +152,7 @@ describe("imessage provider", () => {
     const provider = new IMessageProviderAdapter(
       "imessage-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);
@@ -171,7 +171,7 @@ describe("imessage provider", () => {
     const provider = new IMessageProviderAdapter(
       "imessage-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);
@@ -216,7 +216,7 @@ describe("imessage provider", () => {
     const provider = new IMessageProviderAdapter(
       "imessage-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);
@@ -235,7 +235,7 @@ describe("imessage provider", () => {
     const provider = new IMessageProviderAdapter(
       "imessage-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);
@@ -258,7 +258,7 @@ describe("imessage provider", () => {
     const provider = new IMessageProviderAdapter(
       "imessage-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);

@@ -2,7 +2,7 @@ import path from "node:path";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import { Chat, type Adapter } from "chat";
 import { createiMessageAdapter } from "chat-adapter-imessage";
-import { MultipassError, ensureErrorMessage } from "../../core/errors.js";
+import { CrablineError, ensureErrorMessage } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import {
   appendRecordedInbound,
@@ -97,7 +97,7 @@ export function resolveIMessageAdapterConfig(
 
   if (local === false) {
     if (!serverUrl) {
-      throw new MultipassError(
+      throw new CrablineError(
         "iMessage remote mode requires imessage.serverUrl or IMESSAGE_SERVER_URL.",
         {
           kind: "config",
@@ -105,7 +105,7 @@ export function resolveIMessageAdapterConfig(
       );
     }
     if (!apiKey) {
-      throw new MultipassError(
+      throw new CrablineError(
         "iMessage remote mode requires imessage.apiKey or IMESSAGE_API_KEY.",
         {
           kind: "config",
@@ -146,20 +146,20 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
     return path.resolve(configuredPath);
   }
 
-  return path.resolve(".multipass", "recorders", `${providerId}.jsonl`);
+  return path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
 }
 
-function classifyIMessageFailure(error: unknown): MultipassError {
-  if (error instanceof MultipassError) {
+function classifyIMessageFailure(error: unknown): CrablineError {
+  if (error instanceof CrablineError) {
     return error;
   }
 
   const message = ensureErrorMessage(error);
   if (/api key|unauthorized|401|forbidden/i.test(message)) {
-    return new MultipassError(message, { cause: error, kind: "auth" });
+    return new CrablineError(message, { cause: error, kind: "auth" });
   }
 
-  return new MultipassError(message, { cause: error, kind: "connectivity" });
+  return new CrablineError(message, { cause: error, kind: "connectivity" });
 }
 
 export class IMessageProviderAdapter implements ProviderAdapter {
@@ -226,8 +226,8 @@ export class IMessageProviderAdapter implements ProviderAdapter {
         threadId: sent.threadId,
       };
     } catch (error) {
-      const kind = error instanceof MultipassError ? error.kind : "outbound";
-      throw new MultipassError(ensureErrorMessage(error), {
+      const kind = error instanceof CrablineError ? error.kind : "outbound";
+      throw new CrablineError(ensureErrorMessage(error), {
         cause: error,
         ...(kind ? { kind } : {}),
       });
@@ -292,7 +292,7 @@ export class IMessageProviderAdapter implements ProviderAdapter {
     );
 
     if (response.status >= 400) {
-      throw new MultipassError(`iMessage gateway listener failed: ${await response.text()}`, {
+      throw new CrablineError(`iMessage gateway listener failed: ${await response.text()}`, {
         kind: "connectivity",
       });
     }

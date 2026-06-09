@@ -1,11 +1,11 @@
 {
-  "name": "multipass",
+  "name": "crabline",
   "version": "0.1.0",
   "private": true,
   "description": "Standalone CLI for deterministic messaging provider E2E tests",
   "license": "MIT",
   "bin": {
-    "multipass": "./dist/bin/multipass.js"
+    "crabline": "./dist/src/bin/crabline.js"
   },
   "files": [
     "dist",
@@ -16,13 +16,13 @@
   "scripts": {
     "build": "tsgo -p tsconfig.json",
     "clean": "rm -rf dist coverage",
-    "dev": "tsx src/bin/multipass.ts",
-    "doctor": "tsx src/bin/multipass.ts doctor",
-    "fixtures": "tsx src/bin/multipass.ts fixtures",
+    "dev": "tsx src/bin/crabline.ts",
+    "doctor": "tsx src/bin/crabline.ts doctor",
+    "fixtures": "tsx src/bin/crabline.ts fixtures",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "lint": "pnpm format:check && pnpm typecheck && oxlint --deny-warnings --allow vitest/require-mock-type-parameters --type-aware --tsconfig tsconfig.json src test",
-    "run": "tsx src/bin/multipass.ts run",
+    "run": "tsx src/bin/crabline.ts run",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",

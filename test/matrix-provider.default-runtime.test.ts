@@ -31,7 +31,7 @@ describe("matrix provider default runtime", () => {
       roomAllowlist: ["!room:example.com"],
     });
 
-    expect(resolveMatrixAdapterConfig(config, "multipass")).toEqual({
+    expect(resolveMatrixAdapterConfig(config, "crabline")).toEqual({
       auth: {
         password: "secret",
         type: "password",
@@ -42,7 +42,7 @@ describe("matrix provider default runtime", () => {
       commandPrefix: "!",
       recoveryKey: "recovery",
       roomAllowlist: ["!room:example.com"],
-      userName: "multipass",
+      userName: "crabline",
     });
   });
 
@@ -50,7 +50,7 @@ describe("matrix provider default runtime", () => {
     const config = createConfig();
 
     expect(
-      resolveMatrixAdapterConfig(config, "multipass", {
+      resolveMatrixAdapterConfig(config, "crabline", {
         MATRIX_ACCESS_TOKEN: "env-token",
         MATRIX_BASE_URL: "https://env-matrix.example.com",
         MATRIX_PASSWORD: undefined,
@@ -65,7 +65,7 @@ describe("matrix provider default runtime", () => {
         userID: "@env:example.com",
       },
       baseURL: "https://env-matrix.example.com",
-      userName: "multipass",
+      userName: "crabline",
     });
   });
 
@@ -77,7 +77,7 @@ describe("matrix provider default runtime", () => {
       },
     });
 
-    expect(() => resolveMatrixAdapterConfig(config, "multipass")).toThrow(/base URL/u);
+    expect(() => resolveMatrixAdapterConfig(config, "crabline")).toThrow(/base URL/u);
   });
 
   it("fails fast when matrix auth is missing", () => {
@@ -85,6 +85,6 @@ describe("matrix provider default runtime", () => {
       baseURL: "https://matrix.example.com",
     });
 
-    expect(() => resolveMatrixAdapterConfig(config, "multipass")).toThrow(/auth is required/u);
+    expect(() => resolveMatrixAdapterConfig(config, "crabline")).toThrow(/auth is required/u);
   });
 });

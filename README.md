@@ -1,10 +1,12 @@
-# 🧪 multipass
+# 🧪 crabline
 
-![multipass banner](docs/assets/readme-banner.jpg)
+![crabline banner](docs/assets/readme-banner.jpg)
 
 Deterministic messaging-provider tests for OpenClaw.
 
-`multipass` is config-driven, CI-friendly, and deliberately has no `openclaw` dependency. It now models the full OpenClaw messaging matrix: `bluebubbles`, `discord`, `feishu`, `googlechat`, `imessage`, `irc`, `line`, `matrix`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `slack`, `synologychat`, `telegram`, `tlon`, `twitch`, `webchat`, `whatsapp`, `zalo`, `zalouser`.
+`crabline` is config-driven, CI-friendly, and deliberately has no `openclaw` dependency. It now models the full OpenClaw messaging matrix: `bluebubbles`, `discord`, `feishu`, `googlechat`, `imessage`, `irc`, `line`, `matrix`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `slack`, `synologychat`, `telegram`, `tlon`, `twitch`, `webchat`, `whatsapp`, `zalo`, `zalouser`.
+
+This project used to be called `multipass`, but was renamed to `crabline` to avoid conflicts with Canonical Multipass.
 
 The v1 shape is:
 
@@ -31,8 +33,8 @@ pnpm verify
 Run locally:
 
 ```bash
-pnpm dev fixtures --config fixtures/examples/multipass.example.yaml
-pnpm dev roundtrip loopback-roundtrip --config fixtures/examples/multipass.example.yaml
+pnpm dev fixtures --config fixtures/examples/crabline.example.yaml
+pnpm dev roundtrip loopback-roundtrip --config fixtures/examples/crabline.example.yaml
 ```
 
 ## Quality Gate
@@ -57,15 +59,15 @@ GitHub Actions runs the same `pnpm verify` flow on pushes to `main` and pull req
 Config file search order:
 
 1. `--config <path>`
-2. `./multipass.yaml`
-3. `./multipass.yml`
-4. `./multipass.json`
+2. `./crabline.yaml`
+3. `./crabline.yml`
+4. `./crabline.json`
 
 Top-level shape:
 
 ```yaml
 configVersion: 1
-userName: multipass
+userName: crabline
 providers:
   local:
     adapter: loopback | script | slack | discord | matrix | imessage
@@ -121,7 +123,7 @@ providers:
       applicationId: "123456789012345678" # optional; auto-discovered from bot token when omitted
       publicKey: "0123456789abcdef..." # optional; auto-discovered from bot token when omitted
       recorder:
-        path: ./.multipass/recorders/discord-native.jsonl
+        path: ./.crabline/recorders/discord-native.jsonl
       webhook:
         host: 127.0.0.1
         port: 8788
@@ -135,7 +137,7 @@ Discord fixture targeting rules:
 - DMs: omit `target.metadata.guildId`; `target.id` is treated as the user id.
 - Quote Discord snowflakes in YAML so they stay strings.
 
-Discord metadata defaults to token-only setup. When `applicationId` or `publicKey` are omitted, `multipass` fetches them from Discord using the bot token on first connect.
+Discord metadata defaults to token-only setup. When `applicationId` or `publicKey` are omitted, `crabline` fetches them from Discord using the bot token on first connect.
 
 Discord `watch` and `roundtrip` start the local interactions server plus a Discord Gateway listener. `publicUrl` is optional for local gateway-driven receive tests, but needed if you want Discord itself to hit your interactions endpoint from outside your machine.
 
@@ -148,7 +150,7 @@ providers:
     platform: slack
     slack:
       recorder:
-        path: ./.multipass/recorders/slack-native.jsonl
+        path: ./.crabline/recorders/slack-native.jsonl
       webhook:
         host: 127.0.0.1
         port: 8787
@@ -171,7 +173,7 @@ providers:
     matrix:
       baseURL: https://matrix.example.com
       recorder:
-        path: ./.multipass/recorders/matrix-native.jsonl
+        path: ./.crabline/recorders/matrix-native.jsonl
 ```
 
 Native iMessage provider options:
@@ -188,24 +190,24 @@ providers:
       local: false
       serverUrl: https://imessage-gateway.example.com
       recorder:
-        path: ./.multipass/recorders/imessage-native.jsonl
+        path: ./.crabline/recorders/imessage-native.jsonl
 ```
 
 Matrix and iMessage `watch` tail the local recorder stream. There is no webhook listener for Matrix; iMessage uses the adapter gateway listener under the hood.
 
 ## Example fixtures
 
-See [fixtures/examples/multipass.example.yaml](/Users/steipete/Projects/multipass/fixtures/examples/multipass.example.yaml).
+See [fixtures/examples/crabline.example.yaml](fixtures/examples/crabline.example.yaml).
 
 Full OpenClaw bridge matrix example:
 
-[openclaw-supported.yaml](/Users/steipete/Projects/multipass/fixtures/examples/openclaw-supported.yaml)
+[openclaw-supported.yaml](fixtures/examples/openclaw-supported.yaml)
 
 Loopback:
 
 ```bash
-pnpm dev roundtrip loopback-roundtrip --config fixtures/examples/multipass.example.yaml
-pnpm dev agent loopback-agent --config fixtures/examples/multipass.example.yaml
+pnpm dev roundtrip loopback-roundtrip --config fixtures/examples/crabline.example.yaml
+pnpm dev agent loopback-agent --config fixtures/examples/crabline.example.yaml
 ```
 
 Native Slack:
@@ -213,21 +215,21 @@ Native Slack:
 ```bash
 SLACK_BOT_TOKEN=xoxb-... \
 SLACK_SIGNING_SECRET=... \
-pnpm dev probe slack-native-agent --config fixtures/examples/multipass.example.yaml
+pnpm dev probe slack-native-agent --config fixtures/examples/crabline.example.yaml
 
 SLACK_BOT_TOKEN=xoxb-... \
 SLACK_SIGNING_SECRET=... \
-pnpm dev watch slack-native-agent --config fixtures/examples/multipass.example.yaml
+pnpm dev watch slack-native-agent --config fixtures/examples/crabline.example.yaml
 ```
 
 Native Discord:
 
 ```bash
 DISCORD_BOT_TOKEN=... \
-pnpm dev probe discord-native-agent --config fixtures/examples/multipass.example.yaml
+pnpm dev probe discord-native-agent --config fixtures/examples/crabline.example.yaml
 
 DISCORD_BOT_TOKEN=... \
-pnpm dev watch discord-native-agent --config fixtures/examples/multipass.example.yaml
+pnpm dev watch discord-native-agent --config fixtures/examples/crabline.example.yaml
 ```
 
 Telegram via OpenClaw bridge:
@@ -245,11 +247,11 @@ Native Matrix:
 ```bash
 MATRIX_BASE_URL=https://matrix.example.com \
 MATRIX_ACCESS_TOKEN=... \
-pnpm dev probe matrix-native-agent --config fixtures/examples/multipass.example.yaml
+pnpm dev probe matrix-native-agent --config fixtures/examples/crabline.example.yaml
 
 MATRIX_BASE_URL=https://matrix.example.com \
 MATRIX_ACCESS_TOKEN=... \
-pnpm dev watch matrix-native-agent --config fixtures/examples/multipass.example.yaml
+pnpm dev watch matrix-native-agent --config fixtures/examples/crabline.example.yaml
 ```
 
 Native iMessage:
@@ -257,11 +259,11 @@ Native iMessage:
 ```bash
 IMESSAGE_SERVER_URL=https://imessage-gateway.example.com \
 IMESSAGE_API_KEY=... \
-pnpm dev probe imessage-native-agent --config fixtures/examples/multipass.example.yaml
+pnpm dev probe imessage-native-agent --config fixtures/examples/crabline.example.yaml
 
 IMESSAGE_SERVER_URL=https://imessage-gateway.example.com \
 IMESSAGE_API_KEY=... \
-pnpm dev watch imessage-native-agent --config fixtures/examples/multipass.example.yaml
+pnpm dev watch imessage-native-agent --config fixtures/examples/crabline.example.yaml
 ```
 
 Script bridge:
@@ -269,7 +271,7 @@ Script bridge:
 ```bash
 OPENCLAW_URL=http://127.0.0.1:18789 \
 OPENCLAW_TOKEN=secret \
-pnpm dev probe slack-openclaw-demo --config fixtures/examples/multipass.example.yaml
+pnpm dev probe slack-openclaw-demo --config fixtures/examples/crabline.example.yaml
 ```
 
 Full bridge matrix bootstrap:
@@ -283,16 +285,16 @@ pnpm dev providers --config fixtures/examples/openclaw-supported.yaml
 ## Commands
 
 ```bash
-multipass providers
-multipass fixtures
-multipass probe <fixture|provider>
-multipass send <fixture>
-multipass roundtrip <fixture>
-multipass agent <fixture>
-multipass run <fixture...>
-multipass watch <fixture>
-multipass webhook <fixture>  # alias of watch
-multipass doctor
+crabline providers
+crabline fixtures
+crabline probe <fixture|provider>
+crabline send <fixture>
+crabline roundtrip <fixture>
+crabline agent <fixture>
+crabline run <fixture...>
+crabline watch <fixture>
+crabline webhook <fixture>  # alias of watch
+crabline doctor
 ```
 
 ## Script adapter contract
@@ -357,7 +359,7 @@ or:
 2. Set `platform` to one of the supported OpenClaw channel ids from the support matrix.
 3. Use `adapter: slack` for native Slack, otherwise `adapter: script` for bridge-based real E2E.
 4. Add one or more fixtures that point at stable demo accounts/targets.
-5. Run `multipass doctor`, `multipass probe`, then `multipass run ...`.
+5. Run `crabline doctor`, `crabline probe`, then `crabline run ...`.
 
 ## Current scope
 

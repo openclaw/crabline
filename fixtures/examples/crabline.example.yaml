@@ -1,5 +1,5 @@
 configVersion: 1
-userName: multipass
+userName: crabline
 
 providers:
   local:
@@ -16,7 +16,7 @@ providers:
       - SLACK_SIGNING_SECRET
     slack:
       recorder:
-        path: ./.multipass/recorders/slack-native.jsonl
+        path: ./.crabline/recorders/slack-native.jsonl
       webhook:
         host: 127.0.0.1
         port: 8787
@@ -42,7 +42,7 @@ providers:
       - DISCORD_BOT_TOKEN
     discord:
       recorder:
-        path: ./.multipass/recorders/discord-native.jsonl
+        path: ./.crabline/recorders/discord-native.jsonl
       webhook:
         host: 127.0.0.1
         port: 8788
@@ -58,7 +58,7 @@ providers:
     matrix:
       baseURL: https://matrix.example.com
       recorder:
-        path: ./.multipass/recorders/matrix-native.jsonl
+        path: ./.crabline/recorders/matrix-native.jsonl
 
   imessage-native:
     adapter: imessage
@@ -70,7 +70,7 @@ providers:
       local: false
       serverUrl: https://imessage-gateway.example.com
       recorder:
-        path: ./.multipass/recorders/imessage-native.jsonl
+        path: ./.crabline/recorders/imessage-native.jsonl
 
 fixtures:
   - id: loopback-roundtrip

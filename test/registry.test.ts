@@ -26,19 +26,19 @@ const manifest: ManifestDefinition = {
       status: "active",
     },
   },
-  userName: "multipass",
+  userName: "crabline",
 };
 
 describe("registry", () => {
   it("resolves configured providers", () => {
-    const registry = createRegistry(manifest, "/tmp/multipass.yaml");
+    const registry = createRegistry(manifest, "/tmp/crabline.yaml");
     const provider = registry.resolve("local", "fixture");
     expect(provider.id).toBe("local");
     expect(provider.status).toBe("ready");
   });
 
   it("throws for unknown providers", () => {
-    const registry = createRegistry(manifest, "/tmp/multipass.yaml");
+    const registry = createRegistry(manifest, "/tmp/crabline.yaml");
     expect(() => registry.resolve("missing", "fixture")).toThrow(/Unknown provider/);
   });
 
@@ -55,7 +55,7 @@ describe("registry", () => {
         },
       },
     };
-    const registry = createRegistry(disabledManifest, "/tmp/multipass.yaml");
+    const registry = createRegistry(disabledManifest, "/tmp/crabline.yaml");
     expect(() => registry.resolve("local", "fixture")).toThrow(/disabled/);
   });
 
@@ -69,7 +69,7 @@ describe("registry", () => {
           env: [],
           platform: "slack",
           slack: {
-            recorder: { path: "/tmp/multipass-slack-test.jsonl" },
+            recorder: { path: "/tmp/crabline-slack-test.jsonl" },
             webhook: {
               host: "127.0.0.1",
               path: "/slack/events",
@@ -93,7 +93,7 @@ describe("registry", () => {
       ],
     };
 
-    const registry = createRegistry(slackManifest, "/tmp/multipass.yaml");
+    const registry = createRegistry(slackManifest, "/tmp/crabline.yaml");
     const provider = registry.resolve("slack", "slack-fixture");
     expect(provider.id).toBe("slack");
     expect(provider.platform).toBe("slack");
@@ -112,7 +112,7 @@ describe("registry", () => {
             botToken: "discord-token",
             gatewayDurationMs: 30_000,
             publicKey: "a".repeat(64),
-            recorder: { path: "/tmp/multipass-discord-test.jsonl" },
+            recorder: { path: "/tmp/crabline-discord-test.jsonl" },
             webhook: {
               host: "127.0.0.1",
               path: "/discord/interactions",
@@ -130,7 +130,7 @@ describe("registry", () => {
           imessage: {
             gatewayDurationMs: 30_000,
             local: true,
-            recorder: { path: "/tmp/multipass-imessage-test.jsonl" },
+            recorder: { path: "/tmp/crabline-imessage-test.jsonl" },
           },
           platform: "imessage",
           status: "active",
@@ -142,7 +142,7 @@ describe("registry", () => {
           matrix: {
             auth: { accessToken: "token", type: "accessToken" },
             baseURL: "https://matrix.example.com",
-            recorder: { path: "/tmp/multipass-matrix-test.jsonl" },
+            recorder: { path: "/tmp/crabline-matrix-test.jsonl" },
           },
           platform: "matrix",
           status: "active",
@@ -173,7 +173,7 @@ describe("registry", () => {
       ],
     };
 
-    const registry = createRegistry(nativeManifest, "/tmp/multipass.yaml");
+    const registry = createRegistry(nativeManifest, "/tmp/crabline.yaml");
     expect(registry.resolve("discord", "discord-fixture").platform).toBe("discord");
     expect(registry.resolve("imessage", "imessage-fixture").platform).toBe("imessage");
     expect(registry.resolve("matrix", "matrix-fixture").platform).toBe("matrix");

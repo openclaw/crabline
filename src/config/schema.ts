@@ -232,7 +232,7 @@ export const ManifestSchema = z.object({
   configVersion: z.literal(1).default(1),
   fixtures: z.array(FixtureSchema).default([]),
   providers: z.record(z.string(), ProviderConfigSchema).default({}),
-  userName: z.string().min(1).default("multipass"),
+  userName: z.string().min(1).default("crabline"),
 });
 
 export type BuiltinAdapterId = (typeof BUILTIN_ADAPTERS)[number];

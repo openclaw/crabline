@@ -205,9 +205,9 @@ function createContext(config: ProviderConfig): ProviderContext {
       },
       timeoutMs: 500,
     },
-    manifestPath: "/tmp/multipass.yaml",
+    manifestPath: "/tmp/crabline.yaml",
     providerId: "discord-native",
-    userName: "multipass",
+    userName: "crabline",
   };
 }
 
@@ -218,7 +218,7 @@ describe("discord provider", () => {
     const provider = new DiscordProviderAdapter(
       "discord-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);
@@ -262,7 +262,7 @@ describe("discord provider", () => {
     const provider = new DiscordProviderAdapter(
       "discord-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);
@@ -283,7 +283,7 @@ describe("discord provider", () => {
     const provider = new DiscordProviderAdapter(
       "discord-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);
@@ -318,7 +318,7 @@ describe("discord provider", () => {
     const provider = new DiscordProviderAdapter(
       "discord-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);
@@ -346,7 +346,7 @@ describe("discord provider", () => {
     const provider = new DiscordProviderAdapter(
       "discord-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);
@@ -392,7 +392,7 @@ describe("discord provider", () => {
     const provider = new DiscordProviderAdapter(
       "discord-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);
@@ -434,7 +434,7 @@ describe("discord provider", () => {
     const provider = new DiscordProviderAdapter(
       "discord-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     providers.push(provider);
@@ -465,7 +465,7 @@ describe("discord provider", () => {
         ...config,
         discord: { ...config.discord!, recorder: { path: config.discord!.recorder.path } },
       },
-      "multipass",
+      "crabline",
       primaryRuntime.runtime,
     );
     providers.push(primary);
@@ -485,7 +485,7 @@ describe("discord provider", () => {
           },
         },
       },
-      "multipass",
+      "crabline",
       secondaryRuntime.runtime,
     );
     providers.push(secondary);

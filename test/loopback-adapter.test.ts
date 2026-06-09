@@ -11,12 +11,12 @@ afterEach(() => {
 
 describe("loopback chat adapter", () => {
   it("supports direct adapter operations", async () => {
-    adapter = new LoopbackChatAdapter("multipass");
+    adapter = new LoopbackChatAdapter("crabline");
     const chat = new Chat({
       adapters: { loopback: adapter },
       logger: "silent",
       state: createMemoryState(),
-      userName: "multipass",
+      userName: "crabline",
     });
     await chat.initialize();
 

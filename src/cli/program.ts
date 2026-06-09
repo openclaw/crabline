@@ -3,7 +3,7 @@ import { loadManifest } from "../config/load.js";
 import { createRegistry } from "../providers/registry.js";
 import { formatJson, formatRunResultText } from "../core/reporters.js";
 import { computeExitCode, runFixtureCommand, runSuite } from "../core/run.js";
-import { MultipassError, ensureErrorMessage } from "../core/errors.js";
+import { CrablineError, ensureErrorMessage } from "../core/errors.js";
 
 type GlobalOptions = {
   config?: string;
@@ -25,7 +25,7 @@ export function createProgram(): Command {
   const program = new Command();
 
   program
-    .name("multipass")
+    .name("crabline")
     .description("Deterministic CLI harness for messaging provider E2E tests")
     .option("-c, --config <path>", "Config file path")
     .option("--json", "Machine-readable output", false)
@@ -79,7 +79,7 @@ export function createProgram(): Command {
         manifest.fixtures.find((entry) => entry.id === fixtureOrProvider) ??
         manifest.fixtures.find((entry) => entry.provider === fixtureOrProvider);
       if (!fixture) {
-        throw new MultipassError(`No fixture found for "${fixtureOrProvider}"`, { kind: "config" });
+        throw new CrablineError(`No fixture found for "${fixtureOrProvider}"`, { kind: "config" });
       }
       const registry = createRegistry(manifest, path);
       const result = await runFixtureCommand({
@@ -139,12 +139,12 @@ export function createProgram(): Command {
       await withManifest(options, async ({ manifest, path }) => {
         const fixture = manifest.fixtures.find((entry) => entry.id === fixtureId);
         if (!fixture) {
-          throw new MultipassError(`Unknown fixture: ${fixtureId}`, { kind: "config" });
+          throw new CrablineError(`Unknown fixture: ${fixtureId}`, { kind: "config" });
         }
 
         const provider = createRegistry(manifest, path).resolve(fixture.provider, fixture.id);
         if (!provider.watch) {
-          throw new MultipassError(`Provider "${fixture.provider}" does not implement watch.`, {
+          throw new CrablineError(`Provider "${fixture.provider}" does not implement watch.`, {
             kind: "config",
           });
         }
@@ -312,7 +312,7 @@ export async function runCli(argv: string[]): Promise<number> {
   } catch (error) {
     const message = ensureErrorMessage(error);
     process.stderr.write(`${message}\n`);
-    if (error instanceof MultipassError) {
+    if (error instanceof CrablineError) {
       return error.exitCode;
     }
     return 1;

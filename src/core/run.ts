@@ -1,7 +1,7 @@
 import { matchesInbound } from "./matcher.js";
 import { createOutboundText } from "./message-template.js";
 import { createNonce } from "./nonces.js";
-import { type FailureKind, MultipassError, ensureErrorMessage } from "./errors.js";
+import { type FailureKind, CrablineError, ensureErrorMessage } from "./errors.js";
 import type { ManifestDefinition } from "../config/schema.js";
 import type { Registry } from "../providers/registry.js";
 
@@ -33,7 +33,7 @@ export async function runFixtureCommand(params: {
 }): Promise<CommandRunResult> {
   const fixture = params.manifest.fixtures.find((entry) => entry.id === params.fixtureId);
   if (!fixture) {
-    throw new MultipassError(`Unknown fixture: ${params.fixtureId}`, { kind: "config" });
+    throw new CrablineError(`Unknown fixture: ${params.fixtureId}`, { kind: "config" });
   }
 
   const provider = params.registry.resolve(fixture.provider, fixture.id);
@@ -250,7 +250,7 @@ function toFailure(
   nonce?: string,
 ): CommandRunResult {
   const diagnostics = [ensureErrorMessage(error)];
-  if (error instanceof MultipassError) {
+  if (error instanceof CrablineError) {
     return {
       diagnostics,
       failureKind: error.kind,

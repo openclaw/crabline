@@ -16,7 +16,7 @@ afterEach(async () => {
 const createConfig = async (): Promise<string> => {
   const directory = await createTempDir();
   directories.push(directory);
-  const configPath = path.join(directory, "multipass.yaml");
+  const configPath = path.join(directory, "crabline.yaml");
   await writeText(
     configPath,
     [
@@ -51,8 +51,8 @@ describe("cli", () => {
     const captured = captureWrites();
 
     try {
-      expect(await runCli(["node", "multipass", "--config", configPath, "providers"])).toBe(0);
-      expect(await runCli(["node", "multipass", "--config", configPath, "fixtures"])).toBe(0);
+      expect(await runCli(["node", "crabline", "--config", configPath, "providers"])).toBe(0);
+      expect(await runCli(["node", "crabline", "--config", configPath, "fixtures"])).toBe(0);
     } finally {
       captured.restore();
     }
@@ -66,17 +66,17 @@ describe("cli", () => {
     const captured = captureWrites();
 
     try {
-      expect(await runCli(["node", "multipass", "--config", configPath, "doctor"])).toBe(0);
+      expect(await runCli(["node", "crabline", "--config", configPath, "doctor"])).toBe(0);
       expect(
-        await runCli(["node", "multipass", "--config", configPath, "probe", "roundtrip-fixture"]),
+        await runCli(["node", "crabline", "--config", configPath, "probe", "roundtrip-fixture"]),
       ).toBe(0);
       expect(
-        await runCli(["node", "multipass", "--config", configPath, "send", "send-fixture"]),
+        await runCli(["node", "crabline", "--config", configPath, "send", "send-fixture"]),
       ).toBe(0);
       expect(
         await runCli([
           "node",
-          "multipass",
+          "crabline",
           "--config",
           configPath,
           "roundtrip",
@@ -86,7 +86,7 @@ describe("cli", () => {
       expect(
         await runCli([
           "node",
-          "multipass",
+          "crabline",
           "--config",
           configPath,
           "run",
@@ -110,7 +110,7 @@ describe("cli", () => {
 
     let exitCode: number;
     try {
-      exitCode = await runCli(["node", "multipass", "--config", configPath, "probe", "missing"]);
+      exitCode = await runCli(["node", "crabline", "--config", configPath, "probe", "missing"]);
     } finally {
       captured.restore();
     }
@@ -122,7 +122,7 @@ describe("cli", () => {
   it("doctor reports missing slack env", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const configPath = path.join(directory, "multipass.yaml");
+    const configPath = path.join(directory, "crabline.yaml");
     await writeText(
       configPath,
       [
@@ -149,7 +149,7 @@ describe("cli", () => {
     const captured = captureWrites();
     let exitCode: number;
     try {
-      exitCode = await runCli(["node", "multipass", "--config", configPath, "doctor"]);
+      exitCode = await runCli(["node", "crabline", "--config", configPath, "doctor"]);
     } finally {
       captured.restore();
       if (originalBotToken !== undefined) {
@@ -168,7 +168,7 @@ describe("cli", () => {
   it("doctor reports missing discord bot token", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const configPath = path.join(directory, "multipass.yaml");
+    const configPath = path.join(directory, "crabline.yaml");
     await writeText(
       configPath,
       [
@@ -199,7 +199,7 @@ describe("cli", () => {
     const captured = captureWrites();
     let exitCode: number;
     try {
-      exitCode = await runCli(["node", "multipass", "--config", configPath, "doctor"]);
+      exitCode = await runCli(["node", "crabline", "--config", configPath, "doctor"]);
     } finally {
       captured.restore();
       if (originalBotToken !== undefined) {

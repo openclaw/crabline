@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { MultipassError, ensureErrorMessage } from "../../core/errors.js";
+import { CrablineError, ensureErrorMessage } from "../../core/errors.js";
 import type {
   ProviderAdapter,
   ProviderContext,
@@ -65,7 +65,7 @@ function runScript<T>(command: string, payload: unknown, cwd?: string, shell?: s
     child.on("close", (code) => {
       if (code !== 0) {
         reject(
-          new MultipassError(
+          new CrablineError(
             `Script command failed: ${command}\n${stderr.trim() || stdout.trim()}`,
             {
               kind: "connectivity",
@@ -79,7 +79,7 @@ function runScript<T>(command: string, payload: unknown, cwd?: string, shell?: s
         resolve(JSON.parse(stdout) as T);
       } catch (error) {
         reject(
-          new MultipassError(
+          new CrablineError(
             `Script command did not return valid JSON: ${command}\n${ensureErrorMessage(error)}`,
             { kind: "config" },
           ),
@@ -100,12 +100,9 @@ export class ScriptProviderAdapter implements ProviderAdapter {
 
   constructor(context: ProviderContext) {
     if (!context.config.script) {
-      throw new MultipassError(
-        `Provider "${context.providerId}" is missing script configuration.`,
-        {
-          kind: "config",
-        },
-      );
+      throw new CrablineError(`Provider "${context.providerId}" is missing script configuration.`, {
+        kind: "config",
+      });
     }
 
     this.id = context.providerId;
@@ -152,7 +149,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
   async send(context: SendContext) {
     const command = this.#config.commands.send;
     if (!command) {
-      throw new MultipassError(`Provider "${this.id}" is missing send command.`, {
+      throw new CrablineError(`Provider "${this.id}" is missing send command.`, {
         kind: "config",
       });
     }
@@ -207,7 +204,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
   async *watch(context: WatchContext) {
     const command = this.#config.commands.watch;
     if (!command) {
-      throw new MultipassError(`Provider "${this.id}" is missing watch command.`, {
+      throw new CrablineError(`Provider "${this.id}" is missing watch command.`, {
         kind: "config",
       });
     }

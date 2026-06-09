@@ -14,7 +14,7 @@ function modePrefix(mode: FixtureMode): string {
 }
 
 export function createOutboundText(fixture: FixtureDefinition, nonce: string): string {
-  const prefix = `multipass ${modePrefix(fixture.mode)} ${fixture.id}`;
+  const prefix = `crabline ${modePrefix(fixture.mode)} ${fixture.id}`;
   if (fixture.mode === "agent") {
     return `${prefix} nonce=${nonce}. Reply with ACK ${nonce}.`;
   }
