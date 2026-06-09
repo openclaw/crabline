@@ -56,9 +56,9 @@ function createMatrixContext(config: ProviderConfig): ProviderContext {
       target: { id: "!room:example.com", metadata: {} },
       timeoutMs: 500,
     },
-    manifestPath: "/tmp/multipass.yaml",
+    manifestPath: "/tmp/crabline.yaml",
     providerId: "matrix-native",
-    userName: "multipass",
+    userName: "crabline",
   };
 }
 
@@ -133,7 +133,7 @@ describe("matrix provider", () => {
     const provider = new MatrixProviderAdapter(
       "matrix-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
 
@@ -158,7 +158,7 @@ describe("matrix provider", () => {
     const provider = new MatrixProviderAdapter(
       "matrix-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     const context = createMatrixContext(config);
@@ -201,7 +201,7 @@ describe("matrix provider", () => {
     const provider = new MatrixProviderAdapter(
       "matrix-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
 
@@ -221,7 +221,7 @@ describe("matrix provider", () => {
     const provider = new MatrixProviderAdapter(
       "matrix-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
 
@@ -236,7 +236,7 @@ describe("matrix provider", () => {
     const provider = new MatrixProviderAdapter(
       "matrix-native",
       config,
-      "multipass",
+      "crabline",
       runtime.runtime,
     );
     const context = createMatrixContext(config);

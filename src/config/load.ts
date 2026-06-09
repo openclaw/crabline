@@ -1,10 +1,10 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
-import { MultipassError } from "../core/errors.js";
+import { CrablineError } from "../core/errors.js";
 import { type ManifestDefinition, ManifestSchema } from "./schema.js";
 
-const DEFAULT_CONFIG_CANDIDATES = ["multipass.yaml", "multipass.yml", "multipass.json"] as const;
+const DEFAULT_CONFIG_CANDIDATES = ["crabline.yaml", "crabline.yml", "crabline.json"] as const;
 
 export async function resolveConfigPath(explicitPath?: string): Promise<string> {
   if (explicitPath) {
@@ -21,8 +21,8 @@ export async function resolveConfigPath(explicitPath?: string): Promise<string> 
     }
   }
 
-  throw new MultipassError(
-    "No config file found. Create multipass.yaml, multipass.yml, or multipass.json.",
+  throw new CrablineError(
+    "No config file found. Create crabline.yaml, crabline.yml, or crabline.json.",
     { kind: "config" },
   );
 }

@@ -29,7 +29,7 @@ const manifest: ManifestDefinition = {
       status: "active",
     },
   },
-  userName: "multipass",
+  userName: "crabline",
 };
 
 describe("runFixtureCommand retries", () => {
@@ -75,7 +75,7 @@ describe("runFixtureCommand retries", () => {
     const result = await runFixtureCommand({
       fixtureId: "fixture",
       manifest,
-      manifestPath: "/tmp/multipass.yaml",
+      manifestPath: "/tmp/crabline.yaml",
       registry,
     });
 

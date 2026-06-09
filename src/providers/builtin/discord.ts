@@ -2,7 +2,7 @@ import path from "node:path";
 import { createDiscordAdapter } from "@chat-adapter/discord";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import { Chat, type Adapter } from "chat";
-import { MultipassError, ensureErrorMessage } from "../../core/errors.js";
+import { CrablineError, ensureErrorMessage } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import {
   appendRecordedInbound,
@@ -110,7 +110,7 @@ async function fetchDiscordApplicationMetadata(
       },
     });
   } catch (error) {
-    throw new MultipassError(
+    throw new CrablineError(
       `Discord application metadata lookup failed: ${ensureErrorMessage(error)}`,
       {
         cause: error,
@@ -120,12 +120,9 @@ async function fetchDiscordApplicationMetadata(
   }
 
   if (!response.ok) {
-    throw new MultipassError(
-      `Discord application metadata lookup failed: HTTP ${response.status}`,
-      {
-        kind: response.status === 401 || response.status === 403 ? "auth" : "connectivity",
-      },
-    );
+    throw new CrablineError(`Discord application metadata lookup failed: HTTP ${response.status}`, {
+      kind: response.status === 401 || response.status === 403 ? "auth" : "connectivity",
+    });
   }
 
   const payload = (await response.json()) as {
@@ -134,13 +131,13 @@ async function fetchDiscordApplicationMetadata(
   };
 
   if (typeof payload.id !== "string" || payload.id.length === 0) {
-    throw new MultipassError("Discord application metadata lookup returned no application id.", {
+    throw new CrablineError("Discord application metadata lookup returned no application id.", {
       kind: "connectivity",
     });
   }
 
   if (typeof payload.verify_key !== "string" || payload.verify_key.length === 0) {
-    throw new MultipassError("Discord application metadata lookup returned no public key.", {
+    throw new CrablineError("Discord application metadata lookup returned no public key.", {
       kind: "connectivity",
     });
   }
@@ -162,7 +159,7 @@ export async function resolveDiscordAdapterConfig(
   let publicKey = discordConfig?.publicKey ?? env.DISCORD_PUBLIC_KEY;
 
   if (!botToken) {
-    throw new MultipassError(
+    throw new CrablineError(
       "Discord bot token is required. Set discord.botToken or DISCORD_BOT_TOKEN.",
       {
         kind: "config",
@@ -222,7 +219,7 @@ function normalizeDiscordChannelId(value: string, guildId?: string): string {
   }
 
   if (!guildId) {
-    throw new MultipassError(
+    throw new CrablineError(
       "Discord guild channels require target.metadata.guildId unless target id is already encoded as discord:guild:channel.",
       {
         kind: "config",
@@ -251,20 +248,20 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
     return path.resolve(configuredPath);
   }
 
-  return path.resolve(".multipass", "recorders", `${providerId}.jsonl`);
+  return path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
 }
 
-function classifyDiscordFailure(error: unknown): MultipassError {
-  if (error instanceof MultipassError) {
+function classifyDiscordFailure(error: unknown): CrablineError {
+  if (error instanceof CrablineError) {
     return error;
   }
 
   const message = ensureErrorMessage(error);
   if (/401|unauthorized|invalid token|missing access|public key|signature/i.test(message)) {
-    return new MultipassError(message, { cause: error, kind: "auth" });
+    return new CrablineError(message, { cause: error, kind: "auth" });
   }
 
-  return new MultipassError(message, { cause: error, kind: "connectivity" });
+  return new CrablineError(message, { cause: error, kind: "connectivity" });
 }
 
 export class DiscordProviderAdapter implements ProviderAdapter {
@@ -329,7 +326,7 @@ export class DiscordProviderAdapter implements ProviderAdapter {
       }
 
       if (!normalized.channelId) {
-        throw new MultipassError(
+        throw new CrablineError(
           `Discord target "${target.id}" requires target.metadata.guildId or an encoded target.channelId for thread send.`,
           {
             kind: "config",
@@ -392,8 +389,8 @@ export class DiscordProviderAdapter implements ProviderAdapter {
         threadId: sent.threadId,
       };
     } catch (error) {
-      const kind = error instanceof MultipassError ? error.kind : "outbound";
-      throw new MultipassError(ensureErrorMessage(error), {
+      const kind = error instanceof CrablineError ? error.kind : "outbound";
+      throw new CrablineError(ensureErrorMessage(error), {
         cause: error,
         ...(kind ? { kind } : {}),
       });
@@ -507,7 +504,7 @@ export class DiscordProviderAdapter implements ProviderAdapter {
         };
       }
 
-      throw new MultipassError(`Discord webhook server failed: ${ensureErrorMessage(error)}`, {
+      throw new CrablineError(`Discord webhook server failed: ${ensureErrorMessage(error)}`, {
         cause: error,
         kind: "connectivity",
       });
@@ -536,7 +533,7 @@ export class DiscordProviderAdapter implements ProviderAdapter {
     );
 
     if (response.status >= 400) {
-      throw new MultipassError(`Discord gateway listener failed: ${await response.text()}`, {
+      throw new CrablineError(`Discord gateway listener failed: ${await response.text()}`, {
         kind: "connectivity",
       });
     }

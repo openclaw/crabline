@@ -19,7 +19,7 @@ const KIND_TO_EXIT: Record<FailureKind, ExitCode> = {
   assertion: EXIT_CODES.ASSERTION,
 };
 
-export class MultipassError extends Error {
+export class CrablineError extends Error {
   readonly exitCode: ExitCode;
   readonly kind: FailureKind | undefined;
 
@@ -28,7 +28,7 @@ export class MultipassError extends Error {
     options?: { cause?: unknown; exitCode?: ExitCode; kind?: FailureKind },
   ) {
     super(message, options);
-    this.name = "MultipassError";
+    this.name = "CrablineError";
     this.kind = options?.kind;
     this.exitCode =
       options?.exitCode ?? (options?.kind ? KIND_TO_EXIT[options.kind] : EXIT_CODES.FAILURE);

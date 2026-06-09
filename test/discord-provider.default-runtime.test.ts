@@ -38,12 +38,12 @@ describe("discord provider default runtime", () => {
       publicKey: "a".repeat(64),
     });
 
-    await expect(resolveDiscordAdapterConfig(config, "multipass")).resolves.toEqual({
+    await expect(resolveDiscordAdapterConfig(config, "crabline")).resolves.toEqual({
       applicationId: "123456789012345678",
       botToken: "discord-token",
       mentionRoleIds: ["111", "222"],
       publicKey: "a".repeat(64),
-      userName: "multipass",
+      userName: "crabline",
     });
   });
 
@@ -51,7 +51,7 @@ describe("discord provider default runtime", () => {
     const config = createConfig();
 
     await expect(
-      resolveDiscordAdapterConfig(config, "multipass", {
+      resolveDiscordAdapterConfig(config, "crabline", {
         DISCORD_APPLICATION_ID: "123456789012345678",
         DISCORD_BOT_TOKEN: "env-token",
         DISCORD_PUBLIC_KEY: "b".repeat(64),
@@ -60,7 +60,7 @@ describe("discord provider default runtime", () => {
       applicationId: "123456789012345678",
       botToken: "env-token",
       publicKey: "b".repeat(64),
-      userName: "multipass",
+      userName: "crabline",
     });
   });
 
@@ -78,7 +78,7 @@ describe("discord provider default runtime", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      resolveDiscordAdapterConfig(config, "multipass", {
+      resolveDiscordAdapterConfig(config, "crabline", {
         DISCORD_APPLICATION_ID: undefined,
         DISCORD_BOT_TOKEN: "env-token",
         DISCORD_PUBLIC_KEY: undefined,
@@ -87,7 +87,7 @@ describe("discord provider default runtime", () => {
       applicationId: "999999999999999999",
       botToken: "env-token",
       publicKey: "c".repeat(64),
-      userName: "multipass",
+      userName: "crabline",
     });
     expect(fetchMock).toHaveBeenCalledWith("https://discord.com/api/v10/oauth2/applications/@me", {
       headers: {
@@ -100,7 +100,7 @@ describe("discord provider default runtime", () => {
     const config = createConfig();
 
     await expect(
-      resolveDiscordAdapterConfig(config, "multipass", {
+      resolveDiscordAdapterConfig(config, "crabline", {
         DISCORD_APPLICATION_ID: undefined,
         DISCORD_BOT_TOKEN: undefined,
         DISCORD_PUBLIC_KEY: undefined,

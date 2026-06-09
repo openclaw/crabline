@@ -2,7 +2,7 @@ import path from "node:path";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import { createMatrixAdapter } from "@beeper/chat-adapter-matrix";
 import { Chat, type Adapter } from "chat";
-import { MultipassError, ensureErrorMessage } from "../../core/errors.js";
+import { CrablineError, ensureErrorMessage } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import {
   appendRecordedInbound,
@@ -98,12 +98,9 @@ export function resolveMatrixAdapterConfig(
   const matrixConfig = config.matrix;
   const baseURL = matrixConfig?.baseURL ?? env.MATRIX_BASE_URL;
   if (!baseURL) {
-    throw new MultipassError(
-      "Matrix base URL is required. Set matrix.baseURL or MATRIX_BASE_URL.",
-      {
-        kind: "config",
-      },
-    );
+    throw new CrablineError("Matrix base URL is required. Set matrix.baseURL or MATRIX_BASE_URL.", {
+      kind: "config",
+    });
   }
 
   return {
@@ -152,20 +149,20 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
     return path.resolve(configuredPath);
   }
 
-  return path.resolve(".multipass", "recorders", `${providerId}.jsonl`);
+  return path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
 }
 
-function classifyMatrixFailure(error: unknown): MultipassError {
-  if (error instanceof MultipassError) {
+function classifyMatrixFailure(error: unknown): CrablineError {
+  if (error instanceof CrablineError) {
     return error;
   }
 
   const message = ensureErrorMessage(error);
   if (/access token|401|unauthorized|forbidden/i.test(message)) {
-    return new MultipassError(message, { cause: error, kind: "auth" });
+    return new CrablineError(message, { cause: error, kind: "auth" });
   }
 
-  return new MultipassError(message, { cause: error, kind: "connectivity" });
+  return new CrablineError(message, { cause: error, kind: "connectivity" });
 }
 
 function resolveMatrixAuthFromEnv(env: MatrixEnvironment) {
@@ -186,7 +183,7 @@ function resolveMatrixAuthFromEnv(env: MatrixEnvironment) {
     };
   }
 
-  throw new MultipassError(
+  throw new CrablineError(
     "Matrix auth is required. Set matrix.auth or MATRIX_ACCESS_TOKEN or MATRIX_USERNAME/MATRIX_PASSWORD.",
     { kind: "config" },
   );
@@ -195,7 +192,7 @@ function resolveMatrixAuthFromEnv(env: MatrixEnvironment) {
 function resolveMatrixAuth(auth: MatrixProviderAuth | undefined, env: MatrixEnvironment) {
   if (auth?.type === "accessToken") {
     if (!auth.accessToken) {
-      throw new MultipassError("Matrix accessToken auth requires auth.accessToken.", {
+      throw new CrablineError("Matrix accessToken auth requires auth.accessToken.", {
         kind: "config",
       });
     }
@@ -209,7 +206,7 @@ function resolveMatrixAuth(auth: MatrixProviderAuth | undefined, env: MatrixEnvi
 
   if (auth?.type === "password") {
     if (!auth.username || !auth.password) {
-      throw new MultipassError("Matrix password auth requires auth.username and auth.password.", {
+      throw new CrablineError("Matrix password auth requires auth.username and auth.password.", {
         kind: "config",
       });
     }
@@ -266,7 +263,7 @@ export class MatrixProviderAdapter implements ProviderAdapter {
 
     if (target.threadId) {
       if (!normalized.channelId) {
-        throw new MultipassError(
+        throw new CrablineError(
           `Matrix target "${target.id}" requires channelId for thread send.`,
           {
             kind: "config",
@@ -309,8 +306,8 @@ export class MatrixProviderAdapter implements ProviderAdapter {
         threadId: sent.threadId,
       };
     } catch (error) {
-      const kind = error instanceof MultipassError ? error.kind : "outbound";
-      throw new MultipassError(ensureErrorMessage(error), {
+      const kind = error instanceof CrablineError ? error.kind : "outbound";
+      throw new CrablineError(ensureErrorMessage(error), {
         cause: error,
         ...(kind ? { kind } : {}),
       });

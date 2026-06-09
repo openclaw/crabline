@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MultipassError, ensureErrorMessage } from "../src/core/errors.js";
+import { CrablineError, ensureErrorMessage } from "../src/core/errors.js";
 import { EXIT_CODES } from "../src/core/exit-codes.js";
 import { formatJson, formatRunResultText } from "../src/core/reporters.js";
 
@@ -9,7 +9,7 @@ const stripAnsi = (value: string): string => value.replace(ansiPattern, "");
 
 describe("errors and reporters", () => {
   it("maps failure kinds to exit codes", () => {
-    const error = new MultipassError("boom", { kind: "auth" });
+    const error = new CrablineError("boom", { kind: "auth" });
     expect(error.exitCode).toBe(EXIT_CODES.AUTH);
     expect(ensureErrorMessage(error)).toBe("boom");
     expect(ensureErrorMessage("plain")).toBe("plain");

@@ -2,8 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-export const createTempDir = async (): Promise<string> =>
-  mkdtemp(path.join(tmpdir(), "multipass-"));
+export const createTempDir = async (): Promise<string> => mkdtemp(path.join(tmpdir(), "crabline-"));
 
 export const disposeTempDir = async (directory: string): Promise<void> => {
   await rm(directory, { force: true, recursive: true });

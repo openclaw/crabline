@@ -63,9 +63,9 @@ const createContext = async (): Promise<ProviderContext> => {
       target: { id: "thread-1", metadata: {} },
       timeoutMs: 1000,
     },
-    manifestPath: path.join(directory, "multipass.yaml"),
+    manifestPath: path.join(directory, "crabline.yaml"),
     providerId: "scripted",
-    userName: "multipass",
+    userName: "crabline",
   };
 };
 

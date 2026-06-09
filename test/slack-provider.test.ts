@@ -185,9 +185,9 @@ function createContext(config: ProviderConfig): ProviderContext {
       },
       timeoutMs: 500,
     },
-    manifestPath: "/tmp/multipass.yaml",
+    manifestPath: "/tmp/crabline.yaml",
     providerId: "slack-native",
-    userName: "multipass",
+    userName: "crabline",
   };
 }
 
@@ -195,7 +195,7 @@ describe("slack provider", () => {
   it("normalizes channel, thread, and DM targets", async () => {
     const runtime = createFakeSlackRuntime();
     const config = await createSlackConfig(0);
-    const provider = new SlackProviderAdapter("slack-native", config, "multipass", runtime.runtime);
+    const provider = new SlackProviderAdapter("slack-native", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     expect(
@@ -227,7 +227,7 @@ describe("slack provider", () => {
   it("rejects thread targets without a channel id", async () => {
     const runtime = createFakeSlackRuntime();
     const config = await createSlackConfig(0);
-    const provider = new SlackProviderAdapter("slack-native", config, "multipass", runtime.runtime);
+    const provider = new SlackProviderAdapter("slack-native", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     expect(() =>
@@ -242,7 +242,7 @@ describe("slack provider", () => {
   it("probes native slack configuration", async () => {
     const runtime = createFakeSlackRuntime();
     const config = await createSlackConfig(0);
-    const provider = new SlackProviderAdapter("slack-native", config, "multipass", runtime.runtime);
+    const provider = new SlackProviderAdapter("slack-native", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     const result = await provider.probe(createContext(config));
@@ -255,7 +255,7 @@ describe("slack provider", () => {
     const runtime = createFakeSlackRuntime();
     const config = await createSlackConfig(0);
     config.slack!.webhook.publicUrl = "https://example.ngrok.app/slack/events";
-    const provider = new SlackProviderAdapter("slack-native", config, "multipass", runtime.runtime);
+    const provider = new SlackProviderAdapter("slack-native", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     const result = await provider.probe({
@@ -278,7 +278,7 @@ describe("slack provider", () => {
   it("sends to a slack channel and subscribes to the thread", async () => {
     const runtime = createFakeSlackRuntime();
     const config = await createSlackConfig(0);
-    const provider = new SlackProviderAdapter("slack-native", config, "multipass", runtime.runtime);
+    const provider = new SlackProviderAdapter("slack-native", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     const result = await provider.send({
@@ -297,7 +297,7 @@ describe("slack provider", () => {
   it("records webhook inbound events and waits for them", async () => {
     const runtime = createFakeSlackRuntime();
     const config = await createSlackConfig(0);
-    const provider = new SlackProviderAdapter("slack-native", config, "multipass", runtime.runtime);
+    const provider = new SlackProviderAdapter("slack-native", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     await provider.probe(createContext(config));
@@ -337,7 +337,7 @@ describe("slack provider", () => {
   it("streams webhook-backed watch events", async () => {
     const runtime = createFakeSlackRuntime();
     const config = await createSlackConfig(0);
-    const provider = new SlackProviderAdapter("slack-native", config, "multipass", runtime.runtime);
+    const provider = new SlackProviderAdapter("slack-native", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     const probe = await provider.probe(createContext(config));
@@ -374,7 +374,7 @@ describe("slack provider", () => {
     const runtime = createFakeSlackRuntime();
     runtime.adapter.fetchChannelInfo.mockRejectedValueOnce(new Error("invalid_auth"));
     const config = await createSlackConfig(0);
-    const provider = new SlackProviderAdapter("slack-native", config, "multipass", runtime.runtime);
+    const provider = new SlackProviderAdapter("slack-native", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     await expect(provider.probe(createContext(config))).rejects.toMatchObject({ kind: "auth" });
@@ -386,7 +386,7 @@ describe("slack provider", () => {
     const primary = new SlackProviderAdapter(
       "slack-primary",
       { ...config, slack: { ...config.slack!, recorder: { path: config.slack!.recorder.path } } },
-      "multipass",
+      "crabline",
       primaryRuntime.runtime,
     );
     providers.push(primary);
@@ -403,7 +403,7 @@ describe("slack provider", () => {
           },
         },
       },
-      "multipass",
+      "crabline",
       secondaryRuntime.runtime,
     );
     providers.push(secondary);

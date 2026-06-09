@@ -12,7 +12,7 @@ import {
   toPlainText,
 } from "chat";
 import { createMemoryState } from "@chat-adapter/state-memory";
-import { MultipassError } from "../../core/errors.js";
+import { CrablineError } from "../../core/errors.js";
 import { extractNonce } from "../../core/nonces.js";
 import type { FixtureMode, ProviderConfig } from "../../config/schema.js";
 import type {
@@ -53,11 +53,11 @@ function sleep(ms: number): Promise<void> {
 
 function createAuthor(kind: "assistant" | "user") {
   return {
-    fullName: kind === "assistant" ? "multipass-bot" : "loopback-user",
+    fullName: kind === "assistant" ? "crabline-bot" : "loopback-user",
     isBot: kind === "assistant",
     isMe: kind === "assistant",
     userId: kind === "assistant" ? "loopback-bot" : "loopback-user",
-    userName: kind === "assistant" ? "multipass" : "loopback",
+    userName: kind === "assistant" ? "crabline" : "loopback",
   } as const;
 }
 
@@ -111,7 +111,7 @@ export class LoopbackChatAdapter implements Adapter<ThreadAddress, LoopbackRawMe
     const messages = this.#messages.get(threadId) ?? [];
     const existing = messages.find((entry) => entry.id === messageId);
     if (!existing) {
-      throw new MultipassError(`Loopback message not found: ${messageId}`, { kind: "inbound" });
+      throw new CrablineError(`Loopback message not found: ${messageId}`, { kind: "inbound" });
     }
 
     const text = toPostableText(message);

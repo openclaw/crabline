@@ -2,7 +2,7 @@ import path from "node:path";
 import { createSlackAdapter } from "@chat-adapter/slack";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import { Chat, type Adapter } from "chat";
-import { MultipassError, ensureErrorMessage } from "../../core/errors.js";
+import { CrablineError, ensureErrorMessage } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import {
   appendRecordedInbound,
@@ -127,16 +127,16 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
     return path.resolve(configuredPath);
   }
 
-  return path.resolve(".multipass", "recorders", `${providerId}.jsonl`);
+  return path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
 }
 
-function classifySlackFailure(error: unknown): MultipassError {
+function classifySlackFailure(error: unknown): CrablineError {
   const message = ensureErrorMessage(error);
   if (/not_authed|invalid_auth|token/i.test(message)) {
-    return new MultipassError(message, { cause: error, kind: "auth" });
+    return new CrablineError(message, { cause: error, kind: "auth" });
   }
 
-  return new MultipassError(message, { cause: error, kind: "connectivity" });
+  return new CrablineError(message, { cause: error, kind: "connectivity" });
 }
 
 export class SlackProviderAdapter implements ProviderAdapter {
@@ -181,12 +181,9 @@ export class SlackProviderAdapter implements ProviderAdapter {
 
     if (target.threadId) {
       if (!normalized.channelId) {
-        throw new MultipassError(
-          `Slack target "${target.id}" requires channelId for thread send.`,
-          {
-            kind: "config",
-          },
-        );
+        throw new CrablineError(`Slack target "${target.id}" requires channelId for thread send.`, {
+          kind: "config",
+        });
       }
 
       normalized.threadId = normalizeSlackThreadId(normalized.channelId, target.threadId);
@@ -239,8 +236,8 @@ export class SlackProviderAdapter implements ProviderAdapter {
         threadId: sent.threadId,
       };
     } catch (error) {
-      const kind = error instanceof MultipassError ? error.kind : "outbound";
-      throw new MultipassError(ensureErrorMessage(error), {
+      const kind = error instanceof CrablineError ? error.kind : "outbound";
+      throw new CrablineError(ensureErrorMessage(error), {
         cause: error,
         ...(kind ? { kind } : {}),
       });
@@ -340,7 +337,7 @@ export class SlackProviderAdapter implements ProviderAdapter {
         };
       }
 
-      throw new MultipassError(`Slack webhook server failed: ${ensureErrorMessage(error)}`, {
+      throw new CrablineError(`Slack webhook server failed: ${ensureErrorMessage(error)}`, {
         cause: error,
         kind: "connectivity",
       });
@@ -361,7 +358,7 @@ export class SlackProviderAdapter implements ProviderAdapter {
       return this.#getAdapter().openDM(normalized.id);
     }
 
-    throw new MultipassError(`Slack target "${normalized.id}" is not a valid channel or user id.`, {
+    throw new CrablineError(`Slack target "${normalized.id}" is not a valid channel or user id.`, {
       kind: "config",
     });
   }

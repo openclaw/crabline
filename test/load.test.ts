@@ -14,7 +14,7 @@ describe("config load", () => {
   it("loads yaml manifests", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const configPath = path.join(directory, "multipass.yaml");
+    const configPath = path.join(directory, "crabline.yaml");
     await writeText(
       configPath,
       [
@@ -39,7 +39,7 @@ describe("config load", () => {
   it("loads json manifests", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const configPath = path.join(directory, "multipass.json");
+    const configPath = path.join(directory, "crabline.json");
     await writeJson(configPath, {
       configVersion: 1,
       fixtures: [{ id: "fixture", mode: "send", provider: "local", target: { id: "test-target" } }],
@@ -53,7 +53,7 @@ describe("config load", () => {
   it("resolves default config names from cwd", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const configPath = path.join(directory, "multipass.yml");
+    const configPath = path.join(directory, "crabline.yml");
     await writeText(configPath, "configVersion: 1\nproviders: {}\nfixtures: []\n");
     const originalCwd = process.cwd();
 

@@ -1,4 +1,4 @@
-import { MultipassError } from "../core/errors.js";
+import { CrablineError } from "../core/errors.js";
 import type { ManifestDefinition } from "../config/schema.js";
 import { DiscordProviderAdapter } from "./builtin/discord.js";
 import { IMessageProviderAdapter } from "./builtin/imessage.js";
@@ -20,16 +20,16 @@ export function createRegistry(manifest: ManifestDefinition, manifestPath: strin
     resolve(providerId, fixtureId) {
       const fixture = manifest.fixtures.find((entry) => entry.id === fixtureId);
       if (!fixture) {
-        throw new MultipassError(`Unknown fixture: ${fixtureId}`, { kind: "config" });
+        throw new CrablineError(`Unknown fixture: ${fixtureId}`, { kind: "config" });
       }
 
       const config = manifest.providers[providerId];
       if (!config) {
-        throw new MultipassError(`Unknown provider: ${providerId}`, { kind: "config" });
+        throw new CrablineError(`Unknown provider: ${providerId}`, { kind: "config" });
       }
 
       if (config.status === "disabled") {
-        throw new MultipassError(`Provider "${providerId}" is disabled.`, { kind: "config" });
+        throw new CrablineError(`Provider "${providerId}" is disabled.`, { kind: "config" });
       }
 
       const context: ProviderContext = {
