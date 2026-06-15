@@ -1,18 +1,25 @@
 {
   "name": "crabline",
   "version": "0.1.0",
-  "private": true,
   "description": "Standalone CLI for deterministic messaging provider E2E tests",
   "license": "MIT",
   "bin": {
     "crabline": "./dist/src/bin/crabline.js"
   },
   "files": [
-    "dist",
+    "dist/src",
     "README.md",
     "fixtures"
   ],
   "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
   "scripts": {
     "build": "tsgo -p tsconfig.json",
     "clean": "rm -rf dist coverage",
@@ -22,6 +29,7 @@
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "lint": "pnpm format:check && pnpm typecheck && oxlint --deny-warnings --allow vitest/require-mock-type-parameters --type-aware --tsconfig tsconfig.json src test",
+    "prepare": "pnpm build",
     "run": "tsx src/bin/crabline.ts run",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -31,28 +39,55 @@
     "check": "pnpm verify"
   },
   "dependencies": {
-    "@beeper/chat-adapter-matrix": "^0.1.0",
-    "@chat-adapter/discord": "^4.30.0",
-    "@chat-adapter/shared": "^4.30.0",
-    "@chat-adapter/slack": "^4.30.0",
-    "@chat-adapter/state-memory": "^4.30.0",
-    "chat": "^4.30.0",
-    "chat-adapter-imessage": "^0.1.1",
     "commander": "^14.0.3",
     "picocolors": "^1.1.1",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@beeper/chat-adapter-matrix": "^0.1.0",
+    "@chat-adapter/discord": "^4.30.0",
+    "@chat-adapter/slack": "^4.30.0",
+    "@chat-adapter/state-memory": "^4.30.0",
     "@types/node": "^25.9.2",
     "@typescript/native-preview": "7.0.0-dev.20260503.1",
     "@vitest/coverage-v8": "^4.1.8",
+    "chat": "^4.30.0",
+    "chat-adapter-imessage": "^0.1.1",
     "oxfmt": "^0.47.0",
     "oxlint": "^1.69.0",
     "oxlint-tsgolint": "^0.22.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
+  },
+  "peerDependencies": {
+    "@beeper/chat-adapter-matrix": "^0.1.0",
+    "@chat-adapter/discord": "^4.30.0",
+    "@chat-adapter/slack": "^4.30.0",
+    "@chat-adapter/state-memory": "^4.30.0",
+    "chat": "^4.30.0",
+    "chat-adapter-imessage": "^0.1.1"
+  },
+  "peerDependenciesMeta": {
+    "@beeper/chat-adapter-matrix": {
+      "optional": true
+    },
+    "@chat-adapter/discord": {
+      "optional": true
+    },
+    "@chat-adapter/slack": {
+      "optional": true
+    },
+    "@chat-adapter/state-memory": {
+      "optional": true
+    },
+    "chat": {
+      "optional": true
+    },
+    "chat-adapter-imessage": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=22"
