@@ -8,6 +8,15 @@ providers:
     loopback:
       delayMs: 0
 
+  telegram-local:
+    adapter: channel
+    platform: telegram
+    channel:
+      driver: telegram-local-v1
+      botUserName: multipass_telegram_bot
+      qaResponse:
+        mode: ack
+
   slack-native:
     adapter: slack
     platform: slack
@@ -86,6 +95,39 @@ fixtures:
     target:
       id: agent-bot
       behavior: agent
+
+  - id: telegram-local-dm
+    provider: telegram-local
+    mode: roundtrip
+    target:
+      id: "100000001"
+      metadata:
+        chatType: dm
+        userName: qa-user
+    inboundMatch:
+      author: assistant
+      strategy: contains
+      nonce: contains
+
+  - id: telegram-local-group-topic-action
+    provider: telegram-local
+    mode: roundtrip
+    target:
+      id: "-100000001"
+      channelId: telegram:group:-100000001
+      threadId: "42"
+      metadata:
+        actionId: approve-tool-1
+        actionPayload: approve:tool
+        actionType: button
+        chatType: group
+        mediaKind: image
+        mention: "true"
+        topicId: "42"
+    inboundMatch:
+      author: assistant
+      strategy: contains
+      nonce: contains
 
   - id: slack-openclaw-demo
     provider: slack-openclaw

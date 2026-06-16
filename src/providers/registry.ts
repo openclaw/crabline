@@ -1,18 +1,174 @@
 import { CrablineError } from "../core/errors.js";
-import type { ManifestDefinition } from "../config/schema.js";
-import { DiscordProviderAdapter } from "./builtin/discord.js";
-import { IMessageProviderAdapter } from "./builtin/imessage.js";
-import { LoopbackProviderAdapter } from "./builtin/loopback.js";
-import { MatrixProviderAdapter } from "./builtin/matrix.js";
-import { SlackProviderAdapter } from "./builtin/slack.js";
+import type {
+  BuiltinAdapterId,
+  FixtureMode,
+  ManifestDefinition,
+  ProviderConfig,
+} from "../config/schema.js";
+import { LocalChannelProviderAdapter } from "./builtin/channel.js";
 import { ScriptProviderAdapter } from "./builtin/script.js";
 import { OPENCLAW_SUPPORT_CATALOG } from "./catalog.js";
-import type { ProviderAdapter, ProviderContext } from "./types.js";
+import type {
+  InboundEnvelope,
+  NormalizedTarget,
+  ProbeResult,
+  ProviderAdapter,
+  ProviderContext,
+  ProviderSupportStatus,
+  SendContext,
+  SendResult,
+  WaitContext,
+  WatchContext,
+} from "./types.js";
 
 export type Registry = {
   catalog: typeof OPENCLAW_SUPPORT_CATALOG;
   resolve(providerId: string, fixtureId: string): ProviderAdapter;
 };
+
+const COMMON_PROVIDER_SUPPORT = [
+  "probe",
+  "send",
+  "roundtrip",
+  "agent",
+] as const satisfies readonly FixtureMode[];
+
+type LazyAdapterId = Exclude<BuiltinAdapterId, "channel" | "script">;
+type ProviderFactory = () => Promise<ProviderAdapter>;
+type LazyProviderFactory = (params: {
+  config: ProviderConfig;
+  providerId: string;
+  userName: string;
+}) => Promise<ProviderAdapter>;
+
+const LAZY_PROVIDER_FACTORIES = {
+  async discord({ config, providerId, userName }) {
+    const { DiscordProviderAdapter } = await import("./builtin/discord.js");
+    return new DiscordProviderAdapter(providerId, config, userName);
+  },
+  async imessage({ config, providerId, userName }) {
+    const { IMessageProviderAdapter } = await import("./builtin/imessage.js");
+    return new IMessageProviderAdapter(providerId, config, userName);
+  },
+  async loopback({ config, providerId, userName }) {
+    const { LoopbackProviderAdapter } = await import("./builtin/loopback.js");
+    return new LoopbackProviderAdapter(providerId, config, userName);
+  },
+  async matrix({ config, providerId, userName }) {
+    const { MatrixProviderAdapter } = await import("./builtin/matrix.js");
+    return new MatrixProviderAdapter(providerId, config, userName);
+  },
+  async slack({ config, providerId, userName }) {
+    const { SlackProviderAdapter } = await import("./builtin/slack.js");
+    return new SlackProviderAdapter(providerId, config, userName);
+  },
+} satisfies Record<LazyAdapterId, LazyProviderFactory>;
+
+function isLazyAdapter(adapter: BuiltinAdapterId): adapter is LazyAdapterId {
+  return adapter in LAZY_PROVIDER_FACTORIES;
+}
+
+function normalizeTarget(target: ProviderContext["fixture"]["target"]): NormalizedTarget {
+  const normalized: NormalizedTarget = { id: target.id, metadata: target.metadata };
+  if (target.channelId) {
+    normalized.channelId = target.channelId;
+  }
+  if (target.threadId) {
+    normalized.threadId = target.threadId;
+  }
+  return normalized;
+}
+
+function createLazyProvider(params: {
+  adapter: LazyAdapterId;
+  config: ProviderConfig;
+  providerId: string;
+  userName: string;
+}): ProviderAdapter {
+  return new LazyProviderAdapter({
+    adapterName: params.adapter,
+    factory: () => LAZY_PROVIDER_FACTORIES[params.adapter](params),
+    id: params.providerId,
+    platform: params.config.platform,
+    status: "ready",
+    supports: COMMON_PROVIDER_SUPPORT,
+  });
+}
+
+class LazyProviderAdapter implements ProviderAdapter {
+  readonly id;
+  readonly platform;
+  readonly status;
+  readonly supports;
+
+  readonly #adapterName: string;
+  readonly #factory: ProviderFactory;
+  #providerPromise: Promise<ProviderAdapter> | null = null;
+
+  constructor(params: {
+    adapterName: string;
+    factory: ProviderFactory;
+    id: string;
+    platform: ProviderAdapter["platform"];
+    status: ProviderSupportStatus;
+    supports: ProviderAdapter["supports"];
+  }) {
+    this.#adapterName = params.adapterName;
+    this.#factory = params.factory;
+    this.id = params.id;
+    this.platform = params.platform;
+    this.status = params.status;
+    this.supports = params.supports;
+  }
+
+  normalizeTarget(target: ProviderContext["fixture"]["target"]): NormalizedTarget {
+    return normalizeTarget(target);
+  }
+
+  async probe(context: ProviderContext): Promise<ProbeResult> {
+    return await (await this.#provider()).probe(context);
+  }
+
+  async send(context: SendContext): Promise<SendResult> {
+    return await (await this.#provider()).send(context);
+  }
+
+  async waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
+    return await (await this.#provider()).waitForInbound(context);
+  }
+
+  watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
+    return this.#watch(context);
+  }
+
+  async cleanup(): Promise<void> {
+    if (!this.#providerPromise) {
+      return;
+    }
+    await (await this.#providerPromise).cleanup?.();
+  }
+
+  async #provider(): Promise<ProviderAdapter> {
+    this.#providerPromise ??= this.#factory().catch((error: unknown) => {
+      this.#providerPromise = null;
+      throw new CrablineError(
+        `Provider adapter "${this.#adapterName}" could not load. Install its optional peer dependencies before using this adapter.`,
+        { cause: error, kind: "config" },
+      );
+    });
+    return await this.#providerPromise;
+  }
+
+  async *#watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
+    const provider = await this.#provider();
+    if (!provider.watch) {
+      throw new CrablineError(`Provider "${this.id}" does not implement watch.`, {
+        kind: "config",
+      });
+    }
+    yield* provider.watch(context);
+  }
+}
 
 export function createRegistry(manifest: ManifestDefinition, manifestPath: string): Registry {
   return {
@@ -40,24 +196,17 @@ export function createRegistry(manifest: ManifestDefinition, manifestPath: strin
         userName: manifest.userName,
       };
 
-      if (config.adapter === "loopback") {
-        return new LoopbackProviderAdapter(providerId, config, manifest.userName);
+      if (isLazyAdapter(config.adapter)) {
+        return createLazyProvider({
+          adapter: config.adapter,
+          config,
+          providerId,
+          userName: manifest.userName,
+        });
       }
 
-      if (config.adapter === "discord") {
-        return new DiscordProviderAdapter(providerId, config, manifest.userName);
-      }
-
-      if (config.adapter === "matrix") {
-        return new MatrixProviderAdapter(providerId, config, manifest.userName);
-      }
-
-      if (config.adapter === "imessage") {
-        return new IMessageProviderAdapter(providerId, config, manifest.userName);
-      }
-
-      if (config.adapter === "slack") {
-        return new SlackProviderAdapter(providerId, config, manifest.userName);
+      if (config.adapter === "channel") {
+        return new LocalChannelProviderAdapter(providerId, config);
       }
 
       return new ScriptProviderAdapter(context);
