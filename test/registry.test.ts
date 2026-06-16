@@ -100,7 +100,7 @@ describe("registry", () => {
     expect(provider.status).toBe("ready");
   });
 
-  it("resolves built-in discord, matrix, imessage, telegram, and whatsapp providers", () => {
+  it("resolves built-in discord, matrix, imessage, feishu, mattermost, telegram, whatsapp, and zalo providers", () => {
     const nativeManifest: ManifestDefinition = {
       ...manifest,
       providers: {
@@ -121,6 +121,18 @@ describe("registry", () => {
           },
           env: [],
           platform: "discord",
+          status: "active",
+        },
+        feishu: {
+          adapter: "feishu",
+          capabilities: ["probe", "send", "roundtrip", "agent"],
+          env: [],
+          feishu: {
+            appId: "feishu-app",
+            appSecret: "feishu-secret",
+            recorder: { path: "/tmp/crabline-feishu-test.jsonl" },
+          },
+          platform: "feishu",
           status: "active",
         },
         imessage: {
@@ -145,6 +157,23 @@ describe("registry", () => {
             recorder: { path: "/tmp/crabline-matrix-test.jsonl" },
           },
           platform: "matrix",
+          status: "active",
+        },
+        mattermost: {
+          adapter: "mattermost",
+          capabilities: ["probe", "send", "roundtrip", "agent"],
+          env: [],
+          mattermost: {
+            baseUrl: "https://mattermost.example.com",
+            botToken: "mattermost-token",
+            recorder: { path: "/tmp/crabline-mattermost-test.jsonl" },
+            webhook: {
+              host: "127.0.0.1",
+              path: "/mattermost/webhook",
+              port: 8793,
+            },
+          },
+          platform: "mattermost",
           status: "active",
         },
         telegram: {
@@ -183,6 +212,23 @@ describe("registry", () => {
             },
           },
         },
+        zalo: {
+          adapter: "zalo",
+          capabilities: ["probe", "send", "roundtrip", "agent"],
+          env: [],
+          platform: "zalo",
+          status: "active",
+          zalo: {
+            botToken: "zalo-token",
+            recorder: { path: "/tmp/crabline-zalo-test.jsonl" },
+            webhook: {
+              host: "127.0.0.1",
+              path: "/zalo/webhook",
+              port: 8794,
+            },
+            webhookSecret: "zalo-secret",
+          },
+        },
       },
       fixtures: [
         {
@@ -193,6 +239,12 @@ describe("registry", () => {
             id: "123456789012345678",
             metadata: { guildId: "987654321098765432" },
           },
+        },
+        {
+          ...manifest.fixtures[0]!,
+          id: "feishu-fixture",
+          provider: "feishu",
+          target: { id: "oc_123", metadata: {} },
         },
         {
           ...manifest.fixtures[0]!,
@@ -208,6 +260,12 @@ describe("registry", () => {
         },
         {
           ...manifest.fixtures[0]!,
+          id: "mattermost-fixture",
+          provider: "mattermost",
+          target: { id: "channel-id", metadata: {} },
+        },
+        {
+          ...manifest.fixtures[0]!,
           id: "telegram-fixture",
           provider: "telegram",
           target: { id: "123456789", metadata: {} },
@@ -218,14 +276,23 @@ describe("registry", () => {
           provider: "whatsapp",
           target: { id: "15551234567", metadata: {} },
         },
+        {
+          ...manifest.fixtures[0]!,
+          id: "zalo-fixture",
+          provider: "zalo",
+          target: { id: "chat-123", metadata: {} },
+        },
       ],
     };
 
     const registry = createRegistry(nativeManifest, "/tmp/crabline.yaml");
     expect(registry.resolve("discord", "discord-fixture").platform).toBe("discord");
+    expect(registry.resolve("feishu", "feishu-fixture").platform).toBe("feishu");
     expect(registry.resolve("imessage", "imessage-fixture").platform).toBe("imessage");
     expect(registry.resolve("matrix", "matrix-fixture").platform).toBe("matrix");
+    expect(registry.resolve("mattermost", "mattermost-fixture").platform).toBe("mattermost");
     expect(registry.resolve("telegram", "telegram-fixture").platform).toBe("telegram");
     expect(registry.resolve("whatsapp", "whatsapp-fixture").platform).toBe("whatsapp");
+    expect(registry.resolve("zalo", "zalo-fixture").platform).toBe("zalo");
   });
 });

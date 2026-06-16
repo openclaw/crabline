@@ -12,14 +12,17 @@ The current shape is:
 
 - built-in `loopback` provider for local development and contract tests
 - built-in `discord` provider
+- built-in `feishu` provider
+- built-in `mattermost` provider
 - built-in `slack` provider
 - built-in `telegram` provider
 - built-in `whatsapp` provider
+- built-in `zalo` provider
 - adapter-backed providers for `matrix` and `imessage`
 - `script` bridge for the remaining OpenClaw messaging channels
 - webhook-backed recorder mode for Slack `watch` / `webhook`
 - interactions-webhook + gateway-backed recorder mode for Discord
-- recorder-backed watch mode for Telegram, WhatsApp, Matrix, and iMessage
+- recorder-backed watch mode for Telegram, WhatsApp, Feishu, Mattermost, Zalo, Matrix, and iMessage
 - nonce-based `send`, `roundtrip`, `agent`, `probe`, `run`, `watch`, `doctor`
 - text output by default, stable `--json` for automation
 - core provider model aligned with Vercel Chat SDK concepts
@@ -72,7 +75,7 @@ configVersion: 1
 userName: crabline
 providers:
   provider-id:
-    adapter: loopback | script | slack | discord | telegram | whatsapp | matrix | imessage
+    adapter: loopback | script | slack | discord | feishu | mattermost | telegram | whatsapp | zalo | matrix | imessage
     platform: required only when adapter is script
 fixtures:
   - id: string
@@ -106,9 +109,9 @@ For per-channel secrets, external setup, and smoke CI profile guidance, see
 
 ## Support Matrix
 
-- `ready`: `loopback`, built-in `slack`, built-in `discord`, built-in `telegram`, built-in `whatsapp`, adapter-backed `matrix`, adapter-backed `imessage`
-- `bridge`: `bluebubbles`, `feishu`, `googlechat`, `irc`, `line`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `synologychat`, `tlon`, `twitch`, `webchat`, `zalo`, `zalouser`
-- Plugin-backed in OpenClaw, available through the bridge: `feishu`, `line`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `synologychat`, `tlon`, `twitch`, `zalo`, `zalouser`
+- `ready`: `loopback`, built-in `slack`, built-in `discord`, built-in `feishu`, built-in `mattermost`, built-in `telegram`, built-in `whatsapp`, built-in `zalo`, adapter-backed `matrix`, adapter-backed `imessage`
+- `bridge`: `bluebubbles`, `googlechat`, `irc`, `line`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `synologychat`, `tlon`, `twitch`, `webchat`, `zalouser`
+- Plugin-backed in OpenClaw, available through the bridge: `line`, `msteams`, `nextcloudtalk`, `nostr`, `synologychat`, `tlon`, `twitch`, `zalouser`
 - Recommended bridge-only path today: `bluebubbles`, `googlechat`, `irc`, `signal`, `webchat`
 
 Telegram notes:
@@ -161,6 +164,64 @@ providers:
 ```
 
 WhatsApp targets use Chat SDK thread ids: `whatsapp:{phoneNumberId}:{userWaId}`. Raw `target.id` values are encoded from `WHATSAPP_PHONE_NUMBER_ID` or `whatsapp.phoneNumberId`.
+
+Feishu provider options:
+
+```yaml
+providers:
+  feishu:
+    adapter: feishu
+    env:
+      - FEISHU_APP_ID
+      - FEISHU_APP_SECRET
+    feishu:
+      recorder:
+        path: ./.crabline/recorders/feishu.jsonl
+```
+
+Feishu uses the Chat SDK Lark adapter and WebSocket transport. Targets use `lark:{chatId}:{rootId}`. Raw `oc_*` chat ids are encoded automatically; raw `ou_*` user ids are treated as DM targets.
+
+Mattermost provider options:
+
+```yaml
+providers:
+  mattermost:
+    adapter: mattermost
+    env:
+      - MATTERMOST_BASE_URL
+      - MATTERMOST_BOT_TOKEN
+    mattermost:
+      recorder:
+        path: ./.crabline/recorders/mattermost.jsonl
+      webhook:
+        host: 127.0.0.1
+        port: 8793
+        path: /mattermost/webhook
+        publicUrl: https://example.ngrok.app/mattermost/webhook # optional
+```
+
+Mattermost raw channel ids are encoded as `mattermost:{base64urlChannelId}`. Thread replies use `target.channelId` plus `target.threadId`, encoded as `mattermost:{base64urlChannelId}:{base64urlRootPostId}`. User DMs can set `target.metadata.targetType: user`.
+
+Zalo provider options:
+
+```yaml
+providers:
+  zalo:
+    adapter: zalo
+    env:
+      - ZALO_BOT_TOKEN
+      - ZALO_WEBHOOK_SECRET
+    zalo:
+      recorder:
+        path: ./.crabline/recorders/zalo.jsonl
+      webhook:
+        host: 127.0.0.1
+        port: 8794
+        path: /zalo/webhook
+        publicUrl: https://example.ngrok.app/zalo/webhook # optional
+```
+
+Zalo targets use Chat SDK thread ids: `zalo:{chatId}`. Raw `target.id` values are encoded automatically.
 
 Discord provider options:
 
@@ -308,6 +369,42 @@ WHATSAPP_VERIFY_TOKEN=... \
 pnpm dev watch whatsapp-dm --config fixtures/examples/crabline.example.yaml
 ```
 
+Feishu:
+
+```bash
+FEISHU_APP_ID=... \
+FEISHU_APP_SECRET=... \
+pnpm dev probe feishu-chat --config fixtures/examples/crabline.example.yaml
+
+FEISHU_APP_ID=... \
+FEISHU_APP_SECRET=... \
+pnpm dev watch feishu-chat --config fixtures/examples/crabline.example.yaml
+```
+
+Mattermost:
+
+```bash
+MATTERMOST_BASE_URL=https://mattermost.example.com \
+MATTERMOST_BOT_TOKEN=... \
+pnpm dev probe mattermost-channel --config fixtures/examples/crabline.example.yaml
+
+MATTERMOST_BASE_URL=https://mattermost.example.com \
+MATTERMOST_BOT_TOKEN=... \
+pnpm dev watch mattermost-channel --config fixtures/examples/crabline.example.yaml
+```
+
+Zalo:
+
+```bash
+ZALO_BOT_TOKEN=... \
+ZALO_WEBHOOK_SECRET=... \
+pnpm dev probe zalo-chat --config fixtures/examples/crabline.example.yaml
+
+ZALO_BOT_TOKEN=... \
+ZALO_WEBHOOK_SECRET=... \
+pnpm dev watch zalo-chat --config fixtures/examples/crabline.example.yaml
+```
+
 Matrix:
 
 ```bash
@@ -429,6 +526,6 @@ or:
 
 ## Current scope
 
-- Real built-in providers: `loopback`, built-in `slack`, built-in `discord`, built-in `telegram`, built-in `whatsapp`, adapter-backed `matrix`, adapter-backed `imessage`
+- Real built-in providers: `loopback`, built-in `slack`, built-in `discord`, built-in `feishu`, built-in `mattermost`, built-in `telegram`, built-in `whatsapp`, built-in `zalo`, adapter-backed `matrix`, adapter-backed `imessage`
 - Real external bridge: `script` for the full OpenClaw channel matrix
 - Not implemented yet: richer recorder compaction/query tooling, live-model response generation

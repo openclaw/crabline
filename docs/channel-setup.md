@@ -39,8 +39,9 @@ Recommended initial smoke order:
 1. `loopback`: no external dependencies.
 2. `telegram` with polling mode: easiest live messaging smoke because it does
    not require a public webhook URL.
-3. `slack`, `discord`, `matrix`, or `imessage`: depends on which shared test
-   workspace/account OpenClaw already maintains.
+3. `slack`, `discord`, `matrix`, `imessage`, `feishu`, `mattermost`, or
+   `zalo`: depends on which shared test workspace/account OpenClaw already
+   maintains.
 4. `whatsapp`: needs a Meta app, a registered WhatsApp Business phone number,
    public webhook reachability, and a live recipient inside WhatsApp's messaging
    rules.
@@ -289,6 +290,137 @@ Target notes:
 - WhatsApp Cloud API does not provide normal message history, so smoke tests
   should rely on webhook delivery and the recorder.
 
+### Feishu
+
+Backed by `@larksuite/vercel-chat-adapter`.
+
+Required secrets:
+
+- `FEISHU_APP_ID`
+- `FEISHU_APP_SECRET`
+
+Lark env aliases are also accepted:
+
+- `LARK_APP_ID`
+- `LARK_APP_SECRET`
+
+Optional env:
+
+- `FEISHU_BOT_USERNAME`
+- `LARK_BOT_USERNAME`
+
+External setup:
+
+1. Create or reuse a Feishu/Lark app with bot permissions.
+2. Store the app id and app secret in CI secrets.
+3. Enable the app's WebSocket event delivery for the bot.
+4. Add the bot to the dedicated smoke chat.
+5. Record the `oc_*` chat id, or the `ou_*` user open id for DM smoke.
+
+Provider:
+
+```yaml
+providers:
+  feishu:
+    adapter: feishu
+    env:
+      - FEISHU_APP_ID
+      - FEISHU_APP_SECRET
+```
+
+Target notes:
+
+- Encoded `lark:{chatId}:{rootId}` ids are accepted.
+- Raw `oc_*` chat ids are encoded as `lark:{chatId}:`.
+- Raw `ou_*` user ids are treated as DM targets.
+- Thread replies use `target.channelId` plus `target.threadId`.
+
+### Mattermost
+
+Backed by `chat-adapter-mattermost`.
+
+Required config or env:
+
+- `mattermost.baseUrl` or `MATTERMOST_BASE_URL`
+- `mattermost.botToken` or `MATTERMOST_BOT_TOKEN`
+
+Optional env:
+
+- `MATTERMOST_BOT_USERNAME`
+- `MATTERMOST_CALLBACK_URL`
+
+External setup:
+
+1. Create or reuse a Mattermost bot account and personal access token.
+2. Invite the bot to the dedicated smoke channel.
+3. Store the Mattermost base URL and bot token in CI secrets.
+4. For interactive action callbacks, configure a public callback URL ending in
+   `/mattermost/webhook`.
+5. Record a stable channel id or user id for the smoke fixture.
+
+Provider:
+
+```yaml
+providers:
+  mattermost:
+    adapter: mattermost
+    env:
+      - MATTERMOST_BASE_URL
+      - MATTERMOST_BOT_TOKEN
+    mattermost:
+      webhook:
+        publicUrl: https://example.ngrok.app/mattermost/webhook
+```
+
+Target notes:
+
+- Raw channel ids are encoded as `mattermost:{base64urlChannelId}`.
+- Thread replies use `target.channelId` plus `target.threadId`, encoded as
+  `mattermost:{base64urlChannelId}:{base64urlRootPostId}`.
+- User DMs use `target.metadata.targetType: user`.
+- Mattermost inbound message smoke uses the adapter WebSocket and local recorder;
+  the webhook endpoint is for interactive callbacks.
+
+### Zalo
+
+Backed by `chat-adapter-zalo` for the Zalo Bot Platform.
+
+Required secrets:
+
+- `ZALO_BOT_TOKEN`
+- `ZALO_WEBHOOK_SECRET`
+
+Optional env:
+
+- `ZALO_BOT_USERNAME`
+
+External setup:
+
+1. Create or reuse a Zalo bot.
+2. Store the bot token and webhook secret in CI secrets.
+3. Configure the Zalo webhook callback URL to the public Crabline/OpenClaw URL
+   ending in `/zalo/webhook`.
+4. Keep a dedicated private or group chat id for smoke fixtures.
+
+Provider:
+
+```yaml
+providers:
+  zalo:
+    adapter: zalo
+    env:
+      - ZALO_BOT_TOKEN
+      - ZALO_WEBHOOK_SECRET
+    zalo:
+      webhook:
+        publicUrl: https://example.ngrok.app/zalo/webhook
+```
+
+Target notes:
+
+- Raw `target.id` is encoded as `zalo:{chatId}`.
+- Zalo has no native thread concept, so channel and thread ids are the same.
+
 ### Matrix
 
 Backed by `@beeper/chat-adapter-matrix`.
@@ -418,10 +550,10 @@ It must match an OpenClaw channel id. Bridge platform ids are
 `synologychat`, `telegram`, `tlon`, `twitch`, `webchat`, `whatsapp`, `zalo`,
 and `zalouser`.
 
-Telegram and WhatsApp can also be exercised through script bridge profiles when
-the smoke goal is full OpenClaw channel routing rather than built-in
-adapter behavior. In that case, use `platform: telegram` or `platform: whatsapp`
-with the shared OpenClaw bridge secrets above.
+Telegram, WhatsApp, Feishu, Mattermost, and Zalo can also be exercised through
+script bridge profiles when the smoke goal is full OpenClaw channel routing
+rather than built-in adapter behavior. In that case, use the matching `platform`
+value with the shared OpenClaw bridge secrets above.
 
 ### OpenClaw E2E Smoke CI
 
@@ -671,6 +803,27 @@ WHATSAPP_ACCESS_TOKEN
 WHATSAPP_APP_SECRET
 WHATSAPP_PHONE_NUMBER_ID
 WHATSAPP_VERIFY_TOKEN
+```
+
+Feishu smoke adds:
+
+```text
+FEISHU_APP_ID
+FEISHU_APP_SECRET
+```
+
+Mattermost smoke adds:
+
+```text
+MATTERMOST_BASE_URL
+MATTERMOST_BOT_TOKEN
+```
+
+Zalo smoke adds:
+
+```text
+ZALO_BOT_TOKEN
+ZALO_WEBHOOK_SECRET
 ```
 
 OpenClaw bridge smoke adds:

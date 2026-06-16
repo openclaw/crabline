@@ -37,6 +37,44 @@ providers:
         path: /whatsapp/webhook
         publicUrl: https://example.ngrok.app/whatsapp/webhook
 
+  feishu:
+    adapter: feishu
+    env:
+      - FEISHU_APP_ID
+      - FEISHU_APP_SECRET
+    feishu:
+      recorder:
+        path: ./.crabline/recorders/feishu.jsonl
+
+  mattermost:
+    adapter: mattermost
+    env:
+      - MATTERMOST_BASE_URL
+      - MATTERMOST_BOT_TOKEN
+    mattermost:
+      baseUrl: https://mattermost.example.com
+      recorder:
+        path: ./.crabline/recorders/mattermost.jsonl
+      webhook:
+        host: 127.0.0.1
+        port: 8793
+        path: /mattermost/webhook
+        publicUrl: https://example.ngrok.app/mattermost/webhook
+
+  zalo:
+    adapter: zalo
+    env:
+      - ZALO_BOT_TOKEN
+      - ZALO_WEBHOOK_SECRET
+    zalo:
+      recorder:
+        path: ./.crabline/recorders/zalo.jsonl
+      webhook:
+        host: 127.0.0.1
+        port: 8794
+        path: /zalo/webhook
+        publicUrl: https://example.ngrok.app/zalo/webhook
+
   slack:
     adapter: slack
     env:
@@ -127,6 +165,36 @@ fixtures:
     mode: roundtrip
     target:
       id: "15551234567"
+    inboundMatch:
+      author: assistant
+      strategy: contains
+      nonce: contains
+
+  - id: feishu-chat
+    provider: feishu
+    mode: roundtrip
+    target:
+      id: oc_123
+    inboundMatch:
+      author: assistant
+      strategy: contains
+      nonce: contains
+
+  - id: mattermost-channel
+    provider: mattermost
+    mode: roundtrip
+    target:
+      id: channel-id
+    inboundMatch:
+      author: assistant
+      strategy: contains
+      nonce: contains
+
+  - id: zalo-chat
+    provider: zalo
+    mode: roundtrip
+    target:
+      id: chat-123
     inboundMatch:
       author: assistant
       strategy: contains
