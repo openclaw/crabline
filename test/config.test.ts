@@ -40,14 +40,14 @@ describe("manifest schema", () => {
     ).toThrow(/script adapter requires a script configuration/);
   });
 
-  it("parses a native slack provider with webhook defaults", () => {
+  it("parses a built-in slack provider with webhook defaults", () => {
     const manifest = ManifestSchema.parse({
       configVersion: 1,
       fixtures: [
         {
           id: "slack-agent",
           mode: "agent",
-          provider: "slack-native",
+          provider: "slack",
           target: {
             channelId: "C1234567890",
             id: "C1234567890",
@@ -55,16 +55,16 @@ describe("manifest schema", () => {
         },
       ],
       providers: {
-        "slack-native": {
+        slack: {
           adapter: "slack",
-          platform: "slack",
           slack: {},
         },
       },
     });
 
-    expect(manifest.providers["slack-native"]?.slack?.webhook.port).toBe(8787);
-    expect(manifest.providers["slack-native"]?.slack?.webhook.path).toBe("/slack/events");
+    expect(manifest.providers["slack"]?.platform).toBe("slack");
+    expect(manifest.providers["slack"]?.slack?.webhook.port).toBe(8787);
+    expect(manifest.providers["slack"]?.slack?.webhook.path).toBe("/slack/events");
   });
 
   it("rejects slack providers on the wrong platform", () => {
@@ -165,44 +165,88 @@ describe("manifest schema", () => {
     ).toThrow(/discord adapter must use platform=discord/u);
   });
 
-  it("parses the local Telegram channel config", () => {
+  it("parses built-in telegram and whatsapp provider config", () => {
     const manifest = ManifestSchema.parse({
       configVersion: 1,
       fixtures: [
         {
-          id: "telegram-local-dm",
+          id: "telegram-dm",
           mode: "roundtrip",
-          provider: "telegram-local",
+          provider: "telegram",
           target: { id: "user-123" },
+        },
+        {
+          id: "whatsapp-dm",
+          mode: "roundtrip",
+          provider: "whatsapp",
+          target: { id: "15551234567" },
         },
       ],
       providers: {
-        "telegram-local": {
-          adapter: "channel",
-          channel: {
-            qaResponse: { mode: "ack" },
+        telegram: {
+          adapter: "telegram",
+          telegram: {
+            mode: "polling",
           },
-          platform: "telegram",
+        },
+        whatsapp: {
+          adapter: "whatsapp",
+          whatsapp: {
+            phoneNumberId: "1234567890",
+          },
         },
       },
     });
 
-    expect(manifest.providers["telegram-local"]?.platform).toBe("telegram");
-    expect(manifest.providers["telegram-local"]?.channel?.qaResponse.mode).toBe("ack");
+    expect(manifest.providers["telegram"]?.telegram?.webhook.port).toBe(8790);
+    expect(manifest.providers["telegram"]?.telegram?.mode).toBe("polling");
+    expect(manifest.providers["telegram"]?.platform).toBe("telegram");
+    expect(manifest.providers["whatsapp"]?.whatsapp?.webhook.path).toBe("/whatsapp/webhook");
+    expect(manifest.providers["whatsapp"]?.platform).toBe("whatsapp");
   });
 
-  it("rejects channel adapters on non-Telegram platforms until a driver exists", () => {
+  it("rejects built-in telegram and whatsapp adapters on the wrong platform", () => {
     expect(() =>
       ManifestSchema.parse({
         configVersion: 1,
         fixtures: [],
         providers: {
-          discord: {
-            adapter: "channel",
+          telegram: {
+            adapter: "telegram",
             platform: "discord",
           },
         },
       }),
-    ).toThrow(/channel adapter currently supports platform=telegram/u);
+    ).toThrow(/telegram adapter must use platform=telegram/u);
+
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          whatsapp: {
+            adapter: "whatsapp",
+            platform: "telegram",
+          },
+        },
+      }),
+    ).toThrow(/whatsapp adapter must use platform=whatsapp/u);
+  });
+
+  it("requires platform only for script providers", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          slack: {
+            adapter: "script",
+            script: {
+              commands: {},
+            },
+          },
+        },
+      }),
+    ).toThrow(/script adapter requires platform/u);
   });
 });

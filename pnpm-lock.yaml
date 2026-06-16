@@ -33,6 +33,12 @@ importers:
       '@chat-adapter/state-memory':
         specifier: ^4.30.0
         version: 4.30.0(zod@4.4.3)
+      '@chat-adapter/telegram':
+        specifier: ^4.30.0
+        version: 4.30.0(zod@4.4.3)
+      '@chat-adapter/whatsapp':
+        specifier: ^4.30.0
+        version: 4.30.0(zod@4.4.3)
       '@types/node':
         specifier: ^25.9.2
         version: 25.9.2
@@ -115,6 +121,14 @@ packages:
 
   '@chat-adapter/state-redis@4.30.0':
     resolution: {integrity: sha512-Fj5g7UjIl8r0J4WUZnVgljije2yFd0/ZmOaIo5VXDs1TDz4X8I73xxYtLUmyHe5uNM2pGOu0DeYliy+mupaCGA==}
+    engines: {node: '>=20'}
+
+  '@chat-adapter/telegram@4.30.0':
+    resolution: {integrity: sha512-OX98fYMorz3gRvNoCVidYKOnb89Rf9UZQaUDQMhtk5IsgHX0k2qiUpEb2VOquMHyH8Pb7xkqrG52NFLnzGpspQ==}
+    engines: {node: '>=20'}
+
+  '@chat-adapter/whatsapp@4.30.0':
+    resolution: {integrity: sha512-4iXroN/FYRsWdhgVFUNzf4VXX67a9u6xcYoBGgX2eqTwlq5THywYSe7FSA5GP7Hg0SK0mRExdpR/Hvk9+tP9xw==}
     engines: {node: '>=20'}
 
   '@discordjs/builders@1.14.1':
@@ -2316,6 +2330,24 @@ snapshots:
     transitivePeerDependencies:
       - '@node-rs/xxhash'
       - '@opentelemetry/api'
+      - ai
+      - supports-color
+      - zod
+
+  '@chat-adapter/telegram@4.30.0(zod@4.4.3)':
+    dependencies:
+      '@chat-adapter/shared': 4.30.0(zod@4.4.3)
+      chat: 4.30.0(zod@4.4.3)
+    transitivePeerDependencies:
+      - ai
+      - supports-color
+      - zod
+
+  '@chat-adapter/whatsapp@4.30.0(zod@4.4.3)':
+    dependencies:
+      '@chat-adapter/shared': 4.30.0(zod@4.4.3)
+      chat: 4.30.0(zod@4.4.3)
+    transitivePeerDependencies:
       - ai
       - supports-color
       - zod

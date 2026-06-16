@@ -71,14 +71,16 @@ function closeServer(server: Server): Promise<void> {
 export async function startWebhookServer(params: {
   handle(request: Request): Promise<Response>;
   host: string;
+  methods?: readonly string[] | undefined;
   path: string;
   port: number;
 }): Promise<StartedWebhookServer> {
+  const methods = new Set(params.methods ?? ["POST"]);
   const server = createServer(async (request, response) => {
     try {
       const fetchRequest = await toFetchRequest(request);
       const pathname = new URL(fetchRequest.url).pathname;
-      if (fetchRequest.method !== "POST" || pathname !== params.path) {
+      if (!methods.has(fetchRequest.method) || pathname !== params.path) {
         await writeFetchResponse(response, new Response("not found", { status: 404 }));
         return;
       }

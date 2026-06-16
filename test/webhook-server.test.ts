@@ -46,6 +46,38 @@ describe("webhook server", () => {
     expect(response.status).toBe(404);
   });
 
+  it("can serve explicit GET webhook routes", async () => {
+    const server = await startWebhookServer({
+      async handle(request) {
+        return new Response(new URL(request.url).searchParams.get("challenge") ?? "");
+      },
+      host: "127.0.0.1",
+      methods: ["GET", "POST"],
+      path: "/whatsapp/webhook",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+
+    const response = await fetch(`${server.endpointUrl}?challenge=ok`, { method: "GET" });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("ok");
+  });
+
+  it("rejects methods outside the configured route method set", async () => {
+    const server = await startWebhookServer({
+      handle: async () => new Response("ok"),
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+
+    const response = await fetch(server.endpointUrl, { method: "GET" });
+
+    expect(response.status).toBe(404);
+  });
+
   it("returns 500 when the handler throws", async () => {
     const server = await startWebhookServer({
       async handle() {

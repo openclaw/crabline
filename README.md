@@ -8,17 +8,18 @@ Deterministic messaging-provider tests for OpenClaw.
 
 This project used to be called `multipass`, but was renamed to `crabline` to avoid conflicts with Canonical Multipass.
 
-The v1 shape is:
+The current shape is:
 
 - built-in `loopback` provider for local development and contract tests
-- deterministic local channel SDK provider, starting with Telegram
-- native `discord` provider backed by the Chat SDK Discord adapter
-- native `slack` provider backed by the Chat SDK Slack adapter
-- native community adapters for `matrix` and `imessage`
-- `script` bridge for the remaining OpenClaw-supported messaging channels
+- built-in `discord` provider
+- built-in `slack` provider
+- built-in `telegram` provider
+- built-in `whatsapp` provider
+- adapter-backed providers for `matrix` and `imessage`
+- `script` bridge for the remaining OpenClaw messaging channels
 - webhook-backed recorder mode for Slack `watch` / `webhook`
 - interactions-webhook + gateway-backed recorder mode for Discord
-- recorder-backed watch mode for Matrix and iMessage
+- recorder-backed watch mode for Telegram, WhatsApp, Matrix, and iMessage
 - nonce-based `send`, `roundtrip`, `agent`, `probe`, `run`, `watch`, `doctor`
 - text output by default, stable `--json` for automation
 - core provider model aligned with Vercel Chat SDK concepts
@@ -70,9 +71,9 @@ Top-level shape:
 configVersion: 1
 userName: crabline
 providers:
-  local:
-    adapter: channel | loopback | script | slack | discord | matrix | imessage
-    platform: see support matrix below
+  provider-id:
+    adapter: loopback | script | slack | discord | telegram | whatsapp | matrix | imessage
+    platform: required only when adapter is script
 fixtures:
   - id: string
     provider: string
@@ -95,63 +96,85 @@ fixtures:
     notes: string?
 ```
 
-Credentials stay in env, never in fixtures.
+Provider ids are local profile names; fixtures reference them through `provider`.
+Built-in adapters infer their platform from `adapter`. Script bridge providers need
+`platform` so Crabline knows which OpenClaw channel they exercise. Credentials
+stay in env, never in fixtures.
+
+For per-channel secrets, external setup, and smoke CI profile guidance, see
+[Channel Setup](docs/channel-setup.md).
 
 ## Support Matrix
 
-- `ready`: `loopback`, native `slack`, native `discord`, native-community `matrix`, native-community `imessage`
-- `bridge`: `bluebubbles`, `feishu`, `googlechat`, `irc`, `line`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `synologychat`, `telegram`, `tlon`, `twitch`, `webchat`, `whatsapp`, `zalo`, `zalouser`
-- deterministic local channel driver: `adapter: channel`, `platform: telegram`
-- Plugin-backed in OpenClaw, still supported through the bridge: `feishu`, `line`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `synologychat`, `tlon`, `twitch`, `zalo`, `zalouser`
-- Recommended bridge-only path today: `bluebubbles`, `googlechat`, `irc`, `signal`, `telegram`, `webchat`, `whatsapp`
+- `ready`: `loopback`, built-in `slack`, built-in `discord`, built-in `telegram`, built-in `whatsapp`, adapter-backed `matrix`, adapter-backed `imessage`
+- `bridge`: `bluebubbles`, `feishu`, `googlechat`, `irc`, `line`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `synologychat`, `tlon`, `twitch`, `webchat`, `zalo`, `zalouser`
+- Plugin-backed in OpenClaw, available through the bridge: `feishu`, `line`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `synologychat`, `tlon`, `twitch`, `zalo`, `zalouser`
+- Recommended bridge-only path today: `bluebubbles`, `googlechat`, `irc`, `signal`, `webchat`
 
-Telegram bridge notes:
+Telegram notes:
 
 - Use one bot plus one real Telegram user identity for two-way tests.
 - Do not model Telegram roundtrip as bot-to-bot; Telegram bots do not receive messages from other bots, and Bot API delivery is update-queue/webhook based rather than arbitrary history fetch.
 - Best operator path: DM-first, then group/topic once DM roundtrip is stable.
 - For unattended automation, drive the user side with MTProto (for example Telethon), not a second bot.
 
-Local Telegram channel SDK driver:
+Telegram provider options:
 
 ```yaml
 providers:
-  telegram-local:
-    adapter: channel
-    platform: telegram
-    channel:
-      botUserName: crabline_telegram_bot
-      qaResponse:
-        mode: ack # QA-fixture response only; no model call is made
+  telegram:
+    adapter: telegram
+    env:
+      - TELEGRAM_BOT_TOKEN
+    telegram:
+      mode: webhook # auto | webhook | polling
+      recorder:
+        path: ./.crabline/recorders/telegram.jsonl
+      webhook:
+        host: 127.0.0.1
+        port: 8790
+        path: /telegram/webhook
+        publicUrl: https://example.ngrok.app/telegram/webhook # optional
 ```
 
-The Telegram local driver is a deterministic local upstream shim. It records Telegram-shaped
-inbound events, outbound actions, and transcript entries for DM, group mention,
-forum topic/thread, inline button action, media metadata, and reconnect assertions.
-Its in-code driver metadata carries `driverId: "telegram"` and `driverVersion: 1`.
-It is not Canonical Multipass VM orchestration and does not route through OpenClaw's
-`qa-channel` normalized bus.
+Telegram targets use Chat SDK thread ids: `telegram:{chatId}` or `telegram:{chatId}:{messageThreadId}`. Raw `target.id` values are encoded automatically.
 
-Capability metadata is available for automation:
-
-```bash
-pnpm dev channel-matrix --json
-```
-
-Native Discord provider options:
+WhatsApp provider options:
 
 ```yaml
 providers:
-  discord-native:
+  whatsapp:
+    adapter: whatsapp
+    env:
+      - WHATSAPP_ACCESS_TOKEN
+      - WHATSAPP_APP_SECRET
+      - WHATSAPP_PHONE_NUMBER_ID
+      - WHATSAPP_VERIFY_TOKEN
+    whatsapp:
+      recorder:
+        path: ./.crabline/recorders/whatsapp.jsonl
+      webhook:
+        host: 127.0.0.1
+        port: 8789
+        path: /whatsapp/webhook
+        publicUrl: https://example.ngrok.app/whatsapp/webhook # optional
+```
+
+WhatsApp targets use Chat SDK thread ids: `whatsapp:{phoneNumberId}:{userWaId}`. Raw `target.id` values are encoded from `WHATSAPP_PHONE_NUMBER_ID` or `whatsapp.phoneNumberId`.
+
+Discord provider options:
+
+```yaml
+providers:
+  discord:
     adapter: discord
-    platform: discord
     env:
       - DISCORD_BOT_TOKEN
     discord:
       applicationId: "123456789012345678" # optional; auto-discovered from bot token when omitted
       publicKey: "0123456789abcdef..." # optional; auto-discovered from bot token when omitted
       recorder:
-        path: ./.crabline/recorders/discord-native.jsonl
+        path: ./.crabline/recorders/discord.jsonl
       webhook:
         host: 127.0.0.1
         port: 8788
@@ -169,16 +192,15 @@ Discord metadata defaults to token-only setup. When `applicationId` or `publicKe
 
 Discord `watch` and `roundtrip` start the local interactions server plus a Discord Gateway listener. `publicUrl` is optional for local gateway-driven receive tests, but needed if you want Discord itself to hit your interactions endpoint from outside your machine.
 
-Native Slack provider options:
+Slack provider options:
 
 ```yaml
 providers:
-  slack-native:
+  slack:
     adapter: slack
-    platform: slack
     slack:
       recorder:
-        path: ./.crabline/recorders/slack-native.jsonl
+        path: ./.crabline/recorders/slack.jsonl
       webhook:
         host: 127.0.0.1
         port: 8787
@@ -188,29 +210,27 @@ providers:
 
 `watch` (alias: `webhook`) starts the local Slack webhook listener and tails the recorded inbound JSONL stream. `roundtrip` and `agent` also start the webhook listener on demand, and will reuse an already-running listener on the configured port.
 
-Native Matrix provider options:
+Matrix provider options:
 
 ```yaml
 providers:
-  matrix-native:
+  matrix:
     adapter: matrix
-    platform: matrix
     env:
       - MATRIX_BASE_URL
       - MATRIX_ACCESS_TOKEN
     matrix:
       baseURL: https://matrix.example.com
       recorder:
-        path: ./.crabline/recorders/matrix-native.jsonl
+        path: ./.crabline/recorders/matrix.jsonl
 ```
 
-Native iMessage provider options:
+iMessage provider options:
 
 ```yaml
 providers:
-  imessage-native:
+  imessage:
     adapter: imessage
-    platform: imessage
     env:
       - IMESSAGE_API_KEY
       - IMESSAGE_SERVER_URL
@@ -218,7 +238,7 @@ providers:
       local: false
       serverUrl: https://imessage-gateway.example.com
       recorder:
-        path: ./.crabline/recorders/imessage-native.jsonl
+        path: ./.crabline/recorders/imessage.jsonl
 ```
 
 Matrix and iMessage `watch` tail the local recorder stream. There is no webhook listener for Matrix; iMessage uses the adapter gateway listener under the hood.
@@ -229,7 +249,7 @@ See [fixtures/examples/crabline.example.yaml](fixtures/examples/crabline.example
 
 Full OpenClaw bridge matrix example:
 
-[openclaw-supported.yaml](fixtures/examples/openclaw-supported.yaml)
+[openclaw-bridge.yaml](fixtures/examples/openclaw-bridge.yaml)
 
 Loopback:
 
@@ -238,60 +258,78 @@ pnpm dev roundtrip loopback-roundtrip --config fixtures/examples/crabline.exampl
 pnpm dev agent loopback-agent --config fixtures/examples/crabline.example.yaml
 ```
 
-Native Slack:
+Slack:
 
 ```bash
 SLACK_BOT_TOKEN=xoxb-... \
 SLACK_SIGNING_SECRET=... \
-pnpm dev probe slack-native-agent --config fixtures/examples/crabline.example.yaml
+pnpm dev probe slack-agent --config fixtures/examples/crabline.example.yaml
 
 SLACK_BOT_TOKEN=xoxb-... \
 SLACK_SIGNING_SECRET=... \
-pnpm dev watch slack-native-agent --config fixtures/examples/crabline.example.yaml
+pnpm dev watch slack-agent --config fixtures/examples/crabline.example.yaml
 ```
 
-Native Discord:
+Discord:
 
 ```bash
 DISCORD_BOT_TOKEN=... \
-pnpm dev probe discord-native-agent --config fixtures/examples/crabline.example.yaml
+pnpm dev probe discord-agent --config fixtures/examples/crabline.example.yaml
 
 DISCORD_BOT_TOKEN=... \
-pnpm dev watch discord-native-agent --config fixtures/examples/crabline.example.yaml
+pnpm dev watch discord-agent --config fixtures/examples/crabline.example.yaml
 ```
 
-Telegram via OpenClaw bridge:
+Telegram:
 
 ```bash
-OPENCLAW_URL=http://127.0.0.1:8080 \
-OPENCLAW_TOKEN=... \
-pnpm dev roundtrip telegram-openclaw-roundtrip --config fixtures/examples/openclaw-supported.yaml
+TELEGRAM_BOT_TOKEN=... \
+pnpm dev probe telegram-dm --config fixtures/examples/crabline.example.yaml
+
+TELEGRAM_BOT_TOKEN=... \
+pnpm dev watch telegram-dm --config fixtures/examples/crabline.example.yaml
 ```
 
 For true Telegram two-way verification, point `target.id` at the dedicated human test account, not another bot.
 
-Native Matrix:
+WhatsApp:
 
 ```bash
-MATRIX_BASE_URL=https://matrix.example.com \
-MATRIX_ACCESS_TOKEN=... \
-pnpm dev probe matrix-native-agent --config fixtures/examples/crabline.example.yaml
+WHATSAPP_ACCESS_TOKEN=... \
+WHATSAPP_APP_SECRET=... \
+WHATSAPP_PHONE_NUMBER_ID=... \
+WHATSAPP_VERIFY_TOKEN=... \
+pnpm dev probe whatsapp-dm --config fixtures/examples/crabline.example.yaml
 
-MATRIX_BASE_URL=https://matrix.example.com \
-MATRIX_ACCESS_TOKEN=... \
-pnpm dev watch matrix-native-agent --config fixtures/examples/crabline.example.yaml
+WHATSAPP_ACCESS_TOKEN=... \
+WHATSAPP_APP_SECRET=... \
+WHATSAPP_PHONE_NUMBER_ID=... \
+WHATSAPP_VERIFY_TOKEN=... \
+pnpm dev watch whatsapp-dm --config fixtures/examples/crabline.example.yaml
 ```
 
-Native iMessage:
+Matrix:
+
+```bash
+MATRIX_BASE_URL=https://matrix.example.com \
+MATRIX_ACCESS_TOKEN=... \
+pnpm dev probe matrix-agent --config fixtures/examples/crabline.example.yaml
+
+MATRIX_BASE_URL=https://matrix.example.com \
+MATRIX_ACCESS_TOKEN=... \
+pnpm dev watch matrix-agent --config fixtures/examples/crabline.example.yaml
+```
+
+iMessage:
 
 ```bash
 IMESSAGE_SERVER_URL=https://imessage-gateway.example.com \
 IMESSAGE_API_KEY=... \
-pnpm dev probe imessage-native-agent --config fixtures/examples/crabline.example.yaml
+pnpm dev probe imessage-agent --config fixtures/examples/crabline.example.yaml
 
 IMESSAGE_SERVER_URL=https://imessage-gateway.example.com \
 IMESSAGE_API_KEY=... \
-pnpm dev watch imessage-native-agent --config fixtures/examples/crabline.example.yaml
+pnpm dev watch imessage-agent --config fixtures/examples/crabline.example.yaml
 ```
 
 Script bridge:
@@ -307,7 +345,7 @@ Full bridge matrix bootstrap:
 ```bash
 OPENCLAW_URL=http://127.0.0.1:18789 \
 OPENCLAW_TOKEN=secret \
-pnpm dev providers --config fixtures/examples/openclaw-supported.yaml
+pnpm dev providers --config fixtures/examples/openclaw-bridge.yaml
 ```
 
 ## Commands
@@ -315,7 +353,6 @@ pnpm dev providers --config fixtures/examples/openclaw-supported.yaml
 ```bash
 crabline providers
 crabline fixtures
-crabline channel-matrix
 crabline probe <fixture|provider>
 crabline send <fixture>
 crabline roundtrip <fixture>
@@ -385,14 +422,13 @@ or:
 ## Add a provider
 
 1. Add a configured provider instance under `providers`.
-2. Set `platform` to one of the supported OpenClaw channel ids from the support matrix.
-3. Use `adapter: slack` for native Slack, otherwise `adapter: script` for bridge-based real E2E.
+2. Use a built-in adapter when one exists; otherwise use `adapter: script` for bridge-based real E2E.
+3. Set `platform` only for `adapter: script`.
 4. Add one or more fixtures that point at stable demo accounts/targets.
 5. Run `crabline doctor`, `crabline probe`, then `crabline run ...`.
 
 ## Current scope
 
-- Real built-in providers: `loopback`, native `slack`, native `discord`, native-community `matrix`, native-community `imessage`
-- Deterministic local channel SDK drivers: Telegram
+- Real built-in providers: `loopback`, built-in `slack`, built-in `discord`, built-in `telegram`, built-in `whatsapp`, adapter-backed `matrix`, adapter-backed `imessage`
 - Real external bridge: `script` for the full OpenClaw channel matrix
-- Not implemented yet: local channel drivers beyond Telegram, richer recorder compaction/query tooling, live-model response generation
+- Not implemented yet: richer recorder compaction/query tooling, live-model response generation

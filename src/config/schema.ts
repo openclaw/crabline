@@ -5,13 +5,14 @@ export const INBOUND_AUTHORS = ["assistant", "user", "system", "any"] as const;
 export const INBOUND_STRATEGIES = ["contains", "exact", "regex"] as const;
 export const INBOUND_NONCE_MODES = ["contains", "exact", "ignore"] as const;
 export const BUILTIN_ADAPTERS = [
-  "channel",
   "discord",
   "imessage",
   "loopback",
   "matrix",
   "script",
   "slack",
+  "telegram",
+  "whatsapp",
 ] as const;
 export const PROVIDER_PLATFORMS = [
   "bluebubbles",
@@ -38,6 +39,17 @@ export const PROVIDER_PLATFORMS = [
   "zalo",
   "zalouser",
 ] as const;
+
+type BuiltinAdapterName = (typeof BUILTIN_ADAPTERS)[number];
+type ProviderPlatformName = (typeof PROVIDER_PLATFORMS)[number];
+
+function inferProviderPlatform(adapter: BuiltinAdapterName): ProviderPlatformName | undefined {
+  if (adapter === "script") {
+    return undefined;
+  }
+
+  return adapter;
+}
 
 const TargetSchema = z.object({
   id: z.string().min(1),
@@ -116,6 +128,68 @@ const DiscordConfigSchema = z.object({
   }),
 });
 
+const WhatsAppRecorderSchema = z.object({
+  path: z.string().min(1).optional(),
+});
+
+const WhatsAppWebhookSchema = z.object({
+  host: z.string().min(1).default("127.0.0.1"),
+  path: z.string().min(1).default("/whatsapp/webhook"),
+  port: z.number().int().min(0).max(65_535).default(8789),
+  publicUrl: z.string().url().optional(),
+});
+
+const WhatsAppConfigSchema = z.object({
+  accessToken: z.string().min(1).optional(),
+  apiUrl: z.string().url().optional(),
+  apiVersion: z.string().min(1).optional(),
+  appSecret: z.string().min(1).optional(),
+  phoneNumberId: z.string().min(1).optional(),
+  recorder: WhatsAppRecorderSchema.default({}),
+  userName: z.string().min(1).optional(),
+  verifyToken: z.string().min(1).optional(),
+  webhook: WhatsAppWebhookSchema.default({
+    host: "127.0.0.1",
+    path: "/whatsapp/webhook",
+    port: 8789,
+  }),
+});
+
+const TelegramLongPollingSchema = z.object({
+  allowedUpdates: z.array(z.string().min(1)).optional(),
+  deleteWebhook: z.boolean().optional(),
+  dropPendingUpdates: z.boolean().optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+  retryDelayMs: z.number().int().min(0).optional(),
+  timeout: z.number().int().min(0).optional(),
+});
+
+const TelegramRecorderSchema = z.object({
+  path: z.string().min(1).optional(),
+});
+
+const TelegramWebhookSchema = z.object({
+  host: z.string().min(1).default("127.0.0.1"),
+  path: z.string().min(1).default("/telegram/webhook"),
+  port: z.number().int().min(0).max(65_535).default(8790),
+  publicUrl: z.string().url().optional(),
+});
+
+const TelegramConfigSchema = z.object({
+  apiUrl: z.string().url().optional(),
+  botToken: z.string().min(1).optional(),
+  longPolling: TelegramLongPollingSchema.optional(),
+  mode: z.enum(["auto", "polling", "webhook"]).default("auto"),
+  recorder: TelegramRecorderSchema.default({}),
+  secretToken: z.string().min(1).optional(),
+  userName: z.string().min(1).optional(),
+  webhook: TelegramWebhookSchema.default({
+    host: "127.0.0.1",
+    path: "/telegram/webhook",
+    port: 8790,
+  }),
+});
+
 const MatrixAccessTokenAuthSchema = z.object({
   accessToken: z.string().min(1),
   type: z.literal("accessToken"),
@@ -146,32 +220,26 @@ const IMessageConfigSchema = z.object({
   serverUrl: z.string().url().optional(),
 });
 
-const ChannelConfigSchema = z.object({
-  botUserName: z.string().min(1).default("crabline_telegram_bot"),
-  qaResponse: z
-    .object({
-      mode: z.enum(["ack", "echo", "none"]).default("none"),
-    })
-    .default({ mode: "none" }),
-});
-
 export const ProviderConfigSchema = z
   .object({
     adapter: z.enum(BUILTIN_ADAPTERS),
     capabilities: z.array(z.enum(FIXTURE_MODES)).default(["probe", "send", "roundtrip", "agent"]),
-    channel: ChannelConfigSchema.optional(),
     discord: DiscordConfigSchema.optional(),
     env: z.array(z.string().min(1)).default([]),
     imessage: IMessageConfigSchema.optional(),
     loopback: LoopbackConfigSchema.optional(),
     matrix: MatrixConfigSchema.optional(),
     notes: z.string().optional(),
-    platform: z.enum(PROVIDER_PLATFORMS).default("loopback"),
+    platform: z.enum(PROVIDER_PLATFORMS).optional(),
     slack: SlackConfigSchema.optional(),
     script: ScriptConfigSchema.optional(),
     status: z.enum(["active", "disabled", "planned"]).default("active"),
+    telegram: TelegramConfigSchema.optional(),
+    whatsapp: WhatsAppConfigSchema.optional(),
   })
   .superRefine((value, ctx) => {
+    const platform = value.platform ?? inferProviderPlatform(value.adapter);
+
     if (value.adapter === "script" && !value.script) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -180,7 +248,15 @@ export const ProviderConfigSchema = z
       });
     }
 
-    if (value.adapter === "loopback" && value.platform !== "loopback") {
+    if (value.adapter === "script" && !value.platform) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "script adapter requires platform",
+        path: ["platform"],
+      });
+    }
+
+    if (value.adapter === "loopback" && platform !== "loopback") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "loopback adapter must use platform=loopback",
@@ -188,7 +264,7 @@ export const ProviderConfigSchema = z
       });
     }
 
-    if (value.adapter === "slack" && value.platform !== "slack") {
+    if (value.adapter === "slack" && platform !== "slack") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "slack adapter must use platform=slack",
@@ -196,7 +272,7 @@ export const ProviderConfigSchema = z
       });
     }
 
-    if (value.adapter === "discord" && value.platform !== "discord") {
+    if (value.adapter === "discord" && platform !== "discord") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "discord adapter must use platform=discord",
@@ -204,7 +280,23 @@ export const ProviderConfigSchema = z
       });
     }
 
-    if (value.adapter === "matrix" && value.platform !== "matrix") {
+    if (value.adapter === "whatsapp" && platform !== "whatsapp") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "whatsapp adapter must use platform=whatsapp",
+        path: ["platform"],
+      });
+    }
+
+    if (value.adapter === "telegram" && platform !== "telegram") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "telegram adapter must use platform=telegram",
+        path: ["platform"],
+      });
+    }
+
+    if (value.adapter === "matrix" && platform !== "matrix") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "matrix adapter must use platform=matrix",
@@ -212,22 +304,18 @@ export const ProviderConfigSchema = z
       });
     }
 
-    if (value.adapter === "imessage" && value.platform !== "imessage") {
+    if (value.adapter === "imessage" && platform !== "imessage") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "imessage adapter must use platform=imessage",
         path: ["platform"],
       });
     }
-
-    if (value.adapter === "channel" && value.platform !== "telegram") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "channel adapter currently supports platform=telegram",
-        path: ["platform"],
-      });
-    }
-  });
+  })
+  .transform((value) => ({
+    ...value,
+    platform: value.platform ?? inferProviderPlatform(value.adapter) ?? "loopback",
+  }));
 
 export const FixtureSchema = z.object({
   accountId: z.string().min(1).optional(),
@@ -254,10 +342,10 @@ export const ManifestSchema = z.object({
   userName: z.string().min(1).default("crabline"),
 });
 
-export type BuiltinAdapterId = (typeof BUILTIN_ADAPTERS)[number];
+export type BuiltinAdapterId = BuiltinAdapterName;
 export type FixtureDefinition = z.infer<typeof FixtureSchema>;
 export type FixtureMode = (typeof FIXTURE_MODES)[number];
 export type InboundAuthor = (typeof INBOUND_AUTHORS)[number];
 export type ManifestDefinition = z.infer<typeof ManifestSchema>;
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
-export type ProviderPlatform = (typeof PROVIDER_PLATFORMS)[number];
+export type ProviderPlatform = ProviderPlatformName;

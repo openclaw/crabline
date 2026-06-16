@@ -31,7 +31,7 @@ export const OPENCLAW_SUPPORT_CATALOG = [
     "OpenClaw channel via script bridge. Recommended iMessage path.",
   ),
   {
-    notes: "Native Chat SDK adapter with interactions webhook and gateway listener.",
+    notes: "Built-in provider with interactions webhook and gateway listener.",
     platform: "discord",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
@@ -39,7 +39,7 @@ export const OPENCLAW_SUPPORT_CATALOG = [
   createBridgeEntry("feishu", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("googlechat", "OpenClaw channel via script bridge."),
   {
-    notes: "Community Chat SDK adapter for iMessage.",
+    notes: "Adapter-backed provider for iMessage.",
     platform: "imessage",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
@@ -47,7 +47,7 @@ export const OPENCLAW_SUPPORT_CATALOG = [
   createBridgeEntry("irc", "OpenClaw channel via script bridge."),
   createBridgeEntry("line", "OpenClaw plugin channel via script bridge."),
   {
-    notes: "Community Chat SDK adapter for Matrix/Beeper sync.",
+    notes: "Adapter-backed provider for Matrix/Beeper sync.",
     platform: "matrix",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
@@ -58,20 +58,27 @@ export const OPENCLAW_SUPPORT_CATALOG = [
   createBridgeEntry("nostr", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("signal", "OpenClaw channel via script bridge."),
   {
-    notes: "Native Chat SDK adapter plus local recorder/webhook mode.",
+    notes: "Built-in provider plus local recorder/webhook mode.",
     platform: "slack",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
   createBridgeEntry("synologychat", "OpenClaw plugin channel via script bridge."),
-  createBridgeEntry(
-    "telegram",
-    "OpenClaw channel via script bridge; deterministic local driver available via adapter=channel.",
-  ),
+  {
+    notes: "Built-in provider for Telegram Bot API.",
+    platform: "telegram",
+    status: "ready",
+    supports: COMMON_BRIDGE_SUPPORT,
+  },
   createBridgeEntry("tlon", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("twitch", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("webchat", "OpenClaw web channel via script bridge."),
-  createBridgeEntry("whatsapp", "OpenClaw channel via script bridge."),
+  {
+    notes: "Built-in provider for WhatsApp Business Cloud API.",
+    platform: "whatsapp",
+    status: "ready",
+    supports: COMMON_BRIDGE_SUPPORT,
+  },
   createBridgeEntry("zalo", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("zalouser", "OpenClaw plugin personal-account channel via script bridge."),
 ] as const satisfies readonly CatalogEntry[];

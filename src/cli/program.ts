@@ -1,6 +1,4 @@
 import { Command } from "commander";
-import { LOCAL_CHANNEL_DRIVER_METADATA } from "../channels/driver-registry.js";
-import { LOCAL_CHANNEL_DRIVER_MATRIX } from "../channels/matrix.js";
 import { loadManifest } from "../config/load.js";
 import { createRegistry } from "../providers/registry.js";
 import { formatJson, formatRunResultText } from "../core/reporters.js";
@@ -35,7 +33,7 @@ export function createProgram(): Command {
 
   program
     .command("providers")
-    .description("List configured providers and supported platform overlap")
+    .description("List configured providers and provider catalog coverage")
     .action(async () => {
       const options = program.opts() as GlobalOptions;
       const { manifest, path } = await loadManifest(options.config);
@@ -51,18 +49,6 @@ export function createProgram(): Command {
         support: registry.catalog,
       };
       print(options.json ? formatJson(payload) : renderProvidersText(payload));
-    });
-
-  program
-    .command("channel-matrix")
-    .description("List deterministic local channel driver capabilities")
-    .action(() => {
-      const options = program.opts() as GlobalOptions;
-      const payload = {
-        drivers: LOCAL_CHANNEL_DRIVER_METADATA,
-        matrix: LOCAL_CHANNEL_DRIVER_MATRIX,
-      };
-      print(options.json ? formatJson(payload) : renderChannelMatrixText(payload));
     });
 
   program
@@ -235,39 +221,6 @@ function renderProvidersText(payload: {
   return lines.join("\n");
 }
 
-function renderChannelMatrixText(payload: {
-  drivers: ReadonlyArray<{
-    channel: string;
-    channelLive: false;
-    deterministic: true;
-    driverId: string;
-    driverVersion: number;
-    status: string;
-  }>;
-  matrix: ReadonlyArray<{
-    capabilityId: string;
-    channel: string;
-    driverId?: string | undefined;
-    notes: string;
-    status: string;
-  }>;
-}): string {
-  const lines = ["local channel drivers:"];
-  for (const driver of payload.drivers) {
-    lines.push(
-      `  ${driver.driverId} channel=${driver.channel} version=${driver.driverVersion} live=${String(driver.channelLive)} deterministic=${String(driver.deterministic)} status=${driver.status}`,
-    );
-  }
-
-  lines.push("capability matrix:");
-  for (const row of payload.matrix) {
-    const driver = row.driverId ? ` driver=${row.driverId}` : "";
-    lines.push(`  ${row.channel} ${row.capabilityId} status=${row.status}${driver} ${row.notes}`);
-  }
-
-  return lines.join("\n");
-}
-
 function diagnose(manifest: Awaited<ReturnType<typeof loadManifest>>["manifest"]): string[] {
   const findings: string[] = [];
   const seen = new Set<string>();
@@ -317,6 +270,33 @@ function diagnose(manifest: Awaited<ReturnType<typeof loadManifest>>["manifest"]
     if (provider.adapter === "discord") {
       if (!provider.discord?.botToken && !process.env.DISCORD_BOT_TOKEN) {
         findings.push(`provider ${providerId} missing discord.botToken or DISCORD_BOT_TOKEN`);
+      }
+    }
+
+    if (provider.adapter === "telegram") {
+      if (!provider.telegram?.botToken && !process.env.TELEGRAM_BOT_TOKEN) {
+        findings.push(`provider ${providerId} missing telegram.botToken or TELEGRAM_BOT_TOKEN`);
+      }
+    }
+
+    if (provider.adapter === "whatsapp") {
+      if (!provider.whatsapp?.accessToken && !process.env.WHATSAPP_ACCESS_TOKEN) {
+        findings.push(
+          `provider ${providerId} missing whatsapp.accessToken or WHATSAPP_ACCESS_TOKEN`,
+        );
+      }
+      if (!provider.whatsapp?.appSecret && !process.env.WHATSAPP_APP_SECRET) {
+        findings.push(`provider ${providerId} missing whatsapp.appSecret or WHATSAPP_APP_SECRET`);
+      }
+      if (!provider.whatsapp?.phoneNumberId && !process.env.WHATSAPP_PHONE_NUMBER_ID) {
+        findings.push(
+          `provider ${providerId} missing whatsapp.phoneNumberId or WHATSAPP_PHONE_NUMBER_ID`,
+        );
+      }
+      if (!provider.whatsapp?.verifyToken && !process.env.WHATSAPP_VERIFY_TOKEN) {
+        findings.push(
+          `provider ${providerId} missing whatsapp.verifyToken or WHATSAPP_VERIFY_TOKEN`,
+        );
       }
     }
 

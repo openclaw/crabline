@@ -61,24 +61,6 @@ describe("cli", () => {
     expect(captured.stdout.join("")).toContain("roundtrip-fixture");
   });
 
-  it("lists local channel driver metadata", async () => {
-    const captured = captureWrites();
-
-    try {
-      expect(await runCli(["node", "crabline", "channel-matrix"])).toBe(0);
-      expect(await runCli(["node", "crabline", "--json", "channel-matrix"])).toBe(0);
-    } finally {
-      captured.restore();
-    }
-
-    const stdout = captured.stdout.join("");
-    expect(stdout).toContain("telegram channel=telegram version=1");
-    expect(stdout).toContain("telegram.dm.text");
-    expect(JSON.parse(stdout.slice(stdout.indexOf("{")))).toMatchObject({
-      drivers: [expect.objectContaining({ driverId: "telegram", driverVersion: 1 })],
-    });
-  });
-
   it("runs doctor, probe, send, roundtrip, and suite commands", async () => {
     const configPath = await createConfig();
     const captured = captureWrites();
@@ -146,13 +128,13 @@ describe("cli", () => {
       [
         "configVersion: 1",
         "providers:",
-        "  slack-native:",
+        "  slack:",
         "    adapter: slack",
         "    platform: slack",
         "    slack: {}",
         "fixtures:",
         "  - id: slack-agent",
-        "    provider: slack-native",
+        "    provider: slack",
         "    mode: agent",
         "    target:",
         "      id: C1234567890",
@@ -192,13 +174,13 @@ describe("cli", () => {
       [
         "configVersion: 1",
         "providers:",
-        "  discord-native:",
+        "  discord:",
         "    adapter: discord",
         "    platform: discord",
         "    discord: {}",
         "fixtures:",
         "  - id: discord-agent",
-        "    provider: discord-native",
+        "    provider: discord",
         "    mode: agent",
         "    target:",
         '      id: "123456789012345678"',
@@ -233,5 +215,76 @@ describe("cli", () => {
 
     expect(exitCode!).toBe(10);
     expect(captured.stdout.join("")).toContain("missing discord.botToken or DISCORD_BOT_TOKEN");
+  });
+
+  it("doctor reports missing telegram and whatsapp env", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  telegram:",
+        "    adapter: telegram",
+        "    platform: telegram",
+        "    telegram: {}",
+        "  whatsapp:",
+        "    adapter: whatsapp",
+        "    platform: whatsapp",
+        "    whatsapp: {}",
+        "fixtures:",
+        "  - id: telegram-agent",
+        "    provider: telegram",
+        "    mode: agent",
+        "    target:",
+        '      id: "123456789"',
+        "  - id: whatsapp-agent",
+        "    provider: whatsapp",
+        "    mode: agent",
+        "    target:",
+        '      id: "15551234567"',
+      ].join("\n"),
+    );
+
+    const originals = {
+      TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
+      WHATSAPP_ACCESS_TOKEN: process.env.WHATSAPP_ACCESS_TOKEN,
+      WHATSAPP_APP_SECRET: process.env.WHATSAPP_APP_SECRET,
+      WHATSAPP_PHONE_NUMBER_ID: process.env.WHATSAPP_PHONE_NUMBER_ID,
+      WHATSAPP_VERIFY_TOKEN: process.env.WHATSAPP_VERIFY_TOKEN,
+    };
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
+    delete process.env.WHATSAPP_APP_SECRET;
+    delete process.env.WHATSAPP_PHONE_NUMBER_ID;
+    delete process.env.WHATSAPP_VERIFY_TOKEN;
+
+    const captured = captureWrites();
+    let exitCode: number;
+    try {
+      exitCode = await runCli(["node", "crabline", "--config", configPath, "doctor"]);
+    } finally {
+      captured.restore();
+      for (const [name, value] of Object.entries(originals)) {
+        if (value !== undefined) {
+          process.env[name] = value;
+        }
+      }
+    }
+
+    expect(exitCode!).toBe(10);
+    expect(captured.stdout.join("")).toContain("missing telegram.botToken or TELEGRAM_BOT_TOKEN");
+    expect(captured.stdout.join("")).toContain(
+      "missing whatsapp.accessToken or WHATSAPP_ACCESS_TOKEN",
+    );
+    expect(captured.stdout.join("")).toContain("missing whatsapp.appSecret or WHATSAPP_APP_SECRET");
+    expect(captured.stdout.join("")).toContain(
+      "missing whatsapp.phoneNumberId or WHATSAPP_PHONE_NUMBER_ID",
+    );
+    expect(captured.stdout.join("")).toContain(
+      "missing whatsapp.verifyToken or WHATSAPP_VERIFY_TOKEN",
+    );
   });
 });

@@ -23,7 +23,6 @@ describe("support catalog", () => {
             entry.platform,
             {
               adapter: "loopback",
-              platform: "loopback",
             },
           ];
         }
@@ -33,8 +32,27 @@ describe("support catalog", () => {
             entry.platform,
             {
               adapter: "slack",
-              platform: "slack",
               slack: {},
+            },
+          ];
+        }
+
+        if (entry.platform === "telegram") {
+          return [
+            entry.platform,
+            {
+              adapter: "telegram",
+              telegram: {},
+            },
+          ];
+        }
+
+        if (entry.platform === "whatsapp") {
+          return [
+            entry.platform,
+            {
+              adapter: "whatsapp",
+              whatsapp: {},
             },
           ];
         }

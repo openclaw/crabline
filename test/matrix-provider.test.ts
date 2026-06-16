@@ -50,14 +50,14 @@ function createMatrixContext(config: ProviderConfig): ProviderContext {
       id: "matrix-fixture",
       inboundMatch: { author: "assistant", nonce: "contains", strategy: "contains" },
       mode: "roundtrip",
-      provider: "matrix-native",
+      provider: "matrix",
       retries: 0,
       tags: [],
       target: { id: "!room:example.com", metadata: {} },
       timeoutMs: 500,
     },
     manifestPath: "/tmp/crabline.yaml",
-    providerId: "matrix-native",
+    providerId: "matrix",
     userName: "crabline",
   };
 }
@@ -130,12 +130,7 @@ describe("matrix provider", () => {
   it("normalizes room and thread targets", async () => {
     const config = await createMatrixConfig();
     const runtime = createMatrixRuntime();
-    const provider = new MatrixProviderAdapter(
-      "matrix-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new MatrixProviderAdapter("matrix", config, "crabline", runtime.runtime);
 
     expect(provider.normalizeTarget({ id: "!room:example.com", metadata: {} })).toMatchObject({
       channelId: "matrix:!room%3Aexample.com",
@@ -155,12 +150,7 @@ describe("matrix provider", () => {
   it("probes, sends, and waits for recorder-backed inbound", async () => {
     const config = await createMatrixConfig();
     const runtime = createMatrixRuntime();
-    const provider = new MatrixProviderAdapter(
-      "matrix-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new MatrixProviderAdapter("matrix", config, "crabline", runtime.runtime);
     const context = createMatrixContext(config);
 
     await expect(provider.probe(context)).resolves.toMatchObject({ healthy: true });
@@ -198,12 +188,7 @@ describe("matrix provider", () => {
   it("rejects thread sends without a room id", async () => {
     const config = await createMatrixConfig();
     const runtime = createMatrixRuntime();
-    const provider = new MatrixProviderAdapter(
-      "matrix-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new MatrixProviderAdapter("matrix", config, "crabline", runtime.runtime);
 
     expect(() =>
       provider.normalizeTarget({
@@ -218,12 +203,7 @@ describe("matrix provider", () => {
     const config = await createMatrixConfig();
     const runtime = createMatrixRuntime();
     runtime.adapter.fetchChannelInfo.mockRejectedValueOnce(new Error("401 unauthorized"));
-    const provider = new MatrixProviderAdapter(
-      "matrix-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new MatrixProviderAdapter("matrix", config, "crabline", runtime.runtime);
 
     await expect(provider.probe(createMatrixContext(config))).rejects.toMatchObject({
       kind: "auth",
@@ -233,12 +213,7 @@ describe("matrix provider", () => {
   it("records inbound once and exposes it through watch", async () => {
     const config = await createMatrixConfig();
     const runtime = createMatrixRuntime();
-    const provider = new MatrixProviderAdapter(
-      "matrix-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new MatrixProviderAdapter("matrix", config, "crabline", runtime.runtime);
     const context = createMatrixContext(config);
     const stream = provider.watch({
       ...context,

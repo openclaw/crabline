@@ -32,7 +32,7 @@ describe("recorder", () => {
     await appendRecordedInbound(filePath, {
       author: "assistant",
       id: "evt-1",
-      provider: "slack-native",
+      provider: "slack",
       sentAt: new Date().toISOString(),
       text: "hello",
       threadId: "slack:C123",
@@ -56,7 +56,7 @@ describe("recorder", () => {
       void appendRecordedInbound(filePath, {
         author: "assistant",
         id: "evt-2",
-        provider: "slack-native",
+        provider: "slack",
         sentAt: new Date().toISOString(),
         text: "match me",
         threadId: "slack:C123",
@@ -75,7 +75,7 @@ describe("recorder", () => {
     await appendRecordedInbound(filePath, {
       author: "assistant",
       id: "evt-old",
-      provider: "slack-native",
+      provider: "slack",
       sentAt: new Date(Date.now() - 10_000).toISOString(),
       text: "too old",
       threadId: "slack:C123",
@@ -95,7 +95,7 @@ describe("recorder", () => {
     const filePath = await createRecorderPath();
     const iterator = watchRecordedInbound({
       filePath,
-      matches: (event) => event.provider === "slack-native",
+      matches: (event) => event.provider === "slack",
       pollMs: 10,
     })[Symbol.asyncIterator]();
 
@@ -103,7 +103,7 @@ describe("recorder", () => {
       void appendRecordedInbound(filePath, {
         author: "user",
         id: "evt-3",
-        provider: "slack-native",
+        provider: "slack",
         sentAt: new Date().toISOString(),
         text: "tail me",
         threadId: "slack:C999",
