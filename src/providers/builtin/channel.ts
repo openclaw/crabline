@@ -43,7 +43,7 @@ export class LocalChannelProviderAdapter implements ProviderAdapter {
       );
     }
     this.#driver = driver;
-    this.#botUserName = config.channel?.botUserName ?? "crabline_telegram_bot";
+    this.#botUserName = config.channel?.botUserName ?? defaultBotUserName(config.platform);
     this.#qaResponseMode = config.channel?.qaResponse?.mode ?? "none";
   }
 
@@ -118,6 +118,21 @@ export class LocalChannelProviderAdapter implements ProviderAdapter {
       });
     }
 
+    if (
+      this.#driver.metadata.channel === "whatsapp" &&
+      target.metadata.deliveryReceipt === "true"
+    ) {
+      this.#driver.ingestEvent({
+        actor: { id: "whatsapp-local-delivery", isBot: true, role: "system" },
+        conversation,
+        kind: "delivery",
+        raw: { status: target.metadata.deliveryStatus ?? "read" },
+        replyToId: inbound.id,
+        sentAt: new Date().toISOString(),
+        text: `whatsapp delivery ${target.metadata.deliveryStatus ?? "read"}`,
+      });
+    }
+
     return {
       accepted: true,
       messageId: inbound.id,
@@ -177,11 +192,8 @@ function createRawInbound(
   text: string,
   action: ChannelNativeAction | null,
 ): Record<string, unknown> {
-  if (driver.metadata.channel !== "telegram") {
-    return {
-      driverId: driver.metadata.driverId,
-      text,
-    };
+  if (driver.metadata.channel === "whatsapp") {
+    return createWhatsAppRawInbound(target, text, action);
   }
 
   const chatType = target.metadata.chatType ?? "private";
@@ -216,6 +228,54 @@ function createRawInbound(
   return raw;
 }
 
+function createWhatsAppRawInbound(
+  target: NormalizedTarget,
+  text: string,
+  action: ChannelNativeAction | null,
+): Record<string, unknown> {
+  const isGroup = target.metadata.chatType === "group";
+  const remoteJid =
+    target.channelId ??
+    target.metadata.remoteJid ??
+    (isGroup ? `${target.id}@g.us` : `${target.id}@s.whatsapp.net`);
+  const participant = target.metadata.senderJid ?? target.metadata.userJid ?? target.id;
+  const messageId = target.metadata.messageId ?? "whatsapp-local-message";
+  const key: Record<string, unknown> = {
+    fromMe: false,
+    id: messageId,
+    remoteJid,
+  };
+  if (isGroup) {
+    key.participant = participant;
+  }
+  const raw: Record<string, unknown> = {
+    key,
+    message: {
+      conversation: text,
+    },
+    messageTimestamp: 1_767_225_600,
+    pushName: target.metadata.pushName ?? "crabline-user",
+  };
+
+  const quotedMessageId = target.threadId ?? target.metadata.quotedMessageId;
+  if (quotedMessageId) {
+    raw.contextInfo = {
+      participant,
+      stanzaId: quotedMessageId,
+    };
+  }
+  if (action) {
+    raw.message = {
+      buttonsResponseMessage: {
+        selectedButtonId: action.payload,
+        selectedDisplayText: action.label ?? action.payload,
+      },
+    };
+  }
+
+  return raw;
+}
+
 function encodeThreadId(conversation: { id: string; topicId?: string | undefined }): string {
   return conversation.topicId
     ? `${conversation.id}::topic:${conversation.topicId}`
@@ -232,6 +292,10 @@ function resolveQaReply(mode: "ack" | "echo" | "none", text: string): string | n
 
   const nonce = extractNonce(text);
   return nonce ? `ACK ${nonce}` : "ACK";
+}
+
+function defaultBotUserName(platform: string): string {
+  return platform === "whatsapp" ? "crabline_whatsapp_bot" : "crabline_telegram_bot";
 }
 
 function toEnvelope(providerId: string, entry: ChannelTranscriptEntry): InboundEnvelope {

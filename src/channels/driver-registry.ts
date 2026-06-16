@@ -1,6 +1,7 @@
 import type { ProviderPlatform } from "../config/schema.js";
 import { LocalChannelUpstream } from "./local-upstream.js";
 import { TelegramLocalChannelDriver } from "./telegram.js";
+import { WhatsAppLocalChannelDriver } from "./whatsapp.js";
 import type {
   ChannelActor,
   ChannelAttachment,
@@ -22,11 +23,17 @@ export type LocalChannelDriver = {
   recordAction: LocalChannelUpstream["recordAction"];
 };
 
-export const LOCAL_CHANNEL_DRIVER_METADATA = [TelegramLocalChannelDriver.metadata] as const;
+export const LOCAL_CHANNEL_DRIVER_METADATA = [
+  TelegramLocalChannelDriver.metadata,
+  WhatsAppLocalChannelDriver.metadata,
+] as const;
 
 export function createLocalChannelDriver(platform: ProviderPlatform): LocalChannelDriver | null {
   if (platform === "telegram") {
     return new TelegramLocalChannelDriver();
+  }
+  if (platform === "whatsapp") {
+    return new WhatsAppLocalChannelDriver();
   }
   return null;
 }

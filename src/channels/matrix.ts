@@ -25,10 +25,4 @@ export const LOCAL_CHANNEL_DRIVER_MATRIX = [
     notes: "Planned local Slack upstream driver.",
     status: "planned",
   },
-  {
-    capabilityId: "whatsapp.dm.text",
-    channel: "whatsapp",
-    notes: "Planned local WhatsApp upstream driver.",
-    status: "planned",
-  },
 ] as const satisfies readonly ChannelCapabilityMatrixRow[];

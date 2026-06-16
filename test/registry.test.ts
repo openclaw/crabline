@@ -100,7 +100,7 @@ describe("registry", () => {
     expect(provider.status).toBe("ready");
   });
 
-  it("resolves local channel providers", () => {
+  it("resolves local channel providers by platform", () => {
     const channelManifest: ManifestDefinition = {
       ...manifest,
       fixtures: [
@@ -109,6 +109,12 @@ describe("registry", () => {
           id: "telegram-fixture",
           provider: "telegram",
           target: { id: "user-123", metadata: {} },
+        },
+        {
+          ...manifest.fixtures[0]!,
+          id: "whatsapp-fixture",
+          provider: "whatsapp",
+          target: { id: "15551230001", metadata: {} },
         },
       ],
       providers: {
@@ -123,14 +129,30 @@ describe("registry", () => {
           platform: "telegram",
           status: "active",
         },
+        whatsapp: {
+          adapter: "channel",
+          capabilities: ["probe", "send", "roundtrip", "agent"],
+          channel: {
+            botUserName: "crabline_whatsapp_bot",
+            qaResponse: { mode: "ack" },
+          },
+          env: [],
+          platform: "whatsapp",
+          status: "active",
+        },
       },
     };
 
     const registry = createRegistry(channelManifest, "/tmp/crabline.yaml");
-    const provider = registry.resolve("telegram", "telegram-fixture");
-    expect(provider.id).toBe("telegram");
-    expect(provider.platform).toBe("telegram");
-    expect(provider.status).toBe("ready");
+    const telegram = registry.resolve("telegram", "telegram-fixture");
+    expect(telegram.id).toBe("telegram");
+    expect(telegram.platform).toBe("telegram");
+    expect(telegram.status).toBe("ready");
+
+    const whatsapp = registry.resolve("whatsapp", "whatsapp-fixture");
+    expect(whatsapp.id).toBe("whatsapp");
+    expect(whatsapp.platform).toBe("whatsapp");
+    expect(whatsapp.status).toBe("ready");
   });
 
   it("resolves native discord, matrix, and imessage providers", () => {

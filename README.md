@@ -11,7 +11,7 @@ This project used to be called `multipass`, but was renamed to `crabline` to avo
 The v1 shape is:
 
 - built-in `loopback` provider for local development and contract tests
-- deterministic local channel SDK provider, starting with Telegram
+- deterministic local channel SDK provider for Telegram and WhatsApp
 - native `discord` provider backed by the Chat SDK Discord adapter
 - native `slack` provider backed by the Chat SDK Slack adapter
 - native community adapters for `matrix` and `imessage`
@@ -101,7 +101,7 @@ Credentials stay in env, never in fixtures.
 
 - `ready`: `loopback`, native `slack`, native `discord`, native-community `matrix`, native-community `imessage`
 - `bridge`: `bluebubbles`, `feishu`, `googlechat`, `irc`, `line`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `synologychat`, `telegram`, `tlon`, `twitch`, `webchat`, `whatsapp`, `zalo`, `zalouser`
-- deterministic local channel driver: `adapter: channel`, `platform: telegram`
+- deterministic local channel drivers: `adapter: channel`, `platform: telegram | whatsapp`
 - Plugin-backed in OpenClaw, still supported through the bridge: `feishu`, `line`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `synologychat`, `tlon`, `twitch`, `zalo`, `zalouser`
 - Recommended bridge-only path today: `bluebubbles`, `googlechat`, `irc`, `signal`, `telegram`, `webchat`, `whatsapp`
 
@@ -131,6 +131,24 @@ forum topic/thread, inline button action, media metadata, and reconnect assertio
 Its in-code driver metadata carries `driverId: "telegram"` and `driverVersion: 1`.
 It is not Canonical Multipass VM orchestration and does not route through OpenClaw's
 `qa-channel` normalized bus.
+
+Local WhatsApp channel SDK driver:
+
+```yaml
+providers:
+  whatsapp-local:
+    adapter: channel
+    platform: whatsapp
+    channel:
+      botUserName: crabline_whatsapp_bot
+      qaResponse:
+        mode: ack # QA-fixture response only; no model call is made
+```
+
+The WhatsApp local driver records WhatsApp-shaped direct and group chat
+transcript entries with JID metadata, quoted-message reply identity, interactive
+button/list action payloads, media metadata, and delivery receipt assertions.
+Its in-code driver metadata carries `driverId: "whatsapp"` and `driverVersion: 1`.
 
 Capability metadata is available for automation:
 
@@ -393,6 +411,6 @@ or:
 ## Current scope
 
 - Real built-in providers: `loopback`, native `slack`, native `discord`, native-community `matrix`, native-community `imessage`
-- Deterministic local channel SDK drivers: Telegram
+- Deterministic local channel SDK drivers: Telegram, WhatsApp
 - Real external bridge: `script` for the full OpenClaw channel matrix
-- Not implemented yet: local channel drivers beyond Telegram, richer recorder compaction/query tooling, live-model response generation
+- Not implemented yet: local channel drivers beyond Telegram/WhatsApp, richer recorder compaction/query tooling, live-model response generation

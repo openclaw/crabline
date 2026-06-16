@@ -73,10 +73,15 @@ describe("cli", () => {
 
     const stdout = captured.stdout.join("");
     expect(stdout).toContain("telegram channel=telegram version=1");
+    expect(stdout).toContain("whatsapp channel=whatsapp version=1");
     expect(stdout).toContain("telegram.dm.text");
-    expect(JSON.parse(stdout.slice(stdout.indexOf("{")))).toMatchObject({
-      drivers: [expect.objectContaining({ driverId: "telegram", driverVersion: 1 })],
-    });
+    expect(stdout).toContain("whatsapp.dm.text");
+    expect(JSON.parse(stdout.slice(stdout.indexOf("{"))).drivers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ driverId: "telegram", driverVersion: 1 }),
+        expect.objectContaining({ driverId: "whatsapp", driverVersion: 1 }),
+      ]),
+    );
   });
 
   it("runs doctor, probe, send, roundtrip, and suite commands", async () => {

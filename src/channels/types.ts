@@ -6,7 +6,7 @@ export type ChannelConversationKind = "dm" | "group";
 export type ChannelTranscriptKind = "action" | "connection" | "delivery" | "message";
 export type ChannelCapabilityStatus = "covered" | "planned" | "unsupported";
 
-export type LocalChannelDriverId = "telegram";
+export type LocalChannelDriverId = "telegram" | "whatsapp";
 
 export type ChannelConversation = {
   id: string;
@@ -24,7 +24,7 @@ export type ChannelActor = {
 
 export type ChannelAttachment = {
   id: string;
-  kind: "document" | "image" | "location" | "sticker" | "voice";
+  kind: "audio" | "document" | "image" | "location" | "sticker" | "video" | "voice";
   metadata: Record<string, string>;
 };
 

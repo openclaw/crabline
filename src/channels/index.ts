@@ -6,6 +6,12 @@ export {
   TELEGRAM_LOCAL_DRIVER_VERSION,
   TelegramLocalChannelDriver,
 } from "./telegram.js";
+export {
+  WHATSAPP_LOCAL_DRIVER_ID,
+  WHATSAPP_LOCAL_DRIVER_METADATA,
+  WHATSAPP_LOCAL_DRIVER_VERSION,
+  WhatsAppLocalChannelDriver,
+} from "./whatsapp.js";
 export { LocalChannelUpstream } from "./local-upstream.js";
 export type {
   ChannelActor,

@@ -16,6 +16,14 @@ providers:
       qaResponse:
         mode: ack
 
+  whatsapp-local:
+    adapter: channel
+    platform: whatsapp
+    channel:
+      botUserName: crabline_whatsapp_bot
+      qaResponse:
+        mode: ack
+
   slack-native:
     adapter: slack
     platform: slack
@@ -123,6 +131,43 @@ fixtures:
         mediaKind: image
         mention: "true"
         topicId: "42"
+    inboundMatch:
+      author: assistant
+      strategy: contains
+      nonce: contains
+
+  - id: whatsapp-local-dm
+    provider: whatsapp-local
+    mode: roundtrip
+    target:
+      id: "15551230001"
+      metadata:
+        chatType: dm
+        pushName: qa-user
+        userJid: "15551230001@s.whatsapp.net"
+    inboundMatch:
+      author: assistant
+      strategy: contains
+      nonce: contains
+
+  - id: whatsapp-local-group-action
+    provider: whatsapp-local
+    mode: roundtrip
+    target:
+      id: "120363025111@g.us"
+      channelId: "whatsapp:group:120363025111@g.us"
+      threadId: quoted-42
+      metadata:
+        actionId: approve-tool-1
+        actionLabel: Approve
+        actionPayload: approve:tool
+        actionType: button
+        chatType: group
+        mediaKind: image
+        mediaMessageId: media-123
+        pushName: qa-user
+        quotedMessageId: quoted-42
+        senderJid: "15551230001@s.whatsapp.net"
     inboundMatch:
       author: assistant
       strategy: contains

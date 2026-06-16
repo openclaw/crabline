@@ -147,7 +147,7 @@ const IMessageConfigSchema = z.object({
 });
 
 const ChannelConfigSchema = z.object({
-  botUserName: z.string().min(1).default("crabline_telegram_bot"),
+  botUserName: z.string().min(1).optional(),
   qaResponse: z
     .object({
       mode: z.enum(["ack", "echo", "none"]).default("none"),
@@ -220,10 +220,14 @@ export const ProviderConfigSchema = z
       });
     }
 
-    if (value.adapter === "channel" && value.platform !== "telegram") {
+    if (
+      value.adapter === "channel" &&
+      value.platform !== "telegram" &&
+      value.platform !== "whatsapp"
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "channel adapter currently supports platform=telegram",
+        message: "channel adapter currently supports platform=telegram or platform=whatsapp",
         path: ["platform"],
       });
     }

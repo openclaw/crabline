@@ -27,11 +27,28 @@ describe("local channel driver API", () => {
           driverId: "telegram",
           status: "covered",
         }),
+        expect.objectContaining({
+          capabilityId: "whatsapp.dm.text",
+          channel: "whatsapp",
+          driverId: "whatsapp",
+          status: "covered",
+        }),
       ]),
     );
+
+    expect(
+      findLocalChannelDriver({
+        channel: "whatsapp",
+      }),
+    ).toMatchObject({
+      channel: "whatsapp",
+      driverId: "whatsapp",
+      driverVersion: 1,
+      status: "ready",
+    });
   });
 
-  it("runs a deterministic smoke fixture for the selected local driver", async () => {
+  it("runs deterministic smoke fixtures for selected local drivers", async () => {
     await expect(
       runLocalChannelDriverSmoke({
         channel: "telegram",
@@ -46,6 +63,23 @@ describe("local channel driver API", () => {
         fixtureId: "telegram-local-driver-smoke",
         ok: true,
         providerId: "telegram-local",
+      },
+    });
+
+    await expect(
+      runLocalChannelDriverSmoke({
+        channel: "whatsapp",
+      }),
+    ).resolves.toMatchObject({
+      driver: {
+        channel: "whatsapp",
+        driverId: "whatsapp",
+        driverVersion: 1,
+      },
+      result: {
+        fixtureId: "whatsapp-local-driver-smoke",
+        ok: true,
+        providerId: "whatsapp-local",
       },
     });
   });

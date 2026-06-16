@@ -71,7 +71,10 @@ export const OPENCLAW_SUPPORT_CATALOG = [
   createBridgeEntry("tlon", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("twitch", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("webchat", "OpenClaw web channel via script bridge."),
-  createBridgeEntry("whatsapp", "OpenClaw channel via script bridge."),
+  createBridgeEntry(
+    "whatsapp",
+    "OpenClaw channel via script bridge; deterministic local driver available via adapter=channel.",
+  ),
   createBridgeEntry("zalo", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("zalouser", "OpenClaw plugin personal-account channel via script bridge."),
 ] as const satisfies readonly CatalogEntry[];

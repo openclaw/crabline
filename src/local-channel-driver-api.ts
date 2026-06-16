@@ -36,21 +36,18 @@ function buildLocalChannelSmokeManifest(params: {
   driver: ChannelDriverMetadata;
   userName?: string;
 }): ManifestDefinition {
-  if (params.driver.channel !== "telegram") {
-    throw new Error(
-      `unsupported local channel driver: ${params.driver.channel}/${params.driver.driverId}`,
-    );
-  }
+  const providerId = `${params.driver.channel}-local`;
+  const fixtureId = localChannelSmokeFixtureId(params.driver);
 
   return ManifestSchema.parse({
     configVersion: 1,
     userName: params.userName ?? "crabline",
     providers: {
-      "telegram-local": {
+      [providerId]: {
         adapter: "channel",
-        platform: "telegram",
+        platform: params.driver.channel,
         channel: {
-          botUserName: "crabline_telegram_bot",
+          botUserName: defaultBotUserName(params.driver.channel),
           qaResponse: {
             mode: "ack",
           },
@@ -59,16 +56,10 @@ function buildLocalChannelSmokeManifest(params: {
     },
     fixtures: [
       {
-        id: "telegram-local-driver-smoke",
-        provider: "telegram-local",
+        id: fixtureId,
+        provider: providerId,
         mode: "roundtrip",
-        target: {
-          id: "100000001",
-          metadata: {
-            chatType: "dm",
-            userName: "qa-user",
-          },
-        },
+        target: localChannelSmokeTarget(params.driver),
         inboundMatch: {
           author: "assistant",
           nonce: "contains",
@@ -120,7 +111,7 @@ export async function runLocalChannelDriverSmoke(params: {
   const manifestPath = params.manifestPath ?? "crabline-local-channel-driver-smoke.json";
   const registry = createLocalChannelDriverRegistry(manifest);
   const result = await runFixtureCommand({
-    fixtureId: "telegram-local-driver-smoke",
+    fixtureId: localChannelSmokeFixtureId(driver),
     manifest,
     manifestPath,
     registry,
@@ -135,5 +126,37 @@ export async function runLocalChannelDriverSmoke(params: {
     driver,
     matrix: LOCAL_CHANNEL_DRIVER_MATRIX,
     result,
+  };
+}
+
+function defaultBotUserName(channel: ChannelDriverMetadata["channel"]): string {
+  return channel === "whatsapp" ? "crabline_whatsapp_bot" : "crabline_telegram_bot";
+}
+
+function localChannelSmokeFixtureId(driver: ChannelDriverMetadata): string {
+  return `${driver.channel}-local-driver-smoke`;
+}
+
+function localChannelSmokeTarget(driver: ChannelDriverMetadata): {
+  id: string;
+  metadata: Record<string, string>;
+} {
+  if (driver.channel === "whatsapp") {
+    return {
+      id: "15551230001",
+      metadata: {
+        chatType: "dm",
+        pushName: "qa-user",
+        userJid: "15551230001@s.whatsapp.net",
+      },
+    };
+  }
+
+  return {
+    id: "100000001",
+    metadata: {
+      chatType: "dm",
+      userName: "qa-user",
+    },
   };
 }

@@ -191,7 +191,33 @@ describe("manifest schema", () => {
     expect(manifest.providers["telegram-local"]?.channel?.qaResponse.mode).toBe("ack");
   });
 
-  it("rejects channel adapters on non-Telegram platforms until a driver exists", () => {
+  it("parses the local WhatsApp channel config", () => {
+    const manifest = ManifestSchema.parse({
+      configVersion: 1,
+      fixtures: [
+        {
+          id: "whatsapp-local-dm",
+          mode: "roundtrip",
+          provider: "whatsapp-local",
+          target: { id: "15551230001" },
+        },
+      ],
+      providers: {
+        "whatsapp-local": {
+          adapter: "channel",
+          channel: {
+            qaResponse: { mode: "ack" },
+          },
+          platform: "whatsapp",
+        },
+      },
+    });
+
+    expect(manifest.providers["whatsapp-local"]?.platform).toBe("whatsapp");
+    expect(manifest.providers["whatsapp-local"]?.channel?.qaResponse.mode).toBe("ack");
+  });
+
+  it("rejects channel adapters on platforms without a local driver", () => {
     expect(() =>
       ManifestSchema.parse({
         configVersion: 1,
@@ -203,6 +229,6 @@ describe("manifest schema", () => {
           },
         },
       }),
-    ).toThrow(/channel adapter currently supports platform=telegram/u);
+    ).toThrow(/channel adapter currently supports platform=telegram or platform=whatsapp/u);
   });
 });
