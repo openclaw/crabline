@@ -196,7 +196,7 @@ function createContext(config: ProviderConfig): ProviderContext {
       id: "discord-agent",
       inboundMatch: { author: "assistant", nonce: "contains", strategy: "contains" },
       mode: "agent",
-      provider: "discord-native",
+      provider: "discord",
       retries: 0,
       tags: [],
       target: {
@@ -206,7 +206,7 @@ function createContext(config: ProviderConfig): ProviderContext {
       timeoutMs: 500,
     },
     manifestPath: "/tmp/crabline.yaml",
-    providerId: "discord-native",
+    providerId: "discord",
     userName: "crabline",
   };
 }
@@ -215,12 +215,7 @@ describe("discord provider", () => {
   it("normalizes channel, thread, encoded, and DM targets", async () => {
     const runtime = createFakeDiscordRuntime();
     const config = await createDiscordConfig(0);
-    const provider = new DiscordProviderAdapter(
-      "discord-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new DiscordProviderAdapter("discord", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     expect(
@@ -259,12 +254,7 @@ describe("discord provider", () => {
   it("rejects thread targets without guild metadata", async () => {
     const runtime = createFakeDiscordRuntime();
     const config = await createDiscordConfig(0);
-    const provider = new DiscordProviderAdapter(
-      "discord-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new DiscordProviderAdapter("discord", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     expect(() =>
@@ -276,16 +266,11 @@ describe("discord provider", () => {
     ).toThrow(/requires target.metadata.guildId/u);
   });
 
-  it("probes native discord configuration and DM targets", async () => {
+  it("probes built-in discord configuration and DM targets", async () => {
     const runtime = createFakeDiscordRuntime();
     const config = await createDiscordConfig(0);
     config.discord!.webhook.publicUrl = "https://example.ngrok.app/discord/interactions";
-    const provider = new DiscordProviderAdapter(
-      "discord-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new DiscordProviderAdapter("discord", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     const result = await provider.probe(createContext(config));
@@ -315,12 +300,7 @@ describe("discord provider", () => {
   it("sends to a discord channel and subscribes to the thread", async () => {
     const runtime = createFakeDiscordRuntime();
     const config = await createDiscordConfig(0);
-    const provider = new DiscordProviderAdapter(
-      "discord-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new DiscordProviderAdapter("discord", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     const result = await provider.send({
@@ -343,12 +323,7 @@ describe("discord provider", () => {
     const runtime = createFakeDiscordRuntime();
     const config = await createDiscordConfig(0);
     config.discord!.webhook.publicUrl = "https://example.ngrok.app/discord/interactions";
-    const provider = new DiscordProviderAdapter(
-      "discord-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new DiscordProviderAdapter("discord", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     const probe = await provider.probe(createContext(config));
@@ -389,12 +364,7 @@ describe("discord provider", () => {
   it("streams gateway-backed watch events", async () => {
     const runtime = createFakeDiscordRuntime();
     const config = await createDiscordConfig(0);
-    const provider = new DiscordProviderAdapter(
-      "discord-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new DiscordProviderAdapter("discord", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     const probe = await provider.probe(createContext(config));
@@ -431,12 +401,7 @@ describe("discord provider", () => {
     const runtime = createFakeDiscordRuntime();
     runtime.adapter.fetchChannelInfo.mockRejectedValueOnce(new Error("401 unauthorized"));
     const config = await createDiscordConfig(0);
-    const provider = new DiscordProviderAdapter(
-      "discord-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new DiscordProviderAdapter("discord", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     await expect(provider.probe(createContext(config))).rejects.toMatchObject({ kind: "auth" });

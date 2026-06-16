@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe("discord provider default runtime", () => {
-  it("builds native discord adapter config from provider settings", async () => {
+  it("builds built-in discord adapter config from provider settings", async () => {
     const config = createConfig({
       applicationId: "123456789012345678",
       botToken: "discord-token",

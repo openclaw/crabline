@@ -49,14 +49,14 @@ function createIMessageContext(config: ProviderConfig): ProviderContext {
       id: "imessage-fixture",
       inboundMatch: { author: "assistant", nonce: "contains", strategy: "contains" },
       mode: "agent",
-      provider: "imessage-native",
+      provider: "imessage",
       retries: 0,
       tags: [],
       target: { id: "chat-guid", metadata: {} },
       timeoutMs: 500,
     },
     manifestPath: "/tmp/crabline.yaml",
-    providerId: "imessage-native",
+    providerId: "imessage",
     userName: "crabline",
   };
 }
@@ -149,12 +149,7 @@ describe("imessage provider", () => {
   it("normalizes targets and probes threads", async () => {
     const config = await createIMessageConfig();
     const runtime = createIMessageRuntime();
-    const provider = new IMessageProviderAdapter(
-      "imessage-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new IMessageProviderAdapter("imessage", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     expect(provider.normalizeTarget({ id: "chat-guid", metadata: {} })).toMatchObject({
@@ -168,12 +163,7 @@ describe("imessage provider", () => {
   it("sends and waits through the gateway-backed recorder flow", async () => {
     const config = await createIMessageConfig();
     const runtime = createIMessageRuntime();
-    const provider = new IMessageProviderAdapter(
-      "imessage-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new IMessageProviderAdapter("imessage", config, "crabline", runtime.runtime);
     providers.push(provider);
     const context = createIMessageContext(config);
 
@@ -213,12 +203,7 @@ describe("imessage provider", () => {
     const config = await createIMessageConfig();
     const runtime = createIMessageRuntime();
     runtime.adapter.fetchThread.mockRejectedValueOnce(new Error("401 api key rejected"));
-    const provider = new IMessageProviderAdapter(
-      "imessage-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new IMessageProviderAdapter("imessage", config, "crabline", runtime.runtime);
     providers.push(provider);
 
     await expect(provider.probe(createIMessageContext(config))).rejects.toMatchObject({
@@ -232,12 +217,7 @@ describe("imessage provider", () => {
     runtime.adapter.startGatewayListener.mockResolvedValueOnce(
       new Response("backend offline", { status: 503 }),
     );
-    const provider = new IMessageProviderAdapter(
-      "imessage-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new IMessageProviderAdapter("imessage", config, "crabline", runtime.runtime);
     providers.push(provider);
     const context = createIMessageContext(config);
 
@@ -255,12 +235,7 @@ describe("imessage provider", () => {
   it("records inbound once and exposes it through watch", async () => {
     const config = await createIMessageConfig();
     const runtime = createIMessageRuntime();
-    const provider = new IMessageProviderAdapter(
-      "imessage-native",
-      config,
-      "crabline",
-      runtime.runtime,
-    );
+    const provider = new IMessageProviderAdapter("imessage", config, "crabline", runtime.runtime);
     providers.push(provider);
     const context = createIMessageContext(config);
     const stream = provider.watch({

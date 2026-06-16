@@ -59,7 +59,7 @@ describe("registry", () => {
     expect(() => registry.resolve("local", "fixture")).toThrow(/disabled/);
   });
 
-  it("resolves native slack providers", () => {
+  it("resolves built-in slack providers", () => {
     const slackManifest: ManifestDefinition = {
       ...manifest,
       providers: {
@@ -100,40 +100,7 @@ describe("registry", () => {
     expect(provider.status).toBe("ready");
   });
 
-  it("resolves local channel providers", () => {
-    const channelManifest: ManifestDefinition = {
-      ...manifest,
-      fixtures: [
-        {
-          ...manifest.fixtures[0]!,
-          id: "telegram-fixture",
-          provider: "telegram",
-          target: { id: "user-123", metadata: {} },
-        },
-      ],
-      providers: {
-        telegram: {
-          adapter: "channel",
-          capabilities: ["probe", "send", "roundtrip", "agent"],
-          channel: {
-            botUserName: "crabline_bot",
-            qaResponse: { mode: "ack" },
-          },
-          env: [],
-          platform: "telegram",
-          status: "active",
-        },
-      },
-    };
-
-    const registry = createRegistry(channelManifest, "/tmp/crabline.yaml");
-    const provider = registry.resolve("telegram", "telegram-fixture");
-    expect(provider.id).toBe("telegram");
-    expect(provider.platform).toBe("telegram");
-    expect(provider.status).toBe("ready");
-  });
-
-  it("resolves native discord, matrix, and imessage providers", () => {
+  it("resolves built-in discord, matrix, imessage, telegram, and whatsapp providers", () => {
     const nativeManifest: ManifestDefinition = {
       ...manifest,
       providers: {
@@ -180,6 +147,42 @@ describe("registry", () => {
           platform: "matrix",
           status: "active",
         },
+        telegram: {
+          adapter: "telegram",
+          capabilities: ["probe", "send", "roundtrip", "agent"],
+          env: [],
+          platform: "telegram",
+          status: "active",
+          telegram: {
+            botToken: "telegram-token",
+            mode: "webhook",
+            recorder: { path: "/tmp/crabline-telegram-test.jsonl" },
+            webhook: {
+              host: "127.0.0.1",
+              path: "/telegram/webhook",
+              port: 8790,
+            },
+          },
+        },
+        whatsapp: {
+          adapter: "whatsapp",
+          capabilities: ["probe", "send", "roundtrip", "agent"],
+          env: [],
+          platform: "whatsapp",
+          status: "active",
+          whatsapp: {
+            accessToken: "whatsapp-token",
+            appSecret: "whatsapp-secret",
+            phoneNumberId: "1234567890",
+            recorder: { path: "/tmp/crabline-whatsapp-test.jsonl" },
+            verifyToken: "verify-token",
+            webhook: {
+              host: "127.0.0.1",
+              path: "/whatsapp/webhook",
+              port: 8789,
+            },
+          },
+        },
       },
       fixtures: [
         {
@@ -203,6 +206,18 @@ describe("registry", () => {
           provider: "matrix",
           target: { id: "!room:example.com", metadata: {} },
         },
+        {
+          ...manifest.fixtures[0]!,
+          id: "telegram-fixture",
+          provider: "telegram",
+          target: { id: "123456789", metadata: {} },
+        },
+        {
+          ...manifest.fixtures[0]!,
+          id: "whatsapp-fixture",
+          provider: "whatsapp",
+          target: { id: "15551234567", metadata: {} },
+        },
       ],
     };
 
@@ -210,5 +225,7 @@ describe("registry", () => {
     expect(registry.resolve("discord", "discord-fixture").platform).toBe("discord");
     expect(registry.resolve("imessage", "imessage-fixture").platform).toBe("imessage");
     expect(registry.resolve("matrix", "matrix-fixture").platform).toBe("matrix");
+    expect(registry.resolve("telegram", "telegram-fixture").platform).toBe("telegram");
+    expect(registry.resolve("whatsapp", "whatsapp-fixture").platform).toBe("whatsapp");
   });
 });

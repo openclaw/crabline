@@ -5,7 +5,6 @@ import type {
   ManifestDefinition,
   ProviderConfig,
 } from "../config/schema.js";
-import { LocalChannelProviderAdapter } from "./builtin/channel.js";
 import { ScriptProviderAdapter } from "./builtin/script.js";
 import { OPENCLAW_SUPPORT_CATALOG } from "./catalog.js";
 import type {
@@ -33,7 +32,7 @@ const COMMON_PROVIDER_SUPPORT = [
   "agent",
 ] as const satisfies readonly FixtureMode[];
 
-type LazyAdapterId = Exclude<BuiltinAdapterId, "channel" | "script">;
+type LazyAdapterId = Exclude<BuiltinAdapterId, "script">;
 type ProviderFactory = () => Promise<ProviderAdapter>;
 type LazyProviderFactory = (params: {
   config: ProviderConfig;
@@ -61,6 +60,14 @@ const LAZY_PROVIDER_FACTORIES = {
   async slack({ config, providerId, userName }) {
     const { SlackProviderAdapter } = await import("./builtin/slack.js");
     return new SlackProviderAdapter(providerId, config, userName);
+  },
+  async telegram({ config, providerId, userName }) {
+    const { TelegramProviderAdapter } = await import("./builtin/telegram.js");
+    return new TelegramProviderAdapter(providerId, config, userName);
+  },
+  async whatsapp({ config, providerId, userName }) {
+    const { WhatsAppProviderAdapter } = await import("./builtin/whatsapp.js");
+    return new WhatsAppProviderAdapter(providerId, config, userName);
   },
 } satisfies Record<LazyAdapterId, LazyProviderFactory>;
 
@@ -203,10 +210,6 @@ export function createRegistry(manifest: ManifestDefinition, manifestPath: strin
           providerId,
           userName: manifest.userName,
         });
-      }
-
-      if (config.adapter === "channel") {
-        return new LocalChannelProviderAdapter(providerId, config);
       }
 
       return new ScriptProviderAdapter(context);
