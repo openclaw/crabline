@@ -165,7 +165,7 @@ describe("manifest schema", () => {
     ).toThrow(/discord adapter must use platform=discord/u);
   });
 
-  it("parses built-in telegram and whatsapp provider config", () => {
+  it("parses built-in telegram, whatsapp, feishu, mattermost, and zalo provider config", () => {
     const manifest = ManifestSchema.parse({
       configVersion: 1,
       fixtures: [
@@ -181,8 +181,38 @@ describe("manifest schema", () => {
           provider: "whatsapp",
           target: { id: "15551234567" },
         },
+        {
+          id: "feishu-chat",
+          mode: "roundtrip",
+          provider: "feishu",
+          target: { id: "oc_123" },
+        },
+        {
+          id: "mattermost-channel",
+          mode: "roundtrip",
+          provider: "mattermost",
+          target: { id: "channel-id" },
+        },
+        {
+          id: "zalo-chat",
+          mode: "roundtrip",
+          provider: "zalo",
+          target: { id: "chat-123" },
+        },
       ],
       providers: {
+        feishu: {
+          adapter: "feishu",
+          feishu: {
+            appId: "feishu-app",
+          },
+        },
+        mattermost: {
+          adapter: "mattermost",
+          mattermost: {
+            baseUrl: "https://mattermost.example.com",
+          },
+        },
         telegram: {
           adapter: "telegram",
           telegram: {
@@ -195,17 +225,55 @@ describe("manifest schema", () => {
             phoneNumberId: "1234567890",
           },
         },
+        zalo: {
+          adapter: "zalo",
+          zalo: {
+            botToken: "zalo-token",
+          },
+        },
       },
     });
 
+    expect(manifest.providers["feishu"]?.feishu?.recorder).toEqual({});
+    expect(manifest.providers["feishu"]?.platform).toBe("feishu");
+    expect(manifest.providers["mattermost"]?.mattermost?.webhook.path).toBe("/mattermost/webhook");
+    expect(manifest.providers["mattermost"]?.platform).toBe("mattermost");
     expect(manifest.providers["telegram"]?.telegram?.webhook.port).toBe(8790);
     expect(manifest.providers["telegram"]?.telegram?.mode).toBe("polling");
     expect(manifest.providers["telegram"]?.platform).toBe("telegram");
     expect(manifest.providers["whatsapp"]?.whatsapp?.webhook.path).toBe("/whatsapp/webhook");
     expect(manifest.providers["whatsapp"]?.platform).toBe("whatsapp");
+    expect(manifest.providers["zalo"]?.zalo?.webhook.port).toBe(8794);
+    expect(manifest.providers["zalo"]?.platform).toBe("zalo");
   });
 
-  it("rejects built-in telegram and whatsapp adapters on the wrong platform", () => {
+  it("rejects built-in telegram, whatsapp, feishu, mattermost, and zalo adapters on the wrong platform", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          feishu: {
+            adapter: "feishu",
+            platform: "zalo",
+          },
+        },
+      }),
+    ).toThrow(/feishu adapter must use platform=feishu/u);
+
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          mattermost: {
+            adapter: "mattermost",
+            platform: "feishu",
+          },
+        },
+      }),
+    ).toThrow(/mattermost adapter must use platform=mattermost/u);
+
     expect(() =>
       ManifestSchema.parse({
         configVersion: 1,
@@ -231,6 +299,19 @@ describe("manifest schema", () => {
         },
       }),
     ).toThrow(/whatsapp adapter must use platform=whatsapp/u);
+
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          zalo: {
+            adapter: "zalo",
+            platform: "zalouser",
+          },
+        },
+      }),
+    ).toThrow(/zalo adapter must use platform=zalo/u);
   });
 
   it("requires platform only for script providers", () => {

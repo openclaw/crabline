@@ -45,6 +45,10 @@ const LAZY_PROVIDER_FACTORIES = {
     const { DiscordProviderAdapter } = await import("./builtin/discord.js");
     return new DiscordProviderAdapter(providerId, config, userName);
   },
+  async feishu({ config, providerId, userName }) {
+    const { FeishuProviderAdapter } = await import("./builtin/feishu.js");
+    return new FeishuProviderAdapter(providerId, config, userName);
+  },
   async imessage({ config, providerId, userName }) {
     const { IMessageProviderAdapter } = await import("./builtin/imessage.js");
     return new IMessageProviderAdapter(providerId, config, userName);
@@ -57,6 +61,10 @@ const LAZY_PROVIDER_FACTORIES = {
     const { MatrixProviderAdapter } = await import("./builtin/matrix.js");
     return new MatrixProviderAdapter(providerId, config, userName);
   },
+  async mattermost({ config, providerId, userName }) {
+    const { MattermostProviderAdapter } = await import("./builtin/mattermost.js");
+    return new MattermostProviderAdapter(providerId, config, userName);
+  },
   async slack({ config, providerId, userName }) {
     const { SlackProviderAdapter } = await import("./builtin/slack.js");
     return new SlackProviderAdapter(providerId, config, userName);
@@ -68,6 +76,10 @@ const LAZY_PROVIDER_FACTORIES = {
   async whatsapp({ config, providerId, userName }) {
     const { WhatsAppProviderAdapter } = await import("./builtin/whatsapp.js");
     return new WhatsAppProviderAdapter(providerId, config, userName);
+  },
+  async zalo({ config, providerId, userName }) {
+    const { ZaloProviderAdapter } = await import("./builtin/zalo.js");
+    return new ZaloProviderAdapter(providerId, config, userName);
   },
 } satisfies Record<LazyAdapterId, LazyProviderFactory>;
 

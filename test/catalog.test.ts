@@ -47,12 +47,42 @@ describe("support catalog", () => {
           ];
         }
 
+        if (entry.platform === "feishu") {
+          return [
+            entry.platform,
+            {
+              adapter: "feishu",
+              feishu: {},
+            },
+          ];
+        }
+
+        if (entry.platform === "mattermost") {
+          return [
+            entry.platform,
+            {
+              adapter: "mattermost",
+              mattermost: {},
+            },
+          ];
+        }
+
         if (entry.platform === "whatsapp") {
           return [
             entry.platform,
             {
               adapter: "whatsapp",
               whatsapp: {},
+            },
+          ];
+        }
+
+        if (entry.platform === "zalo") {
+          return [
+            entry.platform,
+            {
+              adapter: "zalo",
+              zalo: {},
             },
           ];
         }

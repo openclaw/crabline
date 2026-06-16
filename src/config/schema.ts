@@ -6,13 +6,16 @@ export const INBOUND_STRATEGIES = ["contains", "exact", "regex"] as const;
 export const INBOUND_NONCE_MODES = ["contains", "exact", "ignore"] as const;
 export const BUILTIN_ADAPTERS = [
   "discord",
+  "feishu",
   "imessage",
   "loopback",
   "matrix",
+  "mattermost",
   "script",
   "slack",
   "telegram",
   "whatsapp",
+  "zalo",
 ] as const;
 export const PROVIDER_PLATFORMS = [
   "bluebubbles",
@@ -190,6 +193,67 @@ const TelegramConfigSchema = z.object({
   }),
 });
 
+const FeishuConfigSchema = z.object({
+  appId: z.string().min(1).optional(),
+  appSecret: z.string().min(1).optional(),
+  recorder: z.object({ path: z.string().min(1).optional() }).default({}),
+  userName: z.string().min(1).optional(),
+});
+
+const MattermostRecorderSchema = z.object({
+  path: z.string().min(1).optional(),
+});
+
+const MattermostWebhookSchema = z.object({
+  host: z.string().min(1).default("127.0.0.1"),
+  path: z.string().min(1).default("/mattermost/webhook"),
+  port: z.number().int().min(0).max(65_535).default(8793),
+  publicUrl: z.string().url().optional(),
+});
+
+const MattermostWebsocketSchema = z.object({
+  enabled: z.boolean().optional(),
+  maxReconnectDelayMs: z.number().int().min(0).optional(),
+  reconnectDelayMs: z.number().int().min(0).optional(),
+});
+
+const MattermostConfigSchema = z.object({
+  baseUrl: z.string().url().optional(),
+  botToken: z.string().min(1).optional(),
+  callbackUrl: z.string().url().optional(),
+  recorder: MattermostRecorderSchema.default({}),
+  userName: z.string().min(1).optional(),
+  webhook: MattermostWebhookSchema.default({
+    host: "127.0.0.1",
+    path: "/mattermost/webhook",
+    port: 8793,
+  }),
+  websocket: MattermostWebsocketSchema.optional(),
+});
+
+const ZaloRecorderSchema = z.object({
+  path: z.string().min(1).optional(),
+});
+
+const ZaloWebhookSchema = z.object({
+  host: z.string().min(1).default("127.0.0.1"),
+  path: z.string().min(1).default("/zalo/webhook"),
+  port: z.number().int().min(0).max(65_535).default(8794),
+  publicUrl: z.string().url().optional(),
+});
+
+const ZaloConfigSchema = z.object({
+  botToken: z.string().min(1).optional(),
+  recorder: ZaloRecorderSchema.default({}),
+  userName: z.string().min(1).optional(),
+  webhook: ZaloWebhookSchema.default({
+    host: "127.0.0.1",
+    path: "/zalo/webhook",
+    port: 8794,
+  }),
+  webhookSecret: z.string().min(1).optional(),
+});
+
 const MatrixAccessTokenAuthSchema = z.object({
   accessToken: z.string().min(1),
   type: z.literal("accessToken"),
@@ -226,9 +290,11 @@ export const ProviderConfigSchema = z
     capabilities: z.array(z.enum(FIXTURE_MODES)).default(["probe", "send", "roundtrip", "agent"]),
     discord: DiscordConfigSchema.optional(),
     env: z.array(z.string().min(1)).default([]),
+    feishu: FeishuConfigSchema.optional(),
     imessage: IMessageConfigSchema.optional(),
     loopback: LoopbackConfigSchema.optional(),
     matrix: MatrixConfigSchema.optional(),
+    mattermost: MattermostConfigSchema.optional(),
     notes: z.string().optional(),
     platform: z.enum(PROVIDER_PLATFORMS).optional(),
     slack: SlackConfigSchema.optional(),
@@ -236,6 +302,7 @@ export const ProviderConfigSchema = z
     status: z.enum(["active", "disabled", "planned"]).default("active"),
     telegram: TelegramConfigSchema.optional(),
     whatsapp: WhatsAppConfigSchema.optional(),
+    zalo: ZaloConfigSchema.optional(),
   })
   .superRefine((value, ctx) => {
     const platform = value.platform ?? inferProviderPlatform(value.adapter);
@@ -280,6 +347,22 @@ export const ProviderConfigSchema = z
       });
     }
 
+    if (value.adapter === "feishu" && platform !== "feishu") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "feishu adapter must use platform=feishu",
+        path: ["platform"],
+      });
+    }
+
+    if (value.adapter === "mattermost" && platform !== "mattermost") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "mattermost adapter must use platform=mattermost",
+        path: ["platform"],
+      });
+    }
+
     if (value.adapter === "whatsapp" && platform !== "whatsapp") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -308,6 +391,14 @@ export const ProviderConfigSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "imessage adapter must use platform=imessage",
+        path: ["platform"],
+      });
+    }
+
+    if (value.adapter === "zalo" && platform !== "zalo") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "zalo adapter must use platform=zalo",
         path: ["platform"],
       });
     }

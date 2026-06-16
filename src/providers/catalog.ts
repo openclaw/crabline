@@ -36,7 +36,12 @@ export const OPENCLAW_SUPPORT_CATALOG = [
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
-  createBridgeEntry("feishu", "OpenClaw plugin channel via script bridge."),
+  {
+    notes: "Built-in provider for Feishu/Lark.",
+    platform: "feishu",
+    status: "ready",
+    supports: COMMON_BRIDGE_SUPPORT,
+  },
   createBridgeEntry("googlechat", "OpenClaw channel via script bridge."),
   {
     notes: "Adapter-backed provider for iMessage.",
@@ -52,7 +57,12 @@ export const OPENCLAW_SUPPORT_CATALOG = [
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
-  createBridgeEntry("mattermost", "OpenClaw plugin channel via script bridge."),
+  {
+    notes: "Built-in provider for Mattermost.",
+    platform: "mattermost",
+    status: "ready",
+    supports: COMMON_BRIDGE_SUPPORT,
+  },
   createBridgeEntry("msteams", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("nextcloudtalk", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("nostr", "OpenClaw plugin channel via script bridge."),
@@ -79,6 +89,11 @@ export const OPENCLAW_SUPPORT_CATALOG = [
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
-  createBridgeEntry("zalo", "OpenClaw plugin channel via script bridge."),
+  {
+    notes: "Built-in provider for Zalo Bot Platform.",
+    platform: "zalo",
+    status: "ready",
+    supports: COMMON_BRIDGE_SUPPORT,
+  },
   createBridgeEntry("zalouser", "OpenClaw plugin personal-account channel via script bridge."),
 ] as const satisfies readonly CatalogEntry[];
