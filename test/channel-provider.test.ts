@@ -55,7 +55,6 @@ const manifest: ManifestDefinition = {
       capabilities: ["probe", "send", "roundtrip", "agent"],
       channel: {
         botUserName: "crabline_bot",
-        driver: "telegram-local-v1",
         qaResponse: { mode: "ack" },
       },
       env: [],
@@ -79,8 +78,8 @@ describe("local channel provider", () => {
     expect(result.ok).toBe(true);
     expect(result.diagnostics).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("accepted message telegram-local-v1:event:1"),
-        expect.stringContaining("matched inbound telegram-local-v1:event:2"),
+        expect.stringContaining("accepted message telegram:event:1"),
+        expect.stringContaining("matched inbound telegram:event:2"),
       ]),
     );
   });
@@ -123,7 +122,7 @@ describe("local channel provider", () => {
     expect(inbound.action).toMatchObject({ id: "approve-1", payload: "approve:tool" });
     expect(inbound.attachments[0]).toMatchObject({ id: "file-123", kind: "image" });
     expect(inbound.channel).toBe("telegram");
-    expect(inbound.driverId).toBe("telegram-local-v1");
+    expect(inbound.driverId).toBe("telegram");
   });
 
   it("keeps local capability gaps visible for future channels", () => {

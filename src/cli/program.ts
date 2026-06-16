@@ -1,6 +1,6 @@
 import { Command } from "commander";
+import { LOCAL_CHANNEL_DRIVER_METADATA } from "../channels/driver-registry.js";
 import { LOCAL_CHANNEL_DRIVER_MATRIX } from "../channels/matrix.js";
-import { TELEGRAM_LOCAL_DRIVER_METADATA } from "../channels/telegram.js";
 import { loadManifest } from "../config/load.js";
 import { createRegistry } from "../providers/registry.js";
 import { formatJson, formatRunResultText } from "../core/reporters.js";
@@ -59,7 +59,7 @@ export function createProgram(): Command {
     .action(() => {
       const options = program.opts() as GlobalOptions;
       const payload = {
-        drivers: [TELEGRAM_LOCAL_DRIVER_METADATA],
+        drivers: LOCAL_CHANNEL_DRIVER_METADATA,
         matrix: LOCAL_CHANNEL_DRIVER_MATRIX,
       };
       print(options.json ? formatJson(payload) : renderChannelMatrixText(payload));
@@ -241,6 +241,7 @@ function renderChannelMatrixText(payload: {
     channelLive: false;
     deterministic: true;
     driverId: string;
+    driverVersion: number;
     status: string;
   }>;
   matrix: ReadonlyArray<{
@@ -254,7 +255,7 @@ function renderChannelMatrixText(payload: {
   const lines = ["local channel drivers:"];
   for (const driver of payload.drivers) {
     lines.push(
-      `  ${driver.driverId} channel=${driver.channel} live=${String(driver.channelLive)} deterministic=${String(driver.deterministic)} status=${driver.status}`,
+      `  ${driver.driverId} channel=${driver.channel} version=${driver.driverVersion} live=${String(driver.channelLive)} deterministic=${String(driver.deterministic)} status=${driver.status}`,
     );
   }
 

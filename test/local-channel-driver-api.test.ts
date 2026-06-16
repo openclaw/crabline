@@ -15,7 +15,8 @@ describe("local channel driver API", () => {
       channel: "telegram",
       channelLive: false,
       deterministic: true,
-      driverId: "telegram-local-v1",
+      driverId: "telegram",
+      driverVersion: 1,
       status: "ready",
     });
     expect(listLocalChannelDriverMatrix().matrix).toEqual(
@@ -23,7 +24,7 @@ describe("local channel driver API", () => {
         expect.objectContaining({
           capabilityId: "telegram.dm.text",
           channel: "telegram",
-          driverId: "telegram-local-v1",
+          driverId: "telegram",
           status: "covered",
         }),
       ]),
@@ -38,7 +39,8 @@ describe("local channel driver API", () => {
     ).resolves.toMatchObject({
       driver: {
         channel: "telegram",
-        driverId: "telegram-local-v1",
+        driverId: "telegram",
+        driverVersion: 1,
       },
       result: {
         fixtureId: "telegram-local-driver-smoke",

@@ -1,7 +1,11 @@
 import { extractNonce } from "../../core/nonces.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { TelegramLocalChannelDriver } from "../../channels/telegram.js";
-import type { ChannelTranscriptEntry } from "../../channels/types.js";
+import {
+  createLocalChannelDriver,
+  type LocalChannelDriver,
+} from "../../channels/driver-registry.js";
+import type { ChannelNativeAction, ChannelTranscriptEntry } from "../../channels/types.js";
+import { CrablineError } from "../../core/errors.js";
 import type {
   InboundEnvelope,
   NormalizedTarget,
@@ -20,17 +24,26 @@ function sleep(ms: number): Promise<void> {
 
 export class LocalChannelProviderAdapter implements ProviderAdapter {
   readonly id;
-  readonly platform = "telegram" as const;
+  readonly platform;
   readonly status = "ready" as const;
   readonly supports = ["probe", "send", "roundtrip", "agent"] as const;
 
   readonly #botUserName: string;
-  readonly #driver = new TelegramLocalChannelDriver();
+  readonly #driver: LocalChannelDriver;
   readonly #qaResponseMode: "ack" | "echo" | "none";
 
   constructor(id: string, config: ProviderConfig) {
     this.id = id;
-    this.#botUserName = config.channel?.botUserName ?? "multipass_telegram_bot";
+    this.platform = config.platform;
+    const driver = createLocalChannelDriver(config.platform);
+    if (!driver) {
+      throw new CrablineError(
+        `No local channel driver is available for platform "${config.platform}".`,
+        { kind: "config" },
+      );
+    }
+    this.#driver = driver;
+    this.#botUserName = config.channel?.botUserName ?? "crabline_telegram_bot";
     this.#qaResponseMode = config.channel?.qaResponse?.mode ?? "none";
   }
 
@@ -67,19 +80,23 @@ export class LocalChannelProviderAdapter implements ProviderAdapter {
       attachments: attachment ? [attachment] : [],
       conversation,
       kind: action ? "action" : "message",
-      raw: createTelegramRawInbound(target, context.text, action),
+      raw: createRawInbound(this.#driver, target, context.text, action),
       sentAt: new Date().toISOString(),
       text: context.text,
     });
 
     if (target.metadata.reconnect === "true") {
       this.#driver.ingestEvent({
-        actor: { id: "telegram-local-upstream", isBot: true, role: "system" },
+        actor: {
+          id: `${this.#driver.metadata.driverId}-local-upstream`,
+          isBot: true,
+          role: "system",
+        },
         conversation,
         kind: "connection",
         raw: { event: "reconnect", ok: true },
         sentAt: new Date().toISOString(),
-        text: "telegram reconnect",
+        text: `${this.#driver.metadata.channel} reconnect`,
       });
     }
 
@@ -154,11 +171,19 @@ export class LocalChannelProviderAdapter implements ProviderAdapter {
   }
 }
 
-function createTelegramRawInbound(
+function createRawInbound(
+  driver: LocalChannelDriver,
   target: NormalizedTarget,
   text: string,
-  action: ReturnType<TelegramLocalChannelDriver["createNativeAction"]>,
+  action: ChannelNativeAction | null,
 ): Record<string, unknown> {
+  if (driver.metadata.channel !== "telegram") {
+    return {
+      driverId: driver.metadata.driverId,
+      text,
+    };
+  }
+
   const chatType = target.metadata.chatType ?? "private";
   const raw: Record<string, unknown> = {
     chat: {

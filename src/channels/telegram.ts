@@ -8,7 +8,8 @@ import type {
 } from "./types.js";
 import { LocalChannelUpstream } from "./local-upstream.js";
 
-export const TELEGRAM_LOCAL_DRIVER_ID = "telegram-local-v1" as const;
+export const TELEGRAM_LOCAL_DRIVER_ID = "telegram" as const;
+export const TELEGRAM_LOCAL_DRIVER_VERSION = 1;
 
 export const TELEGRAM_LOCAL_DRIVER_METADATA = {
   capabilities: [
@@ -68,12 +69,15 @@ export const TELEGRAM_LOCAL_DRIVER_METADATA = {
   channelLive: false,
   deterministic: true,
   driverId: TELEGRAM_LOCAL_DRIVER_ID,
+  driverVersion: TELEGRAM_LOCAL_DRIVER_VERSION,
   eventKinds: ["message", "action", "connection", "delivery"],
   notes: "Deterministic local Telegram upstream shim for OpenClaw QA Lab channel assertions.",
   status: "ready",
 } as const satisfies ChannelDriverMetadata;
 
 export class TelegramLocalChannelDriver extends LocalChannelUpstream {
+  static readonly metadata = TELEGRAM_LOCAL_DRIVER_METADATA;
+
   constructor() {
     super(TELEGRAM_LOCAL_DRIVER_METADATA);
   }

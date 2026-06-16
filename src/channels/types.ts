@@ -6,7 +6,7 @@ export type ChannelConversationKind = "dm" | "group";
 export type ChannelTranscriptKind = "action" | "connection" | "delivery" | "message";
 export type ChannelCapabilityStatus = "covered" | "planned" | "unsupported";
 
-export type LocalChannelDriverId = "telegram-local-v1";
+export type LocalChannelDriverId = "telegram";
 
 export type ChannelConversation = {
   id: string;
@@ -64,6 +64,7 @@ export type ChannelDriverMetadata = {
   channelLive: false;
   deterministic: true;
   driverId: LocalChannelDriverId;
+  driverVersion: number;
   eventKinds: readonly ChannelTranscriptKind[];
   notes: string;
   status: "ready";

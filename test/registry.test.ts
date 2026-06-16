@@ -117,7 +117,6 @@ describe("registry", () => {
           capabilities: ["probe", "send", "roundtrip", "agent"],
           channel: {
             botUserName: "crabline_bot",
-            driver: "telegram-local-v1",
             qaResponse: { mode: "ack" },
           },
           env: [],
