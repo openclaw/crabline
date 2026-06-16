@@ -37,6 +37,34 @@ providers:
         path: /whatsapp/webhook
         publicUrl: https://example.ngrok.app/whatsapp/webhook
 
+  msteams:
+    adapter: msteams
+    env:
+      - TEAMS_APP_ID
+      - TEAMS_APP_PASSWORD
+    msteams:
+      recorder:
+        path: ./.crabline/recorders/msteams.jsonl
+      webhook:
+        host: 127.0.0.1
+        port: 8791
+        path: /msteams/webhook
+        publicUrl: https://example.ngrok.app/msteams/webhook
+
+  googlechat:
+    adapter: googlechat
+    env:
+      - GOOGLE_CHAT_CREDENTIALS
+    googlechat:
+      googleChatProjectNumber: "1234567890"
+      recorder:
+        path: ./.crabline/recorders/googlechat.jsonl
+      webhook:
+        host: 127.0.0.1
+        port: 8792
+        path: /googlechat/webhook
+        publicUrl: https://example.ngrok.app/googlechat/webhook
+
   feishu:
     adapter: feishu
     env:
@@ -165,6 +193,28 @@ fixtures:
     mode: roundtrip
     target:
       id: "15551234567"
+    inboundMatch:
+      author: assistant
+      strategy: contains
+      nonce: contains
+
+  - id: msteams-channel
+    provider: msteams
+    mode: roundtrip
+    target:
+      id: "19:conversation@thread.v2"
+      metadata:
+        serviceUrl: https://smba.trafficmanager.net/amer/
+    inboundMatch:
+      author: assistant
+      strategy: contains
+      nonce: contains
+
+  - id: googlechat-space
+    provider: googlechat
+    mode: roundtrip
+    target:
+      id: spaces/AAAA1234567
     inboundMatch:
       author: assistant
       strategy: contains

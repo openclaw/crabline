@@ -7,10 +7,12 @@ export const INBOUND_NONCE_MODES = ["contains", "exact", "ignore"] as const;
 export const BUILTIN_ADAPTERS = [
   "discord",
   "feishu",
+  "googlechat",
   "imessage",
   "loopback",
   "matrix",
   "mattermost",
+  "msteams",
   "script",
   "slack",
   "telegram",
@@ -158,6 +160,77 @@ const WhatsAppConfigSchema = z.object({
   }),
 });
 
+const MsTeamsFederatedSchema = z.object({
+  clientAudience: z.string().min(1).optional(),
+  clientId: z.string().min(1),
+});
+
+const MsTeamsRecorderSchema = z.object({
+  path: z.string().min(1).optional(),
+});
+
+const MsTeamsWebhookSchema = z.object({
+  host: z.string().min(1).default("127.0.0.1"),
+  path: z.string().min(1).default("/msteams/webhook"),
+  port: z.number().int().min(0).max(65_535).default(8791),
+  publicUrl: z.string().url().optional(),
+});
+
+const MsTeamsConfigSchema = z.object({
+  apiUrl: z.string().url().optional(),
+  appId: z.string().min(1).optional(),
+  appPassword: z.string().min(1).optional(),
+  appTenantId: z.string().min(1).optional(),
+  appType: z.enum(["MultiTenant", "SingleTenant"]).optional(),
+  dialogOpenTimeoutMs: z.number().int().min(0).optional(),
+  federated: MsTeamsFederatedSchema.optional(),
+  recorder: MsTeamsRecorderSchema.default({}),
+  userName: z.string().min(1).optional(),
+  webhook: MsTeamsWebhookSchema.default({
+    host: "127.0.0.1",
+    path: "/msteams/webhook",
+    port: 8791,
+  }),
+});
+
+const GoogleChatCredentialsSchema = z
+  .object({
+    client_email: z.string().min(1),
+    private_key: z.string().min(1),
+    project_id: z.string().min(1).optional(),
+  })
+  .passthrough();
+
+const GoogleChatRecorderSchema = z.object({
+  path: z.string().min(1).optional(),
+});
+
+const GoogleChatWebhookSchema = z.object({
+  host: z.string().min(1).default("127.0.0.1"),
+  path: z.string().min(1).default("/googlechat/webhook"),
+  port: z.number().int().min(0).max(65_535).default(8792),
+  publicUrl: z.string().url().optional(),
+});
+
+const GoogleChatConfigSchema = z.object({
+  apiUrl: z.string().url().optional(),
+  credentials: GoogleChatCredentialsSchema.optional(),
+  disableSignatureVerification: z.boolean().optional(),
+  endpointUrl: z.string().url().optional(),
+  googleChatProjectNumber: z.string().min(1).optional(),
+  impersonateUser: z.string().min(1).optional(),
+  pubsubAudience: z.string().min(1).optional(),
+  pubsubTopic: z.string().min(1).optional(),
+  recorder: GoogleChatRecorderSchema.default({}),
+  useApplicationDefaultCredentials: z.boolean().optional(),
+  userName: z.string().min(1).optional(),
+  webhook: GoogleChatWebhookSchema.default({
+    host: "127.0.0.1",
+    path: "/googlechat/webhook",
+    port: 8792,
+  }),
+});
+
 const TelegramLongPollingSchema = z.object({
   allowedUpdates: z.array(z.string().min(1)).optional(),
   deleteWebhook: z.boolean().optional(),
@@ -291,10 +364,12 @@ export const ProviderConfigSchema = z
     discord: DiscordConfigSchema.optional(),
     env: z.array(z.string().min(1)).default([]),
     feishu: FeishuConfigSchema.optional(),
+    googlechat: GoogleChatConfigSchema.optional(),
     imessage: IMessageConfigSchema.optional(),
     loopback: LoopbackConfigSchema.optional(),
     matrix: MatrixConfigSchema.optional(),
     mattermost: MattermostConfigSchema.optional(),
+    msteams: MsTeamsConfigSchema.optional(),
     notes: z.string().optional(),
     platform: z.enum(PROVIDER_PLATFORMS).optional(),
     slack: SlackConfigSchema.optional(),
@@ -355,10 +430,26 @@ export const ProviderConfigSchema = z
       });
     }
 
+    if (value.adapter === "googlechat" && platform !== "googlechat") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "googlechat adapter must use platform=googlechat",
+        path: ["platform"],
+      });
+    }
+
     if (value.adapter === "mattermost" && platform !== "mattermost") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "mattermost adapter must use platform=mattermost",
+        path: ["platform"],
+      });
+    }
+
+    if (value.adapter === "msteams" && platform !== "msteams") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "msteams adapter must use platform=msteams",
         path: ["platform"],
       });
     }

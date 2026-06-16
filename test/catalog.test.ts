@@ -57,12 +57,32 @@ describe("support catalog", () => {
           ];
         }
 
+        if (entry.platform === "googlechat") {
+          return [
+            entry.platform,
+            {
+              adapter: "googlechat",
+              googlechat: {},
+            },
+          ];
+        }
+
         if (entry.platform === "mattermost") {
           return [
             entry.platform,
             {
               adapter: "mattermost",
               mattermost: {},
+            },
+          ];
+        }
+
+        if (entry.platform === "msteams") {
+          return [
+            entry.platform,
+            {
+              adapter: "msteams",
+              msteams: {},
             },
           ];
         }

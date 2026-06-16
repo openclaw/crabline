@@ -47,9 +47,11 @@
   "devDependencies": {
     "@beeper/chat-adapter-matrix": "^0.1.0",
     "@chat-adapter/discord": "^4.30.0",
+    "@chat-adapter/gchat": "^4.30.0",
     "@chat-adapter/shared": "^4.30.0",
     "@chat-adapter/slack": "^4.30.0",
     "@chat-adapter/state-memory": "^4.30.0",
+    "@chat-adapter/teams": "^4.30.0",
     "@chat-adapter/telegram": "^4.30.0",
     "@chat-adapter/whatsapp": "^4.30.0",
     "@larksuite/vercel-chat-adapter": "^0.1.2",
@@ -70,9 +72,11 @@
   "peerDependencies": {
     "@beeper/chat-adapter-matrix": "^0.1.0",
     "@chat-adapter/discord": "^4.30.0",
+    "@chat-adapter/gchat": "^4.30.0",
     "@chat-adapter/shared": "^4.30.0",
     "@chat-adapter/slack": "^4.30.0",
     "@chat-adapter/state-memory": "^4.30.0",
+    "@chat-adapter/teams": "^4.30.0",
     "@chat-adapter/telegram": "^4.30.0",
     "@chat-adapter/whatsapp": "^4.30.0",
     "@larksuite/vercel-chat-adapter": "^0.1.2",
@@ -88,6 +92,9 @@
     "@chat-adapter/discord": {
       "optional": true
     },
+    "@chat-adapter/gchat": {
+      "optional": true
+    },
     "@chat-adapter/shared": {
       "optional": true
     },
@@ -98,6 +105,9 @@
       "optional": true
     },
     "@chat-adapter/telegram": {
+      "optional": true
+    },
+    "@chat-adapter/teams": {
       "optional": true
     },
     "@chat-adapter/whatsapp": {

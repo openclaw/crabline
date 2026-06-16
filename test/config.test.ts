@@ -165,7 +165,7 @@ describe("manifest schema", () => {
     ).toThrow(/discord adapter must use platform=discord/u);
   });
 
-  it("parses built-in telegram, whatsapp, feishu, mattermost, and zalo provider config", () => {
+  it("parses built-in telegram, whatsapp, feishu, googlechat, mattermost, msteams, and zalo provider config", () => {
     const manifest = ManifestSchema.parse({
       configVersion: 1,
       fixtures: [
@@ -188,10 +188,25 @@ describe("manifest schema", () => {
           target: { id: "oc_123" },
         },
         {
+          id: "googlechat-space",
+          mode: "roundtrip",
+          provider: "googlechat",
+          target: { id: "spaces/AAAA1234567" },
+        },
+        {
           id: "mattermost-channel",
           mode: "roundtrip",
           provider: "mattermost",
           target: { id: "channel-id" },
+        },
+        {
+          id: "msteams-channel",
+          mode: "roundtrip",
+          provider: "msteams",
+          target: {
+            id: "19:conversation@thread.v2",
+            metadata: { serviceUrl: "https://smba.trafficmanager.net/amer/" },
+          },
         },
         {
           id: "zalo-chat",
@@ -207,10 +222,22 @@ describe("manifest schema", () => {
             appId: "feishu-app",
           },
         },
+        googlechat: {
+          adapter: "googlechat",
+          googlechat: {
+            disableSignatureVerification: true,
+          },
+        },
         mattermost: {
           adapter: "mattermost",
           mattermost: {
             baseUrl: "https://mattermost.example.com",
+          },
+        },
+        msteams: {
+          adapter: "msteams",
+          msteams: {
+            appId: "teams-app",
           },
         },
         telegram: {
@@ -236,8 +263,12 @@ describe("manifest schema", () => {
 
     expect(manifest.providers["feishu"]?.feishu?.recorder).toEqual({});
     expect(manifest.providers["feishu"]?.platform).toBe("feishu");
+    expect(manifest.providers["googlechat"]?.googlechat?.webhook.port).toBe(8792);
+    expect(manifest.providers["googlechat"]?.platform).toBe("googlechat");
     expect(manifest.providers["mattermost"]?.mattermost?.webhook.path).toBe("/mattermost/webhook");
     expect(manifest.providers["mattermost"]?.platform).toBe("mattermost");
+    expect(manifest.providers["msteams"]?.msteams?.webhook.path).toBe("/msteams/webhook");
+    expect(manifest.providers["msteams"]?.platform).toBe("msteams");
     expect(manifest.providers["telegram"]?.telegram?.webhook.port).toBe(8790);
     expect(manifest.providers["telegram"]?.telegram?.mode).toBe("polling");
     expect(manifest.providers["telegram"]?.platform).toBe("telegram");
@@ -247,7 +278,7 @@ describe("manifest schema", () => {
     expect(manifest.providers["zalo"]?.platform).toBe("zalo");
   });
 
-  it("rejects built-in telegram, whatsapp, feishu, mattermost, and zalo adapters on the wrong platform", () => {
+  it("rejects built-in telegram, whatsapp, feishu, googlechat, mattermost, msteams, and zalo adapters on the wrong platform", () => {
     expect(() =>
       ManifestSchema.parse({
         configVersion: 1,
@@ -266,6 +297,19 @@ describe("manifest schema", () => {
         configVersion: 1,
         fixtures: [],
         providers: {
+          googlechat: {
+            adapter: "googlechat",
+            platform: "msteams",
+          },
+        },
+      }),
+    ).toThrow(/googlechat adapter must use platform=googlechat/u);
+
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
           mattermost: {
             adapter: "mattermost",
             platform: "feishu",
@@ -273,6 +317,19 @@ describe("manifest schema", () => {
         },
       }),
     ).toThrow(/mattermost adapter must use platform=mattermost/u);
+
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          msteams: {
+            adapter: "msteams",
+            platform: "googlechat",
+          },
+        },
+      }),
+    ).toThrow(/msteams adapter must use platform=msteams/u);
 
     expect(() =>
       ManifestSchema.parse({

@@ -49,6 +49,10 @@ const LAZY_PROVIDER_FACTORIES = {
     const { FeishuProviderAdapter } = await import("./builtin/feishu.js");
     return new FeishuProviderAdapter(providerId, config, userName);
   },
+  async googlechat({ config, providerId, userName }) {
+    const { GoogleChatProviderAdapter } = await import("./builtin/googlechat.js");
+    return new GoogleChatProviderAdapter(providerId, config, userName);
+  },
   async imessage({ config, providerId, userName }) {
     const { IMessageProviderAdapter } = await import("./builtin/imessage.js");
     return new IMessageProviderAdapter(providerId, config, userName);
@@ -64,6 +68,10 @@ const LAZY_PROVIDER_FACTORIES = {
   async mattermost({ config, providerId, userName }) {
     const { MattermostProviderAdapter } = await import("./builtin/mattermost.js");
     return new MattermostProviderAdapter(providerId, config, userName);
+  },
+  async msteams({ config, providerId, userName }) {
+    const { MsTeamsProviderAdapter } = await import("./builtin/msteams.js");
+    return new MsTeamsProviderAdapter(providerId, config, userName);
   },
   async slack({ config, providerId, userName }) {
     const { SlackProviderAdapter } = await import("./builtin/slack.js");
