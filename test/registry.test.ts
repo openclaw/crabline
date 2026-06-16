@@ -100,7 +100,7 @@ describe("registry", () => {
     expect(provider.status).toBe("ready");
   });
 
-  it("resolves built-in discord, matrix, imessage, feishu, mattermost, telegram, whatsapp, and zalo providers", () => {
+  it("resolves built-in discord, matrix, imessage, feishu, googlechat, mattermost, msteams, telegram, whatsapp, and zalo providers", () => {
     const nativeManifest: ManifestDefinition = {
       ...manifest,
       providers: {
@@ -133,6 +133,26 @@ describe("registry", () => {
             recorder: { path: "/tmp/crabline-feishu-test.jsonl" },
           },
           platform: "feishu",
+          status: "active",
+        },
+        googlechat: {
+          adapter: "googlechat",
+          capabilities: ["probe", "send", "roundtrip", "agent"],
+          env: [],
+          googlechat: {
+            credentials: {
+              client_email: "bot@example.iam.gserviceaccount.com",
+              private_key: "private-key",
+            },
+            disableSignatureVerification: true,
+            recorder: { path: "/tmp/crabline-googlechat-test.jsonl" },
+            webhook: {
+              host: "127.0.0.1",
+              path: "/googlechat/webhook",
+              port: 8792,
+            },
+          },
+          platform: "googlechat",
           status: "active",
         },
         imessage: {
@@ -174,6 +194,23 @@ describe("registry", () => {
             },
           },
           platform: "mattermost",
+          status: "active",
+        },
+        msteams: {
+          adapter: "msteams",
+          capabilities: ["probe", "send", "roundtrip", "agent"],
+          env: [],
+          msteams: {
+            appId: "teams-app",
+            appPassword: "teams-secret",
+            recorder: { path: "/tmp/crabline-msteams-test.jsonl" },
+            webhook: {
+              host: "127.0.0.1",
+              path: "/msteams/webhook",
+              port: 8791,
+            },
+          },
+          platform: "msteams",
           status: "active",
         },
         telegram: {
@@ -248,6 +285,12 @@ describe("registry", () => {
         },
         {
           ...manifest.fixtures[0]!,
+          id: "googlechat-fixture",
+          provider: "googlechat",
+          target: { id: "spaces/AAAA1234567", metadata: {} },
+        },
+        {
+          ...manifest.fixtures[0]!,
           id: "imessage-fixture",
           provider: "imessage",
           target: { id: "chat-guid", metadata: {} },
@@ -263,6 +306,15 @@ describe("registry", () => {
           id: "mattermost-fixture",
           provider: "mattermost",
           target: { id: "channel-id", metadata: {} },
+        },
+        {
+          ...manifest.fixtures[0]!,
+          id: "msteams-fixture",
+          provider: "msteams",
+          target: {
+            id: "19:conversation@thread.v2",
+            metadata: { serviceUrl: "https://smba.trafficmanager.net/amer/" },
+          },
         },
         {
           ...manifest.fixtures[0]!,
@@ -288,9 +340,11 @@ describe("registry", () => {
     const registry = createRegistry(nativeManifest, "/tmp/crabline.yaml");
     expect(registry.resolve("discord", "discord-fixture").platform).toBe("discord");
     expect(registry.resolve("feishu", "feishu-fixture").platform).toBe("feishu");
+    expect(registry.resolve("googlechat", "googlechat-fixture").platform).toBe("googlechat");
     expect(registry.resolve("imessage", "imessage-fixture").platform).toBe("imessage");
     expect(registry.resolve("matrix", "matrix-fixture").platform).toBe("matrix");
     expect(registry.resolve("mattermost", "mattermost-fixture").platform).toBe("mattermost");
+    expect(registry.resolve("msteams", "msteams-fixture").platform).toBe("msteams");
     expect(registry.resolve("telegram", "telegram-fixture").platform).toBe("telegram");
     expect(registry.resolve("whatsapp", "whatsapp-fixture").platform).toBe("whatsapp");
     expect(registry.resolve("zalo", "zalo-fixture").platform).toBe("zalo");

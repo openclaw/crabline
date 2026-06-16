@@ -13,7 +13,9 @@ The current shape is:
 - built-in `loopback` provider for local development and contract tests
 - built-in `discord` provider
 - built-in `feishu` provider
+- built-in `googlechat` provider
 - built-in `mattermost` provider
+- built-in `msteams` provider
 - built-in `slack` provider
 - built-in `telegram` provider
 - built-in `whatsapp` provider
@@ -22,7 +24,7 @@ The current shape is:
 - `script` bridge for the remaining OpenClaw messaging channels
 - webhook-backed recorder mode for Slack `watch` / `webhook`
 - interactions-webhook + gateway-backed recorder mode for Discord
-- recorder-backed watch mode for Telegram, WhatsApp, Feishu, Mattermost, Zalo, Matrix, and iMessage
+- recorder-backed watch mode for Telegram, WhatsApp, Feishu, Google Chat, Mattermost, Microsoft Teams, Zalo, Matrix, and iMessage
 - nonce-based `send`, `roundtrip`, `agent`, `probe`, `run`, `watch`, `doctor`
 - text output by default, stable `--json` for automation
 - core provider model aligned with Vercel Chat SDK concepts
@@ -75,7 +77,7 @@ configVersion: 1
 userName: crabline
 providers:
   provider-id:
-    adapter: loopback | script | slack | discord | feishu | mattermost | telegram | whatsapp | zalo | matrix | imessage
+    adapter: loopback | script | slack | discord | feishu | googlechat | mattermost | msteams | telegram | whatsapp | zalo | matrix | imessage
     platform: required only when adapter is script
 fixtures:
   - id: string
@@ -109,10 +111,10 @@ For per-channel secrets, external setup, and smoke CI profile guidance, see
 
 ## Support Matrix
 
-- `ready`: `loopback`, built-in `slack`, built-in `discord`, built-in `feishu`, built-in `mattermost`, built-in `telegram`, built-in `whatsapp`, built-in `zalo`, adapter-backed `matrix`, adapter-backed `imessage`
-- `bridge`: `bluebubbles`, `googlechat`, `irc`, `line`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `synologychat`, `tlon`, `twitch`, `webchat`, `zalouser`
-- Plugin-backed in OpenClaw, available through the bridge: `line`, `msteams`, `nextcloudtalk`, `nostr`, `synologychat`, `tlon`, `twitch`, `zalouser`
-- Recommended bridge-only path today: `bluebubbles`, `googlechat`, `irc`, `signal`, `webchat`
+- `ready`: `loopback`, built-in `slack`, built-in `discord`, built-in `feishu`, built-in `googlechat`, built-in `mattermost`, built-in `msteams`, built-in `telegram`, built-in `whatsapp`, built-in `zalo`, adapter-backed `matrix`, adapter-backed `imessage`
+- `bridge`: `bluebubbles`, `irc`, `line`, `nextcloudtalk`, `nostr`, `signal`, `synologychat`, `tlon`, `twitch`, `webchat`, `zalouser`
+- Plugin-backed in OpenClaw, available through the bridge: `line`, `nextcloudtalk`, `nostr`, `synologychat`, `tlon`, `twitch`, `zalouser`
+- Recommended bridge-only path today: `bluebubbles`, `irc`, `signal`, `webchat`
 
 Telegram notes:
 
@@ -181,6 +183,27 @@ providers:
 
 Feishu uses the Chat SDK Lark adapter and WebSocket transport. Targets use `lark:{chatId}:{rootId}`. Raw `oc_*` chat ids are encoded automatically; raw `ou_*` user ids are treated as DM targets.
 
+Google Chat provider options:
+
+```yaml
+providers:
+  googlechat:
+    adapter: googlechat
+    env:
+      - GOOGLE_CHAT_CREDENTIALS
+    googlechat:
+      googleChatProjectNumber: "1234567890"
+      recorder:
+        path: ./.crabline/recorders/googlechat.jsonl
+      webhook:
+        host: 127.0.0.1
+        port: 8792
+        path: /googlechat/webhook
+        publicUrl: https://example.ngrok.app/googlechat/webhook # optional
+```
+
+Google Chat raw space targets use `spaces/...` and are encoded as `gchat:spaces/...`. Thread replies use `target.channelId` plus `target.threadId`, encoded as `gchat:{spaceName}:{base64urlThreadName}`.
+
 Mattermost provider options:
 
 ```yaml
@@ -201,6 +224,27 @@ providers:
 ```
 
 Mattermost raw channel ids are encoded as `mattermost:{base64urlChannelId}`. Thread replies use `target.channelId` plus `target.threadId`, encoded as `mattermost:{base64urlChannelId}:{base64urlRootPostId}`. User DMs can set `target.metadata.targetType: user`.
+
+Microsoft Teams provider options:
+
+```yaml
+providers:
+  msteams:
+    adapter: msteams
+    env:
+      - TEAMS_APP_ID
+      - TEAMS_APP_PASSWORD
+    msteams:
+      recorder:
+        path: ./.crabline/recorders/msteams.jsonl
+      webhook:
+        host: 127.0.0.1
+        port: 8791
+        path: /msteams/webhook
+        publicUrl: https://example.ngrok.app/msteams/webhook # optional
+```
+
+Microsoft Teams raw conversation targets require `target.metadata.serviceUrl` so Crabline can encode Chat SDK thread ids as `teams:{conversationId}:{serviceUrl}`. Encoded `teams:` ids are passed through.
 
 Zalo provider options:
 
@@ -393,6 +437,28 @@ MATTERMOST_BOT_TOKEN=... \
 pnpm dev watch mattermost-channel --config fixtures/examples/crabline.example.yaml
 ```
 
+Microsoft Teams:
+
+```bash
+TEAMS_APP_ID=... \
+TEAMS_APP_PASSWORD=... \
+pnpm dev probe msteams-channel --config fixtures/examples/crabline.example.yaml
+
+TEAMS_APP_ID=... \
+TEAMS_APP_PASSWORD=... \
+pnpm dev watch msteams-channel --config fixtures/examples/crabline.example.yaml
+```
+
+Google Chat:
+
+```bash
+GOOGLE_CHAT_CREDENTIALS='{"client_email":"...","private_key":"..."}' \
+pnpm dev probe googlechat-space --config fixtures/examples/crabline.example.yaml
+
+GOOGLE_CHAT_CREDENTIALS='{"client_email":"...","private_key":"..."}' \
+pnpm dev watch googlechat-space --config fixtures/examples/crabline.example.yaml
+```
+
 Zalo:
 
 ```bash
@@ -526,6 +592,6 @@ or:
 
 ## Current scope
 
-- Real built-in providers: `loopback`, built-in `slack`, built-in `discord`, built-in `feishu`, built-in `mattermost`, built-in `telegram`, built-in `whatsapp`, built-in `zalo`, adapter-backed `matrix`, adapter-backed `imessage`
+- Real built-in providers: `loopback`, built-in `slack`, built-in `discord`, built-in `feishu`, built-in `googlechat`, built-in `mattermost`, built-in `msteams`, built-in `telegram`, built-in `whatsapp`, built-in `zalo`, adapter-backed `matrix`, adapter-backed `imessage`
 - Real external bridge: `script` for the full OpenClaw channel matrix
 - Not implemented yet: richer recorder compaction/query tooling, live-model response generation

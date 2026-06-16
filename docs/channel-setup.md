@@ -39,9 +39,9 @@ Recommended initial smoke order:
 1. `loopback`: no external dependencies.
 2. `telegram` with polling mode: easiest live messaging smoke because it does
    not require a public webhook URL.
-3. `slack`, `discord`, `matrix`, `imessage`, `feishu`, `mattermost`, or
-   `zalo`: depends on which shared test workspace/account OpenClaw already
-   maintains.
+3. `slack`, `discord`, `matrix`, `imessage`, `feishu`, `googlechat`,
+   `mattermost`, `msteams`, or `zalo`: depends on which shared test
+   workspace/account OpenClaw already maintains.
 4. `whatsapp`: needs a Meta app, a registered WhatsApp Business phone number,
    public webhook reachability, and a live recipient inside WhatsApp's messaging
    rules.
@@ -289,6 +289,120 @@ Target notes:
 - Raw targets are encoded as `whatsapp:{phoneNumberId}:{userWaId}`.
 - WhatsApp Cloud API does not provide normal message history, so smoke tests
   should rely on webhook delivery and the recorder.
+
+### Microsoft Teams
+
+Backed by `@chat-adapter/teams`.
+
+Required secrets:
+
+- `TEAMS_APP_ID`
+- `TEAMS_APP_PASSWORD`
+
+Alternative auth:
+
+- `TEAMS_FEDERATED_CLIENT_ID`
+- `TEAMS_FEDERATED_CLIENT_AUDIENCE`
+
+Optional env:
+
+- `TEAMS_APP_TENANT_ID`
+- `TEAMS_APP_TYPE`
+- `TEAMS_API_URL`
+- `TEAMS_BOT_USERNAME`
+
+External setup:
+
+1. Create or reuse a Microsoft Teams bot registration.
+2. Store the app id and app password, or configure workload identity federation.
+3. Configure the bot messaging endpoint to the public Crabline/OpenClaw URL
+   ending in `/msteams/webhook`.
+4. Install the bot into the dedicated smoke team/chat.
+5. Record the Teams conversation id and service URL for the smoke fixture, or
+   store the fully encoded `teams:` Chat SDK thread id.
+
+Provider:
+
+```yaml
+providers:
+  msteams:
+    adapter: msteams
+    env:
+      - TEAMS_APP_ID
+      - TEAMS_APP_PASSWORD
+    msteams:
+      webhook:
+        publicUrl: https://example.ngrok.app/msteams/webhook
+```
+
+Target notes:
+
+- Encoded `teams:` ids are accepted as `target.id`, `target.channelId`, or
+  `target.threadId`.
+- Raw Teams conversation ids require `target.metadata.serviceUrl`.
+- Thread replies use `target.threadId`; Crabline appends it to the raw
+  conversation id before encoding the SDK thread id.
+- User DMs use `target.id` as the Teams user id when no conversation id or
+  service URL is provided.
+
+### Google Chat
+
+Backed by `@chat-adapter/gchat`.
+
+Required auth config or env:
+
+- `googlechat.credentials` or `GOOGLE_CHAT_CREDENTIALS`
+- or `googlechat.useApplicationDefaultCredentials: true` /
+  `GOOGLE_CHAT_USE_ADC=true`
+
+Required webhook verification config:
+
+- `googlechat.googleChatProjectNumber`
+- or `googlechat.pubsubAudience`
+- or `googlechat.disableSignatureVerification: true` for local development
+
+Optional env:
+
+- `GOOGLE_CHAT_API_URL`
+- `GOOGLE_CHAT_BOT_USERNAME`
+- `GOOGLE_CHAT_ENDPOINT_URL`
+- `GOOGLE_CHAT_IMPERSONATE_USER`
+- `GOOGLE_CHAT_PROJECT_NUMBER`
+- `GOOGLE_CHAT_PUBSUB_AUDIENCE`
+- `GOOGLE_CHAT_PUBSUB_TOPIC`
+
+External setup:
+
+1. Create or reuse a Google Chat app in the smoke Google Cloud project.
+2. Enable the Google Chat API.
+3. Configure a service account credential or Application Default Credentials
+   for the smoke runner.
+4. Configure the HTTP endpoint to the public Crabline/OpenClaw URL ending in
+   `/googlechat/webhook`.
+5. Configure webhook verification through project-number JWT verification,
+   Pub/Sub audience verification, or local-only signature verification disable.
+6. Add the app to the dedicated smoke space and record its `spaces/...` id.
+
+Provider:
+
+```yaml
+providers:
+  googlechat:
+    adapter: googlechat
+    env:
+      - GOOGLE_CHAT_CREDENTIALS
+    googlechat:
+      googleChatProjectNumber: "1234567890"
+      webhook:
+        publicUrl: https://example.ngrok.app/googlechat/webhook
+```
+
+Target notes:
+
+- Raw space ids are accepted, for example `spaces/AAAA1234567`.
+- Encoded ids are also accepted, for example `gchat:spaces/AAAA1234567`.
+- Thread replies use `target.channelId` plus `target.threadId`; raw thread names
+  are base64url encoded into the Chat SDK thread id.
 
 ### Feishu
 
@@ -550,10 +664,10 @@ It must match an OpenClaw channel id. Bridge platform ids are
 `synologychat`, `telegram`, `tlon`, `twitch`, `webchat`, `whatsapp`, `zalo`,
 and `zalouser`.
 
-Telegram, WhatsApp, Feishu, Mattermost, and Zalo can also be exercised through
-script bridge profiles when the smoke goal is full OpenClaw channel routing
-rather than built-in adapter behavior. In that case, use the matching `platform`
-value with the shared OpenClaw bridge secrets above.
+Telegram, WhatsApp, Feishu, Mattermost, Microsoft Teams, Google Chat, and Zalo
+can also be exercised through script bridge profiles when the smoke goal is full
+OpenClaw channel routing rather than built-in adapter behavior. In that case,
+use the matching `platform` value with the shared OpenClaw bridge secrets above.
 
 ### OpenClaw E2E Smoke CI
 
@@ -803,6 +917,25 @@ WHATSAPP_ACCESS_TOKEN
 WHATSAPP_APP_SECRET
 WHATSAPP_PHONE_NUMBER_ID
 WHATSAPP_VERIFY_TOKEN
+```
+
+Microsoft Teams smoke adds:
+
+```text
+TEAMS_APP_ID
+TEAMS_APP_PASSWORD
+```
+
+Google Chat smoke adds one auth path:
+
+```text
+GOOGLE_CHAT_CREDENTIALS
+```
+
+or:
+
+```text
+GOOGLE_CHAT_USE_ADC
 ```
 
 Feishu smoke adds:

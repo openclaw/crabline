@@ -42,7 +42,12 @@ export const OPENCLAW_SUPPORT_CATALOG = [
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
-  createBridgeEntry("googlechat", "OpenClaw channel via script bridge."),
+  {
+    notes: "Built-in provider for Google Chat.",
+    platform: "googlechat",
+    status: "ready",
+    supports: COMMON_BRIDGE_SUPPORT,
+  },
   {
     notes: "Adapter-backed provider for iMessage.",
     platform: "imessage",
@@ -63,7 +68,12 @@ export const OPENCLAW_SUPPORT_CATALOG = [
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
-  createBridgeEntry("msteams", "OpenClaw plugin channel via script bridge."),
+  {
+    notes: "Built-in provider for Microsoft Teams.",
+    platform: "msteams",
+    status: "ready",
+    supports: COMMON_BRIDGE_SUPPORT,
+  },
   createBridgeEntry("nextcloudtalk", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("nostr", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("signal", "OpenClaw channel via script bridge."),
