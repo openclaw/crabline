@@ -5,7 +5,6 @@ import { OPENCLAW_SUPPORT_CATALOG } from "./providers/catalog.js";
 import type { Registry } from "./providers/registry.js";
 import {
   LOCAL_CHANNEL_DRIVER_MATRIX,
-  TELEGRAM_LOCAL_DRIVER_ID,
   TELEGRAM_LOCAL_DRIVER_METADATA,
   type ChannelCapabilityMatrixRow,
   type ChannelDriverMetadata,
@@ -27,22 +26,25 @@ export function listLocalChannelDriverMatrix() {
 
 export function findLocalChannelDriver(params: {
   channel: ProviderPlatform;
-  driverId: LocalChannelDriverId;
+  driverId?: LocalChannelDriverId;
 }): ChannelDriverMetadata | null {
   return (
     listLocalChannelDriverMatrix().drivers.find(
-      (driver) => driver.channel === params.channel && driver.driverId === params.driverId,
+      (driver) =>
+        driver.channel === params.channel &&
+        (!params.driverId || driver.driverId === params.driverId),
     ) ?? null
   );
 }
 
 function buildLocalChannelSmokeManifest(params: {
-  channel: ProviderPlatform;
-  driverId: LocalChannelDriverId;
+  driver: ChannelDriverMetadata;
   userName?: string;
 }): ManifestDefinition {
-  if (params.channel !== "telegram" || params.driverId !== TELEGRAM_LOCAL_DRIVER_ID) {
-    throw new Error(`unsupported local channel driver: ${params.channel}/${params.driverId}`);
+  if (params.driver.channel !== "telegram") {
+    throw new Error(
+      `unsupported local channel driver: ${params.driver.channel}/${params.driver.driverId}`,
+    );
   }
 
   return ManifestSchema.parse({
@@ -53,7 +55,7 @@ function buildLocalChannelSmokeManifest(params: {
         adapter: "channel",
         platform: "telegram",
         channel: {
-          driver: TELEGRAM_LOCAL_DRIVER_ID,
+          driver: params.driver.driverId,
           botUserName: "crabline_telegram_bot",
           qaResponse: {
             mode: "ack",
@@ -107,19 +109,23 @@ function createLocalChannelDriverRegistry(manifest: ManifestDefinition): Registr
 
 export async function runLocalChannelDriverSmoke(params: {
   channel: ProviderPlatform;
-  driverId: LocalChannelDriverId;
+  driverId?: LocalChannelDriverId;
   manifestPath?: string;
   userName?: string;
 }): Promise<LocalChannelDriverSmokeResult> {
   const driver = findLocalChannelDriver({
     channel: params.channel,
-    driverId: params.driverId,
+    ...(params.driverId ? { driverId: params.driverId } : {}),
   });
   if (!driver) {
-    throw new Error(`local channel driver not found: ${params.channel}/${params.driverId}`);
+    const suffix = params.driverId ? `/${params.driverId}` : "";
+    throw new Error(`local channel driver not found: ${params.channel}${suffix}`);
   }
 
-  const manifest = buildLocalChannelSmokeManifest(params);
+  const manifest = buildLocalChannelSmokeManifest({
+    driver,
+    ...(params.userName ? { userName: params.userName } : {}),
+  });
   const manifestPath = params.manifestPath ?? "crabline-local-channel-driver-smoke.json";
   const registry = createLocalChannelDriverRegistry(manifest);
   const result = await runFixtureCommand({

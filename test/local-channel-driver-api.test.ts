@@ -10,7 +10,6 @@ describe("local channel driver API", () => {
     expect(
       findLocalChannelDriver({
         channel: "telegram",
-        driverId: "telegram-local-v1",
       }),
     ).toMatchObject({
       channel: "telegram",
@@ -35,7 +34,6 @@ describe("local channel driver API", () => {
     await expect(
       runLocalChannelDriverSmoke({
         channel: "telegram",
-        driverId: "telegram-local-v1",
       }),
     ).resolves.toMatchObject({
       driver: {
