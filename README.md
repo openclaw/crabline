@@ -11,7 +11,7 @@ This project used to be called `multipass`, but was renamed to `crabline` to avo
 The v1 shape is:
 
 - built-in `loopback` provider for local development and contract tests
-- deterministic local channel SDK provider, starting with `telegram-local-v1`
+- deterministic local channel SDK provider, starting with Telegram
 - native `discord` provider backed by the Chat SDK Discord adapter
 - native `slack` provider backed by the Chat SDK Slack adapter
 - native community adapters for `matrix` and `imessage`
@@ -101,7 +101,7 @@ Credentials stay in env, never in fixtures.
 
 - `ready`: `loopback`, native `slack`, native `discord`, native-community `matrix`, native-community `imessage`
 - `bridge`: `bluebubbles`, `feishu`, `googlechat`, `irc`, `line`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `synologychat`, `telegram`, `tlon`, `twitch`, `webchat`, `whatsapp`, `zalo`, `zalouser`
-- deterministic local channel driver: `telegram-local-v1` via `adapter: channel`, `platform: telegram`
+- deterministic local channel driver: `adapter: channel`, `platform: telegram`
 - Plugin-backed in OpenClaw, still supported through the bridge: `feishu`, `line`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `synologychat`, `tlon`, `twitch`, `zalo`, `zalouser`
 - Recommended bridge-only path today: `bluebubbles`, `googlechat`, `irc`, `signal`, `telegram`, `webchat`, `whatsapp`
 
@@ -120,15 +120,15 @@ providers:
     adapter: channel
     platform: telegram
     channel:
-      driver: telegram-local-v1
-      botUserName: multipass_telegram_bot
+      botUserName: crabline_telegram_bot
       qaResponse:
         mode: ack # QA-fixture response only; no model call is made
 ```
 
-`telegram-local-v1` is a deterministic local upstream shim. It records Telegram-shaped
+The Telegram local driver is a deterministic local upstream shim. It records Telegram-shaped
 inbound events, outbound actions, and transcript entries for DM, group mention,
 forum topic/thread, inline button action, media metadata, and reconnect assertions.
+Its in-code driver metadata carries `driverId: "telegram"` and `driverVersion: 1`.
 It is not Canonical Multipass VM orchestration and does not route through OpenClaw's
 `qa-channel` normalized bus.
 
@@ -393,6 +393,6 @@ or:
 ## Current scope
 
 - Real built-in providers: `loopback`, native `slack`, native `discord`, native-community `matrix`, native-community `imessage`
-- Deterministic local channel SDK drivers: `telegram-local-v1`
+- Deterministic local channel SDK drivers: Telegram
 - Real external bridge: `script` for the full OpenClaw channel matrix
 - Not implemented yet: local channel drivers beyond Telegram, richer recorder compaction/query tooling, live-model response generation

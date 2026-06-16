@@ -4,11 +4,10 @@ import { LocalChannelProviderAdapter } from "./providers/builtin/channel.js";
 import { OPENCLAW_SUPPORT_CATALOG } from "./providers/catalog.js";
 import type { Registry } from "./providers/registry.js";
 import {
+  LOCAL_CHANNEL_DRIVER_METADATA,
   LOCAL_CHANNEL_DRIVER_MATRIX,
-  TELEGRAM_LOCAL_DRIVER_METADATA,
   type ChannelCapabilityMatrixRow,
   type ChannelDriverMetadata,
-  type LocalChannelDriverId,
 } from "./channels/index.js";
 
 export type LocalChannelDriverSmokeResult = {
@@ -19,21 +18,17 @@ export type LocalChannelDriverSmokeResult = {
 
 export function listLocalChannelDriverMatrix() {
   return {
-    drivers: [TELEGRAM_LOCAL_DRIVER_METADATA],
+    drivers: LOCAL_CHANNEL_DRIVER_METADATA,
     matrix: LOCAL_CHANNEL_DRIVER_MATRIX,
   };
 }
 
 export function findLocalChannelDriver(params: {
   channel: ProviderPlatform;
-  driverId?: LocalChannelDriverId;
 }): ChannelDriverMetadata | null {
   return (
-    listLocalChannelDriverMatrix().drivers.find(
-      (driver) =>
-        driver.channel === params.channel &&
-        (!params.driverId || driver.driverId === params.driverId),
-    ) ?? null
+    listLocalChannelDriverMatrix().drivers.find((driver) => driver.channel === params.channel) ??
+    null
   );
 }
 
@@ -55,7 +50,6 @@ function buildLocalChannelSmokeManifest(params: {
         adapter: "channel",
         platform: "telegram",
         channel: {
-          driver: params.driver.driverId,
           botUserName: "crabline_telegram_bot",
           qaResponse: {
             mode: "ack",
@@ -109,17 +103,14 @@ function createLocalChannelDriverRegistry(manifest: ManifestDefinition): Registr
 
 export async function runLocalChannelDriverSmoke(params: {
   channel: ProviderPlatform;
-  driverId?: LocalChannelDriverId;
   manifestPath?: string;
   userName?: string;
 }): Promise<LocalChannelDriverSmokeResult> {
   const driver = findLocalChannelDriver({
     channel: params.channel,
-    ...(params.driverId ? { driverId: params.driverId } : {}),
   });
   if (!driver) {
-    const suffix = params.driverId ? `/${params.driverId}` : "";
-    throw new Error(`local channel driver not found: ${params.channel}${suffix}`);
+    throw new Error(`local channel driver not found: ${params.channel}`);
   }
 
   const manifest = buildLocalChannelSmokeManifest({

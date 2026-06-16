@@ -165,7 +165,7 @@ describe("manifest schema", () => {
     ).toThrow(/discord adapter must use platform=discord/u);
   });
 
-  it("parses the local Telegram channel driver config", () => {
+  it("parses the local Telegram channel config", () => {
     const manifest = ManifestSchema.parse({
       configVersion: 1,
       fixtures: [
@@ -187,7 +187,7 @@ describe("manifest schema", () => {
       },
     });
 
-    expect(manifest.providers["telegram-local"]?.channel?.driver).toBe("telegram-local-v1");
+    expect(manifest.providers["telegram-local"]?.platform).toBe("telegram");
     expect(manifest.providers["telegram-local"]?.channel?.qaResponse.mode).toBe("ack");
   });
 

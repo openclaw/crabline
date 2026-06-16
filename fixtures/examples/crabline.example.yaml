@@ -12,8 +12,7 @@ providers:
     adapter: channel
     platform: telegram
     channel:
-      driver: telegram-local-v1
-      botUserName: multipass_telegram_bot
+      botUserName: crabline_telegram_bot
       qaResponse:
         mode: ack
 

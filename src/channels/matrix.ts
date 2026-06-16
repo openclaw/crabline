@@ -1,15 +1,17 @@
 import type { ChannelCapabilityMatrixRow } from "./types.js";
-import { TELEGRAM_LOCAL_DRIVER_ID, TELEGRAM_LOCAL_DRIVER_METADATA } from "./telegram.js";
+import { LOCAL_CHANNEL_DRIVER_METADATA } from "./driver-registry.js";
 
 export const LOCAL_CHANNEL_DRIVER_MATRIX = [
-  ...TELEGRAM_LOCAL_DRIVER_METADATA.capabilities.map(
-    (capability): ChannelCapabilityMatrixRow => ({
-      capabilityId: capability.id,
-      channel: "telegram",
-      driverId: TELEGRAM_LOCAL_DRIVER_ID,
-      notes: capability.notes,
-      status: capability.status,
-    }),
+  ...LOCAL_CHANNEL_DRIVER_METADATA.flatMap((driver) =>
+    driver.capabilities.map(
+      (capability): ChannelCapabilityMatrixRow => ({
+        capabilityId: capability.id,
+        channel: driver.channel,
+        driverId: driver.driverId,
+        notes: capability.notes,
+        status: capability.status,
+      }),
+    ),
   ),
   {
     capabilityId: "discord.dm.text",

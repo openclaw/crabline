@@ -72,10 +72,10 @@ describe("cli", () => {
     }
 
     const stdout = captured.stdout.join("");
-    expect(stdout).toContain("telegram-local-v1");
+    expect(stdout).toContain("telegram channel=telegram version=1");
     expect(stdout).toContain("telegram.dm.text");
     expect(JSON.parse(stdout.slice(stdout.indexOf("{")))).toMatchObject({
-      drivers: [expect.objectContaining({ driverId: "telegram-local-v1" })],
+      drivers: [expect.objectContaining({ driverId: "telegram", driverVersion: 1 })],
     });
   });
 

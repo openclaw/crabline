@@ -147,8 +147,7 @@ const IMessageConfigSchema = z.object({
 });
 
 const ChannelConfigSchema = z.object({
-  botUserName: z.string().min(1).default("multipass_telegram_bot"),
-  driver: z.literal("telegram-local-v1").default("telegram-local-v1"),
+  botUserName: z.string().min(1).default("crabline_telegram_bot"),
   qaResponse: z
     .object({
       mode: z.enum(["ack", "echo", "none"]).default("none"),

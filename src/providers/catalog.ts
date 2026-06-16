@@ -66,7 +66,7 @@ export const OPENCLAW_SUPPORT_CATALOG = [
   createBridgeEntry("synologychat", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry(
     "telegram",
-    "OpenClaw channel via script bridge; deterministic local driver available as telegram-local-v1.",
+    "OpenClaw channel via script bridge; deterministic local driver available via adapter=channel.",
   ),
   createBridgeEntry("tlon", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("twitch", "OpenClaw plugin channel via script bridge."),
