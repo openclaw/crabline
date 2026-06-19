@@ -4,7 +4,10 @@ import { LocalMockProviderAdapter, type LocalMockTargetCodec } from "../local-mo
 import type { NormalizedTarget, ProviderAdapter, ProviderContext } from "../types.js";
 
 type TelegramEnvironment = Partial<
-  Pick<NodeJS.ProcessEnv, "TELEGRAM_BOT_USERNAME" | "TELEGRAM_WEBHOOK_SECRET_TOKEN">
+  Pick<
+    NodeJS.ProcessEnv,
+    "TELEGRAM_API_BASE_URL" | "TELEGRAM_BOT_USERNAME" | "TELEGRAM_WEBHOOK_SECRET_TOKEN"
+  >
 >;
 
 export function resolveTelegramAdapterConfig(
@@ -14,8 +17,8 @@ export function resolveTelegramAdapterConfig(
   const telegramConfig = config.telegram;
   return {
     mode: telegramConfig?.mode ?? "auto",
-    ...((telegramConfig?.apiUrl ?? process.env.TELEGRAM_API_BASE_URL)
-      ? { apiUrl: telegramConfig?.apiUrl ?? process.env.TELEGRAM_API_BASE_URL! }
+    ...((telegramConfig?.apiUrl ?? env.TELEGRAM_API_BASE_URL)
+      ? { apiUrl: telegramConfig?.apiUrl ?? env.TELEGRAM_API_BASE_URL! }
       : {}),
     ...((telegramConfig?.secretToken ?? env.TELEGRAM_WEBHOOK_SECRET_TOKEN)
       ? { secretToken: telegramConfig?.secretToken ?? env.TELEGRAM_WEBHOOK_SECRET_TOKEN! }

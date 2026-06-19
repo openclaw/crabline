@@ -65,8 +65,8 @@ providers:
 ```
 
 Provider credential fields such as `botToken`, `accessToken`, `baseURL`, or
-`serverUrl` are optional metadata for compatibility with older configs. They
-are not required for local mock execution.
+`serverUrl` are optional mock metadata. They are not required for local mock
+execution.
 
 ## Webhook Payload
 
@@ -123,7 +123,7 @@ For deterministic CI, use Crabline through a mock channel driver:
 
 ```yaml
 profile: smoke-ci
-channelDriver: mock
+channelDriver: crabline
 ```
 
 The scenario channel should remain the real channel contract:

@@ -20,7 +20,7 @@ execution backend for that channel shape.
   `doctor` commands
 - text output by default and stable `--json` output for automation
 
-Crabline is not a live transport runner. Live OpenClaw channel tests should use
+Crabline is not a live transport runner. Live OpenClaw channel tests use
 OpenClaw's live channel adapters and credentials directly.
 
 ## Install

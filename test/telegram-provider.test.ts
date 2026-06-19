@@ -78,11 +78,13 @@ describe("telegram provider", () => {
           },
         },
         {
+          TELEGRAM_API_BASE_URL: "http://127.0.0.1:19090",
           TELEGRAM_BOT_USERNAME: "crabline_bot",
           TELEGRAM_WEBHOOK_SECRET_TOKEN: "secret",
         },
       ),
     ).toMatchObject({
+      apiUrl: "http://127.0.0.1:19090",
       mode: "polling",
       secretToken: "secret",
       userName: "crabline_bot",
