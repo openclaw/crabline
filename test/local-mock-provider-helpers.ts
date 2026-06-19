@@ -194,5 +194,49 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
         text: "reply nonce-2",
       });
     });
+
+    it("lets fixture matching observe user-authored webhook events", async () => {
+      const config = await createLocalMockConfig(
+        options.platform,
+        options.endpointPath,
+        options.adapter,
+      );
+      const provider = new options.Adapter(options.platform, config, "crabline");
+      providers.push(provider);
+      const context = createProviderContext(options.platform, config);
+      context.fixture.inboundMatch = {
+        author: "user",
+        nonce: "contains",
+        strategy: "contains",
+      };
+      const endpoint = endpointFromDetails((await provider.probe(context)).details);
+      const since = new Date(Date.now() - 1000).toISOString();
+
+      const response = await fetch(endpoint, {
+        body: JSON.stringify({
+          author: "user",
+          id: `${options.platform}-user-inbound`,
+          text: "user nonce-3",
+          threadId: `${options.platform}:target-1`,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+
+      await expect(
+        provider.waitForInbound({
+          ...context,
+          nonce: "nonce-3",
+          since,
+          threadId: `${options.platform}:target-1`,
+          timeoutMs: 500,
+        }),
+      ).resolves.toMatchObject({
+        author: "user",
+        id: `${options.platform}-user-inbound`,
+        text: "user nonce-3",
+      });
+    });
   });
 }

@@ -219,11 +219,12 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   async waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
     await this.#ensureWebhookServer(true);
     const target = this.normalizeTarget(context.fixture.target);
+    const expectedAuthor = context.fixture.inboundMatch.author;
     return await waitForRecordedInbound({
       filePath: this.#recorderPath,
       matches: (event) =>
         event.provider === this.id &&
-        event.author !== "user" &&
+        (expectedAuthor === "any" || event.author === expectedAuthor) &&
         isAddressInChannel(event.threadId, context.threadId ?? target.threadId ?? target.channelId),
       since: context.since,
       timeoutMs: context.timeoutMs,
