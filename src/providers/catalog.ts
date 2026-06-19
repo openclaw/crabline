@@ -21,7 +21,7 @@ function createBridgeEntry(platform: ProviderPlatform, notes: string): CatalogEn
 
 export const OPENCLAW_SUPPORT_CATALOG = [
   {
-    notes: "Built-in local reference provider for development and tests.",
+    notes: "Built-in local reference mock for development and tests.",
     platform: "loopback",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
@@ -31,25 +31,25 @@ export const OPENCLAW_SUPPORT_CATALOG = [
     "OpenClaw channel via script bridge. Recommended iMessage path.",
   ),
   {
-    notes: "Built-in provider with interactions webhook and gateway listener.",
+    notes: "Built-in local Discord mock with interactions webhook shape.",
     platform: "discord",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
   {
-    notes: "Built-in provider for Feishu/Lark.",
+    notes: "Built-in local Feishu/Lark mock.",
     platform: "feishu",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
   {
-    notes: "Built-in provider for Google Chat.",
+    notes: "Built-in local Google Chat mock.",
     platform: "googlechat",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
   {
-    notes: "Adapter-backed provider for iMessage.",
+    notes: "Built-in local iMessage mock.",
     platform: "imessage",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
@@ -57,19 +57,19 @@ export const OPENCLAW_SUPPORT_CATALOG = [
   createBridgeEntry("irc", "OpenClaw channel via script bridge."),
   createBridgeEntry("line", "OpenClaw plugin channel via script bridge."),
   {
-    notes: "Adapter-backed provider for Matrix/Beeper sync.",
+    notes: "Built-in local Matrix mock.",
     platform: "matrix",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
   {
-    notes: "Built-in provider for Mattermost.",
+    notes: "Built-in local Mattermost mock.",
     platform: "mattermost",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
   {
-    notes: "Built-in provider for Microsoft Teams.",
+    notes: "Built-in local Microsoft Teams mock.",
     platform: "msteams",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
@@ -78,14 +78,14 @@ export const OPENCLAW_SUPPORT_CATALOG = [
   createBridgeEntry("nostr", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("signal", "OpenClaw channel via script bridge."),
   {
-    notes: "Built-in provider plus local recorder/webhook mode.",
+    notes: "Built-in local Slack mock with events webhook shape.",
     platform: "slack",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
   createBridgeEntry("synologychat", "OpenClaw plugin channel via script bridge."),
   {
-    notes: "Built-in provider for Telegram Bot API.",
+    notes: "Built-in local Telegram mock with Bot API-style webhook shape.",
     platform: "telegram",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
@@ -94,13 +94,13 @@ export const OPENCLAW_SUPPORT_CATALOG = [
   createBridgeEntry("twitch", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("webchat", "OpenClaw web channel via script bridge."),
   {
-    notes: "Built-in provider for WhatsApp Business Cloud API.",
+    notes: "Built-in local WhatsApp mock with Business webhook shape.",
     platform: "whatsapp",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
   {
-    notes: "Built-in provider for Zalo Bot Platform.",
+    notes: "Built-in local Zalo mock.",
     platform: "zalo",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,

@@ -1,4 +1,3 @@
-import type { Message } from "chat";
 import type {
   FixtureDefinition,
   FixtureMode,
@@ -82,10 +81,33 @@ export interface ProviderAdapter {
   cleanup?(): Promise<void>;
 }
 
-export type LoopbackMessage = Message<{
+export type LoopbackMessage = {
+  author: {
+    isMe: boolean;
+    userName: string;
+  };
+  formatted: string;
+  id: string;
+  metadata: {
+    dateSent: Date;
+    edited: boolean;
+    editedAt?: Date;
+  };
+  raw: {
+    author: "assistant" | "user";
+    id: string;
+    text: string;
+    threadId: string;
+    timestamp: string;
+  };
+  text: string;
+  threadId: string;
+};
+
+export type LoopbackRawMessage = {
   author: "assistant" | "user";
   id: string;
   text: string;
   threadId: string;
   timestamp: string;
-}>;
+};

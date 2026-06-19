@@ -258,74 +258,7 @@ function diagnose(manifest: Awaited<ReturnType<typeof loadManifest>>["manifest"]
       }
     }
 
-    if (provider.adapter === "slack") {
-      if (!process.env.SLACK_BOT_TOKEN) {
-        findings.push(`provider ${providerId} missing env SLACK_BOT_TOKEN`);
-      }
-      if (!process.env.SLACK_SIGNING_SECRET) {
-        findings.push(`provider ${providerId} missing env SLACK_SIGNING_SECRET`);
-      }
-    }
-
-    if (provider.adapter === "discord") {
-      if (!provider.discord?.botToken && !process.env.DISCORD_BOT_TOKEN) {
-        findings.push(`provider ${providerId} missing discord.botToken or DISCORD_BOT_TOKEN`);
-      }
-    }
-
-    if (provider.adapter === "telegram") {
-      if (!provider.telegram?.botToken && !process.env.TELEGRAM_BOT_TOKEN) {
-        findings.push(`provider ${providerId} missing telegram.botToken or TELEGRAM_BOT_TOKEN`);
-      }
-    }
-
-    if (provider.adapter === "whatsapp") {
-      if (!provider.whatsapp?.accessToken && !process.env.WHATSAPP_ACCESS_TOKEN) {
-        findings.push(
-          `provider ${providerId} missing whatsapp.accessToken or WHATSAPP_ACCESS_TOKEN`,
-        );
-      }
-      if (!provider.whatsapp?.appSecret && !process.env.WHATSAPP_APP_SECRET) {
-        findings.push(`provider ${providerId} missing whatsapp.appSecret or WHATSAPP_APP_SECRET`);
-      }
-      if (!provider.whatsapp?.phoneNumberId && !process.env.WHATSAPP_PHONE_NUMBER_ID) {
-        findings.push(
-          `provider ${providerId} missing whatsapp.phoneNumberId or WHATSAPP_PHONE_NUMBER_ID`,
-        );
-      }
-      if (!provider.whatsapp?.verifyToken && !process.env.WHATSAPP_VERIFY_TOKEN) {
-        findings.push(
-          `provider ${providerId} missing whatsapp.verifyToken or WHATSAPP_VERIFY_TOKEN`,
-        );
-      }
-    }
-
-    if (provider.adapter === "matrix") {
-      if (!provider.matrix?.baseURL && !process.env.MATRIX_BASE_URL) {
-        findings.push(`provider ${providerId} missing matrix.baseURL or MATRIX_BASE_URL`);
-      }
-      if (
-        !provider.matrix?.auth &&
-        !process.env.MATRIX_ACCESS_TOKEN &&
-        !(process.env.MATRIX_USERNAME && process.env.MATRIX_PASSWORD)
-      ) {
-        findings.push(
-          `provider ${providerId} missing MATRIX_ACCESS_TOKEN or MATRIX_USERNAME/MATRIX_PASSWORD`,
-        );
-      }
-    }
-
-    if (provider.adapter === "imessage") {
-      const local = provider.imessage?.local ?? process.env.IMESSAGE_LOCAL !== "false";
-      if (!local) {
-        if (!provider.imessage?.serverUrl && !process.env.IMESSAGE_SERVER_URL) {
-          findings.push(`provider ${providerId} missing imessage.serverUrl or IMESSAGE_SERVER_URL`);
-        }
-        if (!provider.imessage?.apiKey && !process.env.IMESSAGE_API_KEY) {
-          findings.push(`provider ${providerId} missing imessage.apiKey or IMESSAGE_API_KEY`);
-        }
-      }
-    }
+    void providerId;
   }
 
   return findings;

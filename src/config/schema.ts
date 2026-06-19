@@ -271,6 +271,18 @@ const FeishuConfigSchema = z.object({
   appSecret: z.string().min(1).optional(),
   recorder: z.object({ path: z.string().min(1).optional() }).default({}),
   userName: z.string().min(1).optional(),
+  webhook: z
+    .object({
+      host: z.string().min(1).default("127.0.0.1"),
+      path: z.string().min(1).default("/feishu/webhook"),
+      port: z.number().int().min(0).max(65_535).default(8795),
+      publicUrl: z.string().url().optional(),
+    })
+    .default({
+      host: "127.0.0.1",
+      path: "/feishu/webhook",
+      port: 8795,
+    }),
 });
 
 const MattermostRecorderSchema = z.object({
@@ -347,6 +359,18 @@ const MatrixConfigSchema = z.object({
   recorder: z.object({ path: z.string().min(1).optional() }).default({}),
   recoveryKey: z.string().min(1).optional(),
   roomAllowlist: z.array(z.string().min(1)).optional(),
+  webhook: z
+    .object({
+      host: z.string().min(1).default("127.0.0.1"),
+      path: z.string().min(1).default("/matrix/webhook"),
+      port: z.number().int().min(0).max(65_535).default(8797),
+      publicUrl: z.string().url().optional(),
+    })
+    .default({
+      host: "127.0.0.1",
+      path: "/matrix/webhook",
+      port: 8797,
+    }),
 });
 
 const IMessageConfigSchema = z.object({
@@ -355,6 +379,18 @@ const IMessageConfigSchema = z.object({
   local: z.boolean().optional(),
   recorder: z.object({ path: z.string().min(1).optional() }).default({}),
   serverUrl: z.string().url().optional(),
+  webhook: z
+    .object({
+      host: z.string().min(1).default("127.0.0.1"),
+      path: z.string().min(1).default("/imessage/webhook"),
+      port: z.number().int().min(0).max(65_535).default(8796),
+      publicUrl: z.string().url().optional(),
+    })
+    .default({
+      host: "127.0.0.1",
+      path: "/imessage/webhook",
+      port: 8796,
+    }),
 });
 
 export const ProviderConfigSchema = z

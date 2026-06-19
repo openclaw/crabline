@@ -10,6 +10,11 @@ function createConfig(imessage?: Partial<NonNullable<ProviderConfig["imessage"]>
     imessage: {
       gatewayDurationMs: 60_000,
       recorder: {},
+      webhook: {
+        host: "127.0.0.1",
+        path: "/imessage/webhook",
+        port: 8796,
+      },
       ...imessage,
     },
     platform: "imessage",
@@ -18,45 +23,27 @@ function createConfig(imessage?: Partial<NonNullable<ProviderConfig["imessage"]>
 }
 
 describe("imessage provider default runtime", () => {
-  it("builds remote gateway config from explicit provider settings", () => {
-    const config = createConfig({
-      apiKey: "api-key",
-      local: false,
-      serverUrl: "https://imessage.example.com",
-    });
-
-    expect(resolveIMessageAdapterConfig(config)).toEqual({
-      apiKey: "api-key",
-      local: false,
-      serverUrl: "https://imessage.example.com",
+  it("keeps remote gateway metadata optional for the local mock", () => {
+    expect(resolveIMessageAdapterConfig(createConfig())).toEqual({
+      apiKey: "local-mock-imessage-api-key",
+      local: true,
+      serverUrl: undefined,
     });
   });
 
-  it("falls back to env-based remote gateway config", () => {
-    const config = createConfig();
-
+  it("preserves configured gateway metadata when provided", () => {
     expect(
-      resolveIMessageAdapterConfig(config, {
-        IMESSAGE_API_KEY: "env-api-key",
-        IMESSAGE_LOCAL: "false",
-        IMESSAGE_SERVER_URL: "https://env-imessage.example.com",
-      }),
+      resolveIMessageAdapterConfig(
+        createConfig({
+          apiKey: "config-api-key",
+          local: false,
+          serverUrl: "https://imessage.example.com",
+        }),
+      ),
     ).toEqual({
-      apiKey: "env-api-key",
+      apiKey: "config-api-key",
       local: false,
-      serverUrl: "https://env-imessage.example.com",
+      serverUrl: "https://imessage.example.com",
     });
-  });
-
-  it("fails fast when remote mode is missing api key or server url", () => {
-    const config = createConfig();
-
-    expect(() =>
-      resolveIMessageAdapterConfig(config, {
-        IMESSAGE_API_KEY: undefined,
-        IMESSAGE_LOCAL: "false",
-        IMESSAGE_SERVER_URL: undefined,
-      }),
-    ).toThrow(/remote mode/u);
   });
 });

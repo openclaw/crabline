@@ -1,6 +1,4 @@
-import { Chat, parseMarkdown } from "chat";
 import { afterEach, describe, expect, it } from "vitest";
-import { createMemoryState } from "@chat-adapter/state-memory";
 import { LoopbackChatAdapter } from "../src/providers/builtin/loopback.js";
 
 let adapter: LoopbackChatAdapter | undefined;
@@ -12,13 +10,6 @@ afterEach(() => {
 describe("loopback chat adapter", () => {
   it("supports direct adapter operations", async () => {
     adapter = new LoopbackChatAdapter("crabline");
-    const chat = new Chat({
-      adapters: { loopback: adapter },
-      logger: "silent",
-      state: createMemoryState(),
-      userName: "crabline",
-    });
-    await chat.initialize();
 
     const threadId = adapter.encodeThreadId({ id: "user-1", threadId: "dm-1" });
     expect(adapter.decodeThreadId(threadId).threadId).toBe("dm-1");
@@ -38,7 +29,7 @@ describe("loopback chat adapter", () => {
       timestamp: new Date().toISOString(),
     });
     expect(parsed.text).toBe("plain");
-    expect(adapter.renderFormatted(parseMarkdown("plain"))).toBe("plain");
+    expect(adapter.renderFormatted("plain")).toBe("plain");
     expect((await adapter.fetchThread(threadId)).id).toBe(threadId);
     await expect(adapter.handleWebhook(new Request("https://example.com"))).resolves.toBeInstanceOf(
       Response,

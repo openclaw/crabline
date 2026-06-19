@@ -45,89 +45,15 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@beeper/chat-adapter-matrix": "^0.1.0",
-    "@chat-adapter/discord": "^4.30.0",
-    "@chat-adapter/gchat": "^4.30.0",
-    "@chat-adapter/shared": "^4.30.0",
-    "@chat-adapter/slack": "^4.30.0",
-    "@chat-adapter/state-memory": "^4.30.0",
-    "@chat-adapter/teams": "^4.30.0",
-    "@chat-adapter/telegram": "^4.30.0",
-    "@chat-adapter/whatsapp": "^4.30.0",
-    "@larksuite/vercel-chat-adapter": "^0.1.2",
     "@types/node": "^25.9.2",
     "@typescript/native-preview": "7.0.0-dev.20260503.1",
     "@vitest/coverage-v8": "^4.1.8",
-    "chat": "^4.30.0",
-    "chat-adapter-imessage": "^0.1.1",
-    "chat-adapter-mattermost": "^1.1.3",
-    "chat-adapter-zalo": "^0.1.0",
     "oxfmt": "^0.47.0",
     "oxlint": "^1.69.0",
     "oxlint-tsgolint": "^0.22.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
-  },
-  "peerDependencies": {
-    "@beeper/chat-adapter-matrix": "^0.1.0",
-    "@chat-adapter/discord": "^4.30.0",
-    "@chat-adapter/gchat": "^4.30.0",
-    "@chat-adapter/shared": "^4.30.0",
-    "@chat-adapter/slack": "^4.30.0",
-    "@chat-adapter/state-memory": "^4.30.0",
-    "@chat-adapter/teams": "^4.30.0",
-    "@chat-adapter/telegram": "^4.30.0",
-    "@chat-adapter/whatsapp": "^4.30.0",
-    "@larksuite/vercel-chat-adapter": "^0.1.2",
-    "chat": "^4.30.0",
-    "chat-adapter-imessage": "^0.1.1",
-    "chat-adapter-mattermost": "^1.1.3",
-    "chat-adapter-zalo": "^0.1.0"
-  },
-  "peerDependenciesMeta": {
-    "@beeper/chat-adapter-matrix": {
-      "optional": true
-    },
-    "@chat-adapter/discord": {
-      "optional": true
-    },
-    "@chat-adapter/gchat": {
-      "optional": true
-    },
-    "@chat-adapter/shared": {
-      "optional": true
-    },
-    "@chat-adapter/slack": {
-      "optional": true
-    },
-    "@chat-adapter/state-memory": {
-      "optional": true
-    },
-    "@chat-adapter/telegram": {
-      "optional": true
-    },
-    "@chat-adapter/teams": {
-      "optional": true
-    },
-    "@chat-adapter/whatsapp": {
-      "optional": true
-    },
-    "@larksuite/vercel-chat-adapter": {
-      "optional": true
-    },
-    "chat": {
-      "optional": true
-    },
-    "chat-adapter-mattermost": {
-      "optional": true
-    },
-    "chat-adapter-zalo": {
-      "optional": true
-    },
-    "chat-adapter-imessage": {
-      "optional": true
-    }
   },
   "engines": {
     "node": ">=22"
