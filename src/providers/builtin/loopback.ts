@@ -1,39 +1,7 @@
-import {
-  type Adapter,
-  type AdapterPostableMessage,
-  Chat,
-  type ChatInstance,
-  type FetchOptions,
-  type FetchResult,
-  Message,
-  type RawMessage,
-  type WebhookOptions,
-  parseMarkdown,
-  toPlainText,
-} from "chat";
-import { createMemoryState } from "@chat-adapter/state-memory";
 import { CrablineError } from "../../core/errors.js";
-import { extractNonce } from "../../core/nonces.js";
-import type { FixtureMode, ProviderConfig } from "../../config/schema.js";
-import type {
-  InboundEnvelope,
-  NormalizedTarget,
-  ProbeResult,
-  ProviderAdapter,
-  ProviderContext,
-  SendContext,
-  SendResult,
-  WaitContext,
-  WatchContext,
-} from "../types.js";
-
-type LoopbackRawMessage = {
-  author: "assistant" | "user";
-  id: string;
-  text: string;
-  threadId: string;
-  timestamp: string;
-};
+import type { ProviderConfig } from "../../config/schema.js";
+import { createGenericLocalMockTargetCodec, LocalMockProviderAdapter } from "../local-mock.js";
+import type { LoopbackMessage, LoopbackRawMessage, ProviderAdapter } from "../types.js";
 
 type ThreadAddress = {
   channelId?: string | undefined;
@@ -41,32 +9,35 @@ type ThreadAddress = {
   threadId?: string | undefined;
 };
 
-type LoopbackBehavior = "agent" | "echo" | "sink";
+type PostableMessage =
+  | string
+  | { card: unknown; fallbackText?: string }
+  | { markdown: string }
+  | { raw: string };
 
 function createMessageId(): string {
-  return `msg_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 10)}`;
+  return `loopback-mock-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function toPostableText(message: PostableMessage): string {
+  if (typeof message === "string") {
+    return message;
+  }
+  if ("raw" in message) {
+    return message.raw;
+  }
+  if ("markdown" in message) {
+    return message.markdown;
+  }
+  return message.fallbackText ?? "[card]";
 }
 
-function createAuthor(kind: "assistant" | "user") {
-  return {
-    fullName: kind === "assistant" ? "crabline-bot" : "loopback-user",
-    isBot: kind === "assistant",
-    isMe: kind === "assistant",
-    userId: kind === "assistant" ? "loopback-bot" : "loopback-user",
-    userName: kind === "assistant" ? "crabline" : "loopback",
-  } as const;
-}
-
-export class LoopbackChatAdapter implements Adapter<ThreadAddress, LoopbackRawMessage> {
+export class LoopbackChatAdapter {
   readonly name = "loopback";
-  readonly userName;
   readonly persistMessageHistory = true;
+  readonly userName;
 
-  readonly #messages = new Map<string, Message<LoopbackRawMessage>[]>();
+  readonly #messages = new Map<string, LoopbackMessage[]>();
 
   constructor(userName: string) {
     this.userName = userName;
@@ -106,8 +77,8 @@ export class LoopbackChatAdapter implements Adapter<ThreadAddress, LoopbackRawMe
   editMessage(
     threadId: string,
     messageId: string,
-    message: AdapterPostableMessage,
-  ): Promise<RawMessage<LoopbackRawMessage>> {
+    message: PostableMessage,
+  ): Promise<{ id: string; raw: LoopbackRawMessage; threadId: string }> {
     const messages = this.#messages.get(threadId) ?? [];
     const existing = messages.find((entry) => entry.id === messageId);
     if (!existing) {
@@ -116,7 +87,7 @@ export class LoopbackChatAdapter implements Adapter<ThreadAddress, LoopbackRawMe
 
     const text = toPostableText(message);
     existing.text = text;
-    existing.formatted = parseMarkdown(text);
+    existing.formatted = text;
     existing.metadata.edited = true;
     existing.metadata.editedAt = new Date();
     existing.raw.text = text;
@@ -130,8 +101,8 @@ export class LoopbackChatAdapter implements Adapter<ThreadAddress, LoopbackRawMe
 
   fetchMessages(
     threadId: string,
-    options?: FetchOptions,
-  ): Promise<FetchResult<LoopbackRawMessage>> {
+    options?: { cursor?: string; limit?: number },
+  ): Promise<{ messages: LoopbackMessage[]; nextCursor?: string }> {
     const messages = [...(this.#messages.get(threadId) ?? [])];
     const limit = options?.limit ?? messages.length;
     if (!options?.cursor) {
@@ -141,7 +112,7 @@ export class LoopbackChatAdapter implements Adapter<ThreadAddress, LoopbackRawMe
     }
 
     const offset = Number(options.cursor);
-    const result: FetchResult<LoopbackRawMessage> = {
+    const result: { messages: LoopbackMessage[]; nextCursor?: string } = {
       messages: messages.slice(Math.max(0, offset - limit), offset),
     };
     if (offset - limit > 0) {
@@ -159,25 +130,23 @@ export class LoopbackChatAdapter implements Adapter<ThreadAddress, LoopbackRawMe
     });
   }
 
-  handleWebhook(_: Request, __?: WebhookOptions): Promise<Response> {
+  handleWebhook(_request?: Request): Promise<Response> {
     return Promise.resolve(
       new Response("loopback adapter has no webhook surface", { status: 501 }),
     );
-  }
-
-  initialize(_: ChatInstance): Promise<void> {
-    return Promise.resolve();
   }
 
   isDM(): boolean {
     return true;
   }
 
-  parseMessage(raw: LoopbackRawMessage): Message<LoopbackRawMessage> {
-    return new Message({
-      attachments: [],
-      author: createAuthor(raw.author),
-      formatted: parseMarkdown(raw.text),
+  parseMessage(raw: LoopbackRawMessage): LoopbackMessage {
+    return {
+      author: {
+        isMe: raw.author === "assistant",
+        userName: raw.author === "assistant" ? this.userName : "loopback",
+      },
+      formatted: raw.text,
       id: raw.id,
       metadata: {
         dateSent: new Date(raw.timestamp),
@@ -186,13 +155,13 @@ export class LoopbackChatAdapter implements Adapter<ThreadAddress, LoopbackRawMe
       raw,
       text: raw.text,
       threadId: raw.threadId,
-    });
+    };
   }
 
   postMessage(
     threadId: string,
-    message: AdapterPostableMessage,
-  ): Promise<RawMessage<LoopbackRawMessage>> {
+    message: PostableMessage,
+  ): Promise<{ id: string; raw: LoopbackRawMessage; threadId: string }> {
     const text = toPostableText(message);
     const raw = {
       author: "assistant",
@@ -210,15 +179,15 @@ export class LoopbackChatAdapter implements Adapter<ThreadAddress, LoopbackRawMe
     return Promise.resolve();
   }
 
-  renderFormatted(content: Parameters<typeof toPlainText>[0]): string {
-    return toPlainText(content);
+  renderFormatted(content: string): string {
+    return content;
   }
 
   startTyping(): Promise<void> {
     return Promise.resolve();
   }
 
-  ingestUserMessage(threadId: string, text: string): Message<LoopbackRawMessage> {
+  ingestUserMessage(threadId: string, text: string): LoopbackMessage {
     const raw = {
       author: "user",
       id: createMessageId(),
@@ -231,198 +200,31 @@ export class LoopbackChatAdapter implements Adapter<ThreadAddress, LoopbackRawMe
     return parsed;
   }
 
-  listSince(threadId: string, since: string): Message<LoopbackRawMessage>[] {
+  listSince(threadId: string, since: string): LoopbackMessage[] {
     const sinceTime = new Date(since).getTime();
     return (this.#messages.get(threadId) ?? []).filter(
       (entry) => entry.metadata.dateSent.getTime() >= sinceTime,
     );
   }
 
-  #append(threadId: string, message: Message<LoopbackRawMessage>): void {
+  #append(threadId: string, message: LoopbackMessage): void {
     const bucket = this.#messages.get(threadId) ?? [];
     bucket.push(message);
     this.#messages.set(threadId, bucket);
   }
 }
 
-export class LoopbackProviderAdapter implements ProviderAdapter {
-  readonly id;
-  readonly platform = "loopback" as const;
-  readonly status = "ready" as const;
-  readonly supports = ["probe", "send", "roundtrip", "agent"] as const;
-
-  readonly #adapter: LoopbackChatAdapter;
-  readonly #chat: Chat<{ loopback: LoopbackChatAdapter }>;
-  readonly #behaviorByThread = new Map<string, LoopbackBehavior>();
-  readonly #delayMs: number;
-
-  constructor(id: string, config: ProviderConfig, userName: string) {
-    this.id = id;
-    this.#delayMs = config.loopback?.delayMs ?? 25;
-    this.#adapter = new LoopbackChatAdapter(userName);
-    this.#chat = new Chat({
-      adapters: { loopback: this.#adapter },
-      logger: "silent",
-      state: createMemoryState(),
-      userName,
+export class LoopbackProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
+  constructor(id: string, config: ProviderConfig, _userName: string) {
+    super({
+      codec: createGenericLocalMockTargetCodec("loopback"),
+      config,
+      id,
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/loopback/webhook", port: 8786 },
+        endpointLabel: "webhook endpoint",
+        platform: "loopback",
+      },
     });
-
-    this.#chat.onDirectMessage(async (thread, message) => {
-      const behavior = this.#behaviorByThread.get(thread.id) ?? "echo";
-      if (behavior === "sink") {
-        return;
-      }
-
-      await sleep(this.#delayMs);
-      if (behavior === "echo") {
-        await thread.post(message.text);
-        return;
-      }
-
-      const nonce = extractNonce(message.text);
-      await thread.post(nonce ? `ACK ${nonce}` : "ACK");
-    });
-
-    void this.#chat.initialize();
   }
-
-  normalizeTarget(target: ProviderContext["fixture"]["target"]): NormalizedTarget {
-    const normalized: NormalizedTarget = { id: target.id, metadata: target.metadata };
-    if (target.channelId) {
-      normalized.channelId = target.channelId;
-    }
-    if (target.threadId) {
-      normalized.threadId = target.threadId;
-    }
-    return normalized;
-  }
-
-  async probe(): Promise<ProbeResult> {
-    await this.#chat.initialize();
-    return {
-      details: ["loopback adapter ready", "chat-sdk in-memory state ready"],
-      healthy: true,
-    };
-  }
-
-  async send(context: SendContext): Promise<SendResult> {
-    await this.#chat.initialize();
-    const target = this.normalizeTarget(context.fixture.target);
-    const threadId = this.#adapter.encodeThreadId(toThreadAddress(target));
-    this.#behaviorByThread.set(
-      threadId,
-      resolveBehavior(context.mode, context.fixture.target.behavior),
-    );
-    const message = this.#adapter.ingestUserMessage(threadId, context.text);
-    await this.#chat.handleIncomingMessage(this.#adapter, threadId, message);
-    return {
-      accepted: true,
-      messageId: message.id,
-      threadId,
-    };
-  }
-
-  async waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
-    await this.#chat.initialize();
-    const target = this.normalizeTarget(context.fixture.target);
-    const threadId = this.#adapter.encodeThreadId(toThreadAddress(target));
-    const started = Date.now();
-
-    while (Date.now() - started <= context.timeoutMs) {
-      const matches = this.#adapter
-        .listSince(threadId, context.since)
-        .filter((entry) => entry.author.isMe)
-        .map((entry) => toEnvelope(this.id, entry));
-      if (matches.length > 0) {
-        return matches.at(-1) ?? null;
-      }
-
-      await sleep(Math.min(200, context.timeoutMs));
-    }
-
-    return null;
-  }
-
-  async *watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
-    await this.#chat.initialize();
-    const target = this.normalizeTarget(context.fixture.target);
-    const threadId = this.#adapter.encodeThreadId(toThreadAddress(target));
-    const seen = new Set<string>();
-    const since = context.since ?? new Date(0).toISOString();
-
-    while (true) {
-      const messages = this.#adapter
-        .listSince(threadId, since)
-        .filter((entry) => !entry.author.isMe)
-        .map((entry) => toEnvelope(this.id, entry));
-
-      for (const message of messages) {
-        if (seen.has(message.id)) {
-          continue;
-        }
-        seen.add(message.id);
-        yield message;
-      }
-
-      await sleep(250);
-    }
-  }
-}
-
-function resolveBehavior(mode: FixtureMode, configured?: LoopbackBehavior): LoopbackBehavior {
-  if (configured) {
-    return configured;
-  }
-
-  if (mode === "agent") {
-    return "agent";
-  }
-
-  if (mode === "roundtrip") {
-    return "echo";
-  }
-
-  return "sink";
-}
-
-function toEnvelope(providerId: string, message: Message<LoopbackRawMessage>): InboundEnvelope {
-  return {
-    author: message.author.isMe ? "assistant" : "user",
-    id: message.id,
-    provider: providerId,
-    raw: message.raw,
-    sentAt: message.metadata.dateSent.toISOString(),
-    text: message.text,
-    threadId: message.threadId,
-  };
-}
-
-function toThreadAddress(target: NormalizedTarget): ThreadAddress {
-  const address: ThreadAddress = { id: target.id };
-  if (target.channelId) {
-    address.channelId = target.channelId;
-  }
-  if (target.threadId) {
-    address.threadId = target.threadId;
-  }
-  return address;
-}
-
-function toPostableText(message: AdapterPostableMessage): string {
-  if (typeof message === "string") {
-    return message;
-  }
-  if ("raw" in message) {
-    return message.raw;
-  }
-  if ("markdown" in message) {
-    return message.markdown;
-  }
-  if ("ast" in message) {
-    return toPlainText(message.ast);
-  }
-  if ("card" in message) {
-    return message.fallbackText ?? "[card]";
-  }
-  return "[card]";
 }

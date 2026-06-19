@@ -1,8 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { resolveDiscordAdapterConfig } from "../src/providers/builtin/discord.js";
 import type { ProviderConfig } from "../src/config/schema.js";
-
-const fetchMock = vi.fn<typeof fetch>();
 
 function createConfig(discord?: Partial<NonNullable<ProviderConfig["discord"]>>): ProviderConfig {
   return {
@@ -24,13 +22,8 @@ function createConfig(discord?: Partial<NonNullable<ProviderConfig["discord"]>>)
   };
 }
 
-afterEach(() => {
-  fetchMock.mockReset();
-  vi.unstubAllGlobals();
-});
-
 describe("discord provider default runtime", () => {
-  it("builds built-in discord adapter config from provider settings", async () => {
+  it("builds optional discord metadata from provider settings", async () => {
     const config = createConfig({
       applicationId: "123456789012345678",
       botToken: "discord-token",
@@ -47,7 +40,7 @@ describe("discord provider default runtime", () => {
     });
   });
 
-  it("falls back to env-based config", async () => {
+  it("falls back to env-based optional metadata", async () => {
     const config = createConfig();
 
     await expect(
@@ -64,39 +57,7 @@ describe("discord provider default runtime", () => {
     });
   });
 
-  it("auto-discovers missing Discord metadata from the bot token", async () => {
-    const config = createConfig();
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: "999999999999999999",
-          verify_key: "c".repeat(64),
-        }),
-        { status: 200 },
-      ),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      resolveDiscordAdapterConfig(config, "crabline", {
-        DISCORD_APPLICATION_ID: undefined,
-        DISCORD_BOT_TOKEN: "env-token",
-        DISCORD_PUBLIC_KEY: undefined,
-      }),
-    ).resolves.toEqual({
-      applicationId: "999999999999999999",
-      botToken: "env-token",
-      publicKey: "c".repeat(64),
-      userName: "crabline",
-    });
-    expect(fetchMock).toHaveBeenCalledWith("https://discord.com/api/v10/oauth2/applications/@me", {
-      headers: {
-        Authorization: "Bot env-token",
-      },
-    });
-  });
-
-  it("fails fast when the bot token is missing", async () => {
+  it("does not require live Discord credentials for the local mock", async () => {
     const config = createConfig();
 
     await expect(
@@ -105,6 +66,8 @@ describe("discord provider default runtime", () => {
         DISCORD_BOT_TOKEN: undefined,
         DISCORD_PUBLIC_KEY: undefined,
       }),
-    ).rejects.toThrow(/bot token is required/u);
+    ).resolves.toEqual({
+      userName: "crabline",
+    });
   });
 });

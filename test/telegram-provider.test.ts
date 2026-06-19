@@ -1,5 +1,5 @@
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   resolveTelegramAdapterConfig,
   TelegramProviderAdapter,
@@ -7,22 +7,6 @@ import {
 import type { ProviderConfig } from "../src/config/schema.js";
 import type { ProviderContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
-
-type FakeInboundPayload = {
-  authorIsBot?: boolean;
-  id: string;
-  text: string;
-  threadId: string;
-};
-
-type FakeMessage = {
-  author: { isBot: boolean };
-  id: string;
-  metadata: { dateSent: Date };
-  raw: Record<string, never>;
-  text: string;
-  threadId: string;
-};
 
 const directories: string[] = [];
 const providers: TelegramProviderAdapter[] = [];
@@ -43,7 +27,6 @@ async function createTelegramConfig(port: number): Promise<ProviderConfig> {
     platform: "telegram",
     status: "active",
     telegram: {
-      botToken: "telegram-token",
       mode: "webhook",
       recorder: { path: path.join(directory, "telegram.jsonl") },
       webhook: {
@@ -52,100 +35,6 @@ async function createTelegramConfig(port: number): Promise<ProviderConfig> {
         port,
       },
     },
-  };
-}
-
-function createFakeTelegramRuntime() {
-  const directHandlers: Array<
-    (thread: { id: string }, message: FakeMessage) => Promise<void> | void
-  > = [];
-  const mentionHandlers: typeof directHandlers = [];
-  const messageHandlers: typeof directHandlers = [];
-  const subscribedHandlers: typeof directHandlers = [];
-  const subscriptions = new Set<string>();
-
-  const adapter = {
-    fetchChannelInfo: vi.fn(async (channelId: string) => ({ id: channelId })),
-    openDM: vi.fn(async (userId: string) => `telegram:${userId}`),
-    postMessage: vi.fn(async (threadId: string, _text: string) => ({
-      id: "telegram-sent",
-      threadId,
-    })),
-    stopPolling: vi.fn(async () => {}),
-  };
-
-  const chat = {
-    getState() {
-      return {
-        subscribe: vi.fn(async (threadId: string) => {
-          subscriptions.add(threadId);
-        }),
-      };
-    },
-    initialize: vi.fn(async () => {}),
-    onDirectMessage(
-      handler: (thread: { id: string }, message: FakeMessage) => Promise<void> | void,
-    ) {
-      directHandlers.push(handler);
-    },
-    onNewMention(handler: (thread: { id: string }, message: FakeMessage) => Promise<void> | void) {
-      mentionHandlers.push(handler);
-    },
-    onNewMessage(
-      _pattern: RegExp,
-      handler: (thread: { id: string }, message: FakeMessage) => Promise<void> | void,
-    ) {
-      messageHandlers.push(handler);
-    },
-    onSubscribedMessage(
-      handler: (thread: { id: string }, message: FakeMessage) => Promise<void> | void,
-    ) {
-      subscribedHandlers.push(handler);
-    },
-    webhooks: {
-      telegram: vi.fn(async (request: Request) => {
-        const payload = (await request.json()) as {
-          kind?: "direct" | "mention" | "message" | "subscribed";
-          message: FakeInboundPayload;
-        };
-        const handlersByKind = {
-          direct: directHandlers,
-          mention: mentionHandlers,
-          message: messageHandlers,
-          subscribed: subscribedHandlers,
-        } as const;
-
-        const kind = payload.kind ?? "subscribed";
-        const message = createFakeMessage(payload.message);
-        const thread = { id: message.threadId };
-        for (const handler of handlersByKind[kind]) {
-          await handler(thread, message);
-        }
-
-        return new Response("ok");
-      }),
-    },
-  };
-
-  return {
-    adapter,
-    chat,
-    runtime: {
-      createAdapter: () => adapter,
-      createChat: () => chat,
-    },
-    subscriptions,
-  };
-}
-
-function createFakeMessage(payload: FakeInboundPayload): FakeMessage {
-  return {
-    author: { isBot: payload.authorIsBot ?? true },
-    id: payload.id,
-    metadata: { dateSent: new Date() },
-    raw: {},
-    text: payload.text,
-    threadId: payload.threadId,
   };
 }
 
@@ -173,7 +62,7 @@ function createContext(config: ProviderConfig): ProviderContext {
 }
 
 describe("telegram provider", () => {
-  it("resolves adapter config from provider settings and env", () => {
+  it("resolves local mock config from provider settings and env", () => {
     expect(
       resolveTelegramAdapterConfig(
         {
@@ -183,21 +72,19 @@ describe("telegram provider", () => {
           platform: "telegram",
           status: "active",
           telegram: {
-            botToken: "config-token",
             mode: "polling",
             recorder: {},
             webhook: { host: "127.0.0.1", path: "/telegram/webhook", port: 8790 },
           },
         },
         {
-          TELEGRAM_API_BASE_URL: "https://telegram.example.com",
+          TELEGRAM_API_BASE_URL: "http://127.0.0.1:19090",
           TELEGRAM_BOT_USERNAME: "crabline_bot",
           TELEGRAM_WEBHOOK_SECRET_TOKEN: "secret",
         },
       ),
     ).toMatchObject({
-      apiUrl: "https://telegram.example.com",
-      botToken: "config-token",
+      apiUrl: "http://127.0.0.1:19090",
       mode: "polling",
       secretToken: "secret",
       userName: "crabline_bot",
@@ -205,9 +92,8 @@ describe("telegram provider", () => {
   });
 
   it("normalizes chat and topic targets", async () => {
-    const runtime = createFakeTelegramRuntime();
     const config = await createTelegramConfig(0);
-    const provider = new TelegramProviderAdapter("telegram", config, "crabline", runtime.runtime);
+    const provider = new TelegramProviderAdapter("telegram", config, "crabline");
     providers.push(provider);
 
     expect(provider.normalizeTarget({ id: "-100123", metadata: {} })).toMatchObject({
@@ -226,33 +112,44 @@ describe("telegram provider", () => {
     });
   });
 
-  it("probes and sends through the provider adapter", async () => {
-    const runtime = createFakeTelegramRuntime();
+  it("probes and sends through the local mock service", async () => {
     const config = await createTelegramConfig(0);
-    const provider = new TelegramProviderAdapter("telegram", config, "crabline", runtime.runtime);
+    const provider = new TelegramProviderAdapter("telegram", config, "crabline");
     providers.push(provider);
 
     const probe = await provider.probe(createContext(config));
     expect(probe.healthy).toBe(true);
+    expect(probe.details.join("\n")).toContain("telegram local mock ready");
     expect(probe.details.join("\n")).toContain("webhook endpoint http://127.0.0.1:");
-    expect(runtime.adapter.fetchChannelInfo).toHaveBeenCalledWith("telegram:123456789");
+    expect(probe.details.join("\n")).toContain("channel reachable telegram:123456789");
 
     const result = await provider.send({
       ...createContext(config),
       mode: "roundtrip",
       nonce: "nonce-1",
-      text: "hello",
+      text: "hello nonce-1",
     });
 
+    expect(result.accepted).toBe(true);
     expect(result.threadId).toBe("telegram:123456789");
-    expect(runtime.adapter.postMessage).toHaveBeenCalledWith("telegram:123456789", "hello");
-    expect(runtime.subscriptions.has("telegram:123456789")).toBe(true);
+
+    await expect(
+      provider.waitForInbound({
+        ...createContext(config),
+        nonce: "nonce-1",
+        since: new Date(Date.now() - 1000).toISOString(),
+        threadId: result.threadId,
+        timeoutMs: 500,
+      }),
+    ).resolves.toMatchObject({
+      author: "assistant",
+      text: expect.stringContaining("nonce-1"),
+    });
   });
 
   it("records webhook inbound events", async () => {
-    const runtime = createFakeTelegramRuntime();
     const config = await createTelegramConfig(0);
-    const provider = new TelegramProviderAdapter("telegram", config, "crabline", runtime.runtime);
+    const provider = new TelegramProviderAdapter("telegram", config, "crabline");
     providers.push(provider);
 
     const probe = await provider.probe(createContext(config));
@@ -267,7 +164,7 @@ describe("telegram provider", () => {
       timeoutMs: 500,
     });
 
-    await fetch(endpoint!.replace("webhook endpoint ", ""), {
+    const response = await fetch(endpoint!.replace("webhook endpoint ", ""), {
       body: JSON.stringify({
         message: {
           id: "evt-1",
@@ -279,9 +176,29 @@ describe("telegram provider", () => {
       method: "POST",
     });
 
+    expect(response.status).toBe(200);
     await expect(waitPromise).resolves.toMatchObject({
       id: "evt-1",
       text: "ACK nonce-2",
     });
+  });
+
+  it("returns channel-like webhook errors for malformed inbound events", async () => {
+    const config = await createTelegramConfig(0);
+    const provider = new TelegramProviderAdapter("telegram", config, "crabline");
+    providers.push(provider);
+
+    const probe = await provider.probe(createContext(config));
+    const endpoint = probe.details.find((detail) => detail.startsWith("webhook endpoint "));
+    expect(endpoint).toBeDefined();
+
+    const response = await fetch(endpoint!.replace("webhook endpoint ", ""), {
+      body: JSON.stringify({ message: { id: "evt-bad", text: "missing thread" } }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.text()).resolves.toContain("threadId");
   });
 });

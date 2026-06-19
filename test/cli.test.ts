@@ -119,7 +119,7 @@ describe("cli", () => {
     expect(captured.stderr.join("")).toContain("No fixture found");
   });
 
-  it("doctor reports missing slack env", async () => {
+  it("doctor accepts local mock slack without live env", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const configPath = path.join(directory, "crabline.yaml");
@@ -160,12 +160,11 @@ describe("cli", () => {
       }
     }
 
-    expect(exitCode!).toBe(10);
-    expect(captured.stdout.join("")).toContain("missing env SLACK_BOT_TOKEN");
-    expect(captured.stdout.join("")).toContain("missing env SLACK_SIGNING_SECRET");
+    expect(exitCode!).toBe(0);
+    expect(captured.stdout.join("")).toContain("doctor ok");
   });
 
-  it("doctor reports missing discord bot token", async () => {
+  it("doctor accepts local mock discord without live env", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const configPath = path.join(directory, "crabline.yaml");
@@ -213,11 +212,11 @@ describe("cli", () => {
       }
     }
 
-    expect(exitCode!).toBe(10);
-    expect(captured.stdout.join("")).toContain("missing discord.botToken or DISCORD_BOT_TOKEN");
+    expect(exitCode!).toBe(0);
+    expect(captured.stdout.join("")).toContain("doctor ok");
   });
 
-  it("doctor reports missing telegram and whatsapp env", async () => {
+  it("doctor accepts local mock telegram and whatsapp without live env", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const configPath = path.join(directory, "crabline.yaml");
@@ -274,17 +273,7 @@ describe("cli", () => {
       }
     }
 
-    expect(exitCode!).toBe(10);
-    expect(captured.stdout.join("")).toContain("missing telegram.botToken or TELEGRAM_BOT_TOKEN");
-    expect(captured.stdout.join("")).toContain(
-      "missing whatsapp.accessToken or WHATSAPP_ACCESS_TOKEN",
-    );
-    expect(captured.stdout.join("")).toContain("missing whatsapp.appSecret or WHATSAPP_APP_SECRET");
-    expect(captured.stdout.join("")).toContain(
-      "missing whatsapp.phoneNumberId or WHATSAPP_PHONE_NUMBER_ID",
-    );
-    expect(captured.stdout.join("")).toContain(
-      "missing whatsapp.verifyToken or WHATSAPP_VERIFY_TOKEN",
-    );
+    expect(exitCode!).toBe(0);
+    expect(captured.stdout.join("")).toContain("doctor ok");
   });
 });

@@ -1,14 +1,12 @@
 # Channel Setup
 
-This document is the operator checklist for every channel Crabline can exercise.
-Keep it in sync with `src/config/schema.ts`, `src/providers/catalog.ts`,
-`fixtures/examples/crabline.example.yaml`, and
-`fixtures/examples/openclaw-bridge.yaml`.
+Crabline is a local mock service for OpenClaw channel contracts. It does not
+connect to Slack, Discord, Telegram, WhatsApp, Matrix, iMessage, or any other
+live chat service, and it does not depend on chat provider SDK packages.
 
-Crabline does not require a Vercel account. Chat SDK is a TypeScript library;
-built-in adapters read platform credentials from config or environment variables.
-For smoke CI, put secrets in the CI secret store and reference them through
-provider `env` arrays. Do not commit credentials in fixtures.
+Live channel testing belongs in OpenClaw's live channel adapters. Crabline
+belongs in deterministic smoke CI and local QA where the test needs
+channel-shaped behavior without external services.
 
 ## Provider Shape
 
@@ -28,948 +26,123 @@ fixtures:
     provider: telegram
 ```
 
-Built-in adapters infer `platform` from `adapter`. `platform` is required only for
-`adapter: script`, where Crabline needs to know which OpenClaw channel the bridge
-profile exercises.
+Built-in adapters infer `platform` from `adapter`. `platform` is required only
+for `adapter: script`, where Crabline needs to know which OpenClaw channel the
+bridge profile represents.
 
-## Smoke CI Profiles
+## Built-In Local Mocks
 
-Recommended initial smoke order:
+| Adapter      | Default Webhook Path    | Default Port |
+| ------------ | ----------------------- | ------------ |
+| `discord`    | `/discord/interactions` | `8788`       |
+| `feishu`     | `/feishu/webhook`       | `8795`       |
+| `googlechat` | `/googlechat/webhook`   | `8792`       |
+| `imessage`   | `/imessage/webhook`     | `8796`       |
+| `matrix`     | `/matrix/webhook`       | `8797`       |
+| `mattermost` | `/mattermost/webhook`   | `8793`       |
+| `msteams`    | `/msteams/webhook`      | `8791`       |
+| `slack`      | `/slack/events`         | `8787`       |
+| `telegram`   | `/telegram/webhook`     | `8790`       |
+| `whatsapp`   | `/whatsapp/webhook`     | `8789`       |
+| `zalo`       | `/zalo/webhook`         | `8794`       |
 
-1. `loopback`: no external dependencies.
-2. `telegram` with polling mode: easiest live messaging smoke because it does
-   not require a public webhook URL.
-3. `slack`, `discord`, `matrix`, `imessage`, `feishu`, `googlechat`,
-   `mattermost`, `msteams`, or `zalo`: depends on which shared test
-   workspace/account OpenClaw already maintains.
-4. `whatsapp`: needs a Meta app, a registered WhatsApp Business phone number,
-   public webhook reachability, and a live recipient inside WhatsApp's messaging
-   rules.
-5. `script` bridge profiles: use OpenClaw's own channel credentials and bridge
-   commands.
+`loopback` has no externally meaningful webhook surface and is primarily useful
+for local direct adapter checks.
 
-## Built-In Providers
-
-### Loopback
-
-Use for local development and deterministic contract tests.
-
-Required secrets: none.
-
-Provider:
+## Mock Config
 
 ```yaml
 providers:
-  local:
-    adapter: loopback
-```
-
-Smoke fixture target:
-
-```yaml
-target:
-  id: echo-bot
-  behavior: echo
-```
-
-### Slack
-
-Backed by `@chat-adapter/slack`.
-
-Required secrets:
-
-- `SLACK_BOT_TOKEN`
-- `SLACK_SIGNING_SECRET`
-
-External setup:
-
-1. Create or reuse a Slack app in the smoke workspace.
-2. Install the app to the workspace and grant bot scopes needed by the smoke
-   fixture target.
-3. Configure Slack Events to send to the public Crabline/OpenClaw webhook URL
-   ending in the provider webhook path, usually `/slack/events`.
-4. Subscribe to message events needed by the smoke fixture.
-5. Invite the bot to the target channel, or use a dedicated test DM target.
-
-Provider:
-
-```yaml
-providers:
-  slack-smoke:
+  slack:
     adapter: slack
-    env:
-      - SLACK_BOT_TOKEN
-      - SLACK_SIGNING_SECRET
     slack:
+      recorder:
+        path: ./.crabline/recorders/slack.jsonl
       webhook:
-        publicUrl: https://example.ngrok.app/slack/events
+        host: 127.0.0.1
+        port: 8787
+        path: /slack/events
 ```
 
-Target notes:
+Provider credential fields such as `botToken`, `accessToken`, `baseURL`, or
+`serverUrl` are optional mock metadata. They are not required for local mock
+execution.
 
-- Raw channel ids are accepted, for example `C0123456789`.
-- Encoded ids are also accepted, for example `slack:C0123456789`.
-- For thread replies, set `target.channelId` and `target.threadId`.
+## Webhook Payload
 
-### Discord
+All mock webhooks accept the same simple JSON shape:
 
-Backed by `@chat-adapter/discord`.
-
-Required secrets:
-
-- `DISCORD_BOT_TOKEN`
-
-Optional config or env:
-
-- `DISCORD_APPLICATION_ID`
-- `DISCORD_PUBLIC_KEY`
-
-When application id or public key are omitted, Crabline resolves them from the
-bot token.
-
-External setup:
-
-1. Create or reuse a Discord application and bot.
-2. Install the bot into the smoke guild with permissions to read and send in the
-   target channel.
-3. For webhook delivery, configure the Discord interactions endpoint to the
-   public Crabline/OpenClaw URL ending in `/discord/interactions`.
-4. Keep a stable guild id and channel id for smoke fixtures.
-
-Provider:
-
-```yaml
-providers:
-  discord-smoke:
-    adapter: discord
-    env:
-      - DISCORD_BOT_TOKEN
-    discord:
-      webhook:
-        publicUrl: https://example.ngrok.app/discord/interactions
+```json
+{
+  "id": "inbound-1",
+  "threadId": "slack:C1234567890",
+  "text": "reply nonce-123",
+  "author": "assistant"
+}
 ```
 
-Target notes:
+The nested form is also accepted:
 
-- Guild channels need `target.metadata.guildId`.
-- Quote Discord snowflakes in YAML so they stay strings.
-- DMs omit `target.metadata.guildId`; `target.id` is treated as a user id.
-
-### Telegram
-
-Backed by `@chat-adapter/telegram`.
-
-Required secrets:
-
-- `TELEGRAM_BOT_TOKEN`
-
-Optional env:
-
-- `TELEGRAM_WEBHOOK_SECRET_TOKEN`
-- `TELEGRAM_BOT_USERNAME`
-- `TELEGRAM_API_BASE_URL`
-
-External setup:
-
-1. Create a bot with Telegram BotFather and store the bot token in
-   `TELEGRAM_BOT_TOKEN`.
-2. Have the dedicated smoke user send the bot an initial message so the bot can
-   message that user.
-3. Record the target user/chat id for the smoke fixture.
-4. For CI polling mode, set `telegram.mode: polling` and do not configure a
-   webhook.
-5. For webhook mode, expose a public HTTPS URL ending in `/telegram/webhook` and
-   set the bot webhook with the same secret token stored in
-   `TELEGRAM_WEBHOOK_SECRET_TOKEN`.
-
-Provider for first smoke CI:
-
-```yaml
-providers:
-  telegram:
-    adapter: telegram
-    env:
-      - TELEGRAM_BOT_TOKEN
-    telegram:
-      mode: polling
+```json
+{
+  "message": {
+    "id": "inbound-1",
+    "threadId": "slack:C1234567890",
+    "text": "reply nonce-123"
+  }
+}
 ```
 
-For disposable CI bots where the smoke job should ignore any Telegram updates
-queued before the run starts, enable pending-update cleanup:
+Missing `threadId` or `text` returns `400`. Non-JSON requests return `415`.
 
-```yaml
-providers:
-  telegram:
-    adapter: telegram
-    env:
-      - TELEGRAM_BOT_TOKEN
-    telegram:
-      mode: polling
-      longPolling:
-        deleteWebhook: true
-        dropPendingUpdates: true
-```
+## Target Encoding
 
-Provider for webhook smoke:
-
-```yaml
-providers:
-  telegram:
-    adapter: telegram
-    env:
-      - TELEGRAM_BOT_TOKEN
-      - TELEGRAM_WEBHOOK_SECRET_TOKEN
-    telegram:
-      mode: webhook
-      webhook:
-        publicUrl: https://example.ngrok.app/telegram/webhook
-```
-
-Target notes:
-
-- Raw `target.id` is encoded as `telegram:{chatId}`.
-- Topics use `target.channelId` plus `target.threadId`, encoded as
-  `telegram:{chatId}:{messageThreadId}`.
-- Do not use another Telegram bot as the reply side; Telegram bots do not
-  receive messages from other bots.
-
-### WhatsApp
-
-Backed by `@chat-adapter/whatsapp` for WhatsApp Business Cloud API.
-
-Required secrets:
-
-- `WHATSAPP_ACCESS_TOKEN`
-- `WHATSAPP_APP_SECRET`
-- `WHATSAPP_PHONE_NUMBER_ID`
-- `WHATSAPP_VERIFY_TOKEN`
-
-Optional env:
-
-- `WHATSAPP_BOT_USERNAME`
-- `WHATSAPP_API_URL`
-
-External setup:
-
-1. Create or reuse a Meta app with the WhatsApp product enabled.
-2. Register or select the WhatsApp Business phone number for smoke tests.
-3. Store the phone number id in `WHATSAPP_PHONE_NUMBER_ID`.
-4. Generate a long-lived/system-user access token for CI and store it in
-   `WHATSAPP_ACCESS_TOKEN`.
-5. Store the Meta app secret in `WHATSAPP_APP_SECRET`.
-6. Choose a webhook verify token and store the same value in
-   `WHATSAPP_VERIFY_TOKEN`.
-7. Configure the Meta WhatsApp webhook callback URL to the public
-   Crabline/OpenClaw URL ending in `/whatsapp/webhook`.
-8. Subscribe the webhook to message events.
-9. Keep a dedicated recipient phone number for smoke tests and make sure the
-   test conversation is inside WhatsApp's allowed messaging window, or add a
-   future template-message path before attempting business-initiated smoke
-   sends.
-
-Provider:
-
-```yaml
-providers:
-  whatsapp:
-    adapter: whatsapp
-    env:
-      - WHATSAPP_ACCESS_TOKEN
-      - WHATSAPP_APP_SECRET
-      - WHATSAPP_PHONE_NUMBER_ID
-      - WHATSAPP_VERIFY_TOKEN
-    whatsapp:
-      webhook:
-        publicUrl: https://example.ngrok.app/whatsapp/webhook
-```
-
-Target notes:
-
-- Raw `target.id` is the recipient WhatsApp id / phone number.
-- Raw targets are encoded as `whatsapp:{phoneNumberId}:{userWaId}`.
-- WhatsApp Cloud API does not provide normal message history, so smoke tests
-  should rely on webhook delivery and the recorder.
-
-### Microsoft Teams
-
-Backed by `@chat-adapter/teams`.
-
-Required secrets:
-
-- `TEAMS_APP_ID`
-- `TEAMS_APP_PASSWORD`
-
-Alternative auth:
-
-- `TEAMS_FEDERATED_CLIENT_ID`
-- `TEAMS_FEDERATED_CLIENT_AUDIENCE`
-
-Optional env:
-
-- `TEAMS_APP_TENANT_ID`
-- `TEAMS_APP_TYPE`
-- `TEAMS_API_URL`
-- `TEAMS_BOT_USERNAME`
-
-External setup:
-
-1. Create or reuse a Microsoft Teams bot registration.
-2. Store the app id and app password, or configure workload identity federation.
-3. Configure the bot messaging endpoint to the public Crabline/OpenClaw URL
-   ending in `/msteams/webhook`.
-4. Install the bot into the dedicated smoke team/chat.
-5. Record the Teams conversation id and service URL for the smoke fixture, or
-   store the fully encoded `teams:` Chat SDK thread id.
-
-Provider:
-
-```yaml
-providers:
-  msteams:
-    adapter: msteams
-    env:
-      - TEAMS_APP_ID
-      - TEAMS_APP_PASSWORD
-    msteams:
-      webhook:
-        publicUrl: https://example.ngrok.app/msteams/webhook
-```
-
-Target notes:
-
-- Encoded `teams:` ids are accepted as `target.id`, `target.channelId`, or
-  `target.threadId`.
-- Raw Teams conversation ids require `target.metadata.serviceUrl`.
-- Thread replies use `target.threadId`; Crabline appends it to the raw
-  conversation id before encoding the SDK thread id.
-- User DMs use `target.id` as the Teams user id when no conversation id or
-  service URL is provided.
-
-### Google Chat
-
-Backed by `@chat-adapter/gchat`.
-
-Required auth config or env:
-
-- `googlechat.credentials` or `GOOGLE_CHAT_CREDENTIALS`
-- or `googlechat.useApplicationDefaultCredentials: true` /
-  `GOOGLE_CHAT_USE_ADC=true`
-
-Required webhook verification config:
-
-- `googlechat.googleChatProjectNumber`
-- or `googlechat.pubsubAudience`
-- or `googlechat.disableSignatureVerification: true` for local development
-
-Optional env:
-
-- `GOOGLE_CHAT_API_URL`
-- `GOOGLE_CHAT_BOT_USERNAME`
-- `GOOGLE_CHAT_ENDPOINT_URL`
-- `GOOGLE_CHAT_IMPERSONATE_USER`
-- `GOOGLE_CHAT_PROJECT_NUMBER`
-- `GOOGLE_CHAT_PUBSUB_AUDIENCE`
-- `GOOGLE_CHAT_PUBSUB_TOPIC`
-
-External setup:
-
-1. Create or reuse a Google Chat app in the smoke Google Cloud project.
-2. Enable the Google Chat API.
-3. Configure a service account credential or Application Default Credentials
-   for the smoke runner.
-4. Configure the HTTP endpoint to the public Crabline/OpenClaw URL ending in
-   `/googlechat/webhook`.
-5. Configure webhook verification through project-number JWT verification,
-   Pub/Sub audience verification, or local-only signature verification disable.
-6. Add the app to the dedicated smoke space and record its `spaces/...` id.
-
-Provider:
-
-```yaml
-providers:
-  googlechat:
-    adapter: googlechat
-    env:
-      - GOOGLE_CHAT_CREDENTIALS
-    googlechat:
-      googleChatProjectNumber: "1234567890"
-      webhook:
-        publicUrl: https://example.ngrok.app/googlechat/webhook
-```
-
-Target notes:
-
-- Raw space ids are accepted, for example `spaces/AAAA1234567`.
-- Encoded ids are also accepted, for example `gchat:spaces/AAAA1234567`.
-- Thread replies use `target.channelId` plus `target.threadId`; raw thread names
-  are base64url encoded into the Chat SDK thread id.
-
-### Feishu
-
-Backed by `@larksuite/vercel-chat-adapter`.
-
-Required secrets:
-
-- `FEISHU_APP_ID`
-- `FEISHU_APP_SECRET`
-
-Lark env aliases are also accepted:
-
-- `LARK_APP_ID`
-- `LARK_APP_SECRET`
-
-Optional env:
-
-- `FEISHU_BOT_USERNAME`
-- `LARK_BOT_USERNAME`
-
-External setup:
-
-1. Create or reuse a Feishu/Lark app with bot permissions.
-2. Store the app id and app secret in CI secrets.
-3. Enable the app's WebSocket event delivery for the bot.
-4. Add the bot to the dedicated smoke chat.
-5. Record the `oc_*` chat id, or the `ou_*` user open id for DM smoke.
-
-Provider:
-
-```yaml
-providers:
-  feishu:
-    adapter: feishu
-    env:
-      - FEISHU_APP_ID
-      - FEISHU_APP_SECRET
-```
-
-Target notes:
-
-- Encoded `lark:{chatId}:{rootId}` ids are accepted.
-- Raw `oc_*` chat ids are encoded as `lark:{chatId}:`.
-- Raw `ou_*` user ids are treated as DM targets.
-- Thread replies use `target.channelId` plus `target.threadId`.
-
-### Mattermost
-
-Backed by `chat-adapter-mattermost`.
-
-Required config or env:
-
-- `mattermost.baseUrl` or `MATTERMOST_BASE_URL`
-- `mattermost.botToken` or `MATTERMOST_BOT_TOKEN`
-
-Optional env:
-
-- `MATTERMOST_BOT_USERNAME`
-- `MATTERMOST_CALLBACK_URL`
-
-External setup:
-
-1. Create or reuse a Mattermost bot account and personal access token.
-2. Invite the bot to the dedicated smoke channel.
-3. Store the Mattermost base URL and bot token in CI secrets.
-4. For interactive action callbacks, configure a public callback URL ending in
-   `/mattermost/webhook`.
-5. Record a stable channel id or user id for the smoke fixture.
-
-Provider:
-
-```yaml
-providers:
-  mattermost:
-    adapter: mattermost
-    env:
-      - MATTERMOST_BASE_URL
-      - MATTERMOST_BOT_TOKEN
-    mattermost:
-      webhook:
-        publicUrl: https://example.ngrok.app/mattermost/webhook
-```
-
-Target notes:
-
-- Raw channel ids are encoded as `mattermost:{base64urlChannelId}`.
-- Thread replies use `target.channelId` plus `target.threadId`, encoded as
-  `mattermost:{base64urlChannelId}:{base64urlRootPostId}`.
-- User DMs use `target.metadata.targetType: user`.
-- Mattermost inbound message smoke uses the adapter WebSocket and local recorder;
-  the webhook endpoint is for interactive callbacks.
-
-### Zalo
-
-Backed by `chat-adapter-zalo` for the Zalo Bot Platform.
-
-Required secrets:
-
-- `ZALO_BOT_TOKEN`
-- `ZALO_WEBHOOK_SECRET`
-
-Optional env:
-
-- `ZALO_BOT_USERNAME`
-
-External setup:
-
-1. Create or reuse a Zalo bot.
-2. Store the bot token and webhook secret in CI secrets.
-3. Configure the Zalo webhook callback URL to the public Crabline/OpenClaw URL
-   ending in `/zalo/webhook`.
-4. Keep a dedicated private or group chat id for smoke fixtures.
-
-Provider:
-
-```yaml
-providers:
-  zalo:
-    adapter: zalo
-    env:
-      - ZALO_BOT_TOKEN
-      - ZALO_WEBHOOK_SECRET
-    zalo:
-      webhook:
-        publicUrl: https://example.ngrok.app/zalo/webhook
-```
-
-Target notes:
-
-- Raw `target.id` is encoded as `zalo:{chatId}`.
-- Zalo has no native thread concept, so channel and thread ids are the same.
-
-### Matrix
-
-Backed by `@beeper/chat-adapter-matrix`.
-
-Required config or env:
-
-- `matrix.baseURL` or `MATRIX_BASE_URL`
-- `matrix.auth.accessToken` or `MATRIX_ACCESS_TOKEN`
-
-Alternative auth env:
-
-- `MATRIX_USERNAME`
-- `MATRIX_PASSWORD`
-
-Optional env:
-
-- `MATRIX_USER_ID`
-- `MATRIX_RECOVERY_KEY`
-
-External setup:
-
-1. Create or reuse a Matrix/Beeper bot account.
-2. Join the bot to the smoke room.
-3. Store base URL and auth in CI secrets.
-4. Record the target room id.
-
-Provider:
-
-```yaml
-providers:
-  matrix-smoke:
-    adapter: matrix
-    env:
-      - MATRIX_BASE_URL
-      - MATRIX_ACCESS_TOKEN
-    matrix:
-      baseURL: https://matrix.example.com
-```
-
-Target notes:
-
-- Room ids can be raw, for example `!room:example.com`.
-- Crabline encodes raw room ids into Chat SDK Matrix ids.
-
-### iMessage
-
-Backed by `chat-adapter-imessage`.
-
-Local mode:
-
-- No Crabline env is required when `imessage.local` is true or omitted and the
-  local adapter runtime is available.
-
-Remote gateway mode secrets:
-
-- `IMESSAGE_SERVER_URL`
-- `IMESSAGE_API_KEY`
-
-Optional env:
-
-- `IMESSAGE_LOCAL=false` to force remote gateway mode.
-
-External setup:
-
-1. Choose local adapter mode or a remote iMessage gateway.
-2. For remote gateway mode, store server URL and API key in CI secrets.
-3. Record a stable chat guid or target id for the smoke fixture.
-
-Provider:
-
-```yaml
-providers:
-  imessage-smoke:
-    adapter: imessage
-    env:
-      - IMESSAGE_SERVER_URL
-      - IMESSAGE_API_KEY
-    imessage:
-      local: false
-      serverUrl: https://imessage-gateway.example.com
-```
-
-## Script Bridge Providers
-
-Script bridge providers exercise OpenClaw channels through external
-commands instead of built-in providers. Crabline only needs OpenClaw bridge
-credentials; per-channel secrets live in OpenClaw or that channel's OpenClaw
-plugin configuration.
-
-Required secrets for all script bridge profiles:
-
-- `OPENCLAW_URL`
-- `OPENCLAW_TOKEN`
-
-Required provider fields:
-
-- `adapter: script`
-- `platform: <channel id>`
-- `script.commands.send`
-- `script.commands.waitForInbound`
-
-Optional commands:
-
-- `script.commands.probe`
-- `script.commands.watch`
-
-Shared provider template:
-
-```yaml
-x-openclaw-bridge: &openclaw-bridge
-  adapter: script
-  env:
-    - OPENCLAW_URL
-    - OPENCLAW_TOKEN
-  script:
-    commands:
-      probe: node ./scripts/openclaw-bridge-probe.mjs
-      send: node ./scripts/openclaw-bridge-send.mjs
-      waitForInbound: node ./scripts/openclaw-bridge-wait.mjs
-      watch: node ./scripts/openclaw-bridge-watch.mjs
-```
-
-For bridge smoke, `platform` is routing metadata passed to the bridge command.
-It must match an OpenClaw channel id. Bridge platform ids are
-`bluebubbles`, `discord`, `feishu`, `googlechat`, `imessage`, `irc`, `line`,
-`matrix`, `mattermost`, `msteams`, `nextcloudtalk`, `nostr`, `signal`, `slack`,
-`synologychat`, `telegram`, `tlon`, `twitch`, `webchat`, `whatsapp`, `zalo`,
-and `zalouser`.
-
-Telegram, WhatsApp, Feishu, Mattermost, Microsoft Teams, Google Chat, and Zalo
-can also be exercised through script bridge profiles when the smoke goal is full
-OpenClaw channel routing rather than built-in adapter behavior. In that case,
-use the matching `platform` value with the shared OpenClaw bridge secrets above.
-
-### OpenClaw E2E Smoke CI
-
-For OpenClaw E2E, Crabline can be wired in two ways:
-
-1. Direct external-channel driver: a built-in Crabline adapter acts as the outside
-   test identity on the real platform and sends messages to the OpenClaw bot or
-   channel. This does not need an OpenClaw bridge, but it is only viable when
-   the platform allows that test identity to talk to the OpenClaw SUT and observe
-   replies.
-2. OpenClaw QA bridge: a script provider delegates send/wait/probe to
-   OpenClaw's own QA harness. This is the preferred path when the smoke run
-   should use OpenClaw-owned credentials, OpenClaw private QA setup, or a channel
-   topology that Crabline cannot drive directly.
-
-The bridge path runs Crabline as a client against an already configured OpenClaw
-smoke environment:
-
-1. OpenClaw owns the real channel credentials and target-channel setup.
-2. CI provides Crabline only `OPENCLAW_URL` and `OPENCLAW_TOKEN`.
-3. The Crabline config contains one `adapter: script` provider per OpenClaw
-   channel being exercised.
-4. The bridge command maps Crabline's script payloads onto OpenClaw QA
-   operations.
-5. The job selects concrete fixture ids with `crabline run`.
-
-OpenClaw already has a private QA stack for deterministic `qa-channel` scenarios
-and live transport lanes such as Telegram, WhatsApp, Slack, and Discord. The
-missing Crabline-specific piece is a small command/API wrapper that implements
-Crabline's script adapter contract on top of that QA stack. That wrapper should
-live with OpenClaw QA code because it knows OpenClaw's private QA CLI/API
-surface.
-
-`fixtures/examples/openclaw-bridge.yaml` is a catalog template. Do not run it
-as-is in CI because its targets are placeholders. Use a private/generated smoke
-config with stable test targets:
-
-```yaml
-configVersion: 1
-userName: crabline
-
-x-openclaw-bridge: &openclaw-bridge
-  adapter: script
-  env:
-    - OPENCLAW_URL
-    - OPENCLAW_TOKEN
-  script:
-    commands:
-      probe: node ./scripts/openclaw-bridge-probe.mjs
-      send: node ./scripts/openclaw-bridge-send.mjs
-      waitForInbound: node ./scripts/openclaw-bridge-wait.mjs
-
-providers:
-  telegram-openclaw:
-    <<: *openclaw-bridge
-    platform: telegram
-  whatsapp-openclaw:
-    <<: *openclaw-bridge
-    platform: whatsapp
-
-fixtures:
-  - id: telegram-openclaw-roundtrip
-    provider: telegram-openclaw
-    mode: roundtrip
-    target:
-      id: "123456789"
-    inboundMatch:
-      nonce: contains
-
-  - id: whatsapp-openclaw-roundtrip
-    provider: whatsapp-openclaw
-    mode: roundtrip
-    target:
-      id: "15551234567"
-    inboundMatch:
-      nonce: contains
-```
-
-Minimal job shape:
-
-```bash
-pnpm install --frozen-lockfile
-pnpm build
-rm -rf .crabline/recorders
-pnpm dev doctor --config crabline.smoke.yaml
-pnpm dev run telegram-openclaw-roundtrip whatsapp-openclaw-roundtrip --config crabline.smoke.yaml
-```
-
-Crabline does not interpolate environment variables inside YAML today. If target
-ids should not live in the repository, generate `crabline.smoke.yaml` in CI from
-the CI secret store or fetch it from the same private place that owns the smoke
-OpenClaw deployment.
-
-Literal GitHub Actions setup:
-
-1. Create a GitHub Environment, for example `crabline-smoke`.
-2. Add environment secrets:
-   - `OPENCLAW_URL`: public or private URL for the OpenClaw smoke bridge.
-   - `OPENCLAW_TOKEN`: token accepted by that bridge.
-3. Add environment variables for non-sensitive target ids, or secrets if the
-   ids should be masked:
-   - `CRABLINE_TELEGRAM_TARGET_ID`
-   - `CRABLINE_WHATSAPP_TARGET_ID`
-   - `CRABLINE_SMOKE_FIXTURES`, for example
-     `telegram-openclaw-roundtrip whatsapp-openclaw-roundtrip`
-4. Make the bridge commands available to the Crabline job. In practice, these
-   should come from the OpenClaw checkout or an installed OpenClaw QA CLI because
-   they wrap OpenClaw's private QA harness. The commands are the only part that
-   knows the actual OpenClaw API surface.
-5. Generate the concrete smoke config inside the workflow and run it.
-
-Example workflow job:
-
-```yaml
-jobs:
-  openclaw-smoke:
-    runs-on: ubuntu-latest
-    environment: crabline-smoke
-    env:
-      OPENCLAW_URL: ${{ secrets.OPENCLAW_URL }}
-      OPENCLAW_TOKEN: ${{ secrets.OPENCLAW_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.32.1
-
-      - uses: actions/setup-node@v4
-        with:
-          cache: pnpm
-          node-version: 22
-
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-
-      - name: Write Crabline smoke config
-        run: |
-          cat > crabline.smoke.yaml <<YAML
-          configVersion: 1
-          userName: crabline
-
-          x-openclaw-bridge: &openclaw-bridge
-            adapter: script
-            env:
-              - OPENCLAW_URL
-              - OPENCLAW_TOKEN
-            script:
-              commands:
-                probe: node ./scripts/openclaw-bridge-probe.mjs
-                send: node ./scripts/openclaw-bridge-send.mjs
-                waitForInbound: node ./scripts/openclaw-bridge-wait.mjs
-
-          providers:
-            telegram-openclaw:
-              <<: *openclaw-bridge
-              platform: telegram
-            whatsapp-openclaw:
-              <<: *openclaw-bridge
-              platform: whatsapp
-
-          fixtures:
-            - id: telegram-openclaw-roundtrip
-              provider: telegram-openclaw
-              mode: roundtrip
-              target:
-                id: "${CRABLINE_TELEGRAM_TARGET_ID}"
-              inboundMatch:
-                nonce: contains
-
-            - id: whatsapp-openclaw-roundtrip
-              provider: whatsapp-openclaw
-              mode: roundtrip
-              target:
-                id: "${CRABLINE_WHATSAPP_TARGET_ID}"
-              inboundMatch:
-                nonce: contains
-          YAML
-        env:
-          CRABLINE_TELEGRAM_TARGET_ID: ${{ vars.CRABLINE_TELEGRAM_TARGET_ID }}
-          CRABLINE_WHATSAPP_TARGET_ID: ${{ vars.CRABLINE_WHATSAPP_TARGET_ID }}
-
-      - run: pnpm dev doctor --config crabline.smoke.yaml
-
-      - run: pnpm dev run $CRABLINE_SMOKE_FIXTURES --config crabline.smoke.yaml
-        env:
-          CRABLINE_SMOKE_FIXTURES: ${{ vars.CRABLINE_SMOKE_FIXTURES }}
-```
-
-If the target ids are stored as GitHub secrets instead of variables, use
-`${{ secrets.CRABLINE_TELEGRAM_TARGET_ID }}` and
-`${{ secrets.CRABLINE_WHATSAPP_TARGET_ID }}` in the config-generation step.
-Do not commit the generated `crabline.smoke.yaml`.
-
-## Session Isolation
-
-Normal `roundtrip` and `agent` runs are isolated from previous sessions by
-default:
-
-- Crabline creates a new nonce for each send attempt.
-- Crabline records `since` immediately before sending and passes it into
-  `waitForInbound`.
-- Built-in recorder-backed providers ignore recorded events whose platform
-  `sentAt` is older than `since`.
-- Fixtures default to `inboundMatch.nonce: contains`, so an old response should
-  not satisfy a new run.
-
-Old sessions can still add noise in these cases:
-
-- `watch` tails the configured recorder and can emit old entries unless the
-  caller supplies a `since` value.
-- Recorder JSONL files accumulate until the operator rotates or deletes them.
-- Telegram polling can have pending updates from before the CI job starts.
-- Webhook providers can receive platform retries from earlier deliveries.
-- Script bridge commands can muddy results if they ignore Crabline's `since`,
-  `threadId`, or nonce inputs.
-
-Recommended CI hygiene:
-
-1. Use dedicated smoke bots/accounts and dedicated target chats or recipients.
-2. Keep the default nonce matcher for live smoke fixtures.
-3. Use a run-scoped recorder path, or delete `.crabline/recorders` before each
-   smoke job.
-4. For Telegram polling profiles where old queued updates are not useful, set
-   `telegram.longPolling.dropPendingUpdates: true`.
-5. Make script bridge `waitForInbound` and `watch` commands filter by `since`,
-   `threadId`, and nonce before returning an event.
-
-## CI Secret Checklist
-
-Minimum built-in smoke set:
+Most local mocks encode raw targets as:
 
 ```text
-TELEGRAM_BOT_TOKEN
+{platform}:{target.id}
 ```
 
-Webhook Telegram smoke adds:
+Thread fixtures encode as:
 
 ```text
-TELEGRAM_WEBHOOK_SECRET_TOKEN
+{platform}:{channelId}:{threadId}
 ```
 
-WhatsApp smoke adds:
+Telegram and Discord keep channel-specific target conventions for the cases QA
+already models:
 
-```text
-WHATSAPP_ACCESS_TOKEN
-WHATSAPP_APP_SECRET
-WHATSAPP_PHONE_NUMBER_ID
-WHATSAPP_VERIFY_TOKEN
+- Telegram topics: `telegram:{chatId}:{messageThreadId}`
+- Discord guild channels: `discord:{guildId}:{channelId}`
+- Discord threads: `discord:{guildId}:{channelId}:{threadId}`
+- Discord DMs: `discord:@me:dm-{target.id}`
+
+## Smoke CI Guidance
+
+For deterministic CI, use Crabline through a mock channel driver:
+
+```yaml
+profile: smoke-ci
+channelDriver: crabline
 ```
 
-Microsoft Teams smoke adds:
+The scenario channel should remain the real channel contract:
 
-```text
-TEAMS_APP_ID
-TEAMS_APP_PASSWORD
+```yaml
+execution:
+  channel: telegram
 ```
 
-Google Chat smoke adds one auth path:
+That means "run Telegram-shaped behavior through the mock Telegram backend."
+It does not mean "connect to live Telegram."
 
-```text
-GOOGLE_CHAT_CREDENTIALS
+For release or live verification, use OpenClaw's live driver:
+
+```yaml
+profile: release
+channelDriver: live
 ```
 
-or:
-
-```text
-GOOGLE_CHAT_USE_ADC
-```
-
-Feishu smoke adds:
-
-```text
-FEISHU_APP_ID
-FEISHU_APP_SECRET
-```
-
-Mattermost smoke adds:
-
-```text
-MATTERMOST_BASE_URL
-MATTERMOST_BOT_TOKEN
-```
-
-Zalo smoke adds:
-
-```text
-ZALO_BOT_TOKEN
-ZALO_WEBHOOK_SECRET
-```
-
-OpenClaw bridge smoke adds:
-
-```text
-OPENCLAW_URL
-OPENCLAW_TOKEN
-```
-
-Run the same checks locally or in CI before enabling a profile:
-
-```bash
-pnpm dev doctor --config fixtures/examples/crabline.example.yaml
-pnpm dev probe <fixture-id> --config fixtures/examples/crabline.example.yaml
-pnpm dev roundtrip <fixture-id> --config fixtures/examples/crabline.example.yaml
-```
+If a live driver does not support a requested channel, the QA run should report
+unsupported coverage. Crabline should not be used as a substitute for live
+transport coverage.
