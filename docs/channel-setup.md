@@ -70,12 +70,14 @@ execution.
 
 ## Webhook Payload
 
-All mock webhooks accept the same simple JSON shape:
+Mock webhooks accept provider-native event payloads where Crabline has a built-in
+adapter for the channel. They also accept this simple JSON shape with native
+thread ids:
 
 ```json
 {
   "id": "inbound-1",
-  "threadId": "slack:C1234567890",
+  "threadId": "C1234567890",
   "text": "reply nonce-123",
   "author": "assistant"
 }
@@ -87,7 +89,7 @@ The nested form is also accepted:
 {
   "message": {
     "id": "inbound-1",
-    "threadId": "slack:C1234567890",
+    "threadId": "C1234567890",
     "text": "reply nonce-123"
   }
 }
@@ -95,27 +97,19 @@ The nested form is also accepted:
 
 Missing `threadId` or `text` returns `400`. Non-JSON requests return `415`.
 
-## Target Encoding
+## Target IDs
 
-Most local mocks encode raw targets as:
+Targets use native channel identifiers. Crabline does not add local prefixes such
+as `telegram:`, `discord:`, or `slack:`.
 
-```text
-{platform}:{target.id}
-```
-
-Thread fixtures encode as:
-
-```text
-{platform}:{channelId}:{threadId}
-```
-
-Telegram and Discord keep channel-specific target conventions for the cases QA
-already models:
-
-- Telegram topics: `telegram:{chatId}:{messageThreadId}`
-- Discord guild channels: `discord:{guildId}:{channelId}`
-- Discord threads: `discord:{guildId}:{channelId}:{threadId}`
-- Discord DMs: `discord:@me:dm-{target.id}`
+- Slack conversations: `C1234567890`, `G1234567890`, or `D1234567890`
+- Slack threads: `1700000000.000100`
+- Telegram chats: `-1001234567890` or `@channelusername`
+- Telegram topics: `42`
+- Discord channels and threads: Discord snowflake ids such as
+  `123456789012345678`
+- Google Chat spaces: `spaces/AAAABbbbCCC`
+- Google Chat threads: `spaces/AAAABbbbCCC/threads/BBBBccccDDD`
 
 ## Smoke CI Guidance
 

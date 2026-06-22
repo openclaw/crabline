@@ -1,7 +1,30 @@
 import path from "node:path";
+import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { createGenericLocalMockTargetCodec, LocalMockProviderAdapter } from "../local-mock.js";
+import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
+import {
+  authorFromBotFlag,
+  createNativeTargetCodec,
+  genericMockPayloadWithNativeThread,
+  isRecord,
+  optionalRecord,
+  optionalString,
+  requireNativeInboundId,
+  type NativeIdRule,
+} from "./native-local-mock.js";
+
+const FEISHU_CHAT_ID_RULE: NativeIdRule = {
+  example: "oc_abc123",
+  name: "Feishu chat_id",
+  pattern: /^oc_[A-Za-z0-9_-]+$/u,
+};
+
+const FEISHU_MESSAGE_ID_RULE: NativeIdRule = {
+  example: "om_abc123",
+  name: "Feishu message_id",
+  pattern: /^om_[A-Za-z0-9_-]+$/u,
+};
 
 export function resolveFeishuAdapterConfig(
   config: ProviderConfig,
@@ -16,12 +39,18 @@ export function resolveFeishuAdapterConfig(
 export class FeishuProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
-      codec: createGenericLocalMockTargetCodec("feishu"),
+      codec: createNativeTargetCodec({
+        channel: FEISHU_CHAT_ID_RULE,
+        channelLabel: "Feishu chat_id",
+        thread: FEISHU_MESSAGE_ID_RULE,
+        threadLabel: "Feishu message_id",
+      }),
       config,
       id,
       options: {
         defaultWebhook: { host: "127.0.0.1", path: "/feishu/webhook", port: 8795 },
         endpointLabel: "webhook endpoint",
+        normalizeWebhookPayload: normalizeFeishuWebhookPayload,
         platform: "feishu",
         publicUrl: config.feishu?.webhook.publicUrl,
         recorderPath: config.feishu?.recorder.path
@@ -31,4 +60,57 @@ export class FeishuProviderAdapter extends LocalMockProviderAdapter implements P
       },
     });
   }
+}
+
+function normalizeFeishuWebhookPayload(payload: unknown) {
+  if (!isRecord(payload)) {
+    throw new CrablineError("Feishu webhook payload must be an object", { kind: "inbound" });
+  }
+
+  const event = optionalRecord(payload, "event");
+  const message = event ? optionalRecord(event, "message") : undefined;
+  if (!message) {
+    return genericMockPayloadWithNativeThread({
+      channelRule: FEISHU_CHAT_ID_RULE,
+      payload,
+      threadRule: FEISHU_MESSAGE_ID_RULE,
+    });
+  }
+
+  const chatId = optionalString(message, "chat_id");
+  const messageId = optionalString(message, "message_id");
+  const rawContent = optionalString(message, "content");
+  const text = parseFeishuText(rawContent);
+  if (!chatId || !text) {
+    throw new CrablineError("Feishu event payload requires message.chat_id and message.content", {
+      kind: "inbound",
+    });
+  }
+
+  return {
+    author: authorFromBotFlag(false),
+    ...(messageId
+      ? { id: requireNativeInboundId(messageId, FEISHU_MESSAGE_ID_RULE, "Feishu message_id") }
+      : {}),
+    raw: payload,
+    text,
+    threadId: messageId
+      ? requireNativeInboundId(messageId, FEISHU_MESSAGE_ID_RULE, "Feishu message_id")
+      : requireNativeInboundId(chatId, FEISHU_CHAT_ID_RULE, "Feishu chat_id"),
+  };
+}
+
+function parseFeishuText(content: string | undefined): string | undefined {
+  if (!content) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (isRecord(parsed) && typeof parsed.text === "string") {
+      return parsed.text;
+    }
+  } catch {
+    return content;
+  }
+  return content;
 }

@@ -97,19 +97,22 @@ describe("telegram provider", () => {
     providers.push(provider);
 
     expect(provider.normalizeTarget({ id: "-100123", metadata: {} })).toMatchObject({
-      channelId: "telegram:-100123",
+      channelId: "-100123",
     });
     expect(
       provider.normalizeTarget({
-        channelId: "telegram:-100123",
+        channelId: "-100123",
         id: "topic",
         metadata: {},
         threadId: "42",
       }),
     ).toMatchObject({
-      channelId: "telegram:-100123",
-      threadId: "telegram:-100123:42",
+      channelId: "-100123",
+      threadId: "42",
     });
+    expect(() => provider.normalizeTarget({ id: "telegram:-100123", metadata: {} })).toThrow(
+      /Telegram chat_id/u,
+    );
   });
 
   it("probes and sends through the local mock service", async () => {
@@ -121,7 +124,7 @@ describe("telegram provider", () => {
     expect(probe.healthy).toBe(true);
     expect(probe.details.join("\n")).toContain("telegram local mock ready");
     expect(probe.details.join("\n")).toContain("webhook endpoint http://127.0.0.1:");
-    expect(probe.details.join("\n")).toContain("channel reachable telegram:123456789");
+    expect(probe.details.join("\n")).toContain("channel reachable 123456789");
 
     const result = await provider.send({
       ...createContext(config),
@@ -131,7 +134,7 @@ describe("telegram provider", () => {
     });
 
     expect(result.accepted).toBe(true);
-    expect(result.threadId).toBe("telegram:123456789");
+    expect(result.threadId).toBe("123456789");
 
     await expect(
       provider.waitForInbound({
@@ -160,17 +163,19 @@ describe("telegram provider", () => {
       ...createContext(config),
       nonce: "nonce-2",
       since: new Date(Date.now() - 1000).toISOString(),
-      threadId: "telegram:123456789",
+      threadId: "123456789",
       timeoutMs: 500,
     });
 
     const response = await fetch(endpoint!.replace("webhook endpoint ", ""), {
       body: JSON.stringify({
         message: {
-          id: "evt-1",
+          chat: { id: 123456789 },
+          from: { is_bot: true },
+          message_id: 1,
           text: "ACK nonce-2",
-          threadId: "telegram:123456789",
         },
+        update_id: 2,
       }),
       headers: { "content-type": "application/json" },
       method: "POST",
@@ -178,7 +183,7 @@ describe("telegram provider", () => {
 
     expect(response.status).toBe(200);
     await expect(waitPromise).resolves.toMatchObject({
-      id: "evt-1",
+      id: "1",
       text: "ACK nonce-2",
     });
   });
@@ -193,12 +198,12 @@ describe("telegram provider", () => {
     expect(endpoint).toBeDefined();
 
     const response = await fetch(endpoint!.replace("webhook endpoint ", ""), {
-      body: JSON.stringify({ message: { id: "evt-bad", text: "missing thread" } }),
+      body: JSON.stringify({ message: { message_id: 1, text: "missing thread" } }),
       headers: { "content-type": "application/json" },
       method: "POST",
     });
 
     expect(response.status).toBe(400);
-    await expect(response.text()).resolves.toContain("threadId");
+    await expect(response.text()).resolves.toContain("message.chat.id");
   });
 });

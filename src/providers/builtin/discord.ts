@@ -1,8 +1,18 @@
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { LocalMockProviderAdapter, type LocalMockTargetCodec } from "../local-mock.js";
-import type { NormalizedTarget, ProviderAdapter, ProviderContext } from "../types.js";
+import { LocalMockProviderAdapter } from "../local-mock.js";
+import type { ProviderAdapter } from "../types.js";
+import {
+  authorFromBotFlag,
+  createNativeTargetCodec,
+  genericMockPayloadWithNativeThread,
+  isRecord,
+  optionalRecord,
+  optionalString,
+  requireNativeInboundId,
+  type NativeIdRule,
+} from "./native-local-mock.js";
 
 type DiscordEnvironment = Partial<
   Pick<NodeJS.ProcessEnv, "DISCORD_APPLICATION_ID" | "DISCORD_BOT_TOKEN" | "DISCORD_PUBLIC_KEY">
@@ -30,30 +40,6 @@ export async function resolveDiscordAdapterConfig(
   };
 }
 
-function isDiscordEncodedId(value: string): boolean {
-  return value.startsWith("discord:");
-}
-
-function normalizeDiscordChannelId(channelId: string, guildId?: string): string {
-  if (isDiscordEncodedId(channelId)) {
-    return channelId.split(":").slice(0, 3).join(":");
-  }
-  if (!guildId) {
-    throw new CrablineError(
-      "Discord guild channels require target.metadata.guildId unless target id is already encoded as discord:guild:channel.",
-      { kind: "config" },
-    );
-  }
-  return `discord:${guildId}:${channelId}`;
-}
-
-function normalizeDiscordThreadId(channelId: string, threadId: string): string {
-  if (isDiscordEncodedId(threadId)) {
-    return threadId;
-  }
-  return `${channelId}:${threadId}`;
-}
-
 function toRecorderPath(providerId: string, config: ProviderConfig): string {
   const configuredPath = config.discord?.recorder.path;
   return configuredPath
@@ -61,51 +47,54 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
     : path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
 }
 
-const DISCORD_CODEC: LocalMockTargetCodec = {
-  normalize(target: ProviderContext["fixture"]["target"]): NormalizedTarget {
-    const normalized: NormalizedTarget = {
-      id: target.id,
-      metadata: target.metadata,
-    };
-
-    if (isDiscordEncodedId(target.id)) {
-      const parts = target.id.split(":");
-      if (parts.length >= 3) {
-        normalized.channelId = parts.slice(0, 3).join(":");
-      }
-      if (parts.length >= 4) {
-        normalized.threadId = target.id;
-      }
-    }
-
-    if (target.channelId) {
-      normalized.channelId = normalizeDiscordChannelId(target.channelId, target.metadata.guildId);
-    } else if (!target.threadId && target.metadata.guildId && !normalized.channelId) {
-      normalized.channelId = normalizeDiscordChannelId(target.id, target.metadata.guildId);
-    }
-
-    if (target.threadId) {
-      if (!normalized.channelId) {
-        normalized.channelId = target.metadata.guildId
-          ? normalizeDiscordChannelId(target.id, target.metadata.guildId)
-          : undefined;
-      }
-      if (!normalized.channelId) {
-        throw new CrablineError(
-          `Discord target "${target.id}" requires target.metadata.guildId or an encoded target.channelId for thread send.`,
-          { kind: "config" },
-        );
-      }
-      normalized.threadId = normalizeDiscordThreadId(normalized.channelId, target.threadId);
-    }
-
-    return normalized;
-  },
-  resolveThreadId(target) {
-    const normalized = this.normalize(target);
-    return normalized.threadId ?? normalized.channelId ?? `discord:@me:dm-${normalized.id}`;
-  },
+const DISCORD_SNOWFLAKE_RULE: NativeIdRule = {
+  example: "123456789012345678",
+  name: "Discord snowflake id",
+  pattern: /^\d{17,20}$/u,
 };
+
+const DISCORD_CODEC = createNativeTargetCodec({
+  channel: DISCORD_SNOWFLAKE_RULE,
+  channelLabel: "Discord channel_id",
+  thread: DISCORD_SNOWFLAKE_RULE,
+  threadLabel: "Discord thread id",
+});
+
+function normalizeDiscordWebhookPayload(payload: unknown) {
+  if (!isRecord(payload)) {
+    throw new CrablineError("Discord webhook payload must be an object", { kind: "inbound" });
+  }
+
+  if (optionalRecord(payload, "message")) {
+    return genericMockPayloadWithNativeThread({
+      channelRule: DISCORD_SNOWFLAKE_RULE,
+      payload,
+      threadRule: DISCORD_SNOWFLAKE_RULE,
+    });
+  }
+
+  const data = optionalRecord(payload, "data");
+  const author = optionalRecord(payload, "author") ?? optionalRecord(payload, "member")?.user;
+  const channelId = optionalString(payload, "channel_id");
+  const text =
+    optionalString(payload, "content") ??
+    (data ? (optionalString(data, "content") ?? optionalString(data, "name")) : undefined);
+  if (!channelId || !text) {
+    throw new CrablineError("Discord event payload requires channel_id and content", {
+      kind: "inbound",
+    });
+  }
+
+  const authorRecord = isRecord(author) ? author : undefined;
+  const threadId = optionalString(payload, "thread_id") ?? channelId;
+  return {
+    author: authorFromBotFlag(authorRecord?.bot === true),
+    ...(optionalString(payload, "id") ? { id: optionalString(payload, "id") } : {}),
+    raw: payload,
+    text,
+    threadId: requireNativeInboundId(threadId, DISCORD_SNOWFLAKE_RULE, "Discord thread_id"),
+  };
+}
 
 export class DiscordProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string) {
@@ -120,6 +109,7 @@ export class DiscordProviderAdapter extends LocalMockProviderAdapter implements 
           port: 8788,
         },
         endpointLabel: "interactions endpoint",
+        normalizeWebhookPayload: normalizeDiscordWebhookPayload,
         platform: "discord",
         publicUrl: config.discord?.webhook.publicUrl,
         recorderPath: toRecorderPath(id, config),
