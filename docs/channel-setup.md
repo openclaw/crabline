@@ -1,12 +1,14 @@
 # Channel Setup
 
-Crabline is a local mock service for OpenClaw channel contracts. It does not
-connect to Slack, Discord, Telegram, WhatsApp, Matrix, iMessage, or any other
-live chat service, and it does not depend on chat provider SDK packages.
+Crabline is a local mock service for OpenClaw channel contracts. It has two
+surfaces:
+
+- fixture-level local mocks used directly by the Crabline CLI
+- fake provider servers that OpenClaw live adapters can target
 
 Live channel testing belongs in OpenClaw's live channel adapters. Crabline
 belongs in deterministic smoke CI and local QA where the test needs
-channel-shaped behavior without external services.
+provider-shaped behavior without external services.
 
 ## Provider Shape
 
@@ -67,6 +69,39 @@ providers:
 Provider credential fields such as `botToken`, `accessToken`, `baseURL`, or
 `serverUrl` are optional mock metadata. They are not required for local mock
 execution.
+
+## Fake Provider Servers
+
+Fake provider servers sit below OpenClaw's normal channel adapters. QA starts the
+server, writes the emitted runtime manifest into OpenClaw config/env, and then
+OpenClaw talks to the local fake provider instead of the public provider.
+
+Telegram is currently implemented:
+
+```bash
+crabline --json serve telegram --ready-file .crabline/telegram-server.json
+```
+
+Manifest fields:
+
+- `endpoints.apiRoot`: OpenClaw `channels.telegram.apiRoot`
+- `botToken`: OpenClaw `channels.telegram.botToken`
+- `endpoints.adminInboundUrl`: admin ingress for test user messages
+- `recorderPath`: JSONL provider traffic recorder
+
+The admin ingress accepts JSON like:
+
+```json
+{
+  "chatId": "-1001234567890",
+  "messageThreadId": 42,
+  "fromId": 100001,
+  "text": "user nonce-123"
+}
+```
+
+OpenClaw consumes that message through Telegram `getUpdates`; outbound adapter
+sends are recorded through Telegram `sendMessage`.
 
 ## Webhook Payload
 

@@ -3,10 +3,8 @@
 Deterministic local messaging-channel mocks for OpenClaw QA.
 
 `crabline` is config-driven, CI-friendly, and deliberately has no `openclaw`
-dependency. It models OpenClaw channel contracts without connecting to live chat
-services or installing provider SDKs. A fixture can still say
-`channel: telegram` on the OpenClaw side; Crabline supplies the mock Telegram
-execution backend for that channel shape.
+dependency. It can run fixture-level local mocks, and it can also serve fake
+provider APIs that OpenClaw live adapters can target during deterministic QA.
 
 ## What It Provides
 
@@ -15,13 +13,15 @@ execution backend for that channel shape.
   `whatsapp`, and `zalo`
 - a `script` bridge for channels that are still exercised by external commands
 - per-provider local webhook endpoints for inbound events
+- fake provider servers for live-adapter smoke tests, starting with Telegram
 - JSONL recorder files for deterministic wait/watch behavior
 - nonce-based `send`, `roundtrip`, `agent`, `probe`, `run`, `watch`, and
   `doctor` commands
 - text output by default and stable `--json` output for automation
 
-Crabline is not a live transport runner. Live OpenClaw channel tests use
-OpenClaw's live channel adapters and credentials directly.
+Crabline fake servers are not live-provider coverage. They let OpenClaw run its
+normal channel adapter code against a local provider-shaped API. Release lanes
+still need the `live` driver and real provider credentials.
 
 ## Install
 
@@ -115,6 +115,32 @@ The built-in providers are:
 
 The `script` adapter can bridge any other OpenClaw channel by running local
 commands for `probe`, `send`, `waitForInbound`, or `watch`.
+
+## Fake Provider Servers
+
+`serve` starts provider-shaped HTTP APIs for OpenClaw live adapters. This is the
+preferred Smoke CI path because OpenClaw still uses its normal channel adapter,
+but the provider endpoint is local and deterministic.
+
+Telegram:
+
+```bash
+crabline --json serve telegram --ready-file .crabline/telegram-server.json
+```
+
+The JSON manifest contains:
+
+- `endpoints.apiRoot`: set OpenClaw `channels.telegram.apiRoot` to this value
+- `botToken`: set OpenClaw `channels.telegram.botToken` to this value
+- `endpoints.adminInboundUrl`: POST test user messages here; OpenClaw reads
+  them through Telegram `getUpdates`
+- `recorderPath`: JSONL file of fake provider API/admin traffic
+
+Implemented Telegram Bot API endpoints include `getMe`, `sendMessage`,
+`editMessageText`, `deleteMessage`, `setMessageReaction`, `createForumTopic`,
+`editForumTopic`, `pinChatMessage`, `unpinChatMessage`, `getUpdates`,
+`deleteWebhook`, `setWebhook`, `setMyCommands`, `deleteMyCommands`,
+`sendChatAction`, and `answerCallbackQuery`.
 
 ## Target IDs
 
