@@ -1,7 +1,19 @@
 import path from "node:path";
+import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { LocalMockProviderAdapter, type LocalMockTargetCodec } from "../local-mock.js";
-import type { NormalizedTarget, ProviderAdapter, ProviderContext } from "../types.js";
+import { LocalMockProviderAdapter } from "../local-mock.js";
+import type { ProviderAdapter } from "../types.js";
+import {
+  authorFromBotFlag,
+  createNativeTargetCodec,
+  genericMockPayloadWithNativeThread,
+  isRecord,
+  optionalRecord,
+  optionalString,
+  optionalStringish,
+  requireNativeInboundId,
+  type NativeIdRule,
+} from "./native-local-mock.js";
 
 type TelegramEnvironment = Partial<
   Pick<
@@ -29,22 +41,6 @@ export function resolveTelegramAdapterConfig(
   };
 }
 
-function isTelegramEncodedId(value: string): boolean {
-  return value.startsWith("telegram:");
-}
-
-function normalizeTelegramChannelId(value: string): string {
-  return isTelegramEncodedId(value) ? value : `telegram:${value}`;
-}
-
-function normalizeTelegramThreadId(channelId: string, threadId: string): string {
-  if (isTelegramEncodedId(threadId)) {
-    return threadId;
-  }
-  const chatId = channelId.replace(/^telegram:/u, "");
-  return `telegram:${chatId}:${threadId}`;
-}
-
 function toRecorderPath(providerId: string, config: ProviderConfig): string {
   const configuredPath = config.telegram?.recorder.path;
   return configuredPath
@@ -52,33 +48,71 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
     : path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
 }
 
-const TELEGRAM_CODEC: LocalMockTargetCodec = {
-  normalize(target: ProviderContext["fixture"]["target"]): NormalizedTarget {
-    const normalized: NormalizedTarget = {
-      id: target.id,
-      metadata: target.metadata,
-    };
-
-    if (target.channelId) {
-      normalized.channelId = normalizeTelegramChannelId(target.channelId);
-    } else if (!target.threadId) {
-      normalized.channelId = normalizeTelegramChannelId(target.id);
-    }
-
-    if (target.threadId) {
-      if (!normalized.channelId) {
-        normalized.channelId = normalizeTelegramChannelId(target.id);
-      }
-      normalized.threadId = normalizeTelegramThreadId(normalized.channelId, target.threadId);
-    }
-
-    return normalized;
-  },
-  resolveThreadId(target) {
-    const normalized = this.normalize(target);
-    return normalized.threadId ?? normalized.channelId ?? normalizeTelegramChannelId(normalized.id);
-  },
+const TELEGRAM_CHAT_ID_RULE: NativeIdRule = {
+  example: "-1001234567890 or @channelusername",
+  name: "Telegram chat id",
+  pattern: /^(?:-?\d+|@[A-Za-z][A-Za-z0-9_]{4,31})$/u,
 };
+
+const TELEGRAM_MESSAGE_THREAD_ID_RULE: NativeIdRule = {
+  example: "42",
+  name: "Telegram message_thread_id",
+  pattern: /^\d+$/u,
+};
+
+const TELEGRAM_CODEC = createNativeTargetCodec({
+  channel: TELEGRAM_CHAT_ID_RULE,
+  channelLabel: "Telegram chat_id",
+  thread: TELEGRAM_MESSAGE_THREAD_ID_RULE,
+  threadLabel: "Telegram message_thread_id",
+});
+
+function normalizeTelegramWebhookPayload(payload: unknown) {
+  if (!isRecord(payload)) {
+    throw new CrablineError("Telegram webhook payload must be an object", { kind: "inbound" });
+  }
+
+  const message =
+    optionalRecord(payload, "message") ??
+    optionalRecord(payload, "edited_message") ??
+    optionalRecord(payload, "channel_post");
+  if (!message) {
+    return genericMockPayloadWithNativeThread({
+      channelRule: TELEGRAM_CHAT_ID_RULE,
+      payload,
+      threadRule: TELEGRAM_MESSAGE_THREAD_ID_RULE,
+    });
+  }
+
+  const chat = optionalRecord(message, "chat");
+  const chatId = chat ? optionalStringish(chat, "id") : undefined;
+  const text = optionalString(message, "text") ?? optionalString(message, "caption");
+  if (!chatId || !text) {
+    throw new CrablineError("Telegram update requires message.chat.id and message.text", {
+      kind: "inbound",
+    });
+  }
+
+  const topicId = optionalStringish(message, "message_thread_id");
+  const from = optionalRecord(message, "from");
+  return {
+    author: authorFromBotFlag(from?.is_bot === true),
+    ...(optionalStringish(message, "message_id")
+      ? { id: optionalStringish(message, "message_id") }
+      : optionalStringish(payload, "update_id")
+        ? { id: optionalStringish(payload, "update_id") }
+        : {}),
+    raw: payload,
+    text,
+    threadId: topicId
+      ? requireNativeInboundId(
+          topicId,
+          TELEGRAM_MESSAGE_THREAD_ID_RULE,
+          "Telegram message.message_thread_id",
+        )
+      : requireNativeInboundId(chatId, TELEGRAM_CHAT_ID_RULE, "Telegram message.chat.id"),
+  };
+}
 
 export class TelegramProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string) {
@@ -93,6 +127,7 @@ export class TelegramProviderAdapter extends LocalMockProviderAdapter implements
           port: 8790,
         },
         endpointLabel: "webhook endpoint",
+        normalizeWebhookPayload: normalizeTelegramWebhookPayload,
         platform: "telegram",
         publicUrl: config.telegram?.webhook.publicUrl,
         recorderPath: toRecorderPath(id, config),

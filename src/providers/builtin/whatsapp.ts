@@ -1,7 +1,24 @@
 import path from "node:path";
+import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { createGenericLocalMockTargetCodec, LocalMockProviderAdapter } from "../local-mock.js";
+import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
+import {
+  authorFromBotFlag,
+  createNativeTargetCodec,
+  genericMockPayloadWithNativeThread,
+  isRecord,
+  optionalRecord,
+  optionalString,
+  requireNativeInboundId,
+  type NativeIdRule,
+} from "./native-local-mock.js";
+
+const WHATSAPP_WA_ID_RULE: NativeIdRule = {
+  example: "15551234567",
+  name: "WhatsApp wa_id",
+  pattern: /^\d{7,15}$/u,
+};
 
 export function resolveWhatsAppAdapterConfig(
   config: ProviderConfig,
@@ -19,12 +36,16 @@ export function resolveWhatsAppAdapterConfig(
 export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
-      codec: createGenericLocalMockTargetCodec("whatsapp"),
+      codec: createNativeTargetCodec({
+        channel: WHATSAPP_WA_ID_RULE,
+        channelLabel: "WhatsApp wa_id",
+      }),
       config,
       id,
       options: {
         defaultWebhook: { host: "127.0.0.1", path: "/whatsapp/webhook", port: 8789 },
         endpointLabel: "webhook endpoint",
+        normalizeWebhookPayload: normalizeWhatsAppWebhookPayload,
         platform: "whatsapp",
         publicUrl: config.whatsapp?.webhook.publicUrl,
         recorderPath: config.whatsapp?.recorder.path
@@ -34,4 +55,40 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       },
     });
   }
+}
+
+function normalizeWhatsAppWebhookPayload(payload: unknown) {
+  if (!isRecord(payload)) {
+    throw new CrablineError("WhatsApp webhook payload must be an object", { kind: "inbound" });
+  }
+
+  const entry = Array.isArray(payload.entry) ? payload.entry.find(isRecord) : undefined;
+  const change = entry && Array.isArray(entry.changes) ? entry.changes.find(isRecord) : undefined;
+  const value = change ? optionalRecord(change, "value") : undefined;
+  const message =
+    value && Array.isArray(value.messages) ? value.messages.find(isRecord) : undefined;
+  if (!message) {
+    return genericMockPayloadWithNativeThread({
+      channelRule: WHATSAPP_WA_ID_RULE,
+      payload,
+      threadRule: WHATSAPP_WA_ID_RULE,
+    });
+  }
+
+  const text = optionalRecord(message, "text");
+  const from = optionalString(message, "from");
+  const body = text ? optionalString(text, "body") : undefined;
+  if (!from || !body) {
+    throw new CrablineError("WhatsApp webhook payload requires messages[].from and text.body", {
+      kind: "inbound",
+    });
+  }
+
+  return {
+    author: authorFromBotFlag(false),
+    ...(optionalString(message, "id") ? { id: optionalString(message, "id") } : {}),
+    raw: payload,
+    text: body,
+    threadId: requireNativeInboundId(from, WHATSAPP_WA_ID_RULE, "WhatsApp messages[].from"),
+  };
 }

@@ -25,6 +25,7 @@ export type LocalMockWebhookConfig = {
 export type LocalMockAdapterOptions = {
   defaultWebhook: Required<Pick<LocalMockWebhookConfig, "host" | "path" | "port">>;
   endpointLabel: string;
+  normalizeWebhookPayload?: (payload: unknown) => unknown;
   platform: ProviderPlatform;
   publicUrl?: string | undefined;
   recorderPath?: string | undefined;
@@ -259,7 +260,12 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     }
     let payload: MockWebhookPayload;
     try {
-      payload = normalizeWebhookPayload(await request.json());
+      const rawPayload = await request.json();
+      payload = normalizeWebhookPayload(
+        this.#options.normalizeWebhookPayload
+          ? this.#options.normalizeWebhookPayload(rawPayload)
+          : rawPayload,
+      );
     } catch (error) {
       return new Response(ensureErrorMessage(error), { status: 400 });
     }

@@ -82,7 +82,7 @@ function createContext(config: ProviderConfig): ProviderContext {
 }
 
 describe("discord provider", () => {
-  it("normalizes channel, thread, encoded, and DM targets", async () => {
+  it("normalizes native channel and thread targets", async () => {
     const config = await createDiscordConfig(0);
     const provider = new DiscordProviderAdapter("discord", config, "crabline");
     providers.push(provider);
@@ -93,45 +93,35 @@ describe("discord provider", () => {
         metadata: { guildId: "987654321098765432" },
       }),
     ).toMatchObject({
-      channelId: "discord:987654321098765432:123456789012345678",
+      channelId: "123456789012345678",
     });
     expect(
       provider.normalizeTarget({
         channelId: "123456789012345678",
-        id: "reply-target",
+        id: "123456789012345678",
         metadata: { guildId: "987654321098765432" },
         threadId: "223456789012345678",
       }),
     ).toMatchObject({
-      channelId: "discord:987654321098765432:123456789012345678",
-      threadId: "discord:987654321098765432:123456789012345678:223456789012345678",
-    });
-    expect(
-      provider.normalizeTarget({
-        id: "discord:987654321098765432:123456789012345678:223456789012345678",
-        metadata: {},
-      }),
-    ).toMatchObject({
-      channelId: "discord:987654321098765432:123456789012345678",
-      threadId: "discord:987654321098765432:123456789012345678:223456789012345678",
-    });
-    expect(provider.normalizeTarget({ id: "555555555555555555", metadata: {} })).toMatchObject({
-      id: "555555555555555555",
+      channelId: "123456789012345678",
+      threadId: "223456789012345678",
     });
   });
 
-  it("rejects thread targets without guild metadata", async () => {
+  it("rejects encoded or non-snowflake targets", async () => {
     const config = await createDiscordConfig(0);
     const provider = new DiscordProviderAdapter("discord", config, "crabline");
     providers.push(provider);
 
     expect(() =>
       provider.normalizeTarget({
-        id: "123456789012345678",
+        id: "discord:987654321098765432:123456789012345678",
         metadata: {},
-        threadId: "223456789012345678",
       }),
-    ).toThrow(/requires target.metadata.guildId/u);
+    ).toThrow(/Discord channel_id/u);
+    expect(() => provider.normalizeTarget({ id: "target-1", metadata: {} })).toThrow(
+      /Discord channel_id/u,
+    );
   });
 
   it("probes built-in discord configuration and DM targets", async () => {
@@ -147,9 +137,7 @@ describe("discord provider", () => {
     expect(result.details.join("\n")).toContain(
       "public webhook https://example.ngrok.app/discord/interactions",
     );
-    expect(result.details.join("\n")).toContain(
-      "channel reachable discord:987654321098765432:123456789012345678",
-    );
+    expect(result.details.join("\n")).toContain("channel reachable 123456789012345678");
 
     const dmResult = await provider.probe({
       ...createContext(config),
@@ -161,7 +149,7 @@ describe("discord provider", () => {
         },
       },
     });
-    expect(dmResult.details.join("\n")).toContain("dm reachable discord:@me:dm-555555555555555555");
+    expect(dmResult.details.join("\n")).toContain("channel reachable 555555555555555555");
   });
 
   it("sends to a discord channel and records a local mock reply", async () => {
@@ -177,7 +165,7 @@ describe("discord provider", () => {
     });
 
     expect(result.accepted).toBe(true);
-    expect(result.threadId).toBe("discord:987654321098765432:123456789012345678");
+    expect(result.threadId).toBe("123456789012345678");
     await expect(
       provider.waitForInbound({
         ...createContext(config),
@@ -206,18 +194,16 @@ describe("discord provider", () => {
       ...createContext(config),
       nonce: "nonce-2",
       since: new Date(Date.now() - 1000).toISOString(),
-      threadId: "discord:987654321098765432:123456789012345678",
+      threadId: "123456789012345678",
       timeoutMs: 500,
     });
 
     const response = await fetch(endpoint!.replace("interactions endpoint ", ""), {
       body: JSON.stringify({
-        kind: "subscribed",
-        message: {
-          id: "evt-1",
-          text: "ACK nonce-2",
-          threadId: "discord:987654321098765432:123456789012345678",
-        },
+        author: { bot: true },
+        channel_id: "123456789012345678",
+        content: "ACK nonce-2",
+        id: "333456789012345678",
       }),
       headers: { "content-type": "application/json" },
       method: "POST",
@@ -225,7 +211,7 @@ describe("discord provider", () => {
 
     expect(response.status).toBe(200);
     await expect(waitPromise).resolves.toMatchObject({
-      id: "evt-1",
+      id: "333456789012345678",
       text: "ACK nonce-2",
     });
   });
@@ -251,7 +237,7 @@ describe("discord provider", () => {
           author: "user",
           id: "evt-2",
           text: "user message",
-          threadId: "discord:987654321098765432:123456789012345678",
+          threadId: "123456789012345678",
         },
       }),
       headers: { "content-type": "application/json" },

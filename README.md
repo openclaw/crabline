@@ -118,71 +118,41 @@ commands for `probe`, `send`, `waitForInbound`, or `watch`.
 
 ## Target IDs
 
-Generic mock providers encode raw target ids with the platform prefix:
+Built-in providers accept native channel identifiers. Crabline does not add
+`telegram:`, `discord:`, `slack:`, or other local prefixes.
 
 ```yaml
 target:
-  id: "123"
+  id: "C1234567890"
 ```
 
-becomes:
-
-```text
-telegram:123
-```
-
-Thread targets use `target.channelId` plus `target.threadId`:
+Thread targets use the platform's native thread identifier:
 
 ```yaml
 target:
-  channelId: "room-1"
-  threadId: "thread-1"
+  channelId: "C1234567890"
+  threadId: "1700000000.000100"
 ```
 
-becomes:
+Examples:
 
-```text
-telegram:room-1:thread-1
-```
-
-Discord keeps a Discord-shaped guild/channel/thread encoding:
-
-```yaml
-target:
-  id: "123456789012345678"
-  metadata:
-    guildId: "987654321098765432"
-```
-
-becomes:
-
-```text
-discord:987654321098765432:123456789012345678
-```
-
-Telegram keeps topic-style thread IDs:
-
-```yaml
-target:
-  channelId: "-100123"
-  threadId: "42"
-```
-
-becomes:
-
-```text
-telegram:-100123:42
-```
+- Slack conversations: `C1234567890`, `G1234567890`, or `D1234567890`
+- Slack threads: `1700000000.000100`
+- Telegram chats: `-1001234567890` or `@channelusername`
+- Telegram topics: `42`
+- Discord channels and threads: Discord snowflake ids such as
+  `123456789012345678`
 
 ## Webhooks
 
 Each built-in provider starts a local webhook during `probe`, `waitForInbound`,
-or `watch`. Webhook requests must be JSON:
+or `watch`. Webhook requests can use the provider's native event shape, or this
+simple JSON shape with native thread ids:
 
 ```json
 {
-  "id": "telegram-inbound-1",
-  "threadId": "telegram:100000001",
+  "id": "slack-inbound-1",
+  "threadId": "C1234567890",
   "text": "reply nonce-123",
   "author": "assistant"
 }
@@ -193,8 +163,8 @@ Nested message payloads are also accepted:
 ```json
 {
   "message": {
-    "id": "telegram-inbound-1",
-    "threadId": "telegram:100000001",
+    "id": "slack-inbound-1",
+    "threadId": "C1234567890",
     "text": "reply nonce-123"
   }
 }

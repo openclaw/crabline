@@ -16,6 +16,18 @@ type ContractOptions = {
   adapter?: BuiltinAdapterId;
   endpointPath: string;
   endpointText?: string;
+  expectedChannelId: string;
+  expectedThreadId?: string | undefined;
+  invalidTargets?: ProviderContext["fixture"]["target"][] | undefined;
+  target: ProviderContext["fixture"]["target"];
+  threadTarget?: ProviderContext["fixture"]["target"] | undefined;
+  webhookExpected: {
+    author?: "assistant" | "system" | "user" | undefined;
+    id?: string | undefined;
+    text: string;
+  };
+  webhookPayload: unknown;
+  webhookThreadId: string;
   platform: ProviderPlatform;
 };
 
@@ -86,7 +98,7 @@ function endpointFromDetails(details: string[]): string {
 
 export function runLocalMockProviderContract(options: ContractOptions): void {
   describe(`${options.platform} local mock provider`, () => {
-    it("normalizes targets with the platform channel prefix", async () => {
+    it("normalizes native channel targets and rejects synthetic local ids", async () => {
       const config = await createLocalMockConfig(
         options.platform,
         options.endpointPath,
@@ -95,20 +107,19 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       const provider = new options.Adapter(options.platform, config, "crabline");
       providers.push(provider);
 
-      expect(provider.normalizeTarget({ id: "target-1", metadata: {} })).toMatchObject({
-        channelId: `${options.platform}:target-1`,
+      expect(provider.normalizeTarget(options.target)).toMatchObject({
+        channelId: options.expectedChannelId,
       });
-      expect(
-        provider.normalizeTarget({
-          channelId: `${options.platform}:room-1`,
-          id: "target-1",
-          metadata: {},
-          threadId: "thread-1",
-        }),
-      ).toMatchObject({
-        channelId: `${options.platform}:room-1`,
-        threadId: `${options.platform}:room-1:thread-1`,
+      expect(provider.normalizeTarget(options.threadTarget ?? options.target)).toMatchObject({
+        channelId: options.expectedChannelId,
+        ...(options.expectedThreadId ? { threadId: options.expectedThreadId } : {}),
       });
+      for (const target of options.invalidTargets ?? [
+        { id: `target-1`, metadata: {} },
+        { id: `${options.platform}:${options.expectedChannelId}`, metadata: {} },
+      ]) {
+        expect(() => provider.normalizeTarget(target)).toThrow(/must be|requires|native/u);
+      }
     });
 
     it("probes, sends, and waits for a deterministic mock reply", async () => {
@@ -119,7 +130,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       );
       const provider = new options.Adapter(options.platform, config, "crabline");
       providers.push(provider);
-      const context = createProviderContext(options.platform, config);
+      const context = createProviderContext(options.platform, config, options.target);
 
       const probe = await provider.probe(context);
       expect(probe.healthy).toBe(true);
@@ -134,7 +145,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
         text: "hello nonce-1",
       });
       expect(result.accepted).toBe(true);
-      expect(result.threadId).toBe(`${options.platform}:target-1`);
+      expect(result.threadId).toBe(options.expectedChannelId);
 
       await expect(
         provider.waitForInbound({
@@ -159,7 +170,12 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       );
       const provider = new options.Adapter(options.platform, config, "crabline");
       providers.push(provider);
-      const context = createProviderContext(options.platform, config);
+      const context = createProviderContext(options.platform, config, options.target);
+      context.fixture.inboundMatch = {
+        author: options.webhookExpected.author ?? "any",
+        nonce: "contains",
+        strategy: "contains",
+      };
       const endpoint = endpointFromDetails((await provider.probe(context)).details);
 
       const since = new Date(Date.now() - 1000).toISOString();
@@ -171,11 +187,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       expect(malformed.status).toBe(400);
 
       const response = await fetch(endpoint, {
-        body: JSON.stringify({
-          id: `${options.platform}-inbound`,
-          text: "reply nonce-2",
-          threadId: `${options.platform}:target-1`,
-        }),
+        body: JSON.stringify(options.webhookPayload),
         headers: { "content-type": "application/json" },
         method: "POST",
       });
@@ -186,12 +198,11 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
           ...context,
           nonce: "nonce-2",
           since,
-          threadId: `${options.platform}:target-1`,
+          threadId: options.webhookThreadId,
           timeoutMs: 500,
         }),
       ).resolves.toMatchObject({
-        id: `${options.platform}-inbound`,
-        text: "reply nonce-2",
+        ...options.webhookExpected,
       });
     });
 
@@ -203,7 +214,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       );
       const provider = new options.Adapter(options.platform, config, "crabline");
       providers.push(provider);
-      const context = createProviderContext(options.platform, config);
+      const context = createProviderContext(options.platform, config, options.target);
       context.fixture.inboundMatch = {
         author: "user",
         nonce: "contains",
@@ -214,10 +225,12 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
 
       const response = await fetch(endpoint, {
         body: JSON.stringify({
-          author: "user",
-          id: `${options.platform}-user-inbound`,
-          text: "user nonce-3",
-          threadId: `${options.platform}:target-1`,
+          message: {
+            author: "user",
+            id: `${options.platform}-user-inbound`,
+            text: "user nonce-3",
+            threadId: options.expectedChannelId,
+          },
         }),
         headers: { "content-type": "application/json" },
         method: "POST",
@@ -229,7 +242,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
           ...context,
           nonce: "nonce-3",
           since,
-          threadId: `${options.platform}:target-1`,
+          threadId: options.expectedChannelId,
           timeoutMs: 500,
         }),
       ).resolves.toMatchObject({
