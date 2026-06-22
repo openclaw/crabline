@@ -1,9 +1,18 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createOpenClawCrablineAgentDelivery,
+  createOpenClawCrablineChannelReportNotes,
   createOpenClawCrablineFakeProviderBinding,
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent,
+  OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
+  OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
+  OPENCLAW_CRABLINE_MANIFEST_PATH,
+  resolveOpenClawCrablineChannelDriverSelection,
+  runOpenClawCrablineChannelDriverSmoke,
   startOpenClawCrablineAdapter,
   type CrablineFakeProviderManifest,
 } from "../src/index.js";
@@ -24,6 +33,21 @@ const manifest: CrablineFakeProviderManifest = {
 };
 
 describe("OpenClaw fake provider bridge", () => {
+  it("resolves channel-driver metadata through Crabline", () => {
+    expect(resolveOpenClawCrablineChannelDriverSelection({})).toEqual({
+      capabilityMatrixPath: OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
+      channel: "telegram",
+      channelDriver: "crabline",
+      smokeArtifactPath: OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
+    });
+    expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " TELEGRAM " })).toMatchObject({
+      channel: "telegram",
+    });
+    expect(() => resolveOpenClawCrablineChannelDriverSelection({ channel: "slack" })).toThrow(
+      '--channel must be one of telegram for --channel-driver crabline, got "slack"',
+    );
+  });
+
   it("maps a Telegram fake provider into OpenClaw channel config", () => {
     const binding = createOpenClawCrablineFakeProviderBinding(manifest);
 
@@ -129,5 +153,50 @@ describe("OpenClaw fake provider bridge", () => {
       text: "agent reply",
       to: "dm:alice",
     });
+  });
+
+  it("runs OpenClaw channel-driver smoke and writes fake-provider artifacts", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-smoke-"));
+    try {
+      const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+      const result = await runOpenClawCrablineChannelDriverSmoke({
+        outputDir,
+        selection,
+      });
+
+      expect(result.capabilityReport).toMatchObject({
+        result: {
+          driver: "crabline",
+          selectedChannel: "telegram",
+          supportedChannels: ["telegram"],
+        },
+      });
+      expect(result.smoke).toMatchObject({
+        manifestPath: OPENCLAW_CRABLINE_MANIFEST_PATH,
+        result: {
+          ok: true,
+          provider: "telegram",
+          probe: {
+            ok: true,
+            result: {
+              is_bot: true,
+              username: "crabline_bot",
+            },
+          },
+        },
+      });
+      const writtenManifest = JSON.parse(
+        await fs.readFile(path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH), "utf8"),
+      ) as { provider?: string };
+      expect(writtenManifest.provider).toBe("telegram");
+      expect(createOpenClawCrablineChannelReportNotes(selection)).toEqual([
+        "Channel driver: crabline fake provider for telegram.",
+        "Channel capability report: crabline-fake-provider-capabilities.json.",
+        "Channel driver smoke: crabline-fake-provider-smoke.json.",
+        "Crabline starts local provider-shaped servers; OpenClaw uses its normal channel adapter against those endpoints.",
+      ]);
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
   });
 });

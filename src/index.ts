@@ -8,9 +8,18 @@ export {
 } from "./fake-servers/index.js";
 export {
   createOpenClawCrablineAgentDelivery,
+  createOpenClawCrablineChannelReportNotes,
   createOpenClawCrablineFakeProviderBinding,
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent,
+  OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
+  OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
+  OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
+  OPENCLAW_CRABLINE_MANIFEST_PATH,
+  probeOpenClawCrablineFakeProvider,
+  resolveOpenClawCrablineChannel,
+  resolveOpenClawCrablineChannelDriverSelection,
+  runOpenClawCrablineChannelDriverSmoke,
   startOpenClawCrablineAdapter,
 } from "./openclaw.js";
 export {
@@ -60,6 +69,8 @@ export type {
 } from "./fake-servers/index.js";
 export type {
   OpenClawCrablineAgentDelivery,
+  OpenClawCrablineChannelDriverSelection,
+  OpenClawCrablineChannelDriverSmokeResult,
   OpenClawCrablineGatewayBinding,
   OpenClawCrablineInbound,
   OpenClawCrablineInboundInput,
