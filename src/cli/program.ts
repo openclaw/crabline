@@ -1,9 +1,12 @@
 import { Command } from "commander";
+import fs from "node:fs/promises";
+import nodePath from "node:path";
 import { loadManifest } from "../config/load.js";
 import { createRegistry } from "../providers/registry.js";
 import { formatJson, formatRunResultText } from "../core/reporters.js";
 import { computeExitCode, runFixtureCommand, runSuite } from "../core/run.js";
 import { CrablineError, ensureErrorMessage } from "../core/errors.js";
+import { startTelegramFakeServer } from "../fake-servers/telegram.js";
 
 type GlobalOptions = {
   config?: string;
@@ -170,6 +173,49 @@ export function createProgram(): Command {
     });
 
   program
+    .command("serve <provider>")
+    .description("Start a fake provider server that OpenClaw live adapters can target")
+    .option("--host <host>", "Bind host", "127.0.0.1")
+    .option("--port <port>", "Bind port", "0")
+    .option("--bot-token <token>", "Fake Telegram bot token")
+    .option("--bot-username <username>", "Fake Telegram bot username", "crabline_bot")
+    .option("--recorder <path>", "JSONL recorder path")
+    .option("--ready-file <path>", "Write the server runtime manifest to this path")
+    .option("--once", "Start, print the runtime manifest, and stop immediately", false)
+    .action(async (provider, commandOptions) => {
+      const options = program.opts() as GlobalOptions;
+      if (provider !== "telegram") {
+        throw new CrablineError(`Unsupported fake provider server: ${provider}`, {
+          kind: "config",
+        });
+      }
+      const port = Number(commandOptions.port);
+      if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+        throw new CrablineError(`Invalid fake server port: ${commandOptions.port}`, {
+          kind: "config",
+        });
+      }
+      const server = await startTelegramFakeServer({
+        botToken: commandOptions.botToken,
+        botUsername: commandOptions.botUsername,
+        host: commandOptions.host,
+        port,
+        recorderPath: commandOptions.recorder,
+      });
+      const payload = formatJson(server.manifest);
+      if (commandOptions.readyFile) {
+        await fs.mkdir(nodePath.dirname(commandOptions.readyFile), { recursive: true });
+        await fs.writeFile(commandOptions.readyFile, `${payload}\n`, "utf8");
+      }
+      print(options.json ? payload : renderServeText(server.manifest));
+      if (commandOptions.once) {
+        await server.close();
+        return;
+      }
+      await waitForShutdown(server.close);
+    });
+
+  program
     .command("doctor")
     .description("Diagnose common setup problems")
     .action(async () => {
@@ -183,6 +229,32 @@ export function createProgram(): Command {
     });
 
   return program;
+}
+
+function waitForShutdown(close: () => Promise<void>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const shutdown = () => {
+      close().then(resolve, reject);
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  });
+}
+
+function renderServeText(manifest: {
+  baseUrl: string;
+  botToken: string;
+  endpoints: { adminInboundUrl: string; apiRoot: string };
+  provider: string;
+  recorderPath: string;
+}) {
+  return [
+    `${manifest.provider} fake server ready`,
+    `  apiRoot: ${manifest.endpoints.apiRoot}`,
+    `  botToken: ${manifest.botToken}`,
+    `  inbound: ${manifest.endpoints.adminInboundUrl}`,
+    `  recorder: ${manifest.recorderPath}`,
+  ].join("\n");
 }
 
 function renderProvidersText(payload: {

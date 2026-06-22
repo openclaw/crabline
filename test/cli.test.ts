@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli/program.js";
 import { captureWrites, createTempDir, disposeTempDir, writeText } from "./test-helpers.js";
@@ -117,6 +118,45 @@ describe("cli", () => {
 
     expect(exitCode!).toBe(10);
     expect(captured.stderr.join("")).toContain("No fixture found");
+  });
+
+  it("prints a fake Telegram server runtime manifest", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, ".crabline", "telegram-server.json");
+    const captured = captureWrites();
+
+    try {
+      expect(
+        await runCli([
+          "node",
+          "crabline",
+          "--json",
+          "serve",
+          "telegram",
+          "--once",
+          "--ready-file",
+          readyFile,
+          "--recorder",
+          path.join(directory, "telegram.jsonl"),
+        ]),
+      ).toBe(0);
+    } finally {
+      captured.restore();
+    }
+
+    const manifest = JSON.parse(captured.stdout.join("")) as {
+      endpoints?: { adminInboundUrl?: string; apiRoot?: string };
+      botToken?: string;
+      provider?: string;
+    };
+    expect(manifest.provider).toBe("telegram");
+    expect(manifest.endpoints?.apiRoot).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+    expect(manifest.endpoints?.adminInboundUrl).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/crabline\/telegram\/inbound$/u,
+    );
+    expect(manifest.botToken).toBe("424242:crabline-telegram-token");
+    await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "telegram"');
   });
 
   it("doctor accepts local mock slack without live env", async () => {

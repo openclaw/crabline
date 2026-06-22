@@ -1,5 +1,18 @@
 export { resolveTelegramAdapterConfig } from "./providers/builtin/telegram.js";
 export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
+export { startTelegramFakeServer } from "./fake-servers/telegram.js";
+export {
+  CRABLINE_FAKE_PROVIDER_CHANNELS,
+  isCrablineFakeProviderChannel,
+  startCrablineFakeProviderServer,
+} from "./fake-servers/index.js";
+export {
+  createOpenClawCrablineAgentDelivery,
+  createOpenClawCrablineFakeProviderBinding,
+  createOpenClawCrablineInbound,
+  createOpenClawCrablineOutboundFromRecorderEvent,
+  startOpenClawCrablineAdapter,
+} from "./openclaw.js";
 export {
   BUILTIN_ADAPTERS,
   FIXTURE_MODES,
@@ -34,3 +47,23 @@ export type {
   WaitContext,
   WatchContext,
 } from "./providers/types.js";
+export type {
+  StartedTelegramFakeServer,
+  StartTelegramFakeServerParams,
+  TelegramFakeServerManifest,
+} from "./fake-servers/telegram.js";
+export type {
+  CrablineFakeProviderChannel,
+  CrablineFakeProviderManifest,
+  StartedCrablineFakeProviderServer,
+  StartCrablineFakeProviderServerParams,
+} from "./fake-servers/index.js";
+export type {
+  OpenClawCrablineAgentDelivery,
+  OpenClawCrablineGatewayBinding,
+  OpenClawCrablineInbound,
+  OpenClawCrablineInboundInput,
+  OpenClawCrablineOutboundMessage,
+  StartedOpenClawCrablineAdapter,
+  StartOpenClawCrablineAdapterParams,
+} from "./openclaw.js";
