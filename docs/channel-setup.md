@@ -86,8 +86,12 @@ Manifest fields:
 
 - `endpoints.apiRoot`: OpenClaw `channels.telegram.apiRoot`
 - `botToken`: OpenClaw `channels.telegram.botToken`
-- `endpoints.adminInboundUrl`: admin ingress for test user messages
+- `adminToken`: value for the `X-Crabline-Admin-Token` header on admin ingress
+- `endpoints.adminInboundUrl`: authenticated admin ingress for test user messages
 - `recorderPath`: JSONL provider traffic recorder
+
+The admin token is generated randomly unless `--admin-token <token>` is
+provided. Requests may also use `Authorization: Bearer <token>`.
 
 The admin ingress accepts JSON like:
 

@@ -7,6 +7,13 @@ import { createTempDir, disposeTempDir } from "./test-helpers.js";
 const servers: StartedTelegramFakeServer[] = [];
 const directories: string[] = [];
 
+function adminHeaders(server: StartedTelegramFakeServer) {
+  return {
+    "content-type": "application/json",
+    "x-crabline-admin-token": server.manifest.adminToken,
+  };
+}
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(directories.splice(0).map(disposeTempDir));
@@ -84,7 +91,7 @@ describe("telegram fake provider server", () => {
         messageThreadId: 42,
         text: "user nonce-1",
       }),
-      headers: { "content-type": "application/json" },
+      headers: adminHeaders(server),
       method: "POST",
     });
     await expect(inbound.json()).resolves.toMatchObject({
@@ -117,6 +124,34 @@ describe("telegram fake provider server", () => {
     });
   });
 
+  it("rejects unauthenticated inbound updates", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startTelegramFakeServer({
+      adminToken: "admin-secret",
+      botToken: "123456:fake-token",
+      recorderPath: path.join(directory, "telegram.jsonl"),
+    });
+    servers.push(server);
+
+    const unauthenticated = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ chatId: "123", text: "rejected" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(unauthenticated.status).toBe(401);
+
+    const authenticated = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ chatId: "123", text: "accepted" }),
+      headers: adminHeaders(server),
+      method: "POST",
+    });
+    await expect(authenticated.json()).resolves.toMatchObject({
+      ok: true,
+      update: { message: { text: "accepted" } },
+    });
+  });
+
   it("keeps generated inbound IDs above explicit IDs", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -133,7 +168,7 @@ describe("telegram fake provider server", () => {
         text: "explicit",
         updateId: 100,
       }),
-      headers: { "content-type": "application/json" },
+      headers: adminHeaders(server),
       method: "POST",
     });
     await expect(explicitInbound.json()).resolves.toMatchObject({
@@ -148,7 +183,7 @@ describe("telegram fake provider server", () => {
         chatId: "123",
         text: "generated",
       }),
-      headers: { "content-type": "application/json" },
+      headers: adminHeaders(server),
       method: "POST",
     });
     await expect(generatedInbound.json()).resolves.toMatchObject({

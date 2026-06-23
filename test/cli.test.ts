@@ -172,6 +172,8 @@ describe("cli", () => {
           "--once",
           "--ready-file",
           readyFile,
+          "--admin-token",
+          "test-admin-token",
           "--recorder",
           path.join(directory, "telegram.jsonl"),
         ]),
@@ -181,11 +183,13 @@ describe("cli", () => {
     }
 
     const manifest = JSON.parse(captured.stdout.join("")) as {
+      adminToken?: string;
       endpoints?: { adminInboundUrl?: string; apiRoot?: string };
       botToken?: string;
       provider?: string;
     };
     expect(manifest.provider).toBe("telegram");
+    expect(manifest.adminToken).toBe("test-admin-token");
     expect(manifest.endpoints?.apiRoot).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
     expect(manifest.endpoints?.adminInboundUrl).toMatch(
       /^http:\/\/127\.0\.0\.1:\d+\/crabline\/telegram\/inbound$/u,

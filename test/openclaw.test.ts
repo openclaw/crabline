@@ -18,6 +18,7 @@ import {
 } from "../src/index.js";
 
 const manifest: CrablineFakeProviderManifest = {
+  adminToken: "crabline-admin-token",
   baseUrl: "http://127.0.0.1:1234",
   botToken: "424242:crabline-telegram-token",
   endpoints: {

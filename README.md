@@ -132,9 +132,15 @@ The JSON manifest contains:
 
 - `endpoints.apiRoot`: set OpenClaw `channels.telegram.apiRoot` to this value
 - `botToken`: set OpenClaw `channels.telegram.botToken` to this value
-- `endpoints.adminInboundUrl`: POST test user messages here; OpenClaw reads
-  them through Telegram `getUpdates`
+- `adminToken`: send this as the `X-Crabline-Admin-Token` header when posting
+  test user messages
+- `endpoints.adminInboundUrl`: authenticated POST endpoint for test user
+  messages; OpenClaw reads them through Telegram `getUpdates`
 - `recorderPath`: JSONL file of fake provider API/admin traffic
+
+The admin token is generated randomly unless `--admin-token <token>` is
+provided. The inbound endpoint rejects requests without the matching admin
+header (or `Authorization: Bearer <token>`).
 
 Implemented Telegram Bot API endpoints include `getMe`, `sendMessage`,
 `editMessageText`, `deleteMessage`, `setMessageReaction`, `createForumTopic`,

@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CrablineError } from "../core/errors.js";
@@ -13,6 +14,7 @@ type TelegramFakeServerEvent = {
 };
 
 type TelegramFakeServerState = {
+  adminToken: string;
   botId: number;
   botToken: string;
   botUsername: string;
@@ -46,6 +48,7 @@ type TelegramUpdate = {
 };
 
 export type TelegramFakeServerManifest = {
+  adminToken: string;
   baseUrl: string;
   botToken: string;
   endpoints: {
@@ -66,6 +69,7 @@ export type StartedTelegramFakeServer = {
 };
 
 export type StartTelegramFakeServerParams = {
+  adminToken?: string | undefined;
   botId?: number | undefined;
   botToken?: string | undefined;
   botUsername?: string | undefined;
@@ -277,6 +281,24 @@ function queryRecord(url: URL): Record<string, string> {
   return Object.fromEntries(url.searchParams.entries());
 }
 
+function hasAdminToken(request: IncomingMessage, expectedToken: string): boolean {
+  const header = request.headers["x-crabline-admin-token"];
+  const directToken = Array.isArray(header) ? header[0] : header;
+  const authorization = request.headers.authorization;
+  const bearerToken =
+    typeof authorization === "string" && /^Bearer\s+/iu.test(authorization)
+      ? authorization.replace(/^Bearer\s+/iu, "")
+      : undefined;
+  const providedToken = directToken ?? bearerToken;
+  if (!providedToken) {
+    return false;
+  }
+
+  const provided = Buffer.from(providedToken);
+  const expected = Buffer.from(expectedToken);
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
+}
+
 async function handleTelegramApi(params: {
   body: Record<string, unknown>;
   method: string;
@@ -335,6 +357,12 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
     if (params.request.method !== "POST") {
       return new Response("not found", { status: 404 });
     }
+    if (!hasAdminToken(params.request, params.state.adminToken)) {
+      return new Response("unauthorized", {
+        headers: { "www-authenticate": "Bearer" },
+        status: 401,
+      });
+    }
     const body = await parseRequestBody(params.request);
     const update = createInboundUpdate(params.state, body);
     await appendEvent(params.state, {
@@ -377,6 +405,7 @@ export async function startTelegramFakeServer(
   params: StartTelegramFakeServerParams = {},
 ): Promise<StartedTelegramFakeServer> {
   const state: TelegramFakeServerState = {
+    adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     botId: params.botId ?? 424242,
     botToken: params.botToken ?? "424242:crabline-telegram-token",
     botUsername: params.botUsername ?? "crabline_bot",
@@ -423,6 +452,7 @@ export async function startTelegramFakeServer(
       await closeServer(server);
     },
     manifest: {
+      adminToken: state.adminToken,
       baseUrl,
       botToken: state.botToken,
       endpoints: {

@@ -177,6 +177,7 @@ export function createProgram(): Command {
     .description("Start a fake provider server that OpenClaw live adapters can target")
     .option("--host <host>", "Bind host", "127.0.0.1")
     .option("--port <port>", "Bind port", "0")
+    .option("--admin-token <token>", "Admin token for inbound test messages")
     .option("--bot-token <token>", "Fake Telegram bot token")
     .option("--bot-username <username>", "Fake Telegram bot username", "crabline_bot")
     .option("--recorder <path>", "JSONL recorder path")
@@ -196,6 +197,7 @@ export function createProgram(): Command {
         });
       }
       const server = await startTelegramFakeServer({
+        adminToken: commandOptions.adminToken,
         botToken: commandOptions.botToken,
         botUsername: commandOptions.botUsername,
         host: commandOptions.host,
@@ -242,6 +244,7 @@ function waitForShutdown(close: () => Promise<void>): Promise<void> {
 }
 
 function renderServeText(manifest: {
+  adminToken: string;
   baseUrl: string;
   botToken: string;
   endpoints: { adminInboundUrl: string; apiRoot: string };
@@ -251,6 +254,7 @@ function renderServeText(manifest: {
   return [
     `${manifest.provider} fake server ready`,
     `  apiRoot: ${manifest.endpoints.apiRoot}`,
+    `  adminToken: ${manifest.adminToken}`,
     `  botToken: ${manifest.botToken}`,
     `  inbound: ${manifest.endpoints.adminInboundUrl}`,
     `  recorder: ${manifest.recorderPath}`,
