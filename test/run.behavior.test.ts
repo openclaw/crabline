@@ -191,6 +191,39 @@ describe("run behavior", () => {
     expect(result.diagnostics).toContain("cleanup failed: cleanup exploded");
   });
 
+  it("preserves captured failures when cleanup fails", async () => {
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => {
+        throw new CrablineError("send failed", { kind: "outbound" });
+      },
+      waitForInbound: async () => null,
+      cleanup: async () => {
+        throw new Error("cleanup exploded");
+      },
+    };
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: withAllCapabilities(manifest),
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result).toMatchObject({
+      failureKind: "outbound",
+      ok: false,
+    });
+    expect(result.diagnostics).toEqual(["send failed", "cleanup failed: cleanup exploded"]);
+  });
+
   it("computes suite exit codes", async () => {
     const provider: ProviderAdapter = {
       id: "mock",

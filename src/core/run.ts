@@ -190,7 +190,14 @@ export async function runFixtureCommand(params: {
       if (result) {
         result.diagnostics.push(diagnostic);
       } else {
-        diagnostics.push(diagnostic);
+        result = {
+          diagnostics: [...diagnostics, diagnostic],
+          failureKind: "assertion",
+          fixtureId: fixture.id,
+          mode,
+          ok: false,
+          providerId: fixture.provider,
+        };
       }
     }
   }
