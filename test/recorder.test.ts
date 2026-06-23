@@ -1,3 +1,4 @@
+import { appendFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -42,6 +43,28 @@ describe("recorder", () => {
     expect(events).toHaveLength(1);
     expect(events[0]?.recordedAt).toBeTypeOf("string");
     expect(events[0]?.text).toBe("hello");
+  });
+
+  it("keeps valid events when the final record is truncated", async () => {
+    const filePath = await createRecorderPath();
+    const recorded = await appendRecordedInbound(filePath, {
+      author: "assistant",
+      id: "evt-valid",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "keep me",
+      threadId: "slack:C123",
+    });
+    await appendFile(filePath, '{"id":"evt-truncated"', "utf8");
+
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([recorded]);
+    await expect(
+      waitForRecordedInbound({
+        filePath,
+        matches: (event) => event.id === "evt-valid",
+        timeoutMs: 30,
+      }),
+    ).resolves.toEqual(recorded);
   });
 
   it("waits for a matching inbound event", async () => {

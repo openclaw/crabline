@@ -42,10 +42,21 @@ export async function readRecordedInbound(filePath: string): Promise<RecordedInb
     throw error;
   }
 
-  return raw
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as RecordedInboundEnvelope);
+  const lines = raw.split("\n").filter((line) => line.trim().length > 0);
+  const events: RecordedInboundEnvelope[] = [];
+
+  for (const [index, line] of lines.entries()) {
+    try {
+      events.push(JSON.parse(line) as RecordedInboundEnvelope);
+    } catch (error) {
+      if (index === lines.length - 1) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return events;
 }
 
 export async function waitForRecordedInbound(params: {
