@@ -64,6 +64,47 @@ describe("manifest schema", () => {
     ).toThrow(/script adapter requires a script configuration/);
   });
 
+  it("rejects active script providers without commands for their capabilities", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          slack: {
+            adapter: "script",
+            platform: "slack",
+            script: {
+              commands: {},
+            },
+          },
+        },
+      }),
+    ).toThrow(/script\.commands\.probe/u);
+  });
+
+  it("accepts active script providers with commands for their capabilities", () => {
+    const manifest = ManifestSchema.parse({
+      configVersion: 1,
+      fixtures: [],
+      providers: {
+        slack: {
+          adapter: "script",
+          capabilities: ["probe", "send", "roundtrip", "agent"],
+          platform: "slack",
+          script: {
+            commands: {
+              probe: "probe",
+              send: "send",
+              waitForInbound: "wait",
+            },
+          },
+        },
+      },
+    });
+
+    expect(manifest.providers.slack?.script?.commands.waitForInbound).toBe("wait");
+  });
+
   it("parses a built-in slack provider with webhook defaults", () => {
     const manifest = ManifestSchema.parse({
       configVersion: 1,

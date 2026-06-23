@@ -435,6 +435,31 @@ export const ProviderConfigSchema = z
       });
     }
 
+    if (value.adapter === "script" && value.status === "active" && value.script) {
+      const requiredCommands = new Set<"probe" | "send" | "waitForInbound">();
+      for (const capability of value.capabilities) {
+        if (capability === "probe") {
+          requiredCommands.add("probe");
+        }
+        if (capability === "send" || capability === "roundtrip" || capability === "agent") {
+          requiredCommands.add("send");
+        }
+        if (capability === "roundtrip" || capability === "agent") {
+          requiredCommands.add("waitForInbound");
+        }
+      }
+
+      for (const command of requiredCommands) {
+        if (!value.script.commands[command]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `active script provider requires script.commands.${command} for its declared capabilities`,
+            path: ["script", "commands", command],
+          });
+        }
+      }
+    }
+
     if (value.adapter === "loopback" && platform !== "loopback") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

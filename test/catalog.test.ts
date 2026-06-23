@@ -113,7 +113,11 @@ describe("support catalog", () => {
             adapter: "script",
             platform: entry.platform,
             script: {
-              commands: {},
+              commands: {
+                probe: "probe",
+                send: "send",
+                waitForInbound: "wait",
+              },
             },
           },
         ];
