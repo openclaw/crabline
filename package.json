@@ -21,6 +21,7 @@
     }
   },
   "scripts": {
+    "prebuild": "rm -rf dist",
     "build": "tsgo -p tsconfig.build.json",
     "clean": "rm -rf dist coverage",
     "dev": "tsx src/bin/crabline.ts",
