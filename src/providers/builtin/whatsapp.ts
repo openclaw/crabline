@@ -62,11 +62,29 @@ function normalizeWhatsAppWebhookPayload(payload: unknown) {
     throw new CrablineError("WhatsApp webhook payload must be an object", { kind: "inbound" });
   }
 
-  const entry = Array.isArray(payload.entry) ? payload.entry.find(isRecord) : undefined;
-  const change = entry && Array.isArray(entry.changes) ? entry.changes.find(isRecord) : undefined;
-  const value = change ? optionalRecord(change, "value") : undefined;
-  const message =
-    value && Array.isArray(value.messages) ? value.messages.find(isRecord) : undefined;
+  let message: Record<string, unknown> | undefined;
+  if (Array.isArray(payload.entry)) {
+    for (const entry of payload.entry) {
+      if (!isRecord(entry) || !Array.isArray(entry.changes)) {
+        continue;
+      }
+      for (const change of entry.changes) {
+        if (!isRecord(change)) {
+          continue;
+        }
+        const value = optionalRecord(change, "value");
+        const candidate =
+          value && Array.isArray(value.messages) ? value.messages.find(isRecord) : undefined;
+        if (candidate) {
+          message = candidate;
+          break;
+        }
+      }
+      if (message) {
+        break;
+      }
+    }
+  }
   if (!message) {
     return genericMockPayloadWithNativeThread({
       channelRule: WHATSAPP_WA_ID_RULE,

@@ -14,6 +14,15 @@ runLocalMockProviderContract({
         changes: [
           {
             value: {
+              statuses: [{ id: "wamid.status-only" }],
+            },
+          },
+        ],
+      },
+      {
+        changes: [
+          {
+            value: {
               messages: [
                 {
                   from: "15551234567",
