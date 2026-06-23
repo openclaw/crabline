@@ -270,7 +270,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
         child.kill();
         if (process.platform !== "win32" && child.pid) {
           try {
-            process.kill(-child.pid, "SIGTERM");
+            process.kill(-child.pid, "SIGKILL");
           } catch {
             // The process group may have already exited with the shell.
           }
