@@ -182,9 +182,15 @@ function createBotUser(state: TelegramFakeServerState) {
 }
 
 function createChat(chatId: number | string): TelegramMessage["chat"] {
+  const type =
+    typeof chatId !== "number" || chatId >= 0
+      ? "private"
+      : String(chatId).startsWith("-100")
+        ? "supergroup"
+        : "group";
   return {
     id: chatId,
-    type: typeof chatId === "number" && chatId < 0 ? "supergroup" : "private",
+    type,
   };
 }
 

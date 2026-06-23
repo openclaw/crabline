@@ -12,6 +12,34 @@ afterEach(async () => {
 });
 
 describe("telegram fake provider server", () => {
+  it("distinguishes ordinary groups from supergroups", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startTelegramFakeServer({
+      botToken: "123456:fake-token",
+      recorderPath: path.join(directory, "telegram.jsonl"),
+    });
+    servers.push(server);
+
+    const group = await fetch(`${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`, {
+      body: JSON.stringify({ chat_id: "-42", text: "ordinary group" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(group.json()).resolves.toMatchObject({
+      result: { chat: { id: -42, type: "group" } },
+    });
+
+    const supergroup = await fetch(`${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`, {
+      body: JSON.stringify({ chat_id: "-1001234567890", text: "supergroup" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(supergroup.json()).resolves.toMatchObject({
+      result: { chat: { id: -1001234567890, type: "supergroup" } },
+    });
+  });
+
   it("serves Telegram Bot API calls and queues injected inbound updates", async () => {
     const directory = await createTempDir();
     directories.push(directory);
