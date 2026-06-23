@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Crabline deterministic channel QA</title>
+  <desc id="desc">A coral crab crossing a cyan test waveform over a dark navy background.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#07192c"/><stop offset="1" stop-color="#102f43"/></linearGradient>
+    <linearGradient id="wave" x1="0" x2="1"><stop stop-color="#00e5cc"/><stop offset="1" stop-color="#ffb347"/></linearGradient>
+  </defs>
+  <rect width="1200" height="420" rx="28" fill="url(#bg)"/>
+  <path d="M40 300h140l35-100 45 155 48-120 44 65h160l38-88 46 118 46-75 38 45h300" fill="none" stroke="url(#wave)" stroke-linecap="round" stroke-linejoin="round" stroke-width="10" opacity=".85"/>
+  <g transform="translate(120 88)" fill="none" stroke="#ff6f4d" stroke-linecap="round" stroke-linejoin="round" stroke-width="12">
+    <path d="M85 102c-42-32-71-36-102-16m102 30c-46 0-76 15-104 48m230-62c42-32 71-36 102-16m-102 30c46 0 76 15 104 48"/>
+    <path d="M78 150c-32 30-44 61-35 92m192-92c32 30 44 61 35 92"/>
+    <ellipse cx="160" cy="122" rx="88" ry="68" fill="#ff6f4d"/>
+    <circle cx="126" cy="95" r="9" fill="#07192c" stroke="none"/><circle cx="194" cy="95" r="9" fill="#07192c" stroke="none"/>
+    <path d="M131 134c18 15 40 15 58 0"/>
+  </g>
+  <text x="470" y="145" fill="#fff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="64" font-weight="700">crabline</text>
+  <text x="474" y="205" fill="#9ddbd5" font-family="ui-sans-serif, system-ui, sans-serif" font-size="26">deterministic messaging-channel QA</text>
+  <text x="474" y="255" fill="#ffcf86" font-family="ui-sans-serif, system-ui, sans-serif" font-size="22">local mocks · fake provider APIs · reproducible evidence</text>
+</svg>

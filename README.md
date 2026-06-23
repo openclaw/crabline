@@ -1,5 +1,7 @@
 # crabline
 
+![Crabline deterministic messaging-channel QA](assets/crabline-banner.svg)
+
 Deterministic local messaging-channel mocks for OpenClaw QA.
 
 `crabline` is config-driven, CI-friendly, and deliberately has no `openclaw`
