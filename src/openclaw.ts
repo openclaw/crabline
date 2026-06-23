@@ -113,6 +113,10 @@ function readString(value: unknown): string | undefined {
   return undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function readInteger(value: unknown): number | undefined {
   const stringValue = readString(value);
   if (!stringValue || !/^-?\d+$/u.test(stringValue)) {
@@ -224,30 +228,46 @@ export function createOpenClawCrablineFakeProviderBinding(
       ...env,
       TELEGRAM_BOT_TOKEN: telegram.botToken,
     }),
-    createGatewayConfig: (_openclawConfig = {}) => ({
-      channels: {
-        telegram: {
-          enabled: true,
-          botToken: telegram.botToken,
-          apiRoot: telegram.endpoints.apiRoot,
-          dmPolicy: "open",
-          groupPolicy: "open",
-          allowFrom: ["*"],
-          groupAllowFrom: ["*"],
-          groups: {
-            "*": {
-              requireMention: false,
+    createGatewayConfig: (openclawConfig = {}) => {
+      const channels = isRecord(openclawConfig.channels) ? openclawConfig.channels : {};
+      const telegramConfig = isRecord(channels.telegram) ? channels.telegram : {};
+      const groups = isRecord(telegramConfig.groups) ? telegramConfig.groups : {};
+      const defaultGroup = isRecord(groups["*"]) ? groups["*"] : {};
+      const messages = isRecord(openclawConfig.messages) ? openclawConfig.messages : {};
+      const groupChat = isRecord(messages.groupChat) ? messages.groupChat : {};
+
+      return {
+        ...openclawConfig,
+        channels: {
+          ...channels,
+          telegram: {
+            ...telegramConfig,
+            enabled: true,
+            botToken: telegram.botToken,
+            apiRoot: telegram.endpoints.apiRoot,
+            dmPolicy: "open",
+            groupPolicy: "open",
+            allowFrom: ["*"],
+            groupAllowFrom: ["*"],
+            groups: {
+              ...groups,
+              "*": {
+                ...defaultGroup,
+                requireMention: false,
+              },
             },
           },
         },
-      },
-      messages: {
-        groupChat: {
-          mentionPatterns: ["\\b@?openclaw\\b"],
-          visibleReplies: "automatic",
+        messages: {
+          ...messages,
+          groupChat: {
+            ...groupChat,
+            mentionPatterns: ["\\b@?openclaw\\b"],
+            visibleReplies: "automatic",
+          },
         },
-      },
-    }),
+      };
+    },
     requiredPluginIds: ["telegram"],
   };
 }

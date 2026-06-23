@@ -56,12 +56,46 @@ describe("OpenClaw fake provider bridge", () => {
       channel: "telegram",
       requiredPluginIds: ["telegram"],
     });
-    expect(binding.createGatewayConfig()).toMatchObject({
+    expect(
+      binding.createGatewayConfig({
+        channels: {
+          telegram: {
+            enabled: false,
+          },
+          slack: {
+            enabled: true,
+            webhookUrl: "https://example.test/slack",
+          },
+        },
+        messages: {
+          groupChat: {
+            customSetting: "preserved",
+          },
+          dm: {
+            customSetting: "also-preserved",
+          },
+        },
+      }),
+    ).toMatchObject({
       channels: {
         telegram: {
           apiRoot: "http://127.0.0.1:1234",
           botToken: "424242:crabline-telegram-token",
           enabled: true,
+        },
+        slack: {
+          enabled: true,
+          webhookUrl: "https://example.test/slack",
+        },
+      },
+      messages: {
+        groupChat: {
+          customSetting: "preserved",
+          mentionPatterns: ["\\b@?openclaw\\b"],
+          visibleReplies: "automatic",
+        },
+        dm: {
+          customSetting: "also-preserved",
         },
       },
     });
