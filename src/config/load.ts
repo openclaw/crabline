@@ -16,8 +16,16 @@ export async function resolveConfigPath(explicitPath?: string): Promise<string> 
     try {
       await access(resolved);
       return resolved;
-    } catch {
-      continue;
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (error.code === "ENOENT" || error.code === "ENOTDIR")
+      ) {
+        continue;
+      }
+      throw error;
     }
   }
 

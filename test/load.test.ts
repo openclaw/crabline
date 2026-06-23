@@ -1,8 +1,13 @@
 import path from "node:path";
-import { realpath } from "node:fs/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { realpath, access } from "node:fs/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadManifest, resolveConfigPath } from "../src/config/load.js";
 import { createTempDir, disposeTempDir, writeJson, writeText } from "./test-helpers.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, access: vi.fn(actual.access) };
+});
 
 const directories: string[] = [];
 
@@ -76,5 +81,12 @@ describe("config load", () => {
     } finally {
       process.chdir(originalCwd);
     }
+  });
+
+  it("surfaces non-missing filesystem errors during discovery", async () => {
+    const error = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    vi.mocked(access).mockRejectedValueOnce(error);
+
+    await expect(resolveConfigPath()).rejects.toBe(error);
   });
 });
