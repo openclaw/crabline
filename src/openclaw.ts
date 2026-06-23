@@ -332,7 +332,8 @@ export function createOpenClawCrablineOutboundFromRecorderEvent(params: {
     return null;
   }
   const chatId = readString(event.body.chat_id);
-  const text = readString(event.body.text);
+  const text =
+    typeof event.body.text === "string" && event.body.text.trim() ? event.body.text : undefined;
   if (!chatId || !text) {
     return null;
   }

@@ -176,7 +176,7 @@ describe("OpenClaw fake provider bridge", () => {
           path: "/botTOKEN/sendMessage",
           body: {
             chat_id: "100001",
-            text: "agent reply",
+            text: "  hello\n",
           },
         },
       }),
@@ -184,7 +184,7 @@ describe("OpenClaw fake provider bridge", () => {
       accountId: "default",
       senderId: "openclaw",
       senderName: "OpenClaw QA",
-      text: "agent reply",
+      text: "  hello\n",
       to: "dm:alice",
     });
   });
