@@ -2,7 +2,15 @@
   "name": "@openclaw/crabline",
   "version": "0.1.0",
   "description": "Standalone CLI for deterministic messaging provider E2E tests",
+  "homepage": "https://github.com/openclaw/crabline#readme",
+  "bugs": {
+    "url": "https://github.com/openclaw/crabline/issues"
+  },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openclaw/crabline"
+  },
   "bin": {
     "crabline": "dist/src/bin/crabline.js"
   },
