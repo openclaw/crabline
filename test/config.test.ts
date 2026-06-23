@@ -2,6 +2,30 @@ import { describe, expect, it } from "vitest";
 import { ManifestSchema } from "../src/config/schema.js";
 
 describe("manifest schema", () => {
+  it("rejects fixture ids that cannot be embedded in nonces", () => {
+    for (const id of ["foo_bar", "foo.bar", "foo bar"]) {
+      expect(() =>
+        ManifestSchema.parse({
+          configVersion: 1,
+          fixtures: [
+            {
+              id,
+              mode: "roundtrip",
+              provider: "local",
+              target: { id: "echo-bot" },
+            },
+          ],
+          providers: {
+            local: {
+              adapter: "loopback",
+              platform: "loopback",
+            },
+          },
+        }),
+      ).toThrow(/fixture id must contain only letters, numbers, and hyphens/u);
+    }
+  });
+
   it("parses a valid loopback fixture", () => {
     const manifest = ManifestSchema.parse({
       configVersion: 1,

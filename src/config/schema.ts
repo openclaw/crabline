@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const FIXTURE_MODES = ["probe", "send", "roundtrip", "agent"] as const;
+const FIXTURE_ID_PATTERN = /^[a-z0-9-]+$/i;
 export const INBOUND_AUTHORS = ["assistant", "user", "system", "any"] as const;
 export const INBOUND_STRATEGIES = ["contains", "exact", "regex"] as const;
 export const INBOUND_NONCE_MODES = ["contains", "exact", "ignore"] as const;
@@ -538,7 +539,10 @@ export const ProviderConfigSchema = z
 export const FixtureSchema = z.object({
   accountId: z.string().min(1).optional(),
   env: z.array(z.string().min(1)).default([]),
-  id: z.string().min(1),
+  id: z
+    .string()
+    .min(1)
+    .regex(FIXTURE_ID_PATTERN, "fixture id must contain only letters, numbers, and hyphens"),
   inboundMatch: InboundMatchSchema.default({
     author: "assistant",
     nonce: "contains",

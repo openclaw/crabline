@@ -4,7 +4,7 @@ import { createNonce, extractNonce } from "../src/core/nonces.js";
 
 describe("nonce + matcher", () => {
   it("generates extractable nonces", () => {
-    const nonce = createNonce("fixture");
+    const nonce = createNonce("fixture-id");
     expect(extractNonce(`hello ${nonce}`)).toBe(nonce);
   });
 
