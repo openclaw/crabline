@@ -87,4 +87,46 @@ describe("telegram fake provider server", () => {
       ],
     });
   });
+
+  it("keeps generated inbound IDs above explicit IDs", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startTelegramFakeServer({
+      botToken: "123456:fake-token",
+      recorderPath: path.join(directory, "telegram.jsonl"),
+    });
+    servers.push(server);
+
+    const explicitInbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        chatId: "123",
+        messageId: 200,
+        text: "explicit",
+        updateId: 100,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(explicitInbound.json()).resolves.toMatchObject({
+      update: {
+        message: { message_id: 200 },
+        update_id: 100,
+      },
+    });
+
+    const generatedInbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        chatId: "123",
+        text: "generated",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(generatedInbound.json()).resolves.toMatchObject({
+      update: {
+        message: { message_id: 201 },
+        update_id: 101,
+      },
+    });
+  });
 });

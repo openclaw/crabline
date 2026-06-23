@@ -241,6 +241,14 @@ function createInboundUpdate(
   const fromId = toIntegerValue(body.fromId ?? body.from_id) ?? 100001;
   const threadId = toIntegerValue(body.messageThreadId ?? body.message_thread_id);
   const fromUsername = toStringValue(body.fromUsername ?? body.from_username);
+  const messageId = toIntegerValue(body.messageId ?? body.message_id);
+  const updateId = toIntegerValue(body.updateId ?? body.update_id);
+  if (messageId !== undefined) {
+    state.nextMessageId = Math.max(state.nextMessageId, messageId + 1);
+  }
+  if (updateId !== undefined) {
+    state.nextUpdateId = Math.max(state.nextUpdateId, updateId + 1);
+  }
   return {
     message: {
       chat: createChat(chatId),
@@ -251,11 +259,11 @@ function createInboundUpdate(
         is_bot: false,
         ...(fromUsername ? { username: fromUsername } : {}),
       },
-      message_id: toIntegerValue(body.messageId ?? body.message_id) ?? state.nextMessageId++,
+      message_id: messageId ?? state.nextMessageId++,
       ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
       text,
     },
-    update_id: toIntegerValue(body.updateId ?? body.update_id) ?? state.nextUpdateId++,
+    update_id: updateId ?? state.nextUpdateId++,
   };
 }
 
