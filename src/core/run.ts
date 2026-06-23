@@ -75,20 +75,21 @@ export async function runFixtureCommand(params: {
     userName: params.manifest.userName,
   };
 
+  let result: CommandRunResult | undefined;
   try {
     if (mode === "probe") {
       try {
-        const result = await provider.probe(contextBase);
-        return {
-          diagnostics: result.details,
-          failureKind: result.healthy ? undefined : "connectivity",
+        const probeResult = await provider.probe(contextBase);
+        return (result = {
+          diagnostics: probeResult.details,
+          failureKind: probeResult.healthy ? undefined : "connectivity",
           fixtureId: fixture.id,
           mode,
-          ok: result.healthy,
+          ok: probeResult.healthy,
           providerId: fixture.provider,
-        };
+        });
       } catch (error) {
-        return toFailure(fixture.id, fixture.provider, mode, error);
+        return (result = toFailure(fixture.id, fixture.provider, mode, error));
       }
     }
 
@@ -112,14 +113,14 @@ export async function runFixtureCommand(params: {
         diagnostics.push(`accepted message ${accepted.messageId}`);
 
         if (mode === "send") {
-          return {
+          return (result = {
             diagnostics,
             fixtureId: fixture.id,
             mode,
             nonce,
             ok: true,
             providerId: fixture.provider,
-          };
+          });
         }
 
         const inbound = await provider.waitForInbound({
@@ -160,32 +161,41 @@ export async function runFixtureCommand(params: {
           continue;
         }
 
-        return {
+        return (result = {
           diagnostics: [...diagnostics, `matched inbound ${inbound.id}`],
           fixtureId: fixture.id,
           mode,
           nonce,
           ok: true,
           providerId: fixture.provider,
-        };
+        });
       } catch (error) {
         lastFailure = toFailure(fixture.id, fixture.provider, mode, error, nonce);
       }
     }
 
-    return (
-      lastFailure ?? {
-        diagnostics: ["unknown failure"],
-        failureKind: "assertion",
-        fixtureId: fixture.id,
-        mode,
-        ok: false,
-        providerId: fixture.provider,
-      }
-    );
+    return (result = lastFailure ?? {
+      diagnostics: ["unknown failure"],
+      failureKind: "assertion",
+      fixtureId: fixture.id,
+      mode,
+      ok: false,
+      providerId: fixture.provider,
+    });
   } finally {
-    await provider.cleanup?.();
+    try {
+      await provider.cleanup?.();
+    } catch (error) {
+      const diagnostic = `cleanup failed: ${ensureErrorMessage(error)}`;
+      if (result) {
+        result.diagnostics.push(diagnostic);
+      } else {
+        diagnostics.push(diagnostic);
+      }
+    }
   }
+
+  return result!;
 }
 
 export async function runSuite(params: {

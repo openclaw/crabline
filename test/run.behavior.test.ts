@@ -156,6 +156,41 @@ describe("run behavior", () => {
     expect(roundtrip.failureKind).toBe("assertion");
   });
 
+  it("preserves the fixture result when cleanup fails", async () => {
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => ({ accepted: true, messageId: "sent", threadId: "thread" }),
+      waitForInbound: async (context) => ({
+        author: "assistant",
+        id: "inbound",
+        provider: "mock",
+        sentAt: new Date().toISOString(),
+        text: `ACK ${context.nonce}`,
+        threadId: "thread",
+      }),
+      cleanup: async () => {
+        throw new Error("cleanup exploded");
+      },
+    };
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: withAllCapabilities(manifest),
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toContain("cleanup failed: cleanup exploded");
+  });
+
   it("computes suite exit codes", async () => {
     const provider: ProviderAdapter = {
       id: "mock",
