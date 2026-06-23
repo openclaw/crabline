@@ -1,6 +1,6 @@
 {
   "name": "crabline",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Standalone CLI for deterministic messaging provider E2E tests",
   "license": "MIT",
   "bin": {
