@@ -94,4 +94,27 @@ describe("webhook server", () => {
     expect(response.status).toBe(500);
     await expect(response.text()).resolves.toContain("boom");
   });
+
+  it("returns 413 for oversized request bodies without invoking the handler", async () => {
+    let handlerInvoked = false;
+    const server = await startWebhookServer({
+      async handle() {
+        handlerInvoked = true;
+        return new Response("ok");
+      },
+      host: "127.0.0.1",
+      maxBodyBytes: 4,
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+
+    const response = await fetch(server.endpointUrl, {
+      body: "12345",
+      method: "POST",
+    });
+
+    expect(response.status).toBe(413);
+    expect(handlerInvoked).toBe(false);
+  });
 });

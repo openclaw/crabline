@@ -5,23 +5,55 @@ export type StartedWebhookServer = {
   endpointUrl: string;
 };
 
-async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
+class RequestBodyTooLargeError extends Error {}
 
-  return Buffer.concat(chunks);
+async function readRequestBody(request: IncomingMessage, maxBodyBytes: number): Promise<Buffer> {
+  return await new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let bodyBytes = 0;
+    let settled = false;
+
+    request.on("data", (chunk) => {
+      if (settled) {
+        return;
+      }
+
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bodyBytes += buffer.length;
+      if (bodyBytes > maxBodyBytes) {
+        settled = true;
+        request.resume();
+        reject(new RequestBodyTooLargeError());
+        return;
+      }
+      chunks.push(buffer);
+    });
+    request.once("end", () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(Buffer.concat(chunks));
+    });
+    request.once("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    });
+  });
 }
 
-async function toFetchRequest(request: IncomingMessage): Promise<Request> {
+async function toFetchRequest(request: IncomingMessage, maxBodyBytes: number): Promise<Request> {
   const host = request.headers.host ?? "127.0.0.1";
   const url = new URL(request.url ?? "/", `http://${host}`);
   const body =
     request.method === "GET" || request.method === "HEAD"
       ? undefined
-      : await readRequestBody(request);
+      : await readRequestBody(request, maxBodyBytes);
 
   const init: RequestInit = {
     headers: request.headers as Record<string, string>,
@@ -71,14 +103,16 @@ function closeServer(server: Server): Promise<void> {
 export async function startWebhookServer(params: {
   handle(request: Request): Promise<Response>;
   host: string;
+  maxBodyBytes?: number;
   methods?: readonly string[] | undefined;
   path: string;
   port: number;
 }): Promise<StartedWebhookServer> {
   const methods = new Set(params.methods ?? ["POST"]);
+  const maxBodyBytes = params.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const server = createServer(async (request, response) => {
     try {
-      const fetchRequest = await toFetchRequest(request);
+      const fetchRequest = await toFetchRequest(request, maxBodyBytes);
       const pathname = new URL(fetchRequest.url).pathname;
       if (!methods.has(fetchRequest.method) || pathname !== params.path) {
         await writeFetchResponse(response, new Response("not found", { status: 404 }));
@@ -88,7 +122,11 @@ export async function startWebhookServer(params: {
       await writeFetchResponse(response, await params.handle(fetchRequest));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await writeFetchResponse(response, new Response(message, { status: 500 }));
+      const status = error instanceof RequestBodyTooLargeError ? 413 : 500;
+      await writeFetchResponse(
+        response,
+        new Response(status === 413 ? "request body too large" : message, { status }),
+      );
     }
   });
 
