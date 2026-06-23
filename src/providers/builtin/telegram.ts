@@ -11,6 +11,7 @@ import {
   optionalRecord,
   optionalString,
   optionalStringish,
+  requireNativeId,
   requireNativeInboundId,
   type NativeIdRule,
 } from "./native-local-mock.js";
@@ -60,14 +61,39 @@ const TELEGRAM_MESSAGE_THREAD_ID_RULE: NativeIdRule = {
   pattern: /^\d+$/u,
 };
 
-const TELEGRAM_CODEC = createNativeTargetCodec({
+const TELEGRAM_BASE_CODEC = createNativeTargetCodec({
   channel: TELEGRAM_CHAT_ID_RULE,
   channelLabel: "Telegram chat_id",
   thread: TELEGRAM_MESSAGE_THREAD_ID_RULE,
   threadLabel: "Telegram message_thread_id",
 });
 
-function normalizeTelegramWebhookPayload(payload: unknown) {
+const TELEGRAM_CODEC = {
+  normalize(target: Parameters<typeof TELEGRAM_BASE_CODEC.normalize>[0]) {
+    const normalized = TELEGRAM_BASE_CODEC.normalize({
+      ...target,
+      threadId: undefined,
+    });
+    if (!target.threadId) {
+      return normalized;
+    }
+    const topicId = requireNativeId(
+      target.threadId,
+      TELEGRAM_MESSAGE_THREAD_ID_RULE,
+      "Telegram message_thread_id",
+    );
+    return {
+      ...normalized,
+      threadId: `${normalized.channelId}:${topicId}`,
+    };
+  },
+  resolveThreadId(target: Parameters<typeof TELEGRAM_BASE_CODEC.resolveThreadId>[0]) {
+    const normalized = this.normalize(target);
+    return normalized.threadId ?? normalized.channelId ?? normalized.id;
+  },
+};
+
+export function normalizeTelegramWebhookPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("Telegram webhook payload must be an object", { kind: "inbound" });
   }
@@ -94,6 +120,11 @@ function normalizeTelegramWebhookPayload(payload: unknown) {
   }
 
   const topicId = optionalStringish(message, "message_thread_id");
+  const normalizedChatId = requireNativeInboundId(
+    chatId,
+    TELEGRAM_CHAT_ID_RULE,
+    "Telegram message.chat.id",
+  );
   const from = optionalRecord(message, "from");
   return {
     author: authorFromBotFlag(from?.is_bot === true),
@@ -105,12 +136,12 @@ function normalizeTelegramWebhookPayload(payload: unknown) {
     raw: payload,
     text,
     threadId: topicId
-      ? requireNativeInboundId(
+      ? `${normalizedChatId}:${requireNativeInboundId(
           topicId,
           TELEGRAM_MESSAGE_THREAD_ID_RULE,
           "Telegram message.message_thread_id",
-        )
-      : requireNativeInboundId(chatId, TELEGRAM_CHAT_ID_RULE, "Telegram message.chat.id"),
+        )}`
+      : normalizedChatId,
   };
 }
 

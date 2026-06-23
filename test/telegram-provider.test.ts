@@ -1,6 +1,7 @@
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  normalizeTelegramWebhookPayload,
   resolveTelegramAdapterConfig,
   TelegramProviderAdapter,
 } from "../src/providers/builtin/telegram.js";
@@ -108,11 +109,34 @@ describe("telegram provider", () => {
       }),
     ).toMatchObject({
       channelId: "-100123",
-      threadId: "42",
+      threadId: "-100123:42",
     });
     expect(() => provider.normalizeTarget({ id: "telegram:-100123", metadata: {} })).toThrow(
       /Telegram chat_id/u,
     );
+  });
+
+  it("isolates identical topic ids across Telegram chats", () => {
+    const first = normalizeTelegramWebhookPayload({
+      message: {
+        chat: { id: "-1001" },
+        message_thread_id: 42,
+        text: "chat one",
+      },
+    });
+    const second = normalizeTelegramWebhookPayload({
+      message: {
+        chat: { id: "-1002" },
+        message_thread_id: 42,
+        text: "chat two",
+      },
+    });
+
+    const firstThreadId = (first as { threadId?: string }).threadId;
+    const secondThreadId = (second as { threadId?: string }).threadId;
+    expect(firstThreadId).toBe("-1001:42");
+    expect(secondThreadId).toBe("-1002:42");
+    expect(firstThreadId).not.toBe(secondThreadId);
   });
 
   it("probes and sends through the local mock service", async () => {
