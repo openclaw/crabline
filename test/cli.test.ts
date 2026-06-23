@@ -120,6 +120,46 @@ describe("cli", () => {
     expect(captured.stderr.join("")).toContain("No fixture found");
   });
 
+  it("isolates exit codes across repeated invocations", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  local:",
+        "    adapter: loopback",
+        "    platform: loopback",
+        "    loopback:",
+        "      delayMs: 0",
+        "fixtures:",
+        "  - id: missing-env-fixture",
+        "    provider: local",
+        "    mode: send",
+        "    env:",
+        "      - CRABLINE_TEST_MISSING_ENV",
+        "    target:",
+        "      id: sink-bot",
+        "      behavior: sink",
+      ].join("\n"),
+    );
+    const captured = captureWrites();
+    const originalEnv = process.env.CRABLINE_TEST_MISSING_ENV;
+    delete process.env.CRABLINE_TEST_MISSING_ENV;
+
+    try {
+      expect(await runCli(["node", "crabline", "--config", configPath, "doctor"])).toBe(10);
+      expect(await runCli(["node", "crabline", "--config", configPath, "fixtures"])).toBe(0);
+    } finally {
+      captured.restore();
+      if (originalEnv !== undefined) {
+        process.env.CRABLINE_TEST_MISSING_ENV = originalEnv;
+      }
+    }
+  });
+
   it("classifies malformed config as a config error", async () => {
     const directory = await createTempDir();
     directories.push(directory);

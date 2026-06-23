@@ -13,6 +13,8 @@ type GlobalOptions = {
   json?: boolean;
 };
 
+type SetExitCode = (code: number) => void;
+
 function print(value: string): void {
   process.stdout.write(`${value}\n`);
 }
@@ -24,7 +26,11 @@ async function withManifest<T>(
   return action(await loadManifest(options.config));
 }
 
-export function createProgram(): Command {
+export function createProgram(
+  setExitCode: SetExitCode = (code) => {
+    process.exitCode = code;
+  },
+): Command {
   const program = new Command();
 
   program
@@ -93,7 +99,7 @@ export function createProgram(): Command {
         registry,
       });
       print(options.json ? formatJson(result) : formatRunResultText(result));
-      process.exitCode = computeExitCode(result);
+      setExitCode(computeExitCode(result));
     });
 
   for (const mode of ["send", "roundtrip", "agent"] as const) {
@@ -112,7 +118,7 @@ export function createProgram(): Command {
           registry,
         });
         print(options.json ? formatJson(result) : formatRunResultText(result));
-        process.exitCode = computeExitCode(result);
+        setExitCode(computeExitCode(result));
       });
   }
 
@@ -130,7 +136,7 @@ export function createProgram(): Command {
         registry,
       });
       print(options.json ? formatJson(result) : formatRunResultText(result));
-      process.exitCode = computeExitCode(result);
+      setExitCode(computeExitCode(result));
     });
 
   program
@@ -227,7 +233,7 @@ export function createProgram(): Command {
       const ok = findings.length === 0;
       const payload = { findings, ok };
       print(options.json ? formatJson(payload) : ok ? "doctor ok" : findings.join("\n"));
-      process.exitCode = ok ? 0 : 10;
+      setExitCode(ok ? 0 : 10);
     });
 
   return program;
@@ -341,10 +347,13 @@ function diagnose(manifest: Awaited<ReturnType<typeof loadManifest>>["manifest"]
 }
 
 export async function runCli(argv: string[]): Promise<number> {
-  const program = createProgram();
+  let exitCode = 0;
+  const program = createProgram((code) => {
+    exitCode = code;
+  });
   try {
     await program.parseAsync(argv);
-    return Number(process.exitCode ?? 0);
+    return exitCode;
   } catch (error) {
     const message = ensureErrorMessage(error);
     process.stderr.write(`${message}\n`);
