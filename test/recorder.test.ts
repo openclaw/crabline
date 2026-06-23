@@ -1,4 +1,4 @@
-import { appendFile } from "node:fs/promises";
+import { appendFile, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -65,6 +65,16 @@ describe("recorder", () => {
         timeoutMs: 30,
       }),
     ).resolves.toEqual(recorded);
+
+    const iterator = watchRecordedInbound({
+      filePath,
+      matches: (event) => event.id === "evt-valid",
+      pollMs: 10,
+    })[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: recorded,
+    });
   });
 
   it("waits for a matching inbound event", async () => {
@@ -136,5 +146,66 @@ describe("recorder", () => {
     const next = await iterator.next();
     expect(next.done).toBe(false);
     expect(next.value?.id).toBe("evt-3");
+  });
+
+  it("reads only appended records while watching a large recorder", async () => {
+    const filePath = await createRecorderPath();
+    const history = Array.from(
+      { length: 1000 },
+      (_, index) =>
+        `${JSON.stringify({
+          author: "user",
+          id: `history-${index}`,
+          provider: "slack",
+          recordedAt: new Date().toISOString(),
+          sentAt: new Date().toISOString(),
+          text: "history",
+          threadId: "slack:C999",
+        })}\n`,
+    ).join("");
+    await appendFile(filePath, history, "utf8");
+
+    const probeHandle = await open(filePath, "r");
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle);
+    await probeHandle.close();
+    const originalRead = fileHandlePrototype.read;
+    let bytesRead = 0;
+    fileHandlePrototype.read = async function (
+      this: FileHandle,
+      buffer: Uint8Array,
+      offset?: number | null,
+      length?: number | null,
+      position?: number | null,
+    ) {
+      const result = await originalRead.call(this, buffer, offset, length, position);
+      bytesRead += result.bytesRead;
+      return result;
+    };
+
+    try {
+      const iterator = watchRecordedInbound({
+        filePath,
+        matches: (event) => event.id === "evt-tail",
+        pollMs: 10,
+      })[Symbol.asyncIterator]();
+
+      setTimeout(() => {
+        void appendRecordedInbound(filePath, {
+          author: "user",
+          id: "evt-tail",
+          provider: "slack",
+          sentAt: new Date().toISOString(),
+          text: "tail me",
+          threadId: "slack:C999",
+        });
+      }, 25);
+
+      const next = await iterator.next();
+      expect(next.value?.id).toBe("evt-tail");
+      expect(bytesRead).toBeGreaterThanOrEqual(Buffer.byteLength(history));
+      expect(bytesRead).toBeLessThan(Buffer.byteLength(history) * 2);
+    } finally {
+      fileHandlePrototype.read = originalRead;
+    }
   });
 });
