@@ -213,6 +213,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       cwd: this.#config.cwd ? path.resolve(this.#config.cwd) : process.cwd(),
       env: process.env,
       shell: this.#config.shell ?? true,
+      detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "inherit"],
     });
     child.stdin.end(
@@ -267,6 +268,13 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       child.stdin.destroy();
       if (child.exitCode === null && child.signalCode === null) {
         child.kill();
+        if (process.platform !== "win32" && child.pid) {
+          try {
+            process.kill(-child.pid, "SIGTERM");
+          } catch {
+            // The process group may have already exited with the shell.
+          }
+        }
       }
       await childClosed;
     }
