@@ -133,6 +133,7 @@ describe("script provider", () => {
     const iterator = provider.watch?.({ ...context })?.[Symbol.asyncIterator]();
     const watched = iterator ? await iterator.next() : undefined;
     const pid = Number(watched?.value?.id);
+    expect(Number.isInteger(pid)).toBe(true);
 
     await iterator?.return?.();
 

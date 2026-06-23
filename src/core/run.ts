@@ -202,6 +202,8 @@ export async function runFixtureCommand(params: {
     }
   }
 
+  // The finally block can synthesize a result when provider cleanup fails.
+  // oxlint-disable-next-line no-unreachable
   return result!;
 }
 

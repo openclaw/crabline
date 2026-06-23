@@ -66,12 +66,11 @@ describe("local mock provider", () => {
       providerId: "provider-a",
       userName: "crabline",
     };
-    const iterator = providerA
-      .watch({
-        ...context,
-        since: new Date(Date.now() - 1000).toISOString(),
-      })
-      [Symbol.asyncIterator]();
+    const watch = providerA.watch({
+      ...context,
+      since: new Date(Date.now() - 1000).toISOString(),
+    });
+    const iterator = watch[Symbol.asyncIterator]();
     const nextPromise = iterator.next();
 
     await appendRecordedInbound(recorderPath, {
