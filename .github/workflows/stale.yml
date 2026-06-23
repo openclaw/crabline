@@ -1,0 +1,39 @@
+name: Stale
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/stale@v10
+        with:
+          days-before-issue-stale: 14
+          days-before-issue-close: 7
+          days-before-pr-stale: 14
+          days-before-pr-close: 7
+          stale-issue-label: stale
+          stale-pr-label: stale
+          exempt-issue-labels: enhancement,maintainer,pinned,security,no-stale
+          exempt-pr-labels: maintainer,no-stale
+          operations-per-run: 1000
+          ascending: true
+          exempt-all-assignees: true
+          remove-stale-when-updated: true
+          stale-issue-message: |
+            This issue has been automatically marked as stale due to inactivity.
+            Please add updated crabline details or it will be closed.
+          stale-pr-message: |
+            This pull request has been automatically marked as stale due to inactivity.
+            Please update it or it will be closed.
+          close-issue-message: Closing due to inactivity.
+          close-issue-reason: not_planned
+          close-pr-message: Closing due to inactivity.

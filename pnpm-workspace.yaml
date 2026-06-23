@@ -1,0 +1,10 @@
+packages:
+  - "."
+
+minimumReleaseAge: 2880
+
+minimumReleaseAgeExclude:
+  - "@typescript/native-preview*"
+
+nodeLinker: hoisted
+blockExoticSubdeps: true
