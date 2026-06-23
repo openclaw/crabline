@@ -362,7 +362,7 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
     at: new Date().toISOString(),
     body,
     method: params.request.method ?? "GET",
-    path: url.pathname,
+    path: `/bot<redacted>/${botPath.method}`,
     query: queryRecord(url),
     type: "api",
   });

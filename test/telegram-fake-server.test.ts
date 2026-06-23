@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startTelegramFakeServer, type StartedTelegramFakeServer } from "../src/index.js";
@@ -156,5 +157,21 @@ describe("telegram fake provider server", () => {
         update_id: 101,
       },
     });
+  });
+
+  it("redacts the bot token from recorded API paths", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const botToken = "987654:distinctive-secret-token";
+    const recorderPath = path.join(directory, "telegram.jsonl");
+    const server = await startTelegramFakeServer({ botToken, recorderPath });
+    servers.push(server);
+
+    const response = await fetch(`${server.manifest.baseUrl}/bot${botToken}/getMe`);
+    await expect(response.json()).resolves.toMatchObject({ ok: true });
+
+    const recordedEvents = await fs.readFile(recorderPath, "utf8");
+    expect(recordedEvents).not.toContain(botToken);
+    expect(recordedEvents).toContain('"path":"/bot<redacted>/getMe"');
   });
 });
