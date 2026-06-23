@@ -226,33 +226,49 @@ export class ScriptProviderAdapter implements ProviderAdapter {
     );
 
     let buffer = "";
-    for await (const chunk of child.stdout) {
-      buffer += String(chunk);
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.trim()) {
-          continue;
-        }
-        const parsed = JSON.parse(line) as ScriptInboundResult["message"];
-        if (!parsed) {
-          continue;
-        }
-        yield {
-          ...parsed,
-          provider: this.id,
-        };
+    const childClosed = new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        resolve();
+        return;
       }
-    }
+      child.once("close", () => resolve());
+    });
 
-    if (buffer.trim()) {
-      const parsed = JSON.parse(buffer) as ScriptInboundResult["message"];
-      if (parsed) {
-        yield {
-          ...parsed,
-          provider: this.id,
-        };
+    try {
+      for await (const chunk of child.stdout) {
+        buffer += String(chunk);
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) {
+            continue;
+          }
+          const parsed = JSON.parse(line) as ScriptInboundResult["message"];
+          if (!parsed) {
+            continue;
+          }
+          yield {
+            ...parsed,
+            provider: this.id,
+          };
+        }
       }
+
+      if (buffer.trim()) {
+        const parsed = JSON.parse(buffer) as ScriptInboundResult["message"];
+        if (parsed) {
+          yield {
+            ...parsed,
+            provider: this.id,
+          };
+        }
+      }
+    } finally {
+      child.stdin.destroy();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill();
+      }
+      await childClosed;
     }
   }
 }

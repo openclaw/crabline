@@ -110,6 +110,44 @@ describe("script provider", () => {
     expect(watched?.value?.id).toBe("watch-1");
   });
 
+  it("stops the watch subprocess when iteration ends early", async () => {
+    const context = await createContext();
+    const watchScript = path.join(path.dirname(context.manifestPath), "watch-leaking.mjs");
+    await writeText(
+      watchScript,
+      'process.stdout.write(JSON.stringify({author:"assistant",id:String(process.pid),sentAt:new Date().toISOString(),text:"watch payload",threadId:"thread-1"})+"\\n");setInterval(()=>{},1000);',
+    );
+    const provider = new ScriptProviderAdapter({
+      ...context,
+      config: {
+        ...context.config,
+        script: {
+          ...context.config.script!,
+          commands: {
+            ...context.config.script!.commands,
+            watch: `node ${watchScript}`,
+          },
+        },
+      },
+    });
+    const iterator = provider.watch?.({ ...context })?.[Symbol.asyncIterator]();
+    const watched = iterator ? await iterator.next() : undefined;
+    const pid = Number(watched?.value?.id);
+
+    await iterator?.return?.();
+
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`watch subprocess ${pid} is still running`);
+  });
+
   it("fails when required commands are missing", async () => {
     const context = await createContext();
     const provider = new ScriptProviderAdapter({
