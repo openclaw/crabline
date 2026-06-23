@@ -39,5 +39,6 @@ describe("errors and reporters", () => {
     expect(stripAnsi(single)).toContain("PASS");
     expect(stripAnsi(suite)).toContain("suite 1/1 passed");
     expect(formatJson({ ok: true })).toContain('"ok": true');
+    expect(formatJson(undefined)).toBe("null");
   });
 });
