@@ -244,6 +244,16 @@ export class ScriptProviderAdapter implements ProviderAdapter {
         };
       }
     }
+
+    if (buffer.trim()) {
+      const parsed = JSON.parse(buffer) as ScriptInboundResult["message"];
+      if (parsed) {
+        yield {
+          ...parsed,
+          provider: this.id,
+        };
+      }
+    }
   }
 }
 

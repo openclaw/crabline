@@ -10,7 +10,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
-const createContext = async (): Promise<ProviderContext> => {
+const createContext = async (watchTrailingNewline = true): Promise<ProviderContext> => {
   const directory = await createTempDir();
   directories.push(directory);
 
@@ -33,7 +33,7 @@ const createContext = async (): Promise<ProviderContext> => {
   );
   await writeText(
     watchScript,
-    'process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(JSON.stringify({author:"assistant",id:"watch-1",sentAt:new Date().toISOString(),text:"watch payload",threadId:"thread-1"})+"\\n"));',
+    `process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(JSON.stringify({author:"assistant",id:"watch-1",sentAt:new Date().toISOString(),text:"watch payload",threadId:"thread-1"})${watchTrailingNewline ? '+ "\\n"' : ""}));`,
   );
 
   return {
@@ -98,6 +98,15 @@ describe("script provider", () => {
 
     const iterator = provider.watch?.({ ...context });
     const watched = iterator ? await iterator[Symbol.asyncIterator]().next() : undefined;
+    expect(watched?.value?.id).toBe("watch-1");
+  });
+
+  it("yields a final watch message without a trailing newline", async () => {
+    const context = await createContext(false);
+    const provider = new ScriptProviderAdapter(context);
+    const iterator = provider.watch?.({ ...context });
+    const watched = iterator ? await iterator[Symbol.asyncIterator]().next() : undefined;
+
     expect(watched?.value?.id).toBe("watch-1");
   });
 
