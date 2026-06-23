@@ -57,7 +57,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 }
 
-function normalizeWhatsAppWebhookPayload(payload: unknown) {
+export function normalizeWhatsAppWebhookPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("WhatsApp webhook payload must be an object", { kind: "inbound" });
   }

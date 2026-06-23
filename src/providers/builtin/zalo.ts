@@ -54,7 +54,7 @@ export class ZaloProviderAdapter extends LocalMockProviderAdapter implements Pro
   }
 }
 
-function normalizeZaloWebhookPayload(payload: unknown) {
+export function normalizeZaloWebhookPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("Zalo webhook payload must be an object", { kind: "inbound" });
   }
