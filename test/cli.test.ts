@@ -120,6 +120,41 @@ describe("cli", () => {
     expect(captured.stderr.join("")).toContain("No fixture found");
   });
 
+  it("classifies malformed config as a config error", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(configPath, "providers: [\n");
+    const captured = captureWrites();
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli(["node", "crabline", "--config", configPath, "doctor"]);
+    } finally {
+      captured.restore();
+    }
+
+    expect(exitCode!).toBe(10);
+    expect(captured.stderr.join("")).toContain(`Unable to load config file "${configPath}"`);
+  });
+
+  it("classifies a missing explicit config path as a config error", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "missing.yaml");
+    const captured = captureWrites();
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli(["node", "crabline", "--config", configPath, "doctor"]);
+    } finally {
+      captured.restore();
+    }
+
+    expect(exitCode!).toBe(10);
+    expect(captured.stderr.join("")).toContain(`Unable to load config file "${configPath}"`);
+  });
+
   it("prints a fake Telegram server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);

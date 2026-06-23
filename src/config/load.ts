@@ -1,7 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
-import { CrablineError } from "../core/errors.js";
+import { CrablineError, ensureErrorMessage } from "../core/errors.js";
 import { type ManifestDefinition, ManifestSchema } from "./schema.js";
 
 const DEFAULT_CONFIG_CANDIDATES = ["crabline.yaml", "crabline.yml", "crabline.json"] as const;
@@ -39,8 +39,15 @@ export async function loadManifest(
   configPath?: string,
 ): Promise<{ manifest: ManifestDefinition; path: string }> {
   const resolvedPath = await resolveConfigPath(configPath);
-  const raw = await readFile(resolvedPath, "utf8");
-  const parsed = resolvedPath.endsWith(".json") ? JSON.parse(raw) : YAML.parse(raw);
-  const manifest = ManifestSchema.parse(parsed);
-  return { manifest, path: resolvedPath };
+  try {
+    const raw = await readFile(resolvedPath, "utf8");
+    const parsed = resolvedPath.endsWith(".json") ? JSON.parse(raw) : YAML.parse(raw);
+    const manifest = ManifestSchema.parse(parsed);
+    return { manifest, path: resolvedPath };
+  } catch (error) {
+    throw new CrablineError(
+      `Unable to load config file "${resolvedPath}": ${ensureErrorMessage(error)}`,
+      { cause: error, kind: "config" },
+    );
+  }
 }
