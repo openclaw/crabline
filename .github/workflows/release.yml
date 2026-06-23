@@ -30,7 +30,7 @@ jobs:
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -45,7 +45,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 10.32.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
