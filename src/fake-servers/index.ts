@@ -26,41 +26,29 @@ export type StartCrablineFakeProviderServerParams =
   | (StartTelegramFakeServerParams & { channel: "telegram" })
   | (StartWhatsAppFakeServerParams & { channel: "whatsapp" });
 
-type FakeProviderServerDefinition = {
-  start(params: StartCrablineFakeProviderServerParams): Promise<StartedCrablineFakeProviderServer>;
-};
-
-const FAKE_PROVIDER_SERVER_DEFINITIONS = {
-  telegram: {
-    start: async (params) =>
-      await startTelegramFakeServer(
-        params as StartTelegramFakeServerParams & {
-          channel: "telegram";
-        },
-      ),
-  },
-  whatsapp: {
-    start: async (params) =>
-      await startWhatsAppFakeServer(
-        params as StartWhatsAppFakeServerParams & {
-          channel: "whatsapp";
-        },
-      ),
-  },
-} satisfies Record<CrablineFakeProviderChannel, FakeProviderServerDefinition>;
+const CRABLINE_FAKE_PROVIDER_CHANNEL_SET = new Set<string>(CRABLINE_FAKE_PROVIDER_CHANNELS);
 
 export function isCrablineFakeProviderChannel(value: string): value is CrablineFakeProviderChannel {
-  return Object.hasOwn(FAKE_PROVIDER_SERVER_DEFINITIONS, value);
+  return CRABLINE_FAKE_PROVIDER_CHANNEL_SET.has(value);
 }
 
+export function startCrablineFakeProviderServer(
+  params: StartTelegramFakeServerParams & { channel: "telegram" },
+): Promise<StartedTelegramFakeServer>;
+export function startCrablineFakeProviderServer(
+  params: StartWhatsAppFakeServerParams & { channel: "whatsapp" },
+): Promise<StartedWhatsAppFakeServer>;
+export function startCrablineFakeProviderServer(
+  params: StartCrablineFakeProviderServerParams,
+): Promise<StartedCrablineFakeProviderServer>;
 export async function startCrablineFakeProviderServer(
   params: StartCrablineFakeProviderServerParams,
 ): Promise<StartedCrablineFakeProviderServer> {
-  const definition = FAKE_PROVIDER_SERVER_DEFINITIONS[params.channel];
-  if (!definition) {
-    throw new CrablineError(`Unsupported fake provider server: ${String(params.channel)}`, {
-      kind: "config",
-    });
+  if (params.channel === "telegram") {
+    return await startTelegramFakeServer(params);
   }
-  return await definition.start(params);
+  if (params.channel === "whatsapp") {
+    return await startWhatsAppFakeServer(params);
+  }
+  throw new CrablineError("Unsupported fake provider server.", { kind: "config" });
 }

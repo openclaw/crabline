@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CrablineError } from "../core/errors.js";
+import { adminAuthError, hasAdminToken } from "./http.js";
 
 type TelegramFakeServerEvent = {
   at: string;
@@ -281,24 +282,6 @@ function queryRecord(url: URL): Record<string, string> {
   return Object.fromEntries(url.searchParams.entries());
 }
 
-function hasAdminToken(request: IncomingMessage, expectedToken: string): boolean {
-  const header = request.headers["x-crabline-admin-token"];
-  const directToken = Array.isArray(header) ? header[0] : header;
-  const authorization = request.headers.authorization;
-  const bearerToken =
-    typeof authorization === "string" && /^Bearer\s+/iu.test(authorization)
-      ? authorization.replace(/^Bearer\s+/iu, "")
-      : undefined;
-  const providedToken = directToken ?? bearerToken;
-  if (!providedToken) {
-    return false;
-  }
-
-  const provided = Buffer.from(providedToken);
-  const expected = Buffer.from(expectedToken);
-  return provided.length === expected.length && timingSafeEqual(provided, expected);
-}
-
 async function handleTelegramApi(params: {
   body: Record<string, unknown>;
   method: string;
@@ -358,10 +341,7 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
       return new Response("not found", { status: 404 });
     }
     if (!hasAdminToken(params.request, params.state.adminToken)) {
-      return new Response("unauthorized", {
-        headers: { "www-authenticate": "Bearer" },
-        status: 401,
-      });
+      return adminAuthError();
     }
     const body = await parseRequestBody(params.request);
     const update = createInboundUpdate(params.state, body);

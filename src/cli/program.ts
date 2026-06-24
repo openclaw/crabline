@@ -45,8 +45,6 @@ type ServeParamFactory = (
   commandOptions: ServeCommandOptions,
 ) => StartCrablineFakeProviderServerParams;
 
-type ServeTextRenderer = (manifest: CrablineFakeProviderManifest, lines: string[]) => void;
-
 const SERVE_PARAM_FACTORIES = {
   telegram: (shared, commandOptions) => ({
     ...shared,
@@ -63,25 +61,6 @@ const SERVE_PARAM_FACTORIES = {
     selfJid: commandOptions.selfJid,
   }),
 } satisfies Record<CrablineFakeProviderChannel, ServeParamFactory>;
-
-const SERVE_TEXT_RENDERERS = {
-  telegram: (manifest, lines) => {
-    const telegram = manifest as Extract<CrablineFakeProviderManifest, { provider: "telegram" }>;
-    lines.splice(2, 0, `  adminToken: ${telegram.adminToken}`, `  botToken: ${telegram.botToken}`);
-  },
-  whatsapp: (manifest, lines) => {
-    const whatsapp = manifest as Extract<CrablineFakeProviderManifest, { provider: "whatsapp" }>;
-    lines.splice(
-      2,
-      0,
-      `  adminToken: ${whatsapp.adminToken}`,
-      `  accessToken: ${whatsapp.accessToken}`,
-      `  messages: ${whatsapp.endpoints.messagesUrl}`,
-      `  presence: ${whatsapp.endpoints.presenceUrl}`,
-      `  selfJid: ${whatsapp.selfJid}`,
-    );
-  },
-} satisfies Record<CrablineFakeProviderChannel, ServeTextRenderer>;
 
 function print(value: string): void {
   process.stdout.write(`${value}\n`);
@@ -334,14 +313,30 @@ function renderServeText(manifest: CrablineFakeProviderManifest) {
     `  inbound: ${manifest.endpoints.adminInboundUrl}`,
     `  recorder: ${manifest.recorderPath}`,
   ];
-  const renderProviderFields = SERVE_TEXT_RENDERERS[manifest.provider];
-  if (!renderProviderFields) {
+  const providerFields = renderServeProviderFields(manifest);
+  if (!providerFields) {
     throw new CrablineError(`Unsupported fake provider server: ${String(manifest.provider)}`, {
       kind: "config",
     });
   }
-  renderProviderFields(manifest, lines);
+  lines.splice(2, 0, ...providerFields);
   return lines.join("\n");
+}
+
+function renderServeProviderFields(manifest: CrablineFakeProviderManifest): string[] | undefined {
+  if (manifest.provider === "telegram") {
+    return [`  adminToken: ${manifest.adminToken}`, `  botToken: ${manifest.botToken}`];
+  }
+  if (manifest.provider === "whatsapp") {
+    return [
+      `  adminToken: ${manifest.adminToken}`,
+      `  accessToken: ${manifest.accessToken}`,
+      `  messages: ${manifest.endpoints.messagesUrl}`,
+      `  presence: ${manifest.endpoints.presenceUrl}`,
+      `  selfJid: ${manifest.selfJid}`,
+    ];
+  }
+  return undefined;
 }
 
 function renderProvidersText(payload: {

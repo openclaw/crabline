@@ -125,17 +125,18 @@ Manifest fields:
 - `endpoints.presenceUrl`: presence endpoint used by `sendPresenceUpdate`
 - `recorderPath`: JSONL provider traffic recorder
 
-Use `createWhatsAppBaileysMockSocket()` when a test needs a Baileys-style
-`sendMessage()` / `sendPresenceUpdate()` surface backed by the same fake
-provider server. The admin token is generated randomly unless
+Use the started server's `createBaileysMockSocket()` when a test needs a
+Baileys-style `sendMessage()` / `sendPresenceUpdate()` surface backed by the
+same fake provider server. The admin token is generated randomly unless
 `--admin-token <token>` is provided.
 
 OpenClaw bridge callers should post injected user messages with the
 `providerUrl`, `providerHeaders`, and `providerBody` returned by
 `createOpenClawCrablineInbound()`. For WhatsApp, inbound `messages.upsert`
 delivery is an in-process Baileys mock socket behavior: create the fake server
-and `createWhatsAppBaileysMockSocket()` in the same Node process when testing
-listener-driven inbound delivery.
+and Baileys mock socket in the same Node process when testing listener-driven
+inbound delivery. If the socket is created outside the started server, pass the
+same `WhatsAppBaileysMockRegistry` to the server and socket helper.
 
 The admin ingress accepts JSON like:
 

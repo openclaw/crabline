@@ -1,11 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  createWhatsAppBaileysMockSocket,
-  startWhatsAppFakeServer,
-  type StartedWhatsAppFakeServer,
-} from "../src/index.js";
+import { startWhatsAppFakeServer, type StartedWhatsAppFakeServer } from "../src/index.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const servers: StartedWhatsAppFakeServer[] = [];
@@ -27,11 +23,7 @@ describe("whatsapp fake provider server", () => {
     });
     servers.push(server);
     const inboundEvents: unknown[] = [];
-    const socket = createWhatsAppBaileysMockSocket({
-      accessToken: server.manifest.accessToken,
-      apiRoot: server.manifest.endpoints.apiRoot,
-      selfJid: server.manifest.selfJid,
-    });
+    const socket = server.createBaileysMockSocket();
     socket.ev.on("messages.upsert", (payload) => {
       inboundEvents.push(payload);
     });
@@ -223,11 +215,7 @@ describe("whatsapp fake provider server", () => {
       recorderPath: path.join(directory, "whatsapp.jsonl"),
     });
     servers.push(server);
-    const socket = createWhatsAppBaileysMockSocket({
-      accessToken: server.manifest.accessToken,
-      apiRoot: server.manifest.endpoints.apiRoot,
-      selfJid: server.manifest.selfJid,
-    });
+    const socket = server.createBaileysMockSocket();
     const emitted: unknown[] = [];
     socket.ev.on("messages.upsert", (payload) => {
       emitted.push(payload);

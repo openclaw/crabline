@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { CrablineError } from "../core/errors.js";
 
 export type FakeServerRequestEvent = {
@@ -9,6 +10,8 @@ export type FakeServerRequestEvent = {
   query: Record<string, string>;
   type: "admin" | "api";
 };
+
+export const ADMIN_TOKEN_HEADER = "x-crabline-admin-token";
 
 export function jsonResponse(value: unknown, status = 200): Response {
   return Response.json(value, { status });
@@ -129,4 +132,35 @@ export function readInteger(value: unknown): number | undefined {
     return undefined;
   }
   return Number(stringValue);
+}
+
+function readBearerToken(authorization: string | undefined): string | undefined {
+  if (!authorization) {
+    return undefined;
+  }
+  const trimmed = authorization.trimStart();
+  if (trimmed.slice(0, 7).toLowerCase() !== "bearer ") {
+    return undefined;
+  }
+  return trimmed.slice(7);
+}
+
+export function hasAdminToken(request: IncomingMessage, expectedToken: string): boolean {
+  const header = request.headers[ADMIN_TOKEN_HEADER];
+  const directToken = Array.isArray(header) ? header[0] : header;
+  const providedToken = directToken ?? readBearerToken(request.headers.authorization);
+  if (!providedToken) {
+    return false;
+  }
+
+  const provided = Buffer.from(providedToken);
+  const expected = Buffer.from(expectedToken);
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
+}
+
+export function adminAuthError(): Response {
+  return new Response("unauthorized", {
+    headers: { "www-authenticate": "Bearer" },
+    status: 401,
+  });
 }

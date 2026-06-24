@@ -172,17 +172,19 @@ The JSON manifest contains:
   `sendPresenceUpdate`
 - `recorderPath`: JSONL file of fake provider API/admin traffic
 
-Crabline also exports `createWhatsAppBaileysMockSocket()` so tests can exercise
-a Baileys-style WhatsApp `sendMessage()` / `sendPresenceUpdate()` surface while
-the fake server owns local provider simulation. The admin token is generated
-randomly unless `--admin-token <token>` is provided.
+The started WhatsApp fake server also exposes `createBaileysMockSocket()` so
+tests can exercise a Baileys-style WhatsApp `sendMessage()` /
+`sendPresenceUpdate()` surface while the fake server owns local provider
+simulation. The admin token is generated randomly unless `--admin-token <token>`
+is provided.
 
 OpenClaw bridge callers should post injected user messages with the
 `providerUrl`, `providerHeaders`, and `providerBody` returned by
 `createOpenClawCrablineInbound()`. For WhatsApp, inbound `messages.upsert`
 delivery is an in-process Baileys mock socket behavior: create the fake server
-and `createWhatsAppBaileysMockSocket()` in the same Node process when testing
-listener-driven inbound delivery.
+and Baileys mock socket in the same Node process when testing listener-driven
+inbound delivery. If the socket is created outside the started server, pass the
+same `WhatsAppBaileysMockRegistry` to the server and socket helper.
 
 ## Target IDs
 

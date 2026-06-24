@@ -9,6 +9,7 @@ import {
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent,
   createWhatsAppBaileysMockSocket,
+  DEFAULT_WHATSAPP_BAILEYS_MOCK_REGISTRY,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
@@ -338,6 +339,7 @@ describe("OpenClaw fake provider bridge", () => {
       const socket = createWhatsAppBaileysMockSocket({
         accessToken: adapter.manifest.accessToken,
         apiRoot: adapter.manifest.endpoints.apiRoot,
+        registry: DEFAULT_WHATSAPP_BAILEYS_MOCK_REGISTRY,
         selfJid: adapter.manifest.selfJid,
       });
       socket.ev.on("messages.upsert", (payload) => {
