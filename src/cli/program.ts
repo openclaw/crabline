@@ -38,6 +38,7 @@ type ServeCommandOptions = {
   readyFile?: string | undefined;
   recorder?: string | undefined;
   selfJid?: string | undefined;
+  signingSecret?: string | undefined;
 };
 
 type ServeParamFactory = (
@@ -46,6 +47,13 @@ type ServeParamFactory = (
 ) => StartCrablineFakeProviderServerParams;
 
 const SERVE_PARAM_FACTORIES = {
+  slack: (shared, commandOptions) => ({
+    ...shared,
+    adminToken: commandOptions.adminToken,
+    botToken: commandOptions.botToken,
+    channel: "slack",
+    signingSecret: commandOptions.signingSecret,
+  }),
   telegram: (shared, commandOptions) => ({
     ...shared,
     adminToken: commandOptions.adminToken,
@@ -232,11 +240,12 @@ export function createProgram(
     .option("--port <port>", "Bind port", "0")
     .option("--admin-token <token>", "Admin token for inbound test messages")
     .option("--access-token <token>", "Fake WhatsApp access token")
-    .option("--bot-token <token>", "Fake Telegram bot token")
+    .option("--bot-token <token>", "Fake Telegram or Slack bot token")
     .option("--bot-username <username>", "Fake Telegram bot username", "crabline_bot")
     .option("--recorder <path>", "JSONL recorder path")
     .option("--ready-file <path>", "Write the server runtime manifest to this path")
     .option("--self-jid <jid>", "Fake WhatsApp self JID")
+    .option("--signing-secret <secret>", "Fake Slack signing secret")
     .option("--once", "Start, print the runtime manifest, and stop immediately", false)
     .action(async (provider, commandOptions: ServeCommandOptions) => {
       const options = program.opts() as GlobalOptions;

@@ -1,5 +1,6 @@
 export { resolveTelegramAdapterConfig } from "./providers/builtin/telegram.js";
 export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
+export { startSlackFakeServer } from "./fake-servers/slack.js";
 export { startTelegramFakeServer } from "./fake-servers/telegram.js";
 export {
   createWhatsAppBaileysMockSocket,
@@ -62,6 +63,11 @@ export type {
   WaitContext,
   WatchContext,
 } from "./providers/types.js";
+export type {
+  SlackFakeServerManifest,
+  StartedSlackFakeServer,
+  StartSlackFakeServerParams,
+} from "./fake-servers/slack.js";
 export type {
   StartedTelegramFakeServer,
   StartTelegramFakeServerParams,
