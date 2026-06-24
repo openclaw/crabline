@@ -57,6 +57,26 @@ const whatsappManifest: CrablineFakeProviderManifest = {
   version: 1,
 };
 
+const slackManifest: CrablineFakeProviderManifest = {
+  adminToken: "crabline-slack-admin-token",
+  baseUrl: "http://127.0.0.1:2468",
+  botToken: "xoxb-crabline-slack-token",
+  endpoints: {
+    adminInboundUrl: "http://127.0.0.1:2468/crabline/slack/inbound",
+    apiRoot: "http://127.0.0.1:2468/api/",
+    eventsUrl: "http://127.0.0.1:2468/slack/events",
+  },
+  env: {
+    SLACK_API_URL: "http://127.0.0.1:2468/api/",
+    SLACK_BOT_TOKEN: "xoxb-crabline-slack-token",
+    SLACK_SIGNING_SECRET: "crabline-slack-signing-secret",
+  },
+  provider: "slack",
+  recorderPath: "/tmp/crabline/slack.jsonl",
+  signingSecret: "crabline-slack-signing-secret",
+  version: 1,
+};
+
 describe("OpenClaw fake provider bridge", () => {
   it("resolves channel-driver metadata through Crabline", () => {
     expect(resolveOpenClawCrablineChannelDriverSelection({})).toEqual({
@@ -71,8 +91,11 @@ describe("OpenClaw fake provider bridge", () => {
     expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " WHATSAPP " })).toMatchObject({
       channel: "whatsapp",
     });
+    expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " SLACK " })).toMatchObject({
+      channel: "slack",
+    });
     expect(() => resolveOpenClawCrablineChannelDriverSelection({ channel: "discord" })).toThrow(
-      '--channel must be one of telegram, whatsapp for --channel-driver crabline, got "discord"',
+      '--channel must be one of slack, telegram, whatsapp for --channel-driver crabline, got "discord"',
     );
   });
 
@@ -172,6 +195,46 @@ describe("OpenClaw fake provider bridge", () => {
       CRABLINE_WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
       CRABLINE_WHATSAPP_API_ROOT: "http://127.0.0.1:5678/crabline/whatsapp",
       CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
+    });
+  });
+
+  it("maps a Slack fake provider into OpenClaw channel config", () => {
+    const binding = createOpenClawCrablineFakeProviderBinding(slackManifest);
+
+    expect(binding).toMatchObject({
+      accountId: "default",
+      channel: "slack",
+      requiredPluginIds: ["slack"],
+    });
+    expect(
+      binding.createGatewayConfig({
+        channels: {
+          slack: {
+            enabled: false,
+          },
+          telegram: {
+            enabled: true,
+          },
+        },
+      }),
+    ).toMatchObject({
+      channels: {
+        slack: {
+          botToken: "xoxb-crabline-slack-token",
+          enabled: true,
+          mode: "http",
+          signingSecret: "crabline-slack-signing-secret",
+          webhookPath: "/slack/events",
+        },
+        telegram: {
+          enabled: true,
+        },
+      },
+    });
+    expect(binding.createChannelDriverSmokeEnv({})).toMatchObject({
+      SLACK_API_URL: "http://127.0.0.1:2468/api/",
+      SLACK_BOT_TOKEN: "xoxb-crabline-slack-token",
+      SLACK_SIGNING_SECRET: "crabline-slack-signing-secret",
     });
   });
 
@@ -329,6 +392,76 @@ describe("OpenClaw fake provider bridge", () => {
     });
   });
 
+  it("maps Slack QA targets, inbound messages, and recorder events", () => {
+    expect(
+      createOpenClawCrablineAgentDelivery({
+        manifest: slackManifest,
+        target: "thread:C1234567890/1700000000.000100",
+      }),
+    ).toEqual({
+      channel: "slack",
+      to: "C1234567890",
+      replyChannel: "slack",
+      replyTo: "C1234567890:thread:1700000000.000100",
+    });
+
+    const inbound = createOpenClawCrablineInbound({
+      manifest: slackManifest,
+      input: {
+        conversation: { id: "C1234567890", kind: "group" },
+        senderId: "U1234567890",
+        senderName: "Alice",
+        text: "hello",
+        threadId: "1700000000.000100",
+      },
+    });
+    expect(inbound).toEqual({
+      providerBody: {
+        channel: "C1234567890",
+        user: "U1234567890",
+        username: "Alice",
+        threadTs: "1700000000.000100",
+        text: "hello",
+      },
+      providerHeaders: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "crabline-slack-admin-token",
+      },
+      providerTargetKey: "C1234567890:thread:1700000000.000100",
+      providerUrl: "http://127.0.0.1:2468/crabline/slack/inbound",
+      qaTarget: "thread:C1234567890/1700000000.000100",
+      stateConversation: {
+        id: "C1234567890",
+        kind: "group",
+      },
+      threadId: "1700000000.000100",
+    });
+
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: slackManifest,
+        targetByProviderTarget: new Map([
+          ["C1234567890:thread:1700000000.000100", "thread:qa/parent"],
+        ]),
+        event: {
+          type: "api",
+          path: "/api/chat.postMessage",
+          body: {
+            channel: "C1234567890",
+            text: "hello from openclaw",
+            thread_ts: "1700000000.000100",
+          },
+        },
+      }),
+    ).toEqual({
+      accountId: "default",
+      senderId: "openclaw",
+      senderName: "OpenClaw QA",
+      text: "hello from openclaw",
+      to: "thread:qa/parent",
+    });
+  });
+
   it("posts WhatsApp OpenClaw inbound with admin headers into the Baileys listener path", async () => {
     const adapter = await startOpenClawCrablineAdapter({ channel: "whatsapp" });
     try {
@@ -405,7 +538,7 @@ describe("OpenClaw fake provider bridge", () => {
         result: {
           driver: "crabline",
           selectedChannel: "telegram",
-          supportedChannels: ["telegram", "whatsapp"],
+          supportedChannels: ["slack", "telegram", "whatsapp"],
         },
       });
       expect(result.smoke).toMatchObject({

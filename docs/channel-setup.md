@@ -76,6 +76,36 @@ Fake provider servers sit below OpenClaw's normal channel adapters. QA starts th
 server, writes the emitted runtime manifest into OpenClaw config/env, and then
 OpenClaw talks to the local fake provider instead of the public provider.
 
+Slack:
+
+```bash
+crabline --json serve slack --ready-file .crabline/slack-server.json
+```
+
+Manifest fields:
+
+- `endpoints.apiRoot`: OpenClaw Slack Web API root / `SLACK_API_URL`
+- `botToken`: OpenClaw `channels.slack.botToken`
+- `signingSecret`: OpenClaw `channels.slack.signingSecret`
+- `adminToken`: value for the `X-Crabline-Admin-Token` header on admin ingress
+- `endpoints.adminInboundUrl`: authenticated admin ingress for test user messages
+- `endpoints.eventsUrl`: local Slack Events API endpoint
+- `recorderPath`: JSONL provider traffic recorder
+
+The admin ingress accepts JSON like:
+
+```json
+{
+  "channel": "C1234567890",
+  "threadTs": "1700000000.000100",
+  "user": "U1234567890",
+  "text": "user nonce-123"
+}
+```
+
+OpenClaw consumes that message through Slack Events API shape; outbound adapter
+sends are recorded through Slack `chat.postMessage`.
+
 Telegram:
 
 ```bash

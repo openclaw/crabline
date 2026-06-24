@@ -1,12 +1,9 @@
 import { CrablineError } from "../../core/errors.js";
 import type { LocalMockTargetCodec } from "../local-mock.js";
+import type { NativeIdRule } from "../native-ids.js";
 import type { InboundEnvelope, NormalizedTarget, ProviderContext } from "../types.js";
 
-export type NativeIdRule = {
-  example: string;
-  name: string;
-  pattern: RegExp;
-};
+export type { NativeIdRule } from "../native-ids.js";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);

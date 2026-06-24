@@ -238,6 +238,56 @@ describe("cli", () => {
     await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "telegram"');
   });
 
+  it("prints a fake Slack server runtime manifest", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, ".crabline", "slack-server.json");
+    const captured = captureWrites();
+
+    try {
+      expect(
+        await runCli([
+          "node",
+          "crabline",
+          "--json",
+          "serve",
+          "slack",
+          "--once",
+          "--ready-file",
+          readyFile,
+          "--admin-token",
+          "test-admin-token",
+          "--bot-token",
+          "xoxb-test",
+          "--signing-secret",
+          "test-signing-secret",
+          "--recorder",
+          path.join(directory, "slack.jsonl"),
+        ]),
+      ).toBe(0);
+    } finally {
+      captured.restore();
+    }
+
+    const manifest = JSON.parse(captured.stdout.join("")) as {
+      adminToken?: string;
+      botToken?: string;
+      endpoints?: { adminInboundUrl?: string; apiRoot?: string; eventsUrl?: string };
+      provider?: string;
+      signingSecret?: string;
+    };
+    expect(manifest.provider).toBe("slack");
+    expect(manifest.adminToken).toBe("test-admin-token");
+    expect(manifest.botToken).toBe("xoxb-test");
+    expect(manifest.signingSecret).toBe("test-signing-secret");
+    expect(manifest.endpoints?.apiRoot).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/api\/$/u);
+    expect(manifest.endpoints?.adminInboundUrl).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/crabline\/slack\/inbound$/u,
+    );
+    expect(manifest.endpoints?.eventsUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/slack\/events$/u);
+    await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "slack"');
+  });
+
   it("prints a fake WhatsApp server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);

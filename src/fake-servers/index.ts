@@ -1,4 +1,10 @@
 import {
+  startSlackFakeServer,
+  type SlackFakeServerManifest,
+  type StartedSlackFakeServer,
+  type StartSlackFakeServerParams,
+} from "./slack.js";
+import {
   startTelegramFakeServer,
   type StartedTelegramFakeServer,
   type StartTelegramFakeServerParams,
@@ -12,17 +18,26 @@ import {
 } from "./whatsapp.js";
 import { CrablineError } from "../core/errors.js";
 
-export const CRABLINE_FAKE_PROVIDER_CHANNELS = Object.freeze(["telegram", "whatsapp"] as const);
+export const CRABLINE_FAKE_PROVIDER_CHANNELS = Object.freeze([
+  "slack",
+  "telegram",
+  "whatsapp",
+] as const);
 
 export type CrablineFakeProviderChannel = (typeof CRABLINE_FAKE_PROVIDER_CHANNELS)[number];
 
-export type CrablineFakeProviderManifest = TelegramFakeServerManifest | WhatsAppFakeServerManifest;
+export type CrablineFakeProviderManifest =
+  | SlackFakeServerManifest
+  | TelegramFakeServerManifest
+  | WhatsAppFakeServerManifest;
 
 export type StartedCrablineFakeProviderServer =
+  | StartedSlackFakeServer
   | StartedTelegramFakeServer
   | StartedWhatsAppFakeServer;
 
 export type StartCrablineFakeProviderServerParams =
+  | (StartSlackFakeServerParams & { channel: "slack" })
   | (StartTelegramFakeServerParams & { channel: "telegram" })
   | (StartWhatsAppFakeServerParams & { channel: "whatsapp" });
 
@@ -32,6 +47,9 @@ export function isCrablineFakeProviderChannel(value: string): value is CrablineF
   return CRABLINE_FAKE_PROVIDER_CHANNEL_SET.has(value);
 }
 
+export function startCrablineFakeProviderServer(
+  params: StartSlackFakeServerParams & { channel: "slack" },
+): Promise<StartedSlackFakeServer>;
 export function startCrablineFakeProviderServer(
   params: StartTelegramFakeServerParams & { channel: "telegram" },
 ): Promise<StartedTelegramFakeServer>;
@@ -44,6 +62,9 @@ export function startCrablineFakeProviderServer(
 export async function startCrablineFakeProviderServer(
   params: StartCrablineFakeProviderServerParams,
 ): Promise<StartedCrablineFakeProviderServer> {
+  if (params.channel === "slack") {
+    return await startSlackFakeServer(params);
+  }
   if (params.channel === "telegram") {
     return await startTelegramFakeServer(params);
   }

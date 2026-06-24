@@ -12,20 +12,8 @@ import {
   genericMockPayloadWithNativeThread,
   isRecord,
   requireNativeInboundId,
-  type NativeIdRule,
 } from "./native-local-mock.js";
-
-const SLACK_CHANNEL_ID_RULE: NativeIdRule = {
-  example: "C1234567890",
-  name: "Slack conversation id",
-  pattern: /^[CDG][A-Z0-9]{2,}$/u,
-};
-
-const SLACK_TS_RULE: NativeIdRule = {
-  example: "1700000000.000100",
-  name: "Slack timestamp",
-  pattern: /^\d{10}\.\d{6}$/u,
-};
+import { SLACK_CHANNEL_ID_RULE, SLACK_TS_RULE } from "../slack-ids.js";
 
 function requireSlackChannelId(value: string, label: string): string {
   if (!SLACK_CHANNEL_ID_RULE.pattern.test(value)) {

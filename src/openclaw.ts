@@ -6,6 +6,7 @@ import {
   type CrablineFakeProviderManifest,
   type StartedCrablineFakeProviderServer,
 } from "./fake-servers/index.js";
+import { SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/slack.js";
 import { TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/telegram.js";
 import { WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/whatsapp.js";
 import {
@@ -50,6 +51,7 @@ export type {
 } from "./openclaw/shared.js";
 
 const OPENCLAW_CRABLINE_PROVIDER_BRIDGES = {
+  slack: SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
   telegram: TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
   whatsapp: WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
 } satisfies OpenClawCrablineProviderBridgeRegistry;
