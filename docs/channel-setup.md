@@ -117,15 +117,18 @@ Manifest fields:
 
 - `endpoints.apiRoot`: Crabline WhatsApp fake provider API root
 - `accessToken`: bearer token for fake provider requests
+- `adminToken`: value for the `X-Crabline-Admin-Token` header on admin ingress
 - `selfJid`: fake authenticated WhatsApp user JID
-- `endpoints.adminInboundUrl`: admin ingress for test user messages
+- `endpoints.adminInboundUrl`: authenticated admin ingress for test user
+  messages; subscribed Baileys mock sockets receive them as `messages.upsert`
 - `endpoints.messagesUrl`: text send endpoint used by the Baileys-shaped mock
 - `endpoints.presenceUrl`: presence endpoint used by `sendPresenceUpdate`
 - `recorderPath`: JSONL provider traffic recorder
 
 Use `createWhatsAppBaileysMockSocket()` when a test needs a Baileys-style
 `sendMessage()` / `sendPresenceUpdate()` surface backed by the same fake
-provider server.
+provider server. The admin token is generated randomly unless
+`--admin-token <token>` is provided.
 
 The admin ingress accepts JSON like:
 

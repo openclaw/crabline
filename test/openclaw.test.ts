@@ -35,6 +35,7 @@ const manifest: CrablineFakeProviderManifest = {
 
 const whatsappManifest: CrablineFakeProviderManifest = {
   accessToken: "crabline-whatsapp-access-token",
+  adminToken: "crabline-whatsapp-admin-token",
   baseUrl: "http://127.0.0.1:5678",
   endpoints: {
     adminInboundUrl: "http://127.0.0.1:5678/crabline/whatsapp/inbound",
@@ -43,6 +44,7 @@ const whatsappManifest: CrablineFakeProviderManifest = {
     presenceUrl: "http://127.0.0.1:5678/crabline/whatsapp/presence",
   },
   env: {
+    CRABLINE_WHATSAPP_ADMIN_TOKEN: "crabline-whatsapp-admin-token",
     CRABLINE_WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
     CRABLINE_WHATSAPP_API_ROOT: "http://127.0.0.1:5678/crabline/whatsapp",
     CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
@@ -164,6 +166,7 @@ describe("OpenClaw fake provider bridge", () => {
       },
     });
     expect(binding.createChannelDriverSmokeEnv({})).toMatchObject({
+      CRABLINE_WHATSAPP_ADMIN_TOKEN: "crabline-whatsapp-admin-token",
       CRABLINE_WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
       CRABLINE_WHATSAPP_API_ROOT: "http://127.0.0.1:5678/crabline/whatsapp",
       CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",

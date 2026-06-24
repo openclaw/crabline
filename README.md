@@ -161,8 +161,11 @@ The JSON manifest contains:
 
 - `endpoints.apiRoot`: Crabline WhatsApp fake provider API root
 - `accessToken`: bearer token for fake provider requests
+- `adminToken`: send this as the `X-Crabline-Admin-Token` header when posting
+  test user messages
 - `selfJid`: fake authenticated WhatsApp user JID
-- `endpoints.adminInboundUrl`: POST endpoint for test user messages
+- `endpoints.adminInboundUrl`: authenticated POST endpoint for test user
+  messages; subscribed Baileys mock sockets receive them as `messages.upsert`
 - `endpoints.messagesUrl`: fake text send endpoint used by the Baileys-shaped
   mock
 - `endpoints.presenceUrl`: fake presence endpoint used by
@@ -171,7 +174,8 @@ The JSON manifest contains:
 
 Crabline also exports `createWhatsAppBaileysMockSocket()` so tests can exercise
 a Baileys-style WhatsApp `sendMessage()` / `sendPresenceUpdate()` surface while
-the fake server owns local provider simulation.
+the fake server owns local provider simulation. The admin token is generated
+randomly unless `--admin-token <token>` is provided.
 
 ## Target IDs
 
