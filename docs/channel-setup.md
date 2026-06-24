@@ -76,7 +76,7 @@ Fake provider servers sit below OpenClaw's normal channel adapters. QA starts th
 server, writes the emitted runtime manifest into OpenClaw config/env, and then
 OpenClaw talks to the local fake provider instead of the public provider.
 
-Telegram is currently implemented:
+Telegram:
 
 ```bash
 crabline --json serve telegram --ready-file .crabline/telegram-server.json
@@ -106,6 +106,39 @@ The admin ingress accepts JSON like:
 
 OpenClaw consumes that message through Telegram `getUpdates`; outbound adapter
 sends are recorded through Telegram `sendMessage`.
+
+WhatsApp:
+
+```bash
+crabline --json serve whatsapp --ready-file .crabline/whatsapp-server.json
+```
+
+Manifest fields:
+
+- `endpoints.apiRoot`: Crabline WhatsApp fake provider API root
+- `accessToken`: bearer token for fake provider requests
+- `selfJid`: fake authenticated WhatsApp user JID
+- `endpoints.adminInboundUrl`: admin ingress for test user messages
+- `endpoints.messagesUrl`: text send endpoint used by the Baileys-shaped mock
+- `endpoints.presenceUrl`: presence endpoint used by `sendPresenceUpdate`
+- `recorderPath`: JSONL provider traffic recorder
+
+Use `createWhatsAppBaileysMockSocket()` when a test needs a Baileys-style
+`sendMessage()` / `sendPresenceUpdate()` surface backed by the same fake
+provider server.
+
+The admin ingress accepts JSON like:
+
+```json
+{
+  "chatJid": "120363001234567890@g.us",
+  "senderJid": "15551234567@s.whatsapp.net",
+  "text": "user nonce-123"
+}
+```
+
+Outbound text sends and composing presence are recorded through the fake
+provider messages and presence endpoints.
 
 ## Webhook Payload
 
@@ -145,6 +178,8 @@ as `telegram:`, `discord:`, or `slack:`.
 - Slack threads: `1700000000.000100`
 - Telegram chats: `-1001234567890` or `@channelusername`
 - Telegram topics: `42`
+- WhatsApp users: `15551234567@s.whatsapp.net`
+- WhatsApp groups: `120363001234567890@g.us`
 - Discord channels and threads: Discord snowflake ids such as
   `123456789012345678`
 - Google Chat spaces: `spaces/AAAABbbbCCC`

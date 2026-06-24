@@ -33,6 +33,26 @@ const manifest: CrablineFakeProviderManifest = {
   version: 1,
 };
 
+const whatsappManifest: CrablineFakeProviderManifest = {
+  accessToken: "crabline-whatsapp-access-token",
+  baseUrl: "http://127.0.0.1:5678",
+  endpoints: {
+    adminInboundUrl: "http://127.0.0.1:5678/crabline/whatsapp/inbound",
+    apiRoot: "http://127.0.0.1:5678/crabline/whatsapp",
+    messagesUrl: "http://127.0.0.1:5678/crabline/whatsapp/messages",
+    presenceUrl: "http://127.0.0.1:5678/crabline/whatsapp/presence",
+  },
+  env: {
+    CRABLINE_WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
+    CRABLINE_WHATSAPP_API_ROOT: "http://127.0.0.1:5678/crabline/whatsapp",
+    CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
+  },
+  provider: "whatsapp",
+  recorderPath: "/tmp/crabline/whatsapp.jsonl",
+  selfJid: "15550000000@s.whatsapp.net",
+  version: 1,
+};
+
 describe("OpenClaw fake provider bridge", () => {
   it("resolves channel-driver metadata through Crabline", () => {
     expect(resolveOpenClawCrablineChannelDriverSelection({})).toEqual({
@@ -44,8 +64,11 @@ describe("OpenClaw fake provider bridge", () => {
     expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " TELEGRAM " })).toMatchObject({
       channel: "telegram",
     });
-    expect(() => resolveOpenClawCrablineChannelDriverSelection({ channel: "slack" })).toThrow(
-      '--channel must be one of telegram for --channel-driver crabline, got "slack"',
+    expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " WHATSAPP " })).toMatchObject({
+      channel: "whatsapp",
+    });
+    expect(() => resolveOpenClawCrablineChannelDriverSelection({ channel: "discord" })).toThrow(
+      '--channel must be one of telegram, whatsapp for --channel-driver crabline, got "discord"',
     );
   });
 
@@ -102,6 +125,48 @@ describe("OpenClaw fake provider bridge", () => {
     });
     expect(binding.createChannelDriverSmokeEnv({})).toMatchObject({
       TELEGRAM_BOT_TOKEN: "424242:crabline-telegram-token",
+    });
+  });
+
+  it("maps a WhatsApp fake provider into OpenClaw channel config", () => {
+    const binding = createOpenClawCrablineFakeProviderBinding(whatsappManifest);
+
+    expect(binding).toMatchObject({
+      accountId: "default",
+      channel: "whatsapp",
+      requiredPluginIds: ["whatsapp"],
+    });
+    expect(
+      binding.createGatewayConfig({
+        channels: {
+          slack: {
+            enabled: true,
+            webhookUrl: "https://example.test/slack",
+          },
+          whatsapp: {
+            enabled: false,
+          },
+        },
+      }),
+    ).toMatchObject({
+      channels: {
+        slack: {
+          enabled: true,
+          webhookUrl: "https://example.test/slack",
+        },
+        whatsapp: {
+          enabled: true,
+          dmPolicy: "open",
+          groupPolicy: "open",
+          allowFrom: ["*"],
+          groupAllowFrom: ["*"],
+        },
+      },
+    });
+    expect(binding.createChannelDriverSmokeEnv({})).toMatchObject({
+      CRABLINE_WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
+      CRABLINE_WHATSAPP_API_ROOT: "http://127.0.0.1:5678/crabline/whatsapp",
+      CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
     });
   });
 
@@ -190,6 +255,65 @@ describe("OpenClaw fake provider bridge", () => {
     });
   });
 
+  it("maps WhatsApp QA targets, inbound messages, and recorder events", () => {
+    expect(
+      createOpenClawCrablineAgentDelivery({
+        manifest: whatsappManifest,
+        target: "dm:15551234567@s.whatsapp.net",
+      }),
+    ).toEqual({
+      channel: "whatsapp",
+      to: "15551234567@s.whatsapp.net",
+      replyChannel: "whatsapp",
+      replyTo: "15551234567@s.whatsapp.net",
+    });
+
+    const inbound = createOpenClawCrablineInbound({
+      manifest: whatsappManifest,
+      input: {
+        conversation: { id: "120363001234567890@g.us", kind: "group" },
+        senderId: "15551234567@s.whatsapp.net",
+        senderName: "Alice",
+        text: "hello",
+      },
+    });
+    expect(inbound).toEqual({
+      providerBody: {
+        chatJid: "120363001234567890@g.us",
+        senderJid: "15551234567@s.whatsapp.net",
+        pushName: "Alice",
+        text: "hello",
+      },
+      providerTargetKey: "120363001234567890@g.us",
+      qaTarget: "group:120363001234567890@g.us",
+      stateConversation: {
+        id: "120363001234567890@g.us",
+        kind: "group",
+      },
+    });
+
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: whatsappManifest,
+        targetByProviderTarget: new Map([["15551234567@s.whatsapp.net", "dm:alice"]]),
+        event: {
+          type: "api",
+          path: "/crabline/whatsapp/messages",
+          body: {
+            to: "15551234567@s.whatsapp.net",
+            text: { body: "hello from openclaw" },
+          },
+        },
+      }),
+    ).toEqual({
+      accountId: "default",
+      senderId: "openclaw",
+      senderName: "OpenClaw QA",
+      text: "hello from openclaw",
+      to: "dm:alice",
+    });
+  });
+
   it("runs OpenClaw channel-driver smoke and writes fake-provider artifacts", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-smoke-"));
     try {
@@ -203,7 +327,7 @@ describe("OpenClaw fake provider bridge", () => {
         result: {
           driver: "crabline",
           selectedChannel: "telegram",
-          supportedChannels: ["telegram"],
+          supportedChannels: ["telegram", "whatsapp"],
         },
       });
       expect(result.smoke).toMatchObject({

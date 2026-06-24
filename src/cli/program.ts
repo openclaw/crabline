@@ -6,7 +6,11 @@ import { createRegistry } from "../providers/registry.js";
 import { formatJson, formatRunResultText } from "../core/reporters.js";
 import { computeExitCode, runFixtureCommand, runSuite } from "../core/run.js";
 import { CrablineError, ensureErrorMessage } from "../core/errors.js";
-import { startTelegramFakeServer } from "../fake-servers/telegram.js";
+import {
+  isCrablineFakeProviderChannel,
+  startCrablineFakeProviderServer,
+  type CrablineFakeProviderManifest,
+} from "../fake-servers/index.js";
 
 type GlobalOptions = {
   config?: string;
@@ -184,14 +188,16 @@ export function createProgram(
     .option("--host <host>", "Bind host", "127.0.0.1")
     .option("--port <port>", "Bind port", "0")
     .option("--admin-token <token>", "Admin token for inbound test messages")
+    .option("--access-token <token>", "Fake WhatsApp access token")
     .option("--bot-token <token>", "Fake Telegram bot token")
     .option("--bot-username <username>", "Fake Telegram bot username", "crabline_bot")
     .option("--recorder <path>", "JSONL recorder path")
     .option("--ready-file <path>", "Write the server runtime manifest to this path")
+    .option("--self-jid <jid>", "Fake WhatsApp self JID")
     .option("--once", "Start, print the runtime manifest, and stop immediately", false)
     .action(async (provider, commandOptions) => {
       const options = program.opts() as GlobalOptions;
-      if (provider !== "telegram") {
+      if (!isCrablineFakeProviderChannel(provider)) {
         throw new CrablineError(`Unsupported fake provider server: ${provider}`, {
           kind: "config",
         });
@@ -202,14 +208,25 @@ export function createProgram(
           kind: "config",
         });
       }
-      const server = await startTelegramFakeServer({
-        adminToken: commandOptions.adminToken,
-        botToken: commandOptions.botToken,
-        botUsername: commandOptions.botUsername,
-        host: commandOptions.host,
-        port,
-        recorderPath: commandOptions.recorder,
-      });
+      const server =
+        provider === "telegram"
+          ? await startCrablineFakeProviderServer({
+              adminToken: commandOptions.adminToken,
+              botToken: commandOptions.botToken,
+              botUsername: commandOptions.botUsername,
+              channel: "telegram",
+              host: commandOptions.host,
+              port,
+              recorderPath: commandOptions.recorder,
+            })
+          : await startCrablineFakeProviderServer({
+              accessToken: commandOptions.accessToken,
+              channel: "whatsapp",
+              host: commandOptions.host,
+              port,
+              recorderPath: commandOptions.recorder,
+              selfJid: commandOptions.selfJid,
+            });
       const payload = formatJson(server.manifest);
       if (commandOptions.readyFile) {
         await fs.mkdir(nodePath.dirname(commandOptions.readyFile), { recursive: true });
@@ -249,22 +266,26 @@ function waitForShutdown(close: () => Promise<void>): Promise<void> {
   });
 }
 
-function renderServeText(manifest: {
-  adminToken: string;
-  baseUrl: string;
-  botToken: string;
-  endpoints: { adminInboundUrl: string; apiRoot: string };
-  provider: string;
-  recorderPath: string;
-}) {
-  return [
+function renderServeText(manifest: CrablineFakeProviderManifest) {
+  const lines = [
     `${manifest.provider} fake server ready`,
     `  apiRoot: ${manifest.endpoints.apiRoot}`,
-    `  adminToken: ${manifest.adminToken}`,
-    `  botToken: ${manifest.botToken}`,
     `  inbound: ${manifest.endpoints.adminInboundUrl}`,
     `  recorder: ${manifest.recorderPath}`,
-  ].join("\n");
+  ];
+  if (manifest.provider === "telegram") {
+    lines.splice(2, 0, `  adminToken: ${manifest.adminToken}`, `  botToken: ${manifest.botToken}`);
+  } else {
+    lines.splice(
+      2,
+      0,
+      `  accessToken: ${manifest.accessToken}`,
+      `  messages: ${manifest.endpoints.messagesUrl}`,
+      `  presence: ${manifest.endpoints.presenceUrl}`,
+      `  selfJid: ${manifest.selfJid}`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function renderProvidersText(payload: {

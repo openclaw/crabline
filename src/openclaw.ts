@@ -9,10 +9,12 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const TELEGRAM_ACCOUNT_ID = "default";
+const DEFAULT_ACCOUNT_ID = "default";
 const TELEGRAM_DIRECT_CHAT_ID = "100001";
 const TELEGRAM_GROUP_CHAT_ID = "-1001234567890";
 const TELEGRAM_DEFAULT_SENDER_ID = 100001;
+const WHATSAPP_JID_RE =
+  /^(?:\d{7,15}(?::\d+)?@s\.whatsapp\.net|\d{7,15}@c\.us|\d{5,}@g\.us|\d{7,15}@lid)$/iu;
 export const OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH =
   "crabline-fake-provider-capabilities.json";
 export const OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH = "crabline-fake-provider-smoke.json";
@@ -97,7 +99,7 @@ export type StartedOpenClawCrablineAdapter = OpenClawCrablineGatewayBinding & {
   probe(): Promise<unknown>;
 };
 
-type TelegramRecorderEvent = {
+type RecorderEvent = {
   body?: Record<string, unknown>;
   path?: string;
   type?: string;
@@ -174,11 +176,22 @@ function qaTargetForInbound(input: OpenClawCrablineInboundInput) {
     : `${prefix}:${input.conversation.id}`;
 }
 
-function requireTelegramManifest(manifest: CrablineFakeProviderManifest) {
-  if (manifest.provider !== "telegram") {
+function requireWhatsAppJid(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!WHATSAPP_JID_RE.test(trimmed)) {
+    throw new Error(`${label} must be a native WhatsApp JID.`);
+  }
+  return trimmed;
+}
+
+function requireManifestProvider<TProvider extends CrablineFakeProviderManifest["provider"]>(
+  manifest: CrablineFakeProviderManifest,
+  provider: TProvider,
+): Extract<CrablineFakeProviderManifest, { provider: TProvider }> {
+  if (manifest.provider !== provider) {
     throw new Error(`Unsupported OpenClaw fake provider binding: ${String(manifest.provider)}`);
   }
-  return manifest;
+  return manifest as Extract<CrablineFakeProviderManifest, { provider: TProvider }>;
 }
 
 export function resolveOpenClawCrablineChannel(input?: string | null): CrablineFakeProviderChannel {
@@ -205,114 +218,203 @@ export function resolveOpenClawCrablineChannelDriverSelection(params: {
 export async function probeOpenClawCrablineFakeProvider(
   manifest: CrablineFakeProviderManifest,
 ): Promise<unknown> {
-  if (manifest.provider !== "telegram") {
-    throw new Error(
-      `OpenClaw Crabline fake-provider smoke does not support ${String(manifest.provider)}.`,
-    );
+  switch (manifest.provider) {
+    case "telegram": {
+      const response = await fetch(`${manifest.endpoints.apiRoot}/bot${manifest.botToken}/getMe`);
+      if (!response.ok) {
+        throw new Error(`Crabline Telegram getMe probe failed with HTTP ${response.status}.`);
+      }
+      return await response.json();
+    }
+    case "whatsapp": {
+      const response = await fetch(`${manifest.endpoints.apiRoot}/health`);
+      if (!response.ok) {
+        throw new Error(`Crabline WhatsApp health probe failed with HTTP ${response.status}.`);
+      }
+      return await response.json();
+    }
   }
-  const response = await fetch(`${manifest.endpoints.apiRoot}/bot${manifest.botToken}/getMe`);
-  if (!response.ok) {
-    throw new Error(`Crabline Telegram getMe probe failed with HTTP ${response.status}.`);
-  }
-  return await response.json();
 }
 
 export function createOpenClawCrablineFakeProviderBinding(
   manifest: CrablineFakeProviderManifest,
 ): OpenClawCrablineGatewayBinding {
-  const telegram = requireTelegramManifest(manifest);
-  return {
-    accountId: TELEGRAM_ACCOUNT_ID,
-    channel: "telegram",
-    createChannelDriverSmokeEnv: (env) => ({
-      ...env,
-      TELEGRAM_BOT_TOKEN: telegram.botToken,
-    }),
-    createGatewayConfig: (openclawConfig = {}) => {
-      const channels = isRecord(openclawConfig.channels) ? openclawConfig.channels : {};
-      const telegramConfig = isRecord(channels.telegram) ? channels.telegram : {};
-      const groups = isRecord(telegramConfig.groups) ? telegramConfig.groups : {};
-      const defaultGroup = isRecord(groups["*"]) ? groups["*"] : {};
-      const messages = isRecord(openclawConfig.messages) ? openclawConfig.messages : {};
-      const groupChat = isRecord(messages.groupChat) ? messages.groupChat : {};
-
+  switch (manifest.provider) {
+    case "telegram": {
+      const telegram = requireManifestProvider(manifest, "telegram");
       return {
-        ...openclawConfig,
-        channels: {
-          ...channels,
-          telegram: {
-            ...telegramConfig,
-            enabled: true,
-            botToken: telegram.botToken,
-            apiRoot: telegram.endpoints.apiRoot,
-            dmPolicy: "open",
-            groupPolicy: "open",
-            allowFrom: ["*"],
-            groupAllowFrom: ["*"],
-            groups: {
-              ...groups,
-              "*": {
-                ...defaultGroup,
-                requireMention: false,
+        accountId: DEFAULT_ACCOUNT_ID,
+        channel: "telegram",
+        createChannelDriverSmokeEnv: (env) => ({
+          ...env,
+          TELEGRAM_BOT_TOKEN: telegram.botToken,
+        }),
+        createGatewayConfig: (openclawConfig = {}) => {
+          const channels = isRecord(openclawConfig.channels) ? openclawConfig.channels : {};
+          const telegramConfig = isRecord(channels.telegram) ? channels.telegram : {};
+          const groups = isRecord(telegramConfig.groups) ? telegramConfig.groups : {};
+          const defaultGroup = isRecord(groups["*"]) ? groups["*"] : {};
+          const messages = isRecord(openclawConfig.messages) ? openclawConfig.messages : {};
+          const groupChat = isRecord(messages.groupChat) ? messages.groupChat : {};
+
+          return {
+            ...openclawConfig,
+            channels: {
+              ...channels,
+              telegram: {
+                ...telegramConfig,
+                enabled: true,
+                botToken: telegram.botToken,
+                apiRoot: telegram.endpoints.apiRoot,
+                dmPolicy: "open",
+                groupPolicy: "open",
+                allowFrom: ["*"],
+                groupAllowFrom: ["*"],
+                groups: {
+                  ...groups,
+                  "*": {
+                    ...defaultGroup,
+                    requireMention: false,
+                  },
+                },
               },
             },
-          },
+            messages: {
+              ...messages,
+              groupChat: {
+                ...groupChat,
+                mentionPatterns: ["\\b@?openclaw\\b"],
+                visibleReplies: "automatic",
+              },
+            },
+          };
         },
-        messages: {
-          ...messages,
-          groupChat: {
-            ...groupChat,
-            mentionPatterns: ["\\b@?openclaw\\b"],
-            visibleReplies: "automatic",
-          },
-        },
+        requiredPluginIds: ["telegram"],
       };
-    },
-    requiredPluginIds: ["telegram"],
-  };
+    }
+    case "whatsapp": {
+      const whatsapp = requireManifestProvider(manifest, "whatsapp");
+      return {
+        accountId: DEFAULT_ACCOUNT_ID,
+        channel: "whatsapp",
+        createChannelDriverSmokeEnv: (env) => ({
+          ...env,
+          CRABLINE_WHATSAPP_ACCESS_TOKEN: whatsapp.accessToken,
+          CRABLINE_WHATSAPP_API_ROOT: whatsapp.endpoints.apiRoot,
+          CRABLINE_WHATSAPP_SELF_JID: whatsapp.selfJid,
+        }),
+        createGatewayConfig: (openclawConfig = {}) => {
+          const channels = isRecord(openclawConfig.channels) ? openclawConfig.channels : {};
+          const whatsappConfig = isRecord(channels.whatsapp) ? channels.whatsapp : {};
+          const groups = isRecord(whatsappConfig.groups) ? whatsappConfig.groups : {};
+          const defaultGroup = isRecord(groups["*"]) ? groups["*"] : {};
+
+          return {
+            ...openclawConfig,
+            channels: {
+              ...channels,
+              whatsapp: {
+                ...whatsappConfig,
+                enabled: true,
+                dmPolicy: "open",
+                groupPolicy: "open",
+                allowFrom: ["*"],
+                groupAllowFrom: ["*"],
+                groups: {
+                  ...groups,
+                  "*": {
+                    ...defaultGroup,
+                    requireMention: false,
+                  },
+                },
+              },
+            },
+          };
+        },
+        requiredPluginIds: ["whatsapp"],
+      };
+    }
+  }
 }
 
 export function createOpenClawCrablineAgentDelivery(params: {
   manifest: CrablineFakeProviderManifest;
   target: string;
 }): OpenClawCrablineAgentDelivery {
-  requireTelegramManifest(params.manifest);
   const parsed = parseQaTarget(params.target);
-  const chatId = normalizeTelegramChatId(parsed.kind, parsed.id);
-  const threadId = readInteger(parsed.threadId);
-  const to = telegramTargetKey(chatId, threadId);
-  return {
-    channel: "telegram",
-    to,
-    replyChannel: "telegram",
-    replyTo: to,
-  };
+  switch (params.manifest.provider) {
+    case "telegram": {
+      requireManifestProvider(params.manifest, "telegram");
+      const chatId = normalizeTelegramChatId(parsed.kind, parsed.id);
+      const threadId = readInteger(parsed.threadId);
+      const to = telegramTargetKey(chatId, threadId);
+      return {
+        channel: "telegram",
+        to,
+        replyChannel: "telegram",
+        replyTo: to,
+      };
+    }
+    case "whatsapp": {
+      requireManifestProvider(params.manifest, "whatsapp");
+      const to = requireWhatsAppJid(parsed.id, "WhatsApp target");
+      return {
+        channel: "whatsapp",
+        to,
+        replyChannel: "whatsapp",
+        replyTo: to,
+      };
+    }
+  }
 }
 
 export function createOpenClawCrablineInbound(params: {
   input: OpenClawCrablineInboundInput;
   manifest: CrablineFakeProviderManifest;
 }): OpenClawCrablineInbound {
-  requireTelegramManifest(params.manifest);
-  const kind = params.input.conversation.kind === "direct" ? "direct" : "group";
-  const chatId = normalizeTelegramChatId(kind, params.input.conversation.id);
-  const threadId = readInteger(params.input.threadId);
-  return {
-    providerBody: {
-      chatId,
-      fromId: readInteger(params.input.senderId) ?? TELEGRAM_DEFAULT_SENDER_ID,
-      fromName: params.input.senderName ?? params.input.senderId,
-      ...(threadId !== undefined ? { messageThreadId: threadId } : {}),
-      text: params.input.text,
-    },
-    providerTargetKey: telegramTargetKey(chatId, threadId),
-    qaTarget: qaTargetForInbound(params.input),
-    stateConversation: {
-      id: chatId,
-      kind: kind === "group" ? "group" : "direct",
-    },
-    ...(threadId !== undefined ? { threadId: String(threadId) } : {}),
-  };
+  switch (params.manifest.provider) {
+    case "telegram": {
+      requireManifestProvider(params.manifest, "telegram");
+      const kind = params.input.conversation.kind === "direct" ? "direct" : "group";
+      const chatId = normalizeTelegramChatId(kind, params.input.conversation.id);
+      const threadId = readInteger(params.input.threadId);
+      return {
+        providerBody: {
+          chatId,
+          fromId: readInteger(params.input.senderId) ?? TELEGRAM_DEFAULT_SENDER_ID,
+          fromName: params.input.senderName ?? params.input.senderId,
+          ...(threadId !== undefined ? { messageThreadId: threadId } : {}),
+          text: params.input.text,
+        },
+        providerTargetKey: telegramTargetKey(chatId, threadId),
+        qaTarget: qaTargetForInbound(params.input),
+        stateConversation: {
+          id: chatId,
+          kind: kind === "group" ? "group" : "direct",
+        },
+        ...(threadId !== undefined ? { threadId: String(threadId) } : {}),
+      };
+    }
+    case "whatsapp": {
+      requireManifestProvider(params.manifest, "whatsapp");
+      const chatJid = requireWhatsAppJid(params.input.conversation.id, "WhatsApp conversation");
+      const senderJid = requireWhatsAppJid(params.input.senderId, "WhatsApp sender");
+      return {
+        providerBody: {
+          chatJid,
+          senderJid,
+          ...(params.input.senderName ? { pushName: params.input.senderName } : {}),
+          text: params.input.text,
+        },
+        providerTargetKey: chatJid,
+        qaTarget: qaTargetForInbound(params.input),
+        stateConversation: {
+          id: chatJid,
+          kind: chatJid.endsWith("@g.us") ? "group" : "direct",
+        },
+      };
+    }
+  }
 }
 
 export function createOpenClawCrablineOutboundFromRecorderEvent(params: {
@@ -320,34 +422,62 @@ export function createOpenClawCrablineOutboundFromRecorderEvent(params: {
   manifest: CrablineFakeProviderManifest;
   targetByProviderTarget: ReadonlyMap<string, string>;
 }): OpenClawCrablineOutboundMessage | null {
-  requireTelegramManifest(params.manifest);
-  const event = params.event as TelegramRecorderEvent;
+  const event = params.event as RecorderEvent;
   if (
     event.type !== "api" ||
     typeof event.path !== "string" ||
-    !event.path.endsWith("/sendMessage") ||
     !event.body ||
     typeof event.body !== "object"
   ) {
     return null;
   }
-  const chatId = readString(event.body.chat_id);
-  const text =
-    typeof event.body.text === "string" && event.body.text.trim() ? event.body.text : undefined;
-  if (!chatId || !text) {
-    return null;
+  switch (params.manifest.provider) {
+    case "telegram": {
+      requireManifestProvider(params.manifest, "telegram");
+      if (!event.path.endsWith("/sendMessage")) {
+        return null;
+      }
+      const chatId = readString(event.body.chat_id);
+      const text =
+        typeof event.body.text === "string" && event.body.text.trim() ? event.body.text : undefined;
+      if (!chatId || !text) {
+        return null;
+      }
+      const threadId = readInteger(event.body.message_thread_id);
+      const providerTargetKey = telegramTargetKey(chatId, threadId);
+      return {
+        accountId: DEFAULT_ACCOUNT_ID,
+        senderId: "openclaw",
+        senderName: "OpenClaw QA",
+        text,
+        to:
+          params.targetByProviderTarget.get(providerTargetKey) ??
+          (threadId === undefined ? chatId : providerTargetKey),
+      };
+    }
+    case "whatsapp": {
+      requireManifestProvider(params.manifest, "whatsapp");
+      if (!event.path.endsWith("/crabline/whatsapp/messages")) {
+        return null;
+      }
+      const to = readString(event.body.to ?? event.body.jid);
+      const textPayload = event.body.text;
+      const text =
+        textPayload && typeof textPayload === "object"
+          ? readString((textPayload as Record<string, unknown>).body)
+          : readString(textPayload);
+      if (!to || !text) {
+        return null;
+      }
+      return {
+        accountId: DEFAULT_ACCOUNT_ID,
+        senderId: "openclaw",
+        senderName: "OpenClaw QA",
+        text,
+        to: params.targetByProviderTarget.get(to) ?? to,
+      };
+    }
   }
-  const threadId = readInteger(event.body.message_thread_id);
-  const providerTargetKey = telegramTargetKey(chatId, threadId);
-  return {
-    accountId: TELEGRAM_ACCOUNT_ID,
-    senderId: "openclaw",
-    senderName: "OpenClaw QA",
-    text,
-    to:
-      params.targetByProviderTarget.get(providerTargetKey) ??
-      (threadId === undefined ? chatId : providerTargetKey),
-  };
 }
 
 export async function startOpenClawCrablineAdapter(

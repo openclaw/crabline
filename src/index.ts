@@ -2,6 +2,10 @@ export { resolveTelegramAdapterConfig } from "./providers/builtin/telegram.js";
 export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
 export { startTelegramFakeServer } from "./fake-servers/telegram.js";
 export {
+  createWhatsAppBaileysMockSocket,
+  startWhatsAppFakeServer,
+} from "./fake-servers/whatsapp.js";
+export {
   CRABLINE_FAKE_PROVIDER_CHANNELS,
   isCrablineFakeProviderChannel,
   startCrablineFakeProviderServer,
@@ -61,6 +65,15 @@ export type {
   StartTelegramFakeServerParams,
   TelegramFakeServerManifest,
 } from "./fake-servers/telegram.js";
+export type {
+  StartedWhatsAppFakeServer,
+  StartWhatsAppFakeServerParams,
+  WhatsAppBaileysMessage,
+  WhatsAppBaileysMockConfig,
+  WhatsAppBaileysMockSocket,
+  WhatsAppBaileysPresence,
+  WhatsAppFakeServerManifest,
+} from "./fake-servers/whatsapp.js";
 export type {
   CrablineFakeProviderChannel,
   CrablineFakeProviderManifest,
