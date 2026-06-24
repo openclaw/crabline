@@ -1,11 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  createWhatsAppBaileysMockSocket,
-  startWhatsAppFakeServer,
-  type StartedWhatsAppFakeServer,
-} from "../src/index.js";
+import { startWhatsAppFakeServer, type StartedWhatsAppFakeServer } from "../src/index.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const servers: StartedWhatsAppFakeServer[] = [];
@@ -21,10 +17,16 @@ describe("whatsapp fake provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startWhatsAppFakeServer({
+      adminToken: "fake-whatsapp-admin-token",
       accessToken: "fake-whatsapp-token",
       recorderPath: path.join(directory, "whatsapp.jsonl"),
     });
     servers.push(server);
+    const inboundEvents: unknown[] = [];
+    const socket = server.createBaileysMockSocket();
+    socket.ev.on("messages.upsert", (payload) => {
+      inboundEvents.push(payload);
+    });
 
     const health = await fetch(`${server.manifest.endpoints.apiRoot}/health`);
     await expect(health.json()).resolves.toMatchObject({
@@ -120,13 +122,29 @@ describe("whatsapp fake provider server", () => {
       presence: "paused",
     });
 
-    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+    const unauthenticatedInbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
         chatJid: "120363001234567890@g.us",
         senderJid: "15551234567@s.whatsapp.net",
-        text: "user nonce-1",
+        text: "forged user nonce",
       }),
       headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(unauthenticatedInbound.status).toBe(401);
+    await expect(unauthenticatedInbound.text()).resolves.toBe("unauthorized");
+
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        chatJid: "120363001234567890@g.us",
+        pushName: "Fake Sender",
+        senderJid: "15551234567@s.whatsapp.net",
+        text: "user nonce-1",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "fake-whatsapp-admin-token",
+      },
       method: "POST",
     });
     await expect(inbound.json()).resolves.toMatchObject({
@@ -139,6 +157,7 @@ describe("whatsapp fake provider server", () => {
         message: {
           conversation: "user nonce-1",
         },
+        pushName: "Fake Sender",
       },
       ok: true,
       webhook: {
@@ -165,6 +184,27 @@ describe("whatsapp fake provider server", () => {
         object: "whatsapp_business_account",
       },
     });
+    expect(inboundEvents).toEqual([
+      expect.objectContaining({
+        messages: [
+          expect.objectContaining({
+            key: expect.objectContaining({
+              fromMe: false,
+              participant: "15551234567@s.whatsapp.net",
+              remoteJid: "120363001234567890@g.us",
+            }),
+            message: {
+              conversation: "user nonce-1",
+            },
+            pushName: "Fake Sender",
+          }),
+        ],
+        type: "notify",
+      }),
+    ]);
+    const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
+    expect(recorder).not.toContain("forged user nonce");
+    expect(recorder).toContain('"path":"/crabline/whatsapp/inbound"');
   });
 
   it("exposes a Baileys-shaped mock socket over the fake provider server", async () => {
@@ -175,11 +215,7 @@ describe("whatsapp fake provider server", () => {
       recorderPath: path.join(directory, "whatsapp.jsonl"),
     });
     servers.push(server);
-    const socket = createWhatsAppBaileysMockSocket({
-      accessToken: server.manifest.accessToken,
-      apiRoot: server.manifest.endpoints.apiRoot,
-      selfJid: server.manifest.selfJid,
-    });
+    const socket = server.createBaileysMockSocket();
     const emitted: unknown[] = [];
     socket.ev.on("messages.upsert", (payload) => {
       emitted.push(payload);

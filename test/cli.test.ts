@@ -238,6 +238,54 @@ describe("cli", () => {
     await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "telegram"');
   });
 
+  it("prints a fake WhatsApp server runtime manifest", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, ".crabline", "whatsapp-server.json");
+    const captured = captureWrites();
+
+    try {
+      expect(
+        await runCli([
+          "node",
+          "crabline",
+          "--json",
+          "serve",
+          "whatsapp",
+          "--once",
+          "--ready-file",
+          readyFile,
+          "--admin-token",
+          "test-whatsapp-admin-token",
+          "--access-token",
+          "test-whatsapp-access-token",
+          "--recorder",
+          path.join(directory, "whatsapp.jsonl"),
+        ]),
+      ).toBe(0);
+    } finally {
+      captured.restore();
+    }
+
+    const manifest = JSON.parse(captured.stdout.join("")) as {
+      accessToken?: string;
+      adminToken?: string;
+      endpoints?: { adminInboundUrl?: string; apiRoot?: string; messagesUrl?: string };
+      provider?: string;
+    };
+    expect(manifest.provider).toBe("whatsapp");
+    expect(manifest.accessToken).toBe("test-whatsapp-access-token");
+    expect(manifest.adminToken).toBe("test-whatsapp-admin-token");
+    expect(manifest.endpoints?.apiRoot).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp$/u);
+    expect(manifest.endpoints?.adminInboundUrl).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/inbound$/u,
+    );
+    expect(manifest.endpoints?.messagesUrl).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/messages$/u,
+    );
+    await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "whatsapp"');
+  });
+
   it("doctor accepts local mock slack without live env", async () => {
     const directory = await createTempDir();
     directories.push(directory);

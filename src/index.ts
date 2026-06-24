@@ -3,7 +3,9 @@ export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
 export { startTelegramFakeServer } from "./fake-servers/telegram.js";
 export {
   createWhatsAppBaileysMockSocket,
+  DEFAULT_WHATSAPP_BAILEYS_MOCK_REGISTRY,
   startWhatsAppFakeServer,
+  WhatsAppBaileysMockRegistry,
 } from "./fake-servers/whatsapp.js";
 export {
   CRABLINE_FAKE_PROVIDER_CHANNELS,
@@ -70,6 +72,7 @@ export type {
   StartWhatsAppFakeServerParams,
   WhatsAppBaileysMessage,
   WhatsAppBaileysMockConfig,
+  WhatsAppBaileysMockSocketOverrides,
   WhatsAppBaileysMockSocket,
   WhatsAppBaileysPresence,
   WhatsAppFakeServerManifest,

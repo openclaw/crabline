@@ -1,7 +1,10 @@
 import type { IncomingMessage } from "node:http";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+  adminAuthError,
+  hasAdminToken,
   jsonResponse,
   parseRequestBody,
   queryRecord,
@@ -17,6 +20,9 @@ const WHATSAPP_LID_RE = /^\d{7,15}@lid$/iu;
 
 type WhatsAppFakeServerState = {
   accessToken: string;
+  adminToken: string;
+  apiRoot: string;
+  baileysRegistry: WhatsAppBaileysMockRegistry;
   displayPhoneNumber: string;
   nextMessageId: number;
   phoneNumberId: string;
@@ -50,11 +56,18 @@ export type WhatsAppBaileysMockConfig = {
   accessToken: string;
   apiRoot: string;
   fetch?: typeof fetch | undefined;
+  registry?: WhatsAppBaileysMockRegistry | undefined;
+  selfJid?: string | undefined;
+};
+
+export type WhatsAppBaileysMockSocketOverrides = {
+  fetch?: typeof fetch | undefined;
   selfJid?: string | undefined;
 };
 
 export type WhatsAppFakeServerManifest = {
   accessToken: string;
+  adminToken: string;
   baseUrl: string;
   endpoints: {
     adminInboundUrl: string;
@@ -63,6 +76,7 @@ export type WhatsAppFakeServerManifest = {
     presenceUrl: string;
   };
   env: {
+    CRABLINE_WHATSAPP_ADMIN_TOKEN: string;
     CRABLINE_WHATSAPP_ACCESS_TOKEN: string;
     CRABLINE_WHATSAPP_API_ROOT: string;
     CRABLINE_WHATSAPP_SELF_JID: string;
@@ -75,11 +89,16 @@ export type WhatsAppFakeServerManifest = {
 
 export type StartedWhatsAppFakeServer = {
   close(): Promise<void>;
+  createBaileysMockSocket(
+    config?: WhatsAppBaileysMockSocketOverrides | undefined,
+  ): WhatsAppBaileysMockSocket;
   manifest: WhatsAppFakeServerManifest;
 };
 
 export type StartWhatsAppFakeServerParams = {
   accessToken?: string | undefined;
+  adminToken?: string | undefined;
+  baileysRegistry?: WhatsAppBaileysMockRegistry | undefined;
   host?: string | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
@@ -191,6 +210,10 @@ function joinUrl(root: string, pathPart: string): string {
   return `${trimTrailingSlashes(root)}/${trimLeadingSlashes(pathPart)}`;
 }
 
+function normalizeApiRoot(value: string): string {
+  return trimTrailingSlashes(value);
+}
+
 async function postJson(params: {
   accessToken: string;
   body: Record<string, unknown>;
@@ -255,6 +278,7 @@ function readTextMessageBody(body: Record<string, unknown>): string | Response {
 function createWhatsAppMessage(params: {
   fromMe: boolean;
   id: string;
+  pushName?: string | undefined;
   remoteJid: string;
   senderJid?: string | undefined;
   text: string;
@@ -270,7 +294,7 @@ function createWhatsAppMessage(params: {
       conversation: params.text,
     },
     messageTimestamp: Math.floor(Date.now() / 1000),
-    pushName: params.fromMe ? "Test Bot" : "Test User",
+    pushName: params.pushName ?? (params.fromMe ? "Test Bot" : "Test User"),
   };
 }
 
@@ -329,45 +353,84 @@ function createEventBus(): WhatsAppBaileysMockSocket["ev"] {
   };
 }
 
+export class WhatsAppBaileysMockRegistry {
+  readonly #busesByApiRoot = new Map<string, Set<WhatsAppBaileysMockSocket["ev"]>>();
+
+  clear(apiRoot: string): void {
+    this.#busesByApiRoot.delete(normalizeApiRoot(apiRoot));
+  }
+
+  createSocket(config: Omit<WhatsAppBaileysMockConfig, "registry">): WhatsAppBaileysMockSocket {
+    const fetchImpl = config.fetch ?? fetch;
+    const selfJid = config.selfJid ?? "15550000000@s.whatsapp.net";
+    const ev = createEventBus();
+    this.register(config.apiRoot, ev);
+    return {
+      ev,
+      async sendMessage(jid, content) {
+        const text = readBaileysTextContent(content);
+        const body = await postJson({
+          accessToken: config.accessToken,
+          body: {
+            messaging_product: "whatsapp",
+            text: { body: text },
+            to: jid,
+            type: "text",
+          },
+          fetchImpl,
+          url: joinUrl(config.apiRoot, "messages"),
+        });
+        const message = readResponseMessage(body, jid);
+        ev.emit("messages.upsert", { messages: [message], type: "notify" });
+        return message;
+      },
+      async sendPresenceUpdate(presence, jid) {
+        await postJson({
+          accessToken: config.accessToken,
+          body: { ...(jid ? { jid } : {}), presence },
+          fetchImpl,
+          url: joinUrl(config.apiRoot, "presence"),
+        });
+        ev.emit("presence.update", { jid, presence });
+      },
+      user: {
+        id: selfJid,
+        name: "Test Bot",
+      },
+    };
+  }
+
+  emitInbound(apiRoot: string, message: WhatsAppBaileysMessage): void {
+    const buses = this.#busesByApiRoot.get(normalizeApiRoot(apiRoot));
+    if (!buses?.size) {
+      return;
+    }
+    const payload = { messages: [message], type: "notify" };
+    for (const ev of buses) {
+      ev.emit("messages.upsert", payload);
+    }
+  }
+
+  private register(apiRoot: string, ev: WhatsAppBaileysMockSocket["ev"]): void {
+    const key = normalizeApiRoot(apiRoot);
+    const buses = this.#busesByApiRoot.get(key) ?? new Set<WhatsAppBaileysMockSocket["ev"]>();
+    buses.add(ev);
+    this.#busesByApiRoot.set(key, buses);
+  }
+}
+
+export const DEFAULT_WHATSAPP_BAILEYS_MOCK_REGISTRY = new WhatsAppBaileysMockRegistry();
+
 export function createWhatsAppBaileysMockSocket(
   config: WhatsAppBaileysMockConfig,
 ): WhatsAppBaileysMockSocket {
-  const fetchImpl = config.fetch ?? fetch;
-  const selfJid = config.selfJid ?? "15550000000@s.whatsapp.net";
-  const ev = createEventBus();
-  return {
-    ev,
-    async sendMessage(jid, content) {
-      const text = readBaileysTextContent(content);
-      const body = await postJson({
-        accessToken: config.accessToken,
-        body: {
-          messaging_product: "whatsapp",
-          text: { body: text },
-          to: jid,
-          type: "text",
-        },
-        fetchImpl,
-        url: joinUrl(config.apiRoot, "messages"),
-      });
-      const message = readResponseMessage(body, jid);
-      ev.emit("messages.upsert", { messages: [message], type: "notify" });
-      return message;
-    },
-    async sendPresenceUpdate(presence, jid) {
-      await postJson({
-        accessToken: config.accessToken,
-        body: { ...(jid ? { jid } : {}), presence },
-        fetchImpl,
-        url: joinUrl(config.apiRoot, "presence"),
-      });
-      ev.emit("presence.update", { jid, presence });
-    },
-    user: {
-      id: selfJid,
-      name: "Test Bot",
-    },
-  };
+  const registry = config.registry ?? DEFAULT_WHATSAPP_BAILEYS_MOCK_REGISTRY;
+  return registry.createSocket({
+    accessToken: config.accessToken,
+    apiRoot: config.apiRoot,
+    fetch: config.fetch,
+    selfJid: config.selfJid,
+  });
 }
 
 async function handleSendMessage(params: {
@@ -431,6 +494,7 @@ async function handleAdminInbound(params: {
   const message = createWhatsAppMessage({
     fromMe: false,
     id: readTrimmedString(params.body.messageId) ?? nextMessageId(params.state),
+    pushName: readTrimmedString(params.body.pushName) ?? "Test User",
     remoteJid: chatJid,
     senderJid,
     text,
@@ -471,11 +535,36 @@ async function handleAdminInbound(params: {
     ],
     object: "whatsapp_business_account",
   };
+  params.state.baileysRegistry.emitInbound(params.state.apiRoot, message);
   return whatsappOk({ message, webhook });
 }
 
 async function handleRequest(params: { request: IncomingMessage; state: WhatsAppFakeServerState }) {
   const url = new URL(params.request.url ?? "/", "http://127.0.0.1");
+
+  if (url.pathname === "/crabline/whatsapp/health") {
+    return whatsappOk({ selfJid: params.state.selfJid });
+  }
+
+  if (url.pathname === "/crabline/whatsapp/inbound") {
+    if (params.request.method !== "POST") {
+      return new Response("not found", { status: 404 });
+    }
+    if (!hasAdminToken(params.request, params.state.adminToken)) {
+      return adminAuthError();
+    }
+    const body = await parseRequestBody(params.request);
+    await appendEvent(params.state, {
+      at: new Date().toISOString(),
+      body,
+      method: params.request.method,
+      path: url.pathname,
+      query: queryRecord(url),
+      type: "admin",
+    });
+    return await handleAdminInbound({ body, state: params.state });
+  }
+
   const body =
     params.request.method === "GET" ? queryRecord(url) : await parseRequestBody(params.request);
   await appendEvent(params.state, {
@@ -484,18 +573,9 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
     method: params.request.method ?? "GET",
     path: url.pathname,
     query: queryRecord(url),
-    type: url.pathname.startsWith("/crabline/whatsapp/inbound") ? "admin" : "api",
+    type: "api",
   });
 
-  if (url.pathname === "/crabline/whatsapp/health") {
-    return whatsappOk({ selfJid: params.state.selfJid });
-  }
-  if (url.pathname === "/crabline/whatsapp/inbound") {
-    if (params.request.method !== "POST") {
-      return new Response("not found", { status: 404 });
-    }
-    return await handleAdminInbound({ body, state: params.state });
-  }
   if (!requireAuth(params.request, params.state)) {
     return graphAuthError();
   }
@@ -523,6 +603,9 @@ export async function startWhatsAppFakeServer(
 ): Promise<StartedWhatsAppFakeServer> {
   const state: WhatsAppFakeServerState = {
     accessToken: params.accessToken ?? "crabline-whatsapp-access-token",
+    adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
+    apiRoot: "",
+    baileysRegistry: params.baileysRegistry ?? DEFAULT_WHATSAPP_BAILEYS_MOCK_REGISTRY,
     displayPhoneNumber: "15550000000",
     nextMessageId: 1,
     phoneNumberId: "TEST_PHONE_NUMBER_ID",
@@ -539,12 +622,23 @@ export async function startWhatsAppFakeServer(
   });
   const baseUrl = httpServer.baseUrl;
   const apiRoot = `${baseUrl}/crabline/whatsapp`;
+  state.apiRoot = apiRoot;
   return {
     async close() {
+      state.baileysRegistry.clear(apiRoot);
       await httpServer.close();
+    },
+    createBaileysMockSocket(config = {}) {
+      return state.baileysRegistry.createSocket({
+        accessToken: state.accessToken,
+        apiRoot,
+        selfJid: state.selfJid,
+        ...config,
+      });
     },
     manifest: {
       accessToken: state.accessToken,
+      adminToken: state.adminToken,
       baseUrl,
       endpoints: {
         adminInboundUrl: `${apiRoot}/inbound`,
@@ -553,6 +647,7 @@ export async function startWhatsAppFakeServer(
         presenceUrl: `${apiRoot}/presence`,
       },
       env: {
+        CRABLINE_WHATSAPP_ADMIN_TOKEN: state.adminToken,
         CRABLINE_WHATSAPP_ACCESS_TOKEN: state.accessToken,
         CRABLINE_WHATSAPP_API_ROOT: apiRoot,
         CRABLINE_WHATSAPP_SELF_JID: state.selfJid,
