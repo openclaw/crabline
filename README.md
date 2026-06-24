@@ -15,7 +15,8 @@ provider APIs that OpenClaw live adapters can target during deterministic QA.
   `whatsapp`, and `zalo`
 - a `script` bridge for channels that are still exercised by external commands
 - per-provider local webhook endpoints for inbound events
-- fake provider servers for live-adapter smoke tests, starting with Telegram
+- fake provider servers for live-adapter smoke tests, starting with Telegram and
+  WhatsApp
 - JSONL recorder files for deterministic wait/watch behavior
 - nonce-based `send`, `roundtrip`, `agent`, `probe`, `run`, `watch`, and
   `doctor` commands
@@ -150,6 +151,28 @@ Implemented Telegram Bot API endpoints include `getMe`, `sendMessage`,
 `deleteWebhook`, `setWebhook`, `setMyCommands`, `deleteMyCommands`,
 `sendChatAction`, and `answerCallbackQuery`.
 
+WhatsApp:
+
+```bash
+crabline --json serve whatsapp --ready-file .crabline/whatsapp-server.json
+```
+
+The JSON manifest contains:
+
+- `endpoints.apiRoot`: Crabline WhatsApp fake provider API root
+- `accessToken`: bearer token for fake provider requests
+- `selfJid`: fake authenticated WhatsApp user JID
+- `endpoints.adminInboundUrl`: POST endpoint for test user messages
+- `endpoints.messagesUrl`: fake text send endpoint used by the Baileys-shaped
+  mock
+- `endpoints.presenceUrl`: fake presence endpoint used by
+  `sendPresenceUpdate`
+- `recorderPath`: JSONL file of fake provider API/admin traffic
+
+Crabline also exports `createWhatsAppBaileysMockSocket()` so tests can exercise
+a Baileys-style WhatsApp `sendMessage()` / `sendPresenceUpdate()` surface while
+the fake server owns local provider simulation.
+
 ## Target IDs
 
 Built-in providers accept native channel identifiers. Crabline does not add
@@ -174,6 +197,8 @@ Examples:
 - Slack threads: `1700000000.000100`
 - Telegram chats: `-1001234567890` or `@channelusername`
 - Telegram topics: `42`
+- WhatsApp users: `15551234567@s.whatsapp.net`
+- WhatsApp groups: `120363001234567890@g.us`
 - Discord channels and threads: Discord snowflake ids such as
   `123456789012345678`
 
