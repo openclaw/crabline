@@ -97,23 +97,56 @@ export type ParsedQaTarget = {
   threadId?: string;
 };
 
-export type OpenClawCrablineProviderBridge = {
-  createAgentDelivery(params: {
-    manifest: CrablineFakeProviderManifest;
-    parsed: ParsedQaTarget;
-  }): OpenClawCrablineAgentDelivery;
-  createBinding(manifest: CrablineFakeProviderManifest): OpenClawCrablineGatewayBinding;
-  createInbound(params: {
-    input: OpenClawCrablineInboundInput;
-    manifest: CrablineFakeProviderManifest;
-  }): OpenClawCrablineInbound;
+export type OpenClawCrablineProviderAdapter = {
+  createAgentDelivery(parsed: ParsedQaTarget): OpenClawCrablineAgentDelivery;
+  createBinding(): OpenClawCrablineGatewayBinding;
+  createInbound(input: OpenClawCrablineInboundInput): OpenClawCrablineInbound;
   createOutboundFromRecorderEvent(params: {
     event: unknown;
-    manifest: CrablineFakeProviderManifest;
     targetByProviderTarget: ReadonlyMap<string, string>;
   }): OpenClawCrablineOutboundMessage | null;
-  probe(manifest: CrablineFakeProviderManifest): Promise<unknown>;
+  probe(): Promise<unknown>;
 };
+
+export type OpenClawCrablineProviderBridge<
+  TManifest extends CrablineFakeProviderManifest = CrablineFakeProviderManifest,
+> = {
+  createAdapter(manifest: TManifest): OpenClawCrablineProviderAdapter;
+  createAdapterFromManifest(
+    manifest: CrablineFakeProviderManifest,
+  ): OpenClawCrablineProviderAdapter;
+  provider: TManifest["provider"];
+};
+
+export type OpenClawCrablineProviderBridgeRegistry = {
+  [Provider in CrablineFakeProviderManifest["provider"]]: OpenClawCrablineProviderBridge<
+    Extract<CrablineFakeProviderManifest, { provider: Provider }>
+  >;
+};
+
+export function createOpenClawCrablineProviderBridge<
+  TProvider extends CrablineFakeProviderManifest["provider"],
+>(params: {
+  createAdapter(
+    manifest: Extract<CrablineFakeProviderManifest, { provider: TProvider }>,
+  ): OpenClawCrablineProviderAdapter;
+  provider: TProvider;
+}): OpenClawCrablineProviderBridge<Extract<CrablineFakeProviderManifest, { provider: TProvider }>> {
+  type ProviderManifest = Extract<CrablineFakeProviderManifest, { provider: TProvider }>;
+  const bridge: OpenClawCrablineProviderBridge<ProviderManifest> = {
+    createAdapter: params.createAdapter,
+    createAdapterFromManifest(manifest) {
+      if (manifest.provider !== params.provider) {
+        throw new Error(
+          `Unsupported OpenClaw fake provider binding: expected ${params.provider}, got ${manifest.provider}.`,
+        );
+      }
+      return params.createAdapter(manifest as ProviderManifest);
+    },
+    provider: params.provider as ProviderManifest["provider"],
+  };
+  return bridge;
+}
 
 export function readString(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) {

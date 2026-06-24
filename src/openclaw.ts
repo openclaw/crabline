@@ -21,7 +21,9 @@ import {
   type OpenClawCrablineInbound,
   type OpenClawCrablineInboundInput,
   type OpenClawCrablineOutboundMessage,
+  type OpenClawCrablineProviderAdapter,
   type OpenClawCrablineProviderBridge,
+  type OpenClawCrablineProviderBridgeRegistry,
   type StartedOpenClawCrablineAdapter,
   type StartOpenClawCrablineAdapterParams,
 } from "./openclaw/shared.js";
@@ -50,16 +52,22 @@ export type {
 const OPENCLAW_CRABLINE_PROVIDER_BRIDGES = {
   telegram: TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
   whatsapp: WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
-} satisfies Record<CrablineFakeProviderChannel, OpenClawCrablineProviderBridge>;
+} satisfies OpenClawCrablineProviderBridgeRegistry;
 
-function getOpenClawCrablineProviderBridge(
+const OPENCLAW_CRABLINE_PROVIDER_BRIDGE_LIST = Object.values(
+  OPENCLAW_CRABLINE_PROVIDER_BRIDGES,
+) as readonly OpenClawCrablineProviderBridge[];
+
+function createOpenClawCrablineProviderAdapter(
   manifest: CrablineFakeProviderManifest,
-): OpenClawCrablineProviderBridge {
-  const bridge = OPENCLAW_CRABLINE_PROVIDER_BRIDGES[manifest.provider];
-  if (!bridge) {
-    throw new Error(`Unsupported OpenClaw fake provider binding: ${String(manifest.provider)}`);
+): OpenClawCrablineProviderAdapter {
+  const bridge = OPENCLAW_CRABLINE_PROVIDER_BRIDGE_LIST.find(
+    (candidate) => candidate.provider === manifest.provider,
+  );
+  if (bridge) {
+    return bridge.createAdapterFromManifest(manifest);
   }
-  return bridge;
+  throw new Error("Unsupported OpenClaw fake provider binding.");
 }
 
 export function resolveOpenClawCrablineChannel(input?: string | null): CrablineFakeProviderChannel {
@@ -86,30 +94,29 @@ export function resolveOpenClawCrablineChannelDriverSelection(params: {
 export async function probeOpenClawCrablineFakeProvider(
   manifest: CrablineFakeProviderManifest,
 ): Promise<unknown> {
-  return await getOpenClawCrablineProviderBridge(manifest).probe(manifest);
+  return await createOpenClawCrablineProviderAdapter(manifest).probe();
 }
 
 export function createOpenClawCrablineFakeProviderBinding(
   manifest: CrablineFakeProviderManifest,
 ): OpenClawCrablineGatewayBinding {
-  return getOpenClawCrablineProviderBridge(manifest).createBinding(manifest);
+  return createOpenClawCrablineProviderAdapter(manifest).createBinding();
 }
 
 export function createOpenClawCrablineAgentDelivery(params: {
   manifest: CrablineFakeProviderManifest;
   target: string;
 }): OpenClawCrablineAgentDelivery {
-  return getOpenClawCrablineProviderBridge(params.manifest).createAgentDelivery({
-    manifest: params.manifest,
-    parsed: parseQaTarget(params.target),
-  });
+  return createOpenClawCrablineProviderAdapter(params.manifest).createAgentDelivery(
+    parseQaTarget(params.target),
+  );
 }
 
 export function createOpenClawCrablineInbound(params: {
   input: OpenClawCrablineInboundInput;
   manifest: CrablineFakeProviderManifest;
 }): OpenClawCrablineInbound {
-  return getOpenClawCrablineProviderBridge(params.manifest).createInbound(params);
+  return createOpenClawCrablineProviderAdapter(params.manifest).createInbound(params.input);
 }
 
 export function createOpenClawCrablineOutboundFromRecorderEvent(params: {
@@ -117,7 +124,10 @@ export function createOpenClawCrablineOutboundFromRecorderEvent(params: {
   manifest: CrablineFakeProviderManifest;
   targetByProviderTarget: ReadonlyMap<string, string>;
 }): OpenClawCrablineOutboundMessage | null {
-  return getOpenClawCrablineProviderBridge(params.manifest).createOutboundFromRecorderEvent(params);
+  return createOpenClawCrablineProviderAdapter(params.manifest).createOutboundFromRecorderEvent({
+    event: params.event,
+    targetByProviderTarget: params.targetByProviderTarget,
+  });
 }
 
 export async function startOpenClawCrablineAdapter(
@@ -127,30 +137,22 @@ export async function startOpenClawCrablineAdapter(
     channel: params.channel,
     recorderPath: params.recorderPath,
   });
-  const binding = createOpenClawCrablineFakeProviderBinding(server.manifest);
+  const providerAdapter = createOpenClawCrablineProviderAdapter(server.manifest);
+  const binding = providerAdapter.createBinding();
   return {
     ...binding,
     close: server.close,
     createGatewayConfig: (openclawConfig = params.openclawConfig ?? {}) =>
       binding.createGatewayConfig(openclawConfig),
-    createAgentDelivery: ({ target }) =>
-      createOpenClawCrablineAgentDelivery({
-        manifest: server.manifest,
-        target,
-      }),
-    createInbound: ({ input }) =>
-      createOpenClawCrablineInbound({
-        input,
-        manifest: server.manifest,
-      }),
+    createAgentDelivery: ({ target }) => providerAdapter.createAgentDelivery(parseQaTarget(target)),
+    createInbound: ({ input }) => providerAdapter.createInbound(input),
     createOutboundFromRecorderEvent: ({ event, targetByProviderTarget }) =>
-      createOpenClawCrablineOutboundFromRecorderEvent({
+      providerAdapter.createOutboundFromRecorderEvent({
         event,
-        manifest: server.manifest,
         targetByProviderTarget,
       }),
     manifest: server.manifest,
-    probe: () => probeOpenClawCrablineFakeProvider(server.manifest),
+    probe: () => providerAdapter.probe(),
   };
 }
 

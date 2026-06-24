@@ -1,25 +1,14 @@
-import type { CrablineFakeProviderManifest } from "../../fake-servers/index.js";
-import type { WhatsAppFakeServerManifest } from "../../fake-servers/whatsapp.js";
 import {
   createAdminInboundRequest,
+  createOpenClawCrablineProviderBridge,
   DEFAULT_ACCOUNT_ID,
   isRecord,
   qaTargetForInbound,
   readString,
-  type OpenClawCrablineProviderBridge,
 } from "../shared.js";
 
 const WHATSAPP_JID_RE =
   /^(?:\d{7,15}(?::\d+)?@s\.whatsapp\.net|\d{7,15}@c\.us|\d{5,}@g\.us|\d{7,15}@lid)$/iu;
-
-function requireWhatsAppManifest(
-  manifest: CrablineFakeProviderManifest,
-): WhatsAppFakeServerManifest {
-  if (manifest.provider !== "whatsapp") {
-    throw new Error(`Unsupported OpenClaw fake provider binding: ${String(manifest.provider)}`);
-  }
-  return manifest;
-}
 
 function requireWhatsAppJid(value: string, label: string): string {
   const trimmed = value.trim();
@@ -29,108 +18,108 @@ function requireWhatsAppJid(value: string, label: string): string {
   return trimmed;
 }
 
-export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE: OpenClawCrablineProviderBridge = {
-  async probe(manifest) {
-    const whatsapp = requireWhatsAppManifest(manifest);
-    const response = await fetch(`${whatsapp.endpoints.apiRoot}/health`);
-    if (!response.ok) {
-      throw new Error(`Crabline WhatsApp health probe failed with HTTP ${response.status}.`);
-    }
-    return await response.json();
-  },
-  createBinding(manifest) {
-    const whatsapp = requireWhatsAppManifest(manifest);
+export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
+  provider: "whatsapp",
+  createAdapter(whatsapp) {
     return {
-      accountId: DEFAULT_ACCOUNT_ID,
-      channel: "whatsapp",
-      createChannelDriverSmokeEnv: (env) => ({
-        ...env,
-        CRABLINE_WHATSAPP_ADMIN_TOKEN: whatsapp.adminToken,
-        CRABLINE_WHATSAPP_ACCESS_TOKEN: whatsapp.accessToken,
-        CRABLINE_WHATSAPP_API_ROOT: whatsapp.endpoints.apiRoot,
-        CRABLINE_WHATSAPP_SELF_JID: whatsapp.selfJid,
-      }),
-      createGatewayConfig: (openclawConfig = {}) => {
-        const channels = isRecord(openclawConfig.channels) ? openclawConfig.channels : {};
-        const whatsappConfig = isRecord(channels.whatsapp) ? channels.whatsapp : {};
-        const groups = isRecord(whatsappConfig.groups) ? whatsappConfig.groups : {};
-        const defaultGroup = isRecord(groups["*"]) ? groups["*"] : {};
-
+      async probe() {
+        const response = await fetch(`${whatsapp.endpoints.apiRoot}/health`);
+        if (!response.ok) {
+          throw new Error(`Crabline WhatsApp health probe failed with HTTP ${response.status}.`);
+        }
+        return await response.json();
+      },
+      createBinding() {
         return {
-          ...openclawConfig,
-          channels: {
-            ...channels,
-            whatsapp: {
-              ...whatsappConfig,
-              enabled: true,
-              dmPolicy: "open",
-              groupPolicy: "open",
-              allowFrom: ["*"],
-              groupAllowFrom: ["*"],
-              groups: {
-                ...groups,
-                "*": {
-                  ...defaultGroup,
-                  requireMention: false,
+          accountId: DEFAULT_ACCOUNT_ID,
+          channel: "whatsapp",
+          createChannelDriverSmokeEnv: (env) => ({
+            ...env,
+            CRABLINE_WHATSAPP_ADMIN_TOKEN: whatsapp.adminToken,
+            CRABLINE_WHATSAPP_ACCESS_TOKEN: whatsapp.accessToken,
+            CRABLINE_WHATSAPP_API_ROOT: whatsapp.endpoints.apiRoot,
+            CRABLINE_WHATSAPP_SELF_JID: whatsapp.selfJid,
+          }),
+          createGatewayConfig: (openclawConfig = {}) => {
+            const channels = isRecord(openclawConfig.channels) ? openclawConfig.channels : {};
+            const whatsappConfig = isRecord(channels.whatsapp) ? channels.whatsapp : {};
+            const groups = isRecord(whatsappConfig.groups) ? whatsappConfig.groups : {};
+            const defaultGroup = isRecord(groups["*"]) ? groups["*"] : {};
+
+            return {
+              ...openclawConfig,
+              channels: {
+                ...channels,
+                whatsapp: {
+                  ...whatsappConfig,
+                  enabled: true,
+                  dmPolicy: "open",
+                  groupPolicy: "open",
+                  allowFrom: ["*"],
+                  groupAllowFrom: ["*"],
+                  groups: {
+                    ...groups,
+                    "*": {
+                      ...defaultGroup,
+                      requireMention: false,
+                    },
+                  },
                 },
               },
-            },
+            };
+          },
+          requiredPluginIds: ["whatsapp"],
+        };
+      },
+      createAgentDelivery(parsed) {
+        const to = requireWhatsAppJid(parsed.id, "WhatsApp target");
+        return {
+          channel: "whatsapp",
+          to,
+          replyChannel: "whatsapp",
+          replyTo: to,
+        };
+      },
+      createInbound(input) {
+        const chatJid = requireWhatsAppJid(input.conversation.id, "WhatsApp conversation");
+        const senderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender");
+        return {
+          ...createAdminInboundRequest(whatsapp),
+          providerBody: {
+            chatJid,
+            senderJid,
+            ...(input.senderName ? { pushName: input.senderName } : {}),
+            text: input.text,
+          },
+          providerTargetKey: chatJid,
+          qaTarget: qaTargetForInbound(input),
+          stateConversation: {
+            id: chatJid,
+            kind: chatJid.endsWith("@g.us") ? "group" : "direct",
           },
         };
       },
-      requiredPluginIds: ["whatsapp"],
-    };
-  },
-  createAgentDelivery({ manifest, parsed }) {
-    requireWhatsAppManifest(manifest);
-    const to = requireWhatsAppJid(parsed.id, "WhatsApp target");
-    return {
-      channel: "whatsapp",
-      to,
-      replyChannel: "whatsapp",
-      replyTo: to,
-    };
-  },
-  createInbound({ input, manifest }) {
-    const whatsapp = requireWhatsAppManifest(manifest);
-    const chatJid = requireWhatsAppJid(input.conversation.id, "WhatsApp conversation");
-    const senderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender");
-    return {
-      ...createAdminInboundRequest(whatsapp),
-      providerBody: {
-        chatJid,
-        senderJid,
-        ...(input.senderName ? { pushName: input.senderName } : {}),
-        text: input.text,
-      },
-      providerTargetKey: chatJid,
-      qaTarget: qaTargetForInbound(input),
-      stateConversation: {
-        id: chatJid,
-        kind: chatJid.endsWith("@g.us") ? "group" : "direct",
+      createOutboundFromRecorderEvent({ event, targetByProviderTarget }) {
+        if (!isRecord(event) || event.type !== "api" || typeof event.path !== "string") {
+          return null;
+        }
+        if (!event.path.endsWith("/crabline/whatsapp/messages") || !isRecord(event.body)) {
+          return null;
+        }
+        const to = readString(event.body.to ?? event.body.jid);
+        const textPayload = event.body.text;
+        const text = isRecord(textPayload) ? readString(textPayload.body) : readString(textPayload);
+        if (!to || !text) {
+          return null;
+        }
+        return {
+          accountId: DEFAULT_ACCOUNT_ID,
+          senderId: "openclaw",
+          senderName: "OpenClaw QA",
+          text,
+          to: targetByProviderTarget.get(to) ?? to,
+        };
       },
     };
   },
-  createOutboundFromRecorderEvent({ event, manifest, targetByProviderTarget }) {
-    requireWhatsAppManifest(manifest);
-    if (!isRecord(event) || event.type !== "api" || typeof event.path !== "string") {
-      return null;
-    }
-    if (!event.path.endsWith("/crabline/whatsapp/messages") || !isRecord(event.body)) {
-      return null;
-    }
-    const to = readString(event.body.to ?? event.body.jid);
-    const textPayload = event.body.text;
-    const text = isRecord(textPayload) ? readString(textPayload.body) : readString(textPayload);
-    if (!to || !text) {
-      return null;
-    }
-    return {
-      accountId: DEFAULT_ACCOUNT_ID,
-      senderId: "openclaw",
-      senderName: "OpenClaw QA",
-      text,
-      to: targetByProviderTarget.get(to) ?? to,
-    };
-  },
-};
+});
