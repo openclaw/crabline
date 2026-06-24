@@ -1,0 +1,252 @@
+import fs from "node:fs/promises";
+import {
+  createWhatsAppBaileysMockSocket,
+  type WhatsAppBaileysMessage,
+  type WhatsAppBaileysMockConfig,
+  type WhatsAppBaileysMockSocket,
+} from "./whatsapp.js";
+
+export const CRABLINE_WHATSAPP_ACCESS_TOKEN_ENV = "CRABLINE_WHATSAPP_ACCESS_TOKEN";
+export const CRABLINE_WHATSAPP_API_ROOT_ENV = "CRABLINE_WHATSAPP_API_ROOT";
+export const CRABLINE_WHATSAPP_RECORDER_PATH_ENV = "CRABLINE_WHATSAPP_RECORDER_PATH";
+export const CRABLINE_WHATSAPP_SELF_JID_ENV = "CRABLINE_WHATSAPP_SELF_JID";
+
+const DEFAULT_RECORDER_POLL_MS = 50;
+const RECORDER_BRIDGE_STATE_KEY = Symbol.for("crabline.whatsapp.baileysRecorderBridge");
+
+type RecorderBridgeState = {
+  cursor: number;
+  syncPromise: Promise<void> | null;
+};
+
+type RecorderBridgeStateMap = Map<string, RecorderBridgeState>;
+
+type GlobalRecorderBridgeState = typeof globalThis & {
+  [RECORDER_BRIDGE_STATE_KEY]?: RecorderBridgeStateMap;
+};
+
+export type WhatsAppBaileysRuntimeGroupMetadata = {
+  id: string;
+  participants: unknown[];
+  subject: string;
+};
+
+export type WhatsAppBaileysRuntimeMockSocket = WhatsAppBaileysMockSocket & {
+  end(error?: Error | undefined): void;
+  groupFetchAllParticipating(): Promise<Record<string, WhatsAppBaileysRuntimeGroupMetadata>>;
+  groupMetadata(jid: string): Promise<WhatsAppBaileysRuntimeGroupMetadata>;
+  readMessages(keys?: unknown[] | undefined): Promise<void>;
+};
+
+export type WhatsAppBaileysRuntimeMockConfig = WhatsAppBaileysMockConfig & {
+  emitConnectionOpen?: boolean | undefined;
+  recorderPath?: string | undefined;
+  recorderPollMs?: number | undefined;
+};
+
+export type WhatsAppSocketFactoryOptions = {
+  fetch?: typeof fetch | undefined;
+  selfJid?: string | undefined;
+};
+
+function readNonEmptyString(value: unknown): string | undefined {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed || undefined;
+}
+
+function readRequiredEnv(env: NodeJS.ProcessEnv, key: string): string {
+  const value = readNonEmptyString(env[key]);
+  if (!value) {
+    throw new Error(`${key} is required to create a WhatsApp Baileys mock socket.`);
+  }
+  return value;
+}
+
+function readOptionalEnv(env: NodeJS.ProcessEnv, key: string): string | undefined {
+  return readNonEmptyString(env[key]);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function getRecorderBridgeState(recorderPath: string): RecorderBridgeState {
+  const globalState = globalThis as GlobalRecorderBridgeState;
+  const states = globalState[RECORDER_BRIDGE_STATE_KEY] ?? new Map();
+  globalState[RECORDER_BRIDGE_STATE_KEY] = states;
+  const state = states.get(recorderPath) ?? { cursor: 0, syncPromise: null };
+  states.set(recorderPath, state);
+  return state;
+}
+
+function parseRecorderLine(line: string): unknown {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+function createInboundMessageFromRecorderEvent(
+  event: unknown,
+  lineIndex: number,
+): WhatsAppBaileysMessage | null {
+  if (!isRecord(event) || event.type !== "admin" || typeof event.path !== "string") {
+    return null;
+  }
+  if (!event.path.endsWith("/crabline/whatsapp/inbound") || !isRecord(event.body)) {
+    return null;
+  }
+
+  const chatJid = readNonEmptyString(event.body.chatJid ?? event.body.chatId);
+  const senderJid = readNonEmptyString(event.body.senderJid ?? event.body.from);
+  const text = readNonEmptyString(event.body.text);
+  if (!chatJid || !senderJid || !text) {
+    return null;
+  }
+
+  const messageId =
+    readNonEmptyString(event.body.messageId) ??
+    `wamid.FAKEQA${String(lineIndex + 1).padStart(8, "0")}`;
+  return {
+    key: {
+      fromMe: false,
+      id: messageId,
+      ...(chatJid.endsWith("@g.us") ? { participant: senderJid } : {}),
+      remoteJid: chatJid,
+    },
+    message: {
+      conversation: text,
+    },
+    messageTimestamp: Math.floor(Date.now() / 1000),
+    pushName: readNonEmptyString(event.body.pushName) ?? "Test User",
+  };
+}
+
+async function readRecorderLines(recorderPath: string): Promise<string[]> {
+  const text = await fs.readFile(recorderPath, "utf8").catch((error: unknown) => {
+    if (isRecord(error) && error.code === "ENOENT") {
+      return "";
+    }
+    throw error;
+  });
+  return text.split(/\r?\n/u).filter((line) => line.trim().length > 0);
+}
+
+export function startWhatsAppBaileysRecorderBridge(params: {
+  recorderPath: string;
+  recorderPollMs?: number | undefined;
+  socket: WhatsAppBaileysMockSocket;
+}): () => void {
+  const state = getRecorderBridgeState(params.recorderPath);
+  const sync = async () => {
+    if (state.syncPromise) {
+      await state.syncPromise;
+      return;
+    }
+    state.syncPromise = (async () => {
+      const lines = await readRecorderLines(params.recorderPath);
+      if (lines.length < state.cursor) {
+        state.cursor = 0;
+      }
+      for (let lineIndex = state.cursor; lineIndex < lines.length; lineIndex += 1) {
+        const event = parseRecorderLine(lines[lineIndex] ?? "");
+        const message = createInboundMessageFromRecorderEvent(event, lineIndex);
+        if (message) {
+          params.socket.ev.emit("messages.upsert", { messages: [message], type: "notify" });
+        }
+      }
+      state.cursor = lines.length;
+    })();
+    try {
+      await state.syncPromise;
+    } finally {
+      state.syncPromise = null;
+    }
+  };
+
+  const interval = setInterval(() => {
+    void sync().catch(() => undefined);
+  }, params.recorderPollMs ?? DEFAULT_RECORDER_POLL_MS);
+  interval.unref?.();
+  void sync().catch(() => undefined);
+
+  return () => {
+    clearInterval(interval);
+  };
+}
+
+export function createWhatsAppBaileysRuntimeMockSocket(
+  config: WhatsAppBaileysRuntimeMockConfig,
+): WhatsAppBaileysRuntimeMockSocket {
+  const socket = createWhatsAppBaileysMockSocket(config);
+  const stopRecorderBridge = config.recorderPath
+    ? startWhatsAppBaileysRecorderBridge({
+        recorderPath: config.recorderPath,
+        recorderPollMs: config.recorderPollMs,
+        socket,
+      })
+    : () => {};
+  const openTimer =
+    config.emitConnectionOpen === false
+      ? null
+      : setTimeout(() => {
+          socket.ev.emit("connection.update", { connection: "open" });
+        }, 0);
+  openTimer?.unref?.();
+  let closed = false;
+
+  return {
+    ...socket,
+    end(error) {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      if (openTimer) {
+        clearTimeout(openTimer);
+      }
+      stopRecorderBridge();
+      socket.ev.emit("connection.update", {
+        connection: "close",
+        lastDisconnect: error ? { error } : undefined,
+      });
+    },
+    async groupFetchAllParticipating() {
+      return {};
+    },
+    async groupMetadata(jid) {
+      return {
+        id: jid,
+        participants: [],
+        subject: "Test Group",
+      };
+    },
+    async readMessages() {
+      return undefined;
+    },
+  };
+}
+
+export function createWhatsAppBaileysRuntimeMockSocketFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  options: WhatsAppSocketFactoryOptions = {},
+): WhatsAppBaileysRuntimeMockSocket {
+  return createWhatsAppBaileysRuntimeMockSocket({
+    accessToken: readRequiredEnv(env, CRABLINE_WHATSAPP_ACCESS_TOKEN_ENV),
+    apiRoot: readRequiredEnv(env, CRABLINE_WHATSAPP_API_ROOT_ENV),
+    fetch: options.fetch,
+    recorderPath: readOptionalEnv(env, CRABLINE_WHATSAPP_RECORDER_PATH_ENV),
+    selfJid: readOptionalEnv(env, CRABLINE_WHATSAPP_SELF_JID_ENV) ?? options.selfJid,
+  });
+}
+
+export async function createWhatsAppSocket(
+  _printQr?: boolean,
+  _verbose?: boolean,
+  options: WhatsAppSocketFactoryOptions = {},
+): Promise<WhatsAppBaileysRuntimeMockSocket> {
+  return createWhatsAppBaileysRuntimeMockSocketFromEnv(process.env, options);
+}
+
+export default createWhatsAppSocket;

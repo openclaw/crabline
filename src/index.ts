@@ -9,6 +9,16 @@ export {
   WhatsAppBaileysMockRegistry,
 } from "./fake-servers/whatsapp.js";
 export {
+  CRABLINE_WHATSAPP_ACCESS_TOKEN_ENV,
+  CRABLINE_WHATSAPP_API_ROOT_ENV,
+  CRABLINE_WHATSAPP_RECORDER_PATH_ENV,
+  CRABLINE_WHATSAPP_SELF_JID_ENV,
+  createWhatsAppBaileysRuntimeMockSocket,
+  createWhatsAppBaileysRuntimeMockSocketFromEnv,
+  createWhatsAppSocket,
+  startWhatsAppBaileysRecorderBridge,
+} from "./fake-servers/whatsapp-socket-factory.js";
+export {
   CRABLINE_FAKE_PROVIDER_CHANNELS,
   isCrablineFakeProviderChannel,
   startCrablineFakeProviderServer,
@@ -83,6 +93,12 @@ export type {
   WhatsAppBaileysPresence,
   WhatsAppFakeServerManifest,
 } from "./fake-servers/whatsapp.js";
+export type {
+  WhatsAppBaileysRuntimeGroupMetadata,
+  WhatsAppBaileysRuntimeMockConfig,
+  WhatsAppBaileysRuntimeMockSocket,
+  WhatsAppSocketFactoryOptions,
+} from "./fake-servers/whatsapp-socket-factory.js";
 export type {
   CrablineFakeProviderChannel,
   CrablineFakeProviderManifest,

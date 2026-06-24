@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/crabline",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Standalone CLI for deterministic messaging provider E2E tests",
   "homepage": "https://github.com/openclaw/crabline#readme",
   "bugs": {
@@ -27,6 +27,10 @@
     ".": {
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js"
+    },
+    "./whatsapp-socket-factory": {
+      "types": "./dist/src/fake-servers/whatsapp-socket-factory.d.ts",
+      "import": "./dist/src/fake-servers/whatsapp-socket-factory.js"
     }
   },
   "scripts": {
