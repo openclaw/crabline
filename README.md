@@ -177,6 +177,13 @@ a Baileys-style WhatsApp `sendMessage()` / `sendPresenceUpdate()` surface while
 the fake server owns local provider simulation. The admin token is generated
 randomly unless `--admin-token <token>` is provided.
 
+OpenClaw bridge callers should post injected user messages with the
+`providerUrl`, `providerHeaders`, and `providerBody` returned by
+`createOpenClawCrablineInbound()`. For WhatsApp, inbound `messages.upsert`
+delivery is an in-process Baileys mock socket behavior: create the fake server
+and `createWhatsAppBaileysMockSocket()` in the same Node process when testing
+listener-driven inbound delivery.
+
 ## Target IDs
 
 Built-in providers accept native channel identifiers. Crabline does not add

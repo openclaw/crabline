@@ -67,7 +67,9 @@ export type OpenClawCrablineInboundInput = {
 
 export type OpenClawCrablineInbound = {
   providerBody: Record<string, unknown>;
+  providerHeaders: Record<string, string>;
   providerTargetKey: string;
+  providerUrl: string;
   qaTarget: string;
   stateConversation: OpenClawCrablineConversation;
   threadId?: string | undefined;
@@ -194,6 +196,16 @@ function requireManifestProvider<TProvider extends CrablineFakeProviderManifest[
   return manifest as Extract<CrablineFakeProviderManifest, { provider: TProvider }>;
 }
 
+function createAdminInboundRequest(manifest: CrablineFakeProviderManifest) {
+  return {
+    providerHeaders: {
+      "content-type": "application/json",
+      "x-crabline-admin-token": manifest.adminToken,
+    },
+    providerUrl: manifest.endpoints.adminInboundUrl,
+  };
+}
+
 export function resolveOpenClawCrablineChannel(input?: string | null): CrablineFakeProviderChannel {
   const channel = input?.trim().toLowerCase() || OPENCLAW_CRABLINE_DEFAULT_CHANNEL;
   if (isCrablineFakeProviderChannel(channel)) {
@@ -308,11 +320,12 @@ const OPENCLAW_CRABLINE_PROVIDER_BRIDGES = {
       };
     },
     createInbound({ input, manifest }) {
-      requireManifestProvider(manifest, "telegram");
+      const telegram = requireManifestProvider(manifest, "telegram");
       const kind = input.conversation.kind === "direct" ? "direct" : "group";
       const chatId = normalizeTelegramChatId(kind, input.conversation.id);
       const threadId = readInteger(input.threadId);
       return {
+        ...createAdminInboundRequest(telegram),
         providerBody: {
           chatId,
           fromId: readInteger(input.senderId) ?? TELEGRAM_DEFAULT_SENDER_ID,
@@ -422,10 +435,11 @@ const OPENCLAW_CRABLINE_PROVIDER_BRIDGES = {
       };
     },
     createInbound({ input, manifest }) {
-      requireManifestProvider(manifest, "whatsapp");
+      const whatsapp = requireManifestProvider(manifest, "whatsapp");
       const chatJid = requireWhatsAppJid(input.conversation.id, "WhatsApp conversation");
       const senderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender");
       return {
+        ...createAdminInboundRequest(whatsapp),
         providerBody: {
           chatJid,
           senderJid,

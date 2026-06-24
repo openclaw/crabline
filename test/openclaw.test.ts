@@ -8,6 +8,7 @@ import {
   createOpenClawCrablineFakeProviderBinding,
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent,
+  createWhatsAppBaileysMockSocket,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
@@ -228,7 +229,12 @@ describe("OpenClaw fake provider bridge", () => {
         fromName: "Alice",
         text: "hello",
       },
+      providerHeaders: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "crabline-admin-token",
+      },
       providerTargetKey: "100001",
+      providerUrl: "http://127.0.0.1:1234/crabline/telegram/inbound",
       qaTarget: "dm:alice",
       stateConversation: {
         id: "100001",
@@ -287,7 +293,12 @@ describe("OpenClaw fake provider bridge", () => {
         pushName: "Alice",
         text: "hello",
       },
+      providerHeaders: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "crabline-whatsapp-admin-token",
+      },
       providerTargetKey: "120363001234567890@g.us",
+      providerUrl: "http://127.0.0.1:5678/crabline/whatsapp/inbound",
       qaTarget: "group:120363001234567890@g.us",
       stateConversation: {
         id: "120363001234567890@g.us",
@@ -315,6 +326,68 @@ describe("OpenClaw fake provider bridge", () => {
       text: "hello from openclaw",
       to: "dm:alice",
     });
+  });
+
+  it("posts WhatsApp OpenClaw inbound with admin headers into the Baileys listener path", async () => {
+    const adapter = await startOpenClawCrablineAdapter({ channel: "whatsapp" });
+    try {
+      if (adapter.manifest.provider !== "whatsapp") {
+        throw new Error("Expected WhatsApp fake provider manifest.");
+      }
+      const inboundEvents: unknown[] = [];
+      const socket = createWhatsAppBaileysMockSocket({
+        accessToken: adapter.manifest.accessToken,
+        apiRoot: adapter.manifest.endpoints.apiRoot,
+        selfJid: adapter.manifest.selfJid,
+      });
+      socket.ev.on("messages.upsert", (payload) => {
+        inboundEvents.push(payload);
+      });
+
+      const inbound = adapter.createInbound({
+        input: {
+          conversation: { id: "120363001234567890@g.us", kind: "group" },
+          senderId: "15551234567@s.whatsapp.net",
+          senderName: "Alice",
+          text: "hello from qa",
+        },
+      });
+
+      const rejected = await fetch(inbound.providerUrl, {
+        body: JSON.stringify(inbound.providerBody),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(rejected.status).toBe(401);
+
+      const accepted = await fetch(inbound.providerUrl, {
+        body: JSON.stringify(inbound.providerBody),
+        headers: inbound.providerHeaders,
+        method: "POST",
+      });
+      expect(accepted.status).toBe(200);
+      await expect(accepted.json()).resolves.toMatchObject({ ok: true });
+      expect(inboundEvents).toEqual([
+        expect.objectContaining({
+          messages: [
+            expect.objectContaining({
+              key: expect.objectContaining({
+                fromMe: false,
+                participant: "15551234567@s.whatsapp.net",
+                remoteJid: "120363001234567890@g.us",
+              }),
+              message: {
+                conversation: "hello from qa",
+              },
+              pushName: "Alice",
+            }),
+          ],
+          type: "notify",
+        }),
+      ]);
+    } finally {
+      await adapter.close();
+    }
   });
 
   it("runs OpenClaw channel-driver smoke and writes fake-provider artifacts", async () => {

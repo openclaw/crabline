@@ -130,6 +130,13 @@ Use `createWhatsAppBaileysMockSocket()` when a test needs a Baileys-style
 provider server. The admin token is generated randomly unless
 `--admin-token <token>` is provided.
 
+OpenClaw bridge callers should post injected user messages with the
+`providerUrl`, `providerHeaders`, and `providerBody` returned by
+`createOpenClawCrablineInbound()`. For WhatsApp, inbound `messages.upsert`
+delivery is an in-process Baileys mock socket behavior: create the fake server
+and `createWhatsAppBaileysMockSocket()` in the same Node process when testing
+listener-driven inbound delivery.
+
 The admin ingress accepts JSON like:
 
 ```json
