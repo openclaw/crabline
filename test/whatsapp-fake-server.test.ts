@@ -391,4 +391,77 @@ describe("whatsapp fake provider server", () => {
       restoreEnv(previousEnv);
     }
   });
+
+  it("fans out recorder inbound lines to runtime sockets sharing a recorder path", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startWhatsAppFakeServer({
+      accessToken: "fake-whatsapp-token",
+      adminToken: "fake-whatsapp-admin-token",
+      baileysRegistry: new WhatsAppBaileysMockRegistry(),
+      recorderPath: path.join(directory, "whatsapp.jsonl"),
+      selfJid: "15550000001@s.whatsapp.net",
+    });
+    servers.push(server);
+    const previousEnv = captureEnv();
+    process.env[CRABLINE_WHATSAPP_ACCESS_TOKEN_ENV] = server.manifest.accessToken;
+    process.env[CRABLINE_WHATSAPP_API_ROOT_ENV] = server.manifest.endpoints.apiRoot;
+    process.env[CRABLINE_WHATSAPP_RECORDER_PATH_ENV] = server.manifest.recorderPath;
+    process.env[CRABLINE_WHATSAPP_SELF_JID_ENV] = server.manifest.selfJid;
+
+    const firstSocket = await createWhatsAppSocket(false, false);
+    const secondSocket = await createWhatsAppSocket(false, false);
+    try {
+      const firstInboundEvents: unknown[] = [];
+      const secondInboundEvents: unknown[] = [];
+      firstSocket.ev.on("messages.upsert", (payload) => {
+        firstInboundEvents.push(payload);
+      });
+      secondSocket.ev.on("messages.upsert", (payload) => {
+        secondInboundEvents.push(payload);
+      });
+
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          chatJid: "120363001234567890@g.us",
+          pushName: "Fake Sender",
+          senderJid: "15551234567@s.whatsapp.net",
+          text: "fanout nonce",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "fake-whatsapp-admin-token",
+        },
+        method: "POST",
+      });
+      expect(inbound.status).toBe(200);
+
+      await waitForCondition(
+        () => firstInboundEvents.length === 1 && secondInboundEvents.length === 1,
+        "WhatsApp recorder fan-out",
+      );
+      const expectedPayload = expect.objectContaining({
+        messages: [
+          expect.objectContaining({
+            key: expect.objectContaining({
+              fromMe: false,
+              participant: "15551234567@s.whatsapp.net",
+              remoteJid: "120363001234567890@g.us",
+            }),
+            message: {
+              conversation: "fanout nonce",
+            },
+            pushName: "Fake Sender",
+          }),
+        ],
+        type: "notify",
+      });
+      expect(firstInboundEvents).toEqual([expectedPayload]);
+      expect(secondInboundEvents).toEqual([expectedPayload]);
+    } finally {
+      firstSocket.end();
+      secondSocket.end();
+      restoreEnv(previousEnv);
+    }
+  });
 });

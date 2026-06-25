@@ -1,4 +1,5 @@
-import fs from "node:fs/promises";
+import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import {
   createWhatsAppBaileysMockSocket,
   type WhatsAppBaileysMessage,
@@ -16,6 +17,8 @@ const RECORDER_BRIDGE_STATE_KEY = Symbol.for("crabline.whatsapp.baileysRecorderB
 
 type RecorderBridgeState = {
   cursor: number;
+  interval: ReturnType<typeof setInterval> | null;
+  sockets: Set<WhatsAppBaileysMockSocket>;
   syncPromise: Promise<void> | null;
 };
 
@@ -74,7 +77,12 @@ function getRecorderBridgeState(recorderPath: string): RecorderBridgeState {
   const globalState = globalThis as GlobalRecorderBridgeState;
   const states = globalState[RECORDER_BRIDGE_STATE_KEY] ?? new Map();
   globalState[RECORDER_BRIDGE_STATE_KEY] = states;
-  const state = states.get(recorderPath) ?? { cursor: 0, syncPromise: null };
+  const state = states.get(recorderPath) ?? {
+    cursor: readRecorderLineCountSync(recorderPath),
+    interval: null,
+    sockets: new Set<WhatsAppBaileysMockSocket>(),
+    syncPromise: null,
+  };
   states.set(recorderPath, state);
   return state;
 }
@@ -124,7 +132,7 @@ function createInboundMessageFromRecorderEvent(
 }
 
 async function readRecorderLines(recorderPath: string): Promise<string[]> {
-  const text = await fs.readFile(recorderPath, "utf8").catch((error: unknown) => {
+  const text = await fsPromises.readFile(recorderPath, "utf8").catch((error: unknown) => {
     if (isRecord(error) && error.code === "ENOENT") {
       return "";
     }
@@ -133,12 +141,27 @@ async function readRecorderLines(recorderPath: string): Promise<string[]> {
   return text.split(/\r?\n/u).filter((line) => line.trim().length > 0);
 }
 
+function readRecorderLineCountSync(recorderPath: string): number {
+  try {
+    return fs
+      .readFileSync(recorderPath, "utf8")
+      .split(/\r?\n/u)
+      .filter((line) => line.trim().length > 0).length;
+  } catch (error: unknown) {
+    if (isRecord(error) && error.code === "ENOENT") {
+      return 0;
+    }
+    throw error;
+  }
+}
+
 export function startWhatsAppBaileysRecorderBridge(params: {
   recorderPath: string;
   recorderPollMs?: number | undefined;
   socket: WhatsAppBaileysMockSocket;
 }): () => void {
   const state = getRecorderBridgeState(params.recorderPath);
+  state.sockets.add(params.socket);
   const sync = async () => {
     if (state.syncPromise) {
       await state.syncPromise;
@@ -153,7 +176,10 @@ export function startWhatsAppBaileysRecorderBridge(params: {
         const event = parseRecorderLine(lines[lineIndex] ?? "");
         const message = createInboundMessageFromRecorderEvent(event, lineIndex);
         if (message) {
-          params.socket.ev.emit("messages.upsert", { messages: [message], type: "notify" });
+          const payload = { messages: [message], type: "notify" };
+          for (const socket of state.sockets) {
+            socket.ev.emit("messages.upsert", payload);
+          }
         }
       }
       state.cursor = lines.length;
@@ -165,14 +191,20 @@ export function startWhatsAppBaileysRecorderBridge(params: {
     }
   };
 
-  const interval = setInterval(() => {
-    void sync().catch(() => undefined);
-  }, params.recorderPollMs ?? DEFAULT_RECORDER_POLL_MS);
-  interval.unref?.();
+  if (!state.interval) {
+    state.interval = setInterval(() => {
+      void sync().catch(() => undefined);
+    }, params.recorderPollMs ?? DEFAULT_RECORDER_POLL_MS);
+    state.interval.unref?.();
+  }
   void sync().catch(() => undefined);
 
   return () => {
-    clearInterval(interval);
+    state.sockets.delete(params.socket);
+    if (state.sockets.size === 0 && state.interval) {
+      clearInterval(state.interval);
+      state.interval = null;
+    }
   };
 }
 
