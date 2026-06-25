@@ -35,5 +35,5 @@ jobs:
             This pull request has been automatically marked as stale due to inactivity.
             Please update it or it will be closed.
           close-issue-message: Closing due to inactivity.
-          close-issue-reason: not planned
+          close-issue-reason: not_planned
           close-pr-message: Closing due to inactivity.
