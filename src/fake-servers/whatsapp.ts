@@ -106,6 +106,15 @@ export type StartWhatsAppFakeServerParams = {
   selfJid?: string | undefined;
 };
 
+type WhatsAppAdminInboundResult = {
+  message?: WhatsAppBaileysMessage | undefined;
+  response: Response;
+};
+
+type WhatsAppRecorderEvent = FakeServerRequestEvent & {
+  message?: WhatsAppBaileysMessage | undefined;
+};
+
 function whatsappOk(value: Record<string, unknown> = {}): Response {
   return jsonResponse({ ok: true, ...value });
 }
@@ -476,21 +485,23 @@ async function handleSendMessage(params: {
 async function handleAdminInbound(params: {
   body: Record<string, unknown>;
   state: WhatsAppFakeServerState;
-}): Promise<Response> {
+}): Promise<WhatsAppAdminInboundResult> {
   const chatJid = requireWhatsAppJid(params.body.chatJid ?? params.body.chatId, "chatJid");
   if (chatJid instanceof Response) {
-    return chatJid;
+    return { response: chatJid };
   }
   const senderJid = requireWhatsAppJid(params.body.senderJid ?? params.body.from, "senderJid");
   if (senderJid instanceof Response) {
-    return senderJid;
+    return { response: senderJid };
   }
   const text = readTrimmedString(params.body.text);
   if (!text) {
-    return graphParameterError(
-      "(#100) Missing required parameter: text",
-      "An inbound WhatsApp fake event requires text.",
-    );
+    return {
+      response: graphParameterError(
+        "(#100) Missing required parameter: text",
+        "An inbound WhatsApp fake event requires text.",
+      ),
+    };
   }
   const message = createWhatsAppMessage({
     fromMe: false,
@@ -536,8 +547,7 @@ async function handleAdminInbound(params: {
     ],
     object: "whatsapp_business_account",
   };
-  params.state.baileysRegistry.emitInbound(params.state.apiRoot, message);
-  return whatsappOk({ message, webhook });
+  return { message, response: whatsappOk({ message, webhook }) };
 }
 
 async function handleRequest(params: { request: IncomingMessage; state: WhatsAppFakeServerState }) {
@@ -555,15 +565,23 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       return adminAuthError();
     }
     const body = await parseRequestBody(params.request);
-    await appendEvent(params.state, {
+    const result = await handleAdminInbound({ body, state: params.state });
+    const event: WhatsAppRecorderEvent = {
       at: new Date().toISOString(),
       body,
       method: params.request.method,
       path: url.pathname,
       query: queryRecord(url),
       type: "admin",
-    });
-    return await handleAdminInbound({ body, state: params.state });
+    };
+    if (result.message) {
+      event.message = result.message;
+    }
+    await appendEvent(params.state, event);
+    if (result.message) {
+      params.state.baileysRegistry.emitInbound(params.state.apiRoot, result.message);
+    }
+    return result.response;
   }
 
   const body =

@@ -73,6 +73,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function readRecordedInboundMessage(value: unknown): WhatsAppBaileysMessage | undefined {
+  if (!isRecord(value) || !isRecord(value.key) || !isRecord(value.message)) {
+    return undefined;
+  }
+  const id = readNonEmptyString(value.key.id);
+  const remoteJid = readNonEmptyString(value.key.remoteJid);
+  if (!id || !remoteJid || value.key.fromMe !== false) {
+    return undefined;
+  }
+  return value as WhatsAppBaileysMessage;
+}
+
 function getRecorderBridgeState(recorderPath: string): RecorderBridgeState {
   const globalState = globalThis as GlobalRecorderBridgeState;
   const states = globalState[RECORDER_BRIDGE_STATE_KEY] ?? new Map();
@@ -102,7 +114,14 @@ function createInboundMessageFromRecorderEvent(
   if (!isRecord(event) || event.type !== "admin" || typeof event.path !== "string") {
     return null;
   }
-  if (!event.path.endsWith("/crabline/whatsapp/inbound") || !isRecord(event.body)) {
+  if (!event.path.endsWith("/crabline/whatsapp/inbound")) {
+    return null;
+  }
+  const recordedMessage = readRecordedInboundMessage(event.message);
+  if (recordedMessage) {
+    return recordedMessage;
+  }
+  if (!isRecord(event.body)) {
     return null;
   }
 
