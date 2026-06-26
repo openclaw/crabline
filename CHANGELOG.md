@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 - 2026-06-26
+
+- Add the Slack fake provider server and WhatsApp runtime socket factory to the releasable package.
+- Preserve generated WhatsApp inbound message IDs when recorder-backed runtime sockets replay admin inbound messages.
+
 ## 0.1.1 - 2026-06-24
 
 - Add the WhatsApp fake provider server with Baileys-style mock socket support for OpenClaw QA runs.
