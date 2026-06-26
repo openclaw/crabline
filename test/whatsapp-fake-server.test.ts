@@ -52,6 +52,23 @@ function restoreEnv(previous: Record<string, string | undefined>) {
   }
 }
 
+function readBaileysMessageId(message: unknown): string | undefined {
+  const key = isRecord(message) ? message.key : undefined;
+  const id = isRecord(key) ? key.id : undefined;
+  return typeof id === "string" ? id : undefined;
+}
+
+function readInboundResponseMessageId(payload: unknown): string | undefined {
+  return isRecord(payload) ? readBaileysMessageId(payload.message) : undefined;
+}
+
+function readUpsertMessageId(payload: unknown): string | undefined {
+  const firstMessage = isRecord(payload)
+    ? (payload.messages as Array<Record<string, unknown>> | undefined)?.[0]
+    : undefined;
+  return readBaileysMessageId(firstMessage);
+}
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(directories.splice(0).map(disposeTempDir));
@@ -252,6 +269,40 @@ describe("whatsapp fake provider server", () => {
     expect(recorder).toContain('"path":"/crabline/whatsapp/inbound"');
   });
 
+  it("does not emit admin inbound messages when recorder append fails", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startWhatsAppFakeServer({
+      adminToken: "fake-whatsapp-admin-token",
+      accessToken: "fake-whatsapp-token",
+      recorderPath: directory,
+    });
+    servers.push(server);
+    const inboundEvents: unknown[] = [];
+    const socket = server.createBaileysMockSocket();
+    socket.ev.on("messages.upsert", (payload) => {
+      inboundEvents.push(payload);
+    });
+
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        chatJid: "120363001234567890@g.us",
+        pushName: "Fake Sender",
+        senderJid: "15551234567@s.whatsapp.net",
+        text: "unrecordable inbound nonce",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "fake-whatsapp-admin-token",
+      },
+      method: "POST",
+    });
+    expect(inbound.status).toBe(500);
+    await expect(inbound.json()).resolves.toMatchObject({ ok: false });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(inboundEvents).toEqual([]);
+  });
+
   it("exposes a Baileys-shaped mock socket over the fake provider server", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -360,6 +411,9 @@ describe("whatsapp fake provider server", () => {
         method: "POST",
       });
       expect(inbound.status).toBe(200);
+      const inboundBody: unknown = await inbound.json();
+      const inboundMessageId = readInboundResponseMessageId(inboundBody);
+      expect(inboundMessageId).toMatch(/^wamid\.FAKE/u);
       await waitForCondition(() => inboundEvents.length === 1, "WhatsApp recorder inbound event");
       expect(inboundEvents).toEqual([
         expect.objectContaining({
@@ -379,6 +433,7 @@ describe("whatsapp fake provider server", () => {
           type: "notify",
         }),
       ]);
+      expect(readUpsertMessageId(inboundEvents[0])).toBe(inboundMessageId);
 
       socket.end();
       expect(connectionUpdates).toContainEqual(
@@ -435,6 +490,9 @@ describe("whatsapp fake provider server", () => {
         method: "POST",
       });
       expect(inbound.status).toBe(200);
+      const inboundBody: unknown = await inbound.json();
+      const inboundMessageId = readInboundResponseMessageId(inboundBody);
+      expect(inboundMessageId).toMatch(/^wamid\.FAKE/u);
 
       await waitForCondition(
         () => firstInboundEvents.length === 1 && secondInboundEvents.length === 1,
@@ -458,6 +516,8 @@ describe("whatsapp fake provider server", () => {
       });
       expect(firstInboundEvents).toEqual([expectedPayload]);
       expect(secondInboundEvents).toEqual([expectedPayload]);
+      expect(readUpsertMessageId(firstInboundEvents[0])).toBe(inboundMessageId);
+      expect(readUpsertMessageId(secondInboundEvents[0])).toBe(inboundMessageId);
     } finally {
       firstSocket.end();
       secondSocket.end();
