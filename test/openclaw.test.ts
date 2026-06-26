@@ -49,6 +49,7 @@ const whatsappManifest: CrablineFakeProviderManifest = {
     CRABLINE_WHATSAPP_ADMIN_TOKEN: "crabline-whatsapp-admin-token",
     CRABLINE_WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
     CRABLINE_WHATSAPP_API_ROOT: "http://127.0.0.1:5678/crabline/whatsapp",
+    CRABLINE_WHATSAPP_RECORDER_PATH: "/tmp/crabline/whatsapp.jsonl",
     CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
   },
   provider: "whatsapp",
@@ -194,6 +195,7 @@ describe("OpenClaw fake provider bridge", () => {
       CRABLINE_WHATSAPP_ADMIN_TOKEN: "crabline-whatsapp-admin-token",
       CRABLINE_WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
       CRABLINE_WHATSAPP_API_ROOT: "http://127.0.0.1:5678/crabline/whatsapp",
+      CRABLINE_WHATSAPP_RECORDER_PATH: "/tmp/crabline/whatsapp.jsonl",
       CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
     });
   });

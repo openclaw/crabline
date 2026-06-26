@@ -79,6 +79,7 @@ export type WhatsAppFakeServerManifest = {
     CRABLINE_WHATSAPP_ADMIN_TOKEN: string;
     CRABLINE_WHATSAPP_ACCESS_TOKEN: string;
     CRABLINE_WHATSAPP_API_ROOT: string;
+    CRABLINE_WHATSAPP_RECORDER_PATH: string;
     CRABLINE_WHATSAPP_SELF_JID: string;
   };
   provider: "whatsapp";
@@ -650,6 +651,7 @@ export async function startWhatsAppFakeServer(
         CRABLINE_WHATSAPP_ADMIN_TOKEN: state.adminToken,
         CRABLINE_WHATSAPP_ACCESS_TOKEN: state.accessToken,
         CRABLINE_WHATSAPP_API_ROOT: apiRoot,
+        CRABLINE_WHATSAPP_RECORDER_PATH: state.recorderPath,
         CRABLINE_WHATSAPP_SELF_JID: state.selfJid,
       },
       provider: "whatsapp",
