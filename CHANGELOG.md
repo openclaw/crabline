@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5 - 2026-06-29
+
+- Rename fake-server internals and public server APIs while preserving fake-provider compatibility aliases and artifact paths.
+
 ## 0.1.4 - 2026-06-29
 
 - Add the Baileys WebSocket WhatsApp fake provider server for OpenClaw WebSocket URL smoke runs.
