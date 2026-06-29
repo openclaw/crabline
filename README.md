@@ -170,10 +170,11 @@ provided. The inbound endpoint rejects requests without the matching admin
 header (or `Authorization: Bearer <token>`).
 
 Implemented Telegram Bot API endpoints include `getMe`, `sendMessage`,
-`editMessageText`, `deleteMessage`, `setMessageReaction`, `createForumTopic`,
-`editForumTopic`, `pinChatMessage`, `unpinChatMessage`, `getUpdates`,
-`deleteWebhook`, `setWebhook`, `setMyCommands`, `deleteMyCommands`,
-`sendChatAction`, and `answerCallbackQuery`.
+`sendPhoto`, `sendDocument`, `sendVideo`, `sendAnimation`, `editMessageText`,
+`deleteMessage`, `setMessageReaction`, `createForumTopic`, `editForumTopic`,
+`pinChatMessage`, `unpinChatMessage`, `getUpdates`, `deleteWebhook`,
+`setWebhook`, `setMyCommands`, `deleteMyCommands`, `sendChatAction`, and
+`answerCallbackQuery`.
 
 WhatsApp:
 
