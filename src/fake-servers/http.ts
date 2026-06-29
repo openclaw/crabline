@@ -73,7 +73,7 @@ export async function startHttpJsonServer(params: {
   host: string;
   port: number;
   serverName: string;
-}): Promise<{ baseUrl: string; close(): Promise<void> }> {
+}): Promise<{ baseUrl: string; close(): Promise<void>; server: Server }> {
   const server = createServer(async (request, response) => {
     try {
       await writeResponse(response, await params.handle(request));
@@ -108,6 +108,7 @@ export async function startHttpJsonServer(params: {
     async close() {
       await closeServer(server);
     },
+    server,
   };
 }
 

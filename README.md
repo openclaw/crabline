@@ -184,36 +184,36 @@ crabline --json serve whatsapp --ready-file .crabline/whatsapp-server.json
 The JSON manifest contains:
 
 - `endpoints.apiRoot`: Crabline WhatsApp fake provider API root
+- `endpoints.baileysWebSocketUrl`: Baileys-compatible WebSocket URL for
+  `waWebSocketUrl`, including the fake provider access token query parameter
 - `accessToken`: bearer token for fake provider requests
 - `adminToken`: send this as the `X-Crabline-Admin-Token` header when posting
   test user messages
 - `selfJid`: fake authenticated WhatsApp user JID
-- `env.CRABLINE_WHATSAPP_ACCESS_TOKEN`: access token for the runtime socket
-  factory
-- `env.CRABLINE_WHATSAPP_API_ROOT`: API root for the runtime socket factory
-- `env.CRABLINE_WHATSAPP_RECORDER_PATH`: recorder file followed by the runtime
-  socket factory for cross-process inbound delivery
-- `env.CRABLINE_WHATSAPP_SELF_JID`: fake authenticated WhatsApp user JID for
-  the runtime socket factory
+- `env.CRABLINE_WHATSAPP_ACCESS_TOKEN`: same value as `accessToken`
+- `env.CRABLINE_WHATSAPP_API_ROOT`: same value as `endpoints.apiRoot`
+- `env.CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL`: same value as
+  `endpoints.baileysWebSocketUrl`
+- `env.CRABLINE_WHATSAPP_RECORDER_PATH`: recorder file for HTTP traffic and
+  Baileys WebSocket stanzas
+- `env.CRABLINE_WHATSAPP_SELF_JID`: fake authenticated WhatsApp user JID
 - `endpoints.adminInboundUrl`: authenticated POST endpoint for test user
-  messages; subscribed Baileys mock sockets receive them as `messages.upsert`
-- `endpoints.messagesUrl`: fake text send endpoint used by the Baileys-shaped
-  mock
-- `endpoints.presenceUrl`: fake presence endpoint used by
-  `sendPresenceUpdate`
-- `recorderPath`: JSONL file of fake provider API/admin traffic
+  messages using the WhatsApp Business webhook payload shape
+- `endpoints.messagesUrl`: fake text send endpoint for Graph-style callers
+- `endpoints.presenceUrl`: fake presence endpoint for Graph-style callers
+- `recorderPath`: JSONL file of fake provider API/admin traffic and Baileys
+  WebSocket stanzas
 
-Use the package subpath `@openclaw/crabline/whatsapp-socket-factory` when a
-runtime needs a Baileys-style module with `createWhatsAppSocket()`. The module
-reads the `CRABLINE_WHATSAPP_*` env vars emitted by the manifest, sends outbound
-traffic to the fake provider API, and follows the recorder for inbound
-`messages.upsert` events. The admin token is generated randomly unless
-`--admin-token <token>` is provided.
+Pass `endpoints.baileysWebSocketUrl` to Baileys as `waWebSocketUrl` when a
+runtime needs to connect through the fake provider. The fake server completes
+the Baileys Noise handshake, serves bootstrap/device/prekey queries, and records
+encrypted outbound WebSocket stanzas. The WebSocket endpoint rejects clients
+that do not present the access token embedded in the manifest URL. The admin
+token is generated randomly unless `--admin-token <token>` is provided.
 
 OpenClaw bridge callers should post injected user messages with the
 `providerUrl`, `providerHeaders`, and `providerBody` returned by
-`createOpenClawCrablineInbound()`. For direct in-process tests, the started fake
-server also exposes `createBaileysMockSocket()`.
+`createOpenClawCrablineInbound()`.
 
 ## Target IDs
 

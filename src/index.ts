@@ -2,22 +2,7 @@ export { resolveTelegramAdapterConfig } from "./providers/builtin/telegram.js";
 export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
 export { startSlackFakeServer } from "./fake-servers/slack.js";
 export { startTelegramFakeServer } from "./fake-servers/telegram.js";
-export {
-  createWhatsAppBaileysMockSocket,
-  DEFAULT_WHATSAPP_BAILEYS_MOCK_REGISTRY,
-  startWhatsAppFakeServer,
-  WhatsAppBaileysMockRegistry,
-} from "./fake-servers/whatsapp.js";
-export {
-  CRABLINE_WHATSAPP_ACCESS_TOKEN_ENV,
-  CRABLINE_WHATSAPP_API_ROOT_ENV,
-  CRABLINE_WHATSAPP_RECORDER_PATH_ENV,
-  CRABLINE_WHATSAPP_SELF_JID_ENV,
-  createWhatsAppBaileysRuntimeMockSocket,
-  createWhatsAppBaileysRuntimeMockSocketFromEnv,
-  createWhatsAppSocket,
-  startWhatsAppBaileysRecorderBridge,
-} from "./fake-servers/whatsapp-socket-factory.js";
+export { startWhatsAppFakeServer } from "./fake-servers/whatsapp.js";
 export {
   CRABLINE_FAKE_PROVIDER_CHANNELS,
   isCrablineFakeProviderChannel,
@@ -87,18 +72,8 @@ export type {
   StartedWhatsAppFakeServer,
   StartWhatsAppFakeServerParams,
   WhatsAppBaileysMessage,
-  WhatsAppBaileysMockConfig,
-  WhatsAppBaileysMockSocketOverrides,
-  WhatsAppBaileysMockSocket,
-  WhatsAppBaileysPresence,
   WhatsAppFakeServerManifest,
 } from "./fake-servers/whatsapp.js";
-export type {
-  WhatsAppBaileysRuntimeGroupMetadata,
-  WhatsAppBaileysRuntimeMockConfig,
-  WhatsAppBaileysRuntimeMockSocket,
-  WhatsAppSocketFactoryOptions,
-} from "./fake-servers/whatsapp-socket-factory.js";
 export type {
   CrablineFakeProviderChannel,
   CrablineFakeProviderManifest,

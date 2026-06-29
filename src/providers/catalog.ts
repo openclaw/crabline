@@ -94,7 +94,7 @@ export const OPENCLAW_SUPPORT_CATALOG = [
   createBridgeEntry("twitch", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry("webchat", "OpenClaw web channel via script bridge."),
   {
-    notes: "Built-in local WhatsApp mock with Business webhook shape.",
+    notes: "Built-in local WhatsApp mock with Business webhook and Baileys WebSocket shapes.",
     platform: "whatsapp",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
