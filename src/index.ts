@@ -1,16 +1,26 @@
 export { resolveTelegramAdapterConfig } from "./providers/builtin/telegram.js";
 export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
-export { startSlackServer } from "./servers/slack.js";
-export { startTelegramServer } from "./servers/telegram.js";
-export { startWhatsAppServer } from "./servers/whatsapp.js";
+export { startSlackServer, startSlackServer as startSlackFakeServer } from "./servers/slack.js";
+export {
+  startTelegramServer,
+  startTelegramServer as startTelegramFakeServer,
+} from "./servers/telegram.js";
+export {
+  startWhatsAppServer,
+  startWhatsAppServer as startWhatsAppFakeServer,
+} from "./servers/whatsapp.js";
 export {
   CRABLINE_SERVER_CHANNELS,
+  CRABLINE_SERVER_CHANNELS as CRABLINE_FAKE_PROVIDER_CHANNELS,
   isCrablineServerChannel,
+  isCrablineServerChannel as isCrablineFakeProviderChannel,
   startCrablineServer,
+  startCrablineServer as startCrablineFakeProviderServer,
 } from "./servers/index.js";
 export {
   createOpenClawCrablineAgentDelivery,
   createOpenClawCrablineChannelReportNotes,
+  createOpenClawCrablineProviderBinding as createOpenClawCrablineFakeProviderBinding,
   createOpenClawCrablineProviderBinding,
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent,
@@ -18,6 +28,7 @@ export {
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
+  probeOpenClawCrablineProvider as probeOpenClawCrablineFakeProvider,
   probeOpenClawCrablineProvider,
   resolveOpenClawCrablineChannel,
   resolveOpenClawCrablineChannelDriverSelection,
@@ -59,25 +70,38 @@ export type {
   WatchContext,
 } from "./providers/types.js";
 export type {
+  SlackServerManifest as SlackFakeServerManifest,
   SlackServerManifest,
+  StartedSlackServer as StartedSlackFakeServer,
   StartedSlackServer,
+  StartSlackServerParams as StartSlackFakeServerParams,
   StartSlackServerParams,
 } from "./servers/slack.js";
 export type {
+  StartedTelegramServer as StartedTelegramFakeServer,
   StartedTelegramServer,
+  StartTelegramServerParams as StartTelegramFakeServerParams,
   StartTelegramServerParams,
+  TelegramServerManifest as TelegramFakeServerManifest,
   TelegramServerManifest,
 } from "./servers/telegram.js";
 export type {
+  StartedWhatsAppServer as StartedWhatsAppFakeServer,
   StartedWhatsAppServer,
+  StartWhatsAppServerParams as StartWhatsAppFakeServerParams,
   StartWhatsAppServerParams,
   WhatsAppBaileysMessage,
+  WhatsAppServerManifest as WhatsAppFakeServerManifest,
   WhatsAppServerManifest,
 } from "./servers/whatsapp.js";
 export type {
+  CrablineServerChannel as CrablineFakeProviderChannel,
   CrablineServerChannel,
+  CrablineServerManifest as CrablineFakeProviderManifest,
   CrablineServerManifest,
+  StartedCrablineServer as StartedCrablineFakeProviderServer,
   StartedCrablineServer,
+  StartCrablineServerParams as StartCrablineFakeProviderServerParams,
   StartCrablineServerParams,
 } from "./servers/index.js";
 export type {

@@ -167,7 +167,7 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
     params.outputDir,
     "artifacts",
     "crabline",
-    `${params.selection.channel}-provider.jsonl`,
+    `${params.selection.channel}-fake-provider.jsonl`,
   );
   await fs.mkdir(path.dirname(recorderPath), { recursive: true });
   const adapter = await startOpenClawCrablineAdapter({

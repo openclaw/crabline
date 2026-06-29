@@ -3,17 +3,27 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  CRABLINE_FAKE_PROVIDER_CHANNELS,
+  CRABLINE_SERVER_CHANNELS,
   createOpenClawCrablineAgentDelivery,
   createOpenClawCrablineChannelReportNotes,
+  createOpenClawCrablineFakeProviderBinding,
   createOpenClawCrablineProviderBinding,
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent,
+  isCrablineFakeProviderChannel,
+  isCrablineServerChannel,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
+  probeOpenClawCrablineFakeProvider,
+  probeOpenClawCrablineProvider,
   resolveOpenClawCrablineChannelDriverSelection,
   runOpenClawCrablineChannelDriverSmoke,
+  startCrablineFakeProviderServer,
+  startCrablineServer,
   startOpenClawCrablineAdapter,
+  type CrablineFakeProviderManifest,
   type CrablineServerManifest,
 } from "../src/index.js";
 
@@ -81,6 +91,17 @@ const slackManifest: CrablineServerManifest = {
 };
 
 describe("OpenClaw local provider bridge", () => {
+  it("keeps legacy fake-provider root aliases", () => {
+    const legacyManifest: CrablineFakeProviderManifest = manifest;
+
+    expect(CRABLINE_FAKE_PROVIDER_CHANNELS).toBe(CRABLINE_SERVER_CHANNELS);
+    expect(isCrablineFakeProviderChannel).toBe(isCrablineServerChannel);
+    expect(startCrablineFakeProviderServer).toBe(startCrablineServer);
+    expect(createOpenClawCrablineFakeProviderBinding).toBe(createOpenClawCrablineProviderBinding);
+    expect(probeOpenClawCrablineFakeProvider).toBe(probeOpenClawCrablineProvider);
+    expect(legacyManifest.provider).toBe("telegram");
+  });
+
   it("resolves channel-driver metadata through Crabline", () => {
     expect(resolveOpenClawCrablineChannelDriverSelection({})).toEqual({
       capabilityMatrixPath: OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
@@ -522,6 +543,7 @@ describe("OpenClaw local provider bridge", () => {
         result: {
           ok: true,
           provider: "telegram",
+          recorderPath: "artifacts/crabline/telegram-fake-provider.jsonl",
           probe: {
             ok: true,
             result: {
@@ -537,8 +559,8 @@ describe("OpenClaw local provider bridge", () => {
       expect(writtenManifest.provider).toBe("telegram");
       expect(createOpenClawCrablineChannelReportNotes(selection)).toEqual([
         "Channel driver: crabline local provider for telegram.",
-        "Channel capability report: crabline-provider-capabilities.json.",
-        "Channel driver smoke: crabline-provider-smoke.json.",
+        "Channel capability report: crabline-fake-provider-capabilities.json.",
+        "Channel driver smoke: crabline-fake-provider-smoke.json.",
         "Crabline starts local provider-shaped servers; OpenClaw uses its normal channel adapter against those endpoints.",
       ]);
     } finally {

@@ -3,9 +3,9 @@ import type { CrablineServerChannel, CrablineServerManifest } from "../servers/i
 
 export const DEFAULT_ACCOUNT_ID = "default";
 export const OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH =
-  "crabline-provider-capabilities.json";
-export const OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH = "crabline-provider-smoke.json";
-export const OPENCLAW_CRABLINE_MANIFEST_PATH = "crabline-provider-server.json";
+  "crabline-fake-provider-capabilities.json";
+export const OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH = "crabline-fake-provider-smoke.json";
+export const OPENCLAW_CRABLINE_MANIFEST_PATH = "crabline-fake-provider-server.json";
 export const OPENCLAW_CRABLINE_DEFAULT_CHANNEL = "telegram";
 
 export type OpenClawCrablineChannelDriverSelection = {
