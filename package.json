@@ -49,8 +49,8 @@
     "check": "pnpm verify"
   },
   "dependencies": {
-    "baileys": "7.0.0-rc13",
     "commander": "^14.0.3",
+    "curve25519-js": "^0.0.4",
     "picocolors": "^1.1.1",
     "ws": "^8.21.0",
     "yaml": "^2.9.0",
@@ -61,6 +61,7 @@
     "@types/ws": "^8.18.1",
     "@typescript/native-preview": "7.0.0-dev.20260503.1",
     "@vitest/coverage-v8": "^4.1.8",
+    "baileys": "7.0.0-rc13",
     "oxfmt": "^0.47.0",
     "oxlint": "^1.69.0",
     "oxlint-tsgolint": "^0.22.1",

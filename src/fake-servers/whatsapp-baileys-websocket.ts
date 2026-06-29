@@ -5,26 +5,28 @@ import {
   aesDecryptGCM,
   aesEncryptGCM,
   Curve,
-  decodeBinaryNode,
   encodeBigEndian,
-  encodeBinaryNode,
   hkdf,
-  KEY_BUNDLE_TYPE,
   NOISE_MODE,
   NOISE_WA_HEADER,
-  proto,
-  S_WHATSAPP_NET,
   sha256,
   signedKeyPair,
-  xmppPreKey,
-  xmppSignedPreKey,
-  type BinaryNode,
   type KeyPair,
   type SignedKeyPair,
-} from "baileys";
+} from "./whatsapp-wire/crypto.js";
+import {
+  decodeBinaryNode,
+  encodeBinaryNode,
+  S_WHATSAPP_NET,
+  type BinaryNode,
+} from "./whatsapp-wire/binary-node.js";
+import { decodeHandshakeMessage, encodeHandshakeMessage } from "./whatsapp-wire/handshake.js";
+import { KEY_BUNDLE_TYPE, xmppPreKey, xmppSignedPreKey } from "./whatsapp-wire/signal.js";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import type { FakeServerRequestEvent } from "./http.js";
 
+// Keep the fake server independent from Baileys at runtime. Tests use Baileys
+// as a black-box client to verify this narrow WhatsApp Web wire subset.
 const EMPTY_BUFFER = Buffer.alloc(0);
 const IV_LENGTH = 12;
 type NodeBuffer = Buffer<ArrayBufferLike>;
@@ -127,22 +129,21 @@ class BaileysNoiseServer {
     return await decodeBinaryNode(this.#transport.decrypt(frame));
   }
 
-  finishClientHandshake(frame: Uint8Array): proto.ClientPayload {
-    const message = proto.HandshakeMessage.decode(frame);
+  finishClientHandshake(frame: Uint8Array): void {
+    const message = decodeHandshakeMessage(frame);
     const finish = message.clientFinish;
-    if (!finish?.static || !finish.payload || !this.#serverEphemeralKey) {
+    if (!finish?.staticKey || !finish.payload || !this.#serverEphemeralKey) {
       throw new Error("Invalid Baileys client finish handshake.");
     }
-    const clientNoisePublic = this.#decrypt(finish.static);
+    const clientNoisePublic = this.#decrypt(finish.staticKey);
     this.#mixIntoKey(Curve.sharedKey(this.#serverEphemeralKey.private, clientNoisePublic));
-    const payload = this.#decrypt(finish.payload);
+    this.#decrypt(finish.payload);
     const [writeKey, readKey] = this.#localHKDF(EMPTY_BUFFER);
     this.#transport = new TransportState(readKey, writeKey);
-    return proto.ClientPayload.decode(payload);
   }
 
   createServerHello(frame: Uint8Array): NodeBuffer {
-    const message = proto.HandshakeMessage.decode(frame);
+    const message = decodeHandshakeMessage(frame);
     const clientHello = message.clientHello;
     if (!clientHello?.ephemeral) {
       throw new Error("Invalid Baileys client hello handshake.");
@@ -157,13 +158,13 @@ class BaileysNoiseServer {
     this.#mixIntoKey(Curve.sharedKey(this.#serverStaticKey.private, clientHello.ephemeral));
     const payload = this.#encrypt(WHATSAPP_NOISE_CERT_CHAIN);
     return encodeLengthPrefixed(
-      proto.HandshakeMessage.encode({
+      encodeHandshakeMessage({
         serverHello: {
           ephemeral: this.#serverEphemeralKey.public,
           payload,
-          static: staticKey,
+          staticKey,
         },
-      }).finish(),
+      }),
     );
   }
 

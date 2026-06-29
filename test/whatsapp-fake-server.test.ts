@@ -338,8 +338,12 @@ describe("whatsapp fake provider server", () => {
         text: "hello through real baileys",
       });
       await waitForCondition(
-        () => fs.readFile(server.manifest.recorderPath, "utf8").then(Boolean, () => false),
-        "WhatsApp recorder",
+        () =>
+          fs.readFile(server.manifest.recorderPath, "utf8").then(
+            (recorder) => recorder.includes('"tag":"message"'),
+            () => false,
+          ),
+        "WhatsApp message recorder event",
       );
       const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
       expect(recorder).toContain('"method":"WEBSOCKET"');
