@@ -566,7 +566,7 @@ export async function startSlackFakeServer(
     botUserId: params.botUserId ?? "UCRABBOT",
     nextDmIndex: 1,
     nextTsIndex: 100,
-    recorderPath: params.recorderPath ?? path.resolve(".crabline", "fake-servers", "slack.jsonl"),
+    recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "slack.jsonl"),
     signingSecret: params.signingSecret ?? "crabline-slack-signing-secret",
     userDmChannels: new Map(),
     messagesByChannel: new Map(),

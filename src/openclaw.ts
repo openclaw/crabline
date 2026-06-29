@@ -5,7 +5,7 @@ import {
   type CrablineFakeProviderChannel,
   type CrablineFakeProviderManifest,
   type StartedCrablineFakeProviderServer,
-} from "./fake-servers/index.js";
+} from "./servers/index.js";
 import { SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/slack.js";
 import { TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/telegram.js";
 import { WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/whatsapp.js";

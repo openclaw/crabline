@@ -391,8 +391,7 @@ export async function startTelegramFakeServer(
     botUsername: params.botUsername ?? "crabline_bot",
     nextMessageId: 1,
     nextUpdateId: 1,
-    recorderPath:
-      params.recorderPath ?? path.resolve(".crabline", "fake-servers", "telegram.jsonl"),
+    recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "telegram.jsonl"),
     updates: [],
   };
   const host = params.host ?? "127.0.0.1";

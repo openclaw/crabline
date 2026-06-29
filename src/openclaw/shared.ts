@@ -1,8 +1,8 @@
-import { ADMIN_TOKEN_HEADER } from "../fake-servers/http.js";
+import { ADMIN_TOKEN_HEADER } from "../servers/http.js";
 import type {
   CrablineFakeProviderChannel,
   CrablineFakeProviderManifest,
-} from "../fake-servers/index.js";
+} from "../servers/index.js";
 
 export const DEFAULT_ACCOUNT_ID = "default";
 export const OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH =

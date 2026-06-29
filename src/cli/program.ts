@@ -12,7 +12,7 @@ import {
   type CrablineFakeProviderChannel,
   type CrablineFakeProviderManifest,
   type StartCrablineFakeProviderServerParams,
-} from "../fake-servers/index.js";
+} from "../servers/index.js";
 
 type GlobalOptions = {
   config?: string;

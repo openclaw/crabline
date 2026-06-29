@@ -416,8 +416,7 @@ export async function startWhatsAppFakeServer(
     displayPhoneNumber: "15550000000",
     nextMessageId: 1,
     phoneNumberId: "TEST_PHONE_NUMBER_ID",
-    recorderPath:
-      params.recorderPath ?? path.resolve(".crabline", "fake-servers", "whatsapp.jsonl"),
+    recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "whatsapp.jsonl"),
     selfJid: params.selfJid ?? "15550000000@s.whatsapp.net",
   };
   const host = params.host ?? "127.0.0.1";
