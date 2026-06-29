@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/crabline",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Standalone CLI for deterministic messaging provider E2E tests",
   "homepage": "https://github.com/openclaw/crabline#readme",
   "bugs": {
@@ -49,7 +49,7 @@
     "check": "pnpm verify"
   },
   "dependencies": {
-    "commander": "^14.0.3",
+    "commander": "^15.0.0",
     "curve25519-js": "^0.0.4",
     "picocolors": "^1.1.1",
     "ws": "^8.21.0",
@@ -57,9 +57,9 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^25.9.2",
+    "@types/node": "^26.0.1",
     "@types/ws": "^8.18.1",
-    "@typescript/native-preview": "7.0.0-dev.20260503.1",
+    "@typescript/native-preview": "7.0.0-dev.20260629.1",
     "@vitest/coverage-v8": "^4.1.8",
     "baileys": "7.0.0-rc13",
     "oxfmt": "^0.56.0",
