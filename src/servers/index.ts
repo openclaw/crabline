@@ -1,75 +1,71 @@
 import {
-  startSlackFakeServer,
-  type SlackFakeServerManifest,
-  type StartedSlackFakeServer,
-  type StartSlackFakeServerParams,
+  startSlackServer,
+  type SlackServerManifest,
+  type StartedSlackServer,
+  type StartSlackServerParams,
 } from "./slack.js";
 import {
-  startTelegramFakeServer,
-  type StartedTelegramFakeServer,
-  type StartTelegramFakeServerParams,
-  type TelegramFakeServerManifest,
+  startTelegramServer,
+  type StartedTelegramServer,
+  type StartTelegramServerParams,
+  type TelegramServerManifest,
 } from "./telegram.js";
 import {
-  startWhatsAppFakeServer,
-  type StartedWhatsAppFakeServer,
-  type StartWhatsAppFakeServerParams,
-  type WhatsAppFakeServerManifest,
+  startWhatsAppServer,
+  type StartedWhatsAppServer,
+  type StartWhatsAppServerParams,
+  type WhatsAppServerManifest,
 } from "./whatsapp.js";
 import { CrablineError } from "../core/errors.js";
 
-export const CRABLINE_FAKE_PROVIDER_CHANNELS = Object.freeze([
-  "slack",
-  "telegram",
-  "whatsapp",
-] as const);
+export const CRABLINE_SERVER_CHANNELS = Object.freeze(["slack", "telegram", "whatsapp"] as const);
 
-export type CrablineFakeProviderChannel = (typeof CRABLINE_FAKE_PROVIDER_CHANNELS)[number];
+export type CrablineServerChannel = (typeof CRABLINE_SERVER_CHANNELS)[number];
 
-export type CrablineFakeProviderManifest =
-  | SlackFakeServerManifest
-  | TelegramFakeServerManifest
-  | WhatsAppFakeServerManifest;
+export type CrablineServerManifest =
+  | SlackServerManifest
+  | TelegramServerManifest
+  | WhatsAppServerManifest;
 
-export type StartedCrablineFakeProviderServer =
-  | StartedSlackFakeServer
-  | StartedTelegramFakeServer
-  | StartedWhatsAppFakeServer;
+export type StartedCrablineServer =
+  | StartedSlackServer
+  | StartedTelegramServer
+  | StartedWhatsAppServer;
 
-export type StartCrablineFakeProviderServerParams =
-  | (StartSlackFakeServerParams & { channel: "slack" })
-  | (StartTelegramFakeServerParams & { channel: "telegram" })
-  | (StartWhatsAppFakeServerParams & { channel: "whatsapp" });
+export type StartCrablineServerParams =
+  | (StartSlackServerParams & { channel: "slack" })
+  | (StartTelegramServerParams & { channel: "telegram" })
+  | (StartWhatsAppServerParams & { channel: "whatsapp" });
 
-const CRABLINE_FAKE_PROVIDER_CHANNEL_SET = new Set<string>(CRABLINE_FAKE_PROVIDER_CHANNELS);
+const CRABLINE_SERVER_CHANNEL_SET = new Set<string>(CRABLINE_SERVER_CHANNELS);
 
-export function isCrablineFakeProviderChannel(value: string): value is CrablineFakeProviderChannel {
-  return CRABLINE_FAKE_PROVIDER_CHANNEL_SET.has(value);
+export function isCrablineServerChannel(value: string): value is CrablineServerChannel {
+  return CRABLINE_SERVER_CHANNEL_SET.has(value);
 }
 
-export function startCrablineFakeProviderServer(
-  params: StartSlackFakeServerParams & { channel: "slack" },
-): Promise<StartedSlackFakeServer>;
-export function startCrablineFakeProviderServer(
-  params: StartTelegramFakeServerParams & { channel: "telegram" },
-): Promise<StartedTelegramFakeServer>;
-export function startCrablineFakeProviderServer(
-  params: StartWhatsAppFakeServerParams & { channel: "whatsapp" },
-): Promise<StartedWhatsAppFakeServer>;
-export function startCrablineFakeProviderServer(
-  params: StartCrablineFakeProviderServerParams,
-): Promise<StartedCrablineFakeProviderServer>;
-export async function startCrablineFakeProviderServer(
-  params: StartCrablineFakeProviderServerParams,
-): Promise<StartedCrablineFakeProviderServer> {
+export function startCrablineServer(
+  params: StartSlackServerParams & { channel: "slack" },
+): Promise<StartedSlackServer>;
+export function startCrablineServer(
+  params: StartTelegramServerParams & { channel: "telegram" },
+): Promise<StartedTelegramServer>;
+export function startCrablineServer(
+  params: StartWhatsAppServerParams & { channel: "whatsapp" },
+): Promise<StartedWhatsAppServer>;
+export function startCrablineServer(
+  params: StartCrablineServerParams,
+): Promise<StartedCrablineServer>;
+export async function startCrablineServer(
+  params: StartCrablineServerParams,
+): Promise<StartedCrablineServer> {
   if (params.channel === "slack") {
-    return await startSlackFakeServer(params);
+    return await startSlackServer(params);
   }
   if (params.channel === "telegram") {
-    return await startTelegramFakeServer(params);
+    return await startTelegramServer(params);
   }
   if (params.channel === "whatsapp") {
-    return await startWhatsAppFakeServer(params);
+    return await startWhatsAppServer(params);
   }
-  throw new CrablineError("Unsupported fake provider server.", { kind: "config" });
+  throw new CrablineError("Unsupported server channel.", { kind: "config" });
 }

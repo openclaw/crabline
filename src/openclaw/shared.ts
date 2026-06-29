@@ -1,18 +1,15 @@
 import { ADMIN_TOKEN_HEADER } from "../servers/http.js";
-import type {
-  CrablineFakeProviderChannel,
-  CrablineFakeProviderManifest,
-} from "../servers/index.js";
+import type { CrablineServerChannel, CrablineServerManifest } from "../servers/index.js";
 
 export const DEFAULT_ACCOUNT_ID = "default";
 export const OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH =
-  "crabline-fake-provider-capabilities.json";
-export const OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH = "crabline-fake-provider-smoke.json";
-export const OPENCLAW_CRABLINE_MANIFEST_PATH = "crabline-fake-provider-server.json";
+  "crabline-provider-capabilities.json";
+export const OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH = "crabline-provider-smoke.json";
+export const OPENCLAW_CRABLINE_MANIFEST_PATH = "crabline-provider-server.json";
 export const OPENCLAW_CRABLINE_DEFAULT_CHANNEL = "telegram";
 
 export type OpenClawCrablineChannelDriverSelection = {
-  channel: CrablineFakeProviderChannel;
+  channel: CrablineServerChannel;
   channelDriver: "crabline";
   capabilityMatrixPath: typeof OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH;
   smokeArtifactPath: typeof OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH;
@@ -74,7 +71,7 @@ export type OpenClawCrablineOutboundMessage = {
 };
 
 export type StartOpenClawCrablineAdapterParams = {
-  channel: CrablineFakeProviderChannel;
+  channel: CrablineServerChannel;
   openclawConfig?: Record<string, unknown> | undefined;
   recorderPath?: string | undefined;
 };
@@ -87,7 +84,7 @@ export type StartedOpenClawCrablineAdapter = OpenClawCrablineGatewayBinding & {
     event: unknown;
     targetByProviderTarget: ReadonlyMap<string, string>;
   }): OpenClawCrablineOutboundMessage | null;
-  manifest: CrablineFakeProviderManifest;
+  manifest: CrablineServerManifest;
   probe(): Promise<unknown>;
 };
 
@@ -109,36 +106,34 @@ export type OpenClawCrablineProviderAdapter = {
 };
 
 export type OpenClawCrablineProviderBridge<
-  TManifest extends CrablineFakeProviderManifest = CrablineFakeProviderManifest,
+  TManifest extends CrablineServerManifest = CrablineServerManifest,
 > = {
   createAdapter(manifest: TManifest): OpenClawCrablineProviderAdapter;
-  createAdapterFromManifest(
-    manifest: CrablineFakeProviderManifest,
-  ): OpenClawCrablineProviderAdapter;
+  createAdapterFromManifest(manifest: CrablineServerManifest): OpenClawCrablineProviderAdapter;
   provider: TManifest["provider"];
 };
 
 export type OpenClawCrablineProviderBridgeRegistry = {
-  [Provider in CrablineFakeProviderManifest["provider"]]: OpenClawCrablineProviderBridge<
-    Extract<CrablineFakeProviderManifest, { provider: Provider }>
+  [Provider in CrablineServerManifest["provider"]]: OpenClawCrablineProviderBridge<
+    Extract<CrablineServerManifest, { provider: Provider }>
   >;
 };
 
 export function createOpenClawCrablineProviderBridge<
-  TProvider extends CrablineFakeProviderManifest["provider"],
+  TProvider extends CrablineServerManifest["provider"],
 >(params: {
   createAdapter(
-    manifest: Extract<CrablineFakeProviderManifest, { provider: TProvider }>,
+    manifest: Extract<CrablineServerManifest, { provider: TProvider }>,
   ): OpenClawCrablineProviderAdapter;
   provider: TProvider;
-}): OpenClawCrablineProviderBridge<Extract<CrablineFakeProviderManifest, { provider: TProvider }>> {
-  type ProviderManifest = Extract<CrablineFakeProviderManifest, { provider: TProvider }>;
+}): OpenClawCrablineProviderBridge<Extract<CrablineServerManifest, { provider: TProvider }>> {
+  type ProviderManifest = Extract<CrablineServerManifest, { provider: TProvider }>;
   const bridge: OpenClawCrablineProviderBridge<ProviderManifest> = {
     createAdapter: params.createAdapter,
     createAdapterFromManifest(manifest) {
       if (manifest.provider !== params.provider) {
         throw new Error(
-          `Unsupported OpenClaw fake provider binding: expected ${params.provider}, got ${manifest.provider}.`,
+          `Unsupported OpenClaw provider binding: expected ${params.provider}, got ${manifest.provider}.`,
         );
       }
       return params.createAdapter(manifest as ProviderManifest);
@@ -203,7 +198,7 @@ export function qaTargetForInbound(input: OpenClawCrablineInboundInput) {
     : `${prefix}:${input.conversation.id}`;
 }
 
-export function createAdminInboundRequest(manifest: CrablineFakeProviderManifest) {
+export function createAdminInboundRequest(manifest: CrablineServerManifest) {
   return {
     providerHeaders: {
       "content-type": "application/json",

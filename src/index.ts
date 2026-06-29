@@ -1,24 +1,24 @@
 export { resolveTelegramAdapterConfig } from "./providers/builtin/telegram.js";
 export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
-export { startSlackFakeServer } from "./servers/slack.js";
-export { startTelegramFakeServer } from "./servers/telegram.js";
-export { startWhatsAppFakeServer } from "./servers/whatsapp.js";
+export { startSlackServer } from "./servers/slack.js";
+export { startTelegramServer } from "./servers/telegram.js";
+export { startWhatsAppServer } from "./servers/whatsapp.js";
 export {
-  CRABLINE_FAKE_PROVIDER_CHANNELS,
-  isCrablineFakeProviderChannel,
-  startCrablineFakeProviderServer,
+  CRABLINE_SERVER_CHANNELS,
+  isCrablineServerChannel,
+  startCrablineServer,
 } from "./servers/index.js";
 export {
   createOpenClawCrablineAgentDelivery,
   createOpenClawCrablineChannelReportNotes,
-  createOpenClawCrablineFakeProviderBinding,
+  createOpenClawCrablineProviderBinding,
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
-  probeOpenClawCrablineFakeProvider,
+  probeOpenClawCrablineProvider,
   resolveOpenClawCrablineChannel,
   resolveOpenClawCrablineChannelDriverSelection,
   runOpenClawCrablineChannelDriverSmoke,
@@ -59,26 +59,26 @@ export type {
   WatchContext,
 } from "./providers/types.js";
 export type {
-  SlackFakeServerManifest,
-  StartedSlackFakeServer,
-  StartSlackFakeServerParams,
+  SlackServerManifest,
+  StartedSlackServer,
+  StartSlackServerParams,
 } from "./servers/slack.js";
 export type {
-  StartedTelegramFakeServer,
-  StartTelegramFakeServerParams,
-  TelegramFakeServerManifest,
+  StartedTelegramServer,
+  StartTelegramServerParams,
+  TelegramServerManifest,
 } from "./servers/telegram.js";
 export type {
-  StartedWhatsAppFakeServer,
-  StartWhatsAppFakeServerParams,
+  StartedWhatsAppServer,
+  StartWhatsAppServerParams,
   WhatsAppBaileysMessage,
-  WhatsAppFakeServerManifest,
+  WhatsAppServerManifest,
 } from "./servers/whatsapp.js";
 export type {
-  CrablineFakeProviderChannel,
-  CrablineFakeProviderManifest,
-  StartedCrablineFakeProviderServer,
-  StartCrablineFakeProviderServerParams,
+  CrablineServerChannel,
+  CrablineServerManifest,
+  StartedCrablineServer,
+  StartCrablineServerParams,
 } from "./servers/index.js";
 export type {
   OpenClawCrablineAgentDelivery,

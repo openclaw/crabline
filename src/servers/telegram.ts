@@ -5,7 +5,7 @@ import path from "node:path";
 import { CrablineError } from "../core/errors.js";
 import { adminAuthError, hasAdminToken } from "./http.js";
 
-type TelegramFakeServerEvent = {
+type TelegramServerEvent = {
   at: string;
   body?: unknown;
   method: string;
@@ -14,7 +14,7 @@ type TelegramFakeServerEvent = {
   type: "admin" | "api";
 };
 
-type TelegramFakeServerState = {
+type TelegramServerState = {
   adminToken: string;
   botId: number;
   botToken: string;
@@ -48,7 +48,7 @@ type TelegramUpdate = {
   update_id: number;
 };
 
-export type TelegramFakeServerManifest = {
+export type TelegramServerManifest = {
   adminToken: string;
   baseUrl: string;
   botToken: string;
@@ -64,12 +64,12 @@ export type TelegramFakeServerManifest = {
   version: 1;
 };
 
-export type StartedTelegramFakeServer = {
+export type StartedTelegramServer = {
   close(): Promise<void>;
-  manifest: TelegramFakeServerManifest;
+  manifest: TelegramServerManifest;
 };
 
-export type StartTelegramFakeServerParams = {
+export type StartTelegramServerParams = {
   adminToken?: string | undefined;
   botId?: number | undefined;
   botToken?: string | undefined;
@@ -168,12 +168,12 @@ function telegramChatId(value: unknown): number | string | undefined {
   return /^-?\d+$/u.test(stringValue) ? Number(stringValue) : stringValue;
 }
 
-async function appendEvent(state: TelegramFakeServerState, event: TelegramFakeServerEvent) {
+async function appendEvent(state: TelegramServerState, event: TelegramServerEvent) {
   await fs.mkdir(path.dirname(state.recorderPath), { recursive: true });
   await fs.appendFile(state.recorderPath, `${JSON.stringify(event)}\n`, "utf8");
 }
 
-function createBotUser(state: TelegramFakeServerState) {
+function createBotUser(state: TelegramServerState) {
   return {
     can_join_groups: true,
     can_read_all_group_messages: true,
@@ -200,7 +200,7 @@ function createChat(chatId: number | string): TelegramMessage["chat"] {
 }
 
 function createOutboundMessage(
-  state: TelegramFakeServerState,
+  state: TelegramServerState,
   body: Record<string, unknown>,
 ): TelegramMessage | undefined {
   const chatId = telegramChatId(body.chat_id);
@@ -220,7 +220,7 @@ function createOutboundMessage(
 }
 
 function createEditedMessage(
-  state: TelegramFakeServerState,
+  state: TelegramServerState,
   body: Record<string, unknown>,
 ): TelegramMessage | undefined {
   const chatId = telegramChatId(body.chat_id);
@@ -241,7 +241,7 @@ function createEditedMessage(
 }
 
 function createInboundUpdate(
-  state: TelegramFakeServerState,
+  state: TelegramServerState,
   body: Record<string, unknown>,
 ): TelegramUpdate | undefined {
   const chatId = telegramChatId(body.chatId ?? body.chat_id);
@@ -285,7 +285,7 @@ function queryRecord(url: URL): Record<string, string> {
 async function handleTelegramApi(params: {
   body: Record<string, unknown>;
   method: string;
-  state: TelegramFakeServerState;
+  state: TelegramServerState;
 }) {
   switch (params.method) {
     case "getMe":
@@ -334,7 +334,7 @@ async function handleTelegramApi(params: {
   }
 }
 
-async function handleRequest(params: { request: IncomingMessage; state: TelegramFakeServerState }) {
+async function handleRequest(params: { request: IncomingMessage; state: TelegramServerState }) {
   const url = new URL(params.request.url ?? "/", "http://127.0.0.1");
   if (url.pathname === "/crabline/telegram/inbound") {
     if (params.request.method !== "POST") {
@@ -381,10 +381,10 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
   });
 }
 
-export async function startTelegramFakeServer(
-  params: StartTelegramFakeServerParams = {},
-): Promise<StartedTelegramFakeServer> {
-  const state: TelegramFakeServerState = {
+export async function startTelegramServer(
+  params: StartTelegramServerParams = {},
+): Promise<StartedTelegramServer> {
+  const state: TelegramServerState = {
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     botId: params.botId ?? 424242,
     botToken: params.botToken ?? "424242:crabline-telegram-token",
@@ -421,7 +421,7 @@ export async function startTelegramFakeServer(
   });
   const address = server.address();
   if (!address || typeof address === "string") {
-    throw new CrablineError("Unable to resolve Telegram fake server address.", {
+    throw new CrablineError("Unable to resolve Telegram local server address.", {
       kind: "connectivity",
     });
   }

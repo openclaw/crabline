@@ -16,5 +16,5 @@
   </g>
   <text x="470" y="145" fill="#fff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="64" font-weight="700">crabline</text>
   <text x="474" y="205" fill="#9ddbd5" font-family="ui-sans-serif, system-ui, sans-serif" font-size="26">deterministic messaging-channel QA</text>
-  <text x="474" y="255" fill="#ffcf86" font-family="ui-sans-serif, system-ui, sans-serif" font-size="22">local mocks · fake provider APIs · reproducible evidence</text>
+  <text x="474" y="255" fill="#ffcf86" font-family="ui-sans-serif, system-ui, sans-serif" font-size="22">local mocks · provider APIs · reproducible evidence</text>
 </svg>

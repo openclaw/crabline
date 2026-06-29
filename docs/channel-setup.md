@@ -4,7 +4,7 @@ Crabline is a local mock service for OpenClaw channel contracts. It has two
 surfaces:
 
 - fixture-level local mocks used directly by the Crabline CLI
-- fake provider servers that OpenClaw live adapters can target
+- local provider servers that OpenClaw live adapters can target
 
 Live channel testing belongs in OpenClaw's live channel adapters. Crabline
 belongs in deterministic smoke CI and local QA where the test needs
@@ -70,11 +70,11 @@ Provider credential fields such as `botToken`, `accessToken`, `baseURL`, or
 `serverUrl` are optional mock metadata. They are not required for local mock
 execution.
 
-## Fake Provider Servers
+## Local Provider Servers
 
-Fake provider servers sit below OpenClaw's normal channel adapters. QA starts the
+Local provider servers sit below OpenClaw's normal channel adapters. QA starts the
 server, writes the emitted runtime manifest into OpenClaw config/env, and then
-OpenClaw talks to the local fake provider instead of the public provider.
+OpenClaw talks to the local provider instead of the public provider.
 
 Slack:
 
@@ -145,19 +145,19 @@ crabline --json serve whatsapp --ready-file .crabline/whatsapp-server.json
 
 Manifest fields:
 
-- `endpoints.apiRoot`: Crabline WhatsApp fake provider API root
+- `endpoints.apiRoot`: Crabline WhatsApp local provider API root
 - `endpoints.baileysWebSocketUrl`: Baileys-compatible WebSocket URL for
-  `waWebSocketUrl`, including the fake provider access token query parameter
-- `accessToken`: bearer token for fake provider requests
+  `waWebSocketUrl`, including the local provider access token query parameter
+- `accessToken`: bearer token for local provider requests
 - `adminToken`: value for the `X-Crabline-Admin-Token` header on admin ingress
-- `selfJid`: fake authenticated WhatsApp user JID
+- `selfJid`: local authenticated WhatsApp user JID
 - `env.CRABLINE_WHATSAPP_ACCESS_TOKEN`: same value as `accessToken`
 - `env.CRABLINE_WHATSAPP_API_ROOT`: same value as `endpoints.apiRoot`
 - `env.CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL`: same value as
   `endpoints.baileysWebSocketUrl`
 - `env.CRABLINE_WHATSAPP_RECORDER_PATH`: recorder file for HTTP traffic and
   Baileys WebSocket stanzas
-- `env.CRABLINE_WHATSAPP_SELF_JID`: fake authenticated WhatsApp user JID
+- `env.CRABLINE_WHATSAPP_SELF_JID`: local authenticated WhatsApp user JID
 - `endpoints.adminInboundUrl`: authenticated admin ingress for test user
   messages using the WhatsApp Business webhook payload shape
 - `endpoints.messagesUrl`: text send endpoint for Graph-style callers
@@ -166,7 +166,7 @@ Manifest fields:
   WebSocket stanzas
 
 Pass `endpoints.baileysWebSocketUrl` to Baileys as `waWebSocketUrl` when a
-runtime needs to connect through the fake provider. The fake server completes
+runtime needs to connect through the local provider. The local server completes
 the Baileys Noise handshake, serves bootstrap/device/prekey queries, and records
 encrypted outbound WebSocket stanzas. The WebSocket endpoint rejects clients
 that do not present the access token embedded in the manifest URL. The admin

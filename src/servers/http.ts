@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { timingSafeEqual } from "node:crypto";
 import { CrablineError } from "../core/errors.js";
 
-export type FakeServerRequestEvent = {
+export type ServerRequestEvent = {
   at: string;
   body?: unknown;
   method: string;
@@ -99,7 +99,7 @@ export async function startHttpJsonServer(params: {
   });
   const address = server.address();
   if (!address || typeof address === "string") {
-    throw new CrablineError(`Unable to resolve ${params.serverName} fake server address.`, {
+    throw new CrablineError(`Unable to resolve ${params.serverName} local server address.`, {
       kind: "connectivity",
     });
   }

@@ -10,7 +10,7 @@ import {
   queryRecord,
   readTrimmedString,
   startHttpJsonServer,
-  type FakeServerRequestEvent,
+  type ServerRequestEvent,
 } from "./http.js";
 import {
   attachWhatsAppBaileysWebSocketServer,
@@ -22,7 +22,7 @@ const WHATSAPP_LEGACY_USER_JID_RE = /^\d{7,15}@c\.us$/iu;
 const WHATSAPP_GROUP_JID_RE = /^\d{5,}@g\.us$/iu;
 const WHATSAPP_LID_RE = /^\d{7,15}@lid$/iu;
 
-type WhatsAppFakeServerState = {
+type WhatsAppServerState = {
   accessToken: string;
   adminToken: string;
   apiRoot: string;
@@ -36,7 +36,7 @@ type WhatsAppFakeServerState = {
 
 export type WhatsAppBaileysMessage = WhatsAppBaileysInboundMessage;
 
-export type WhatsAppFakeServerManifest = {
+export type WhatsAppServerManifest = {
   accessToken: string;
   adminToken: string;
   baseUrl: string;
@@ -61,12 +61,12 @@ export type WhatsAppFakeServerManifest = {
   version: 1;
 };
 
-export type StartedWhatsAppFakeServer = {
+export type StartedWhatsAppServer = {
   close(): Promise<void>;
-  manifest: WhatsAppFakeServerManifest;
+  manifest: WhatsAppServerManifest;
 };
 
-export type StartWhatsAppFakeServerParams = {
+export type StartWhatsAppServerParams = {
   accessToken?: string | undefined;
   adminToken?: string | undefined;
   host?: string | undefined;
@@ -80,7 +80,7 @@ type WhatsAppAdminInboundResult = {
   response: Response;
 };
 
-type WhatsAppRecorderEvent = FakeServerRequestEvent & {
+type WhatsAppRecorderEvent = ServerRequestEvent & {
   message?: WhatsAppBaileysMessage | undefined;
 };
 
@@ -129,7 +129,7 @@ function graphAuthError(): Response {
   });
 }
 
-async function appendEvent(state: WhatsAppFakeServerState, event: FakeServerRequestEvent) {
+async function appendEvent(state: WhatsAppServerState, event: ServerRequestEvent) {
   await fs.mkdir(path.dirname(state.recorderPath), { recursive: true });
   await fs.appendFile(state.recorderPath, `${JSON.stringify(event)}\n`, "utf8");
 }
@@ -154,14 +154,14 @@ function requireWhatsAppJid(value: unknown, label: string): string | Response {
   return stringValue;
 }
 
-function requireAuth(request: IncomingMessage, state: WhatsAppFakeServerState): boolean {
+function requireAuth(request: IncomingMessage, state: WhatsAppServerState): boolean {
   const authorization = request.headers.authorization;
   return (
     typeof authorization === "string" && authorization.trim() === `Bearer ${state.accessToken}`
   );
 }
 
-function nextMessageId(state: WhatsAppFakeServerState): string {
+function nextMessageId(state: WhatsAppServerState): string {
   return `wamid.FAKE${String(state.nextMessageId++).padStart(8, "0")}`;
 }
 
@@ -233,7 +233,7 @@ function createWhatsAppMessage(params: {
 
 async function handleSendMessage(params: {
   body: Record<string, unknown>;
-  state: WhatsAppFakeServerState;
+  state: WhatsAppServerState;
 }): Promise<Response> {
   const productError = requireMessagingProduct(params.body);
   if (productError) {
@@ -272,7 +272,7 @@ async function handleSendMessage(params: {
 
 async function handleAdminInbound(params: {
   body: Record<string, unknown>;
-  state: WhatsAppFakeServerState;
+  state: WhatsAppServerState;
 }): Promise<WhatsAppAdminInboundResult> {
   const chatJid = requireWhatsAppJid(params.body.chatJid ?? params.body.chatId, "chatJid");
   if (chatJid instanceof Response) {
@@ -287,7 +287,7 @@ async function handleAdminInbound(params: {
     return {
       response: graphParameterError(
         "(#100) Missing required parameter: text",
-        "An inbound WhatsApp fake event requires text.",
+        "An inbound WhatsApp event requires text.",
       ),
     };
   }
@@ -338,7 +338,7 @@ async function handleAdminInbound(params: {
   return { message, response: whatsappOk({ message, webhook }) };
 }
 
-async function handleRequest(params: { request: IncomingMessage; state: WhatsAppFakeServerState }) {
+async function handleRequest(params: { request: IncomingMessage; state: WhatsAppServerState }) {
   const url = new URL(params.request.url ?? "/", "http://127.0.0.1");
 
   if (url.pathname === "/crabline/whatsapp/health") {
@@ -405,10 +405,10 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
   return new Response("not found", { status: 404 });
 }
 
-export async function startWhatsAppFakeServer(
-  params: StartWhatsAppFakeServerParams = {},
-): Promise<StartedWhatsAppFakeServer> {
-  const state: WhatsAppFakeServerState = {
+export async function startWhatsAppServer(
+  params: StartWhatsAppServerParams = {},
+): Promise<StartedWhatsAppServer> {
+  const state: WhatsAppServerState = {
     accessToken: params.accessToken ?? "crabline-whatsapp-access-token",
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     apiRoot: "",

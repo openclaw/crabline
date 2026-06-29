@@ -30,7 +30,7 @@ const TAGS = {
   PACKED_MAX: 127,
 } as const;
 
-// Minimal WhatsApp binary token dictionary for the nodes this fake server handles.
+// Minimal WhatsApp binary token dictionary for the nodes this local server handles.
 const SINGLE_BYTE_TOKENS: Readonly<Record<number, string>> = {
   3: "s.whatsapp.net",
   4: "type",

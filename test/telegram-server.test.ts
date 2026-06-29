@@ -1,13 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { startTelegramFakeServer, type StartedTelegramFakeServer } from "../src/index.js";
+import { startTelegramServer, type StartedTelegramServer } from "../src/index.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
-const servers: StartedTelegramFakeServer[] = [];
+const servers: StartedTelegramServer[] = [];
 const directories: string[] = [];
 
-function adminHeaders(server: StartedTelegramFakeServer) {
+function adminHeaders(server: StartedTelegramServer) {
   return {
     "content-type": "application/json",
     "x-crabline-admin-token": server.manifest.adminToken,
@@ -19,11 +19,11 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
-describe("telegram fake provider server", () => {
+describe("telegram local provider server", () => {
   it("distinguishes ordinary groups from supergroups", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const server = await startTelegramFakeServer({
+    const server = await startTelegramServer({
       botToken: "123456:fake-token",
       recorderPath: path.join(directory, "telegram.jsonl"),
     });
@@ -51,7 +51,7 @@ describe("telegram fake provider server", () => {
   it("serves Telegram Bot API calls and queues injected inbound updates", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const server = await startTelegramFakeServer({
+    const server = await startTelegramServer({
       botToken: "123456:fake-token",
       recorderPath: path.join(directory, "telegram.jsonl"),
     });
@@ -127,7 +127,7 @@ describe("telegram fake provider server", () => {
   it("rejects unauthenticated inbound updates", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const server = await startTelegramFakeServer({
+    const server = await startTelegramServer({
       adminToken: "admin-secret",
       botToken: "123456:fake-token",
       recorderPath: path.join(directory, "telegram.jsonl"),
@@ -155,7 +155,7 @@ describe("telegram fake provider server", () => {
   it("keeps generated inbound IDs above explicit IDs", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const server = await startTelegramFakeServer({
+    const server = await startTelegramServer({
       botToken: "123456:fake-token",
       recorderPath: path.join(directory, "telegram.jsonl"),
     });
@@ -199,7 +199,7 @@ describe("telegram fake provider server", () => {
     directories.push(directory);
     const botToken = "987654:distinctive-secret-token";
     const recorderPath = path.join(directory, "telegram.jsonl");
-    const server = await startTelegramFakeServer({ botToken, recorderPath });
+    const server = await startTelegramServer({ botToken, recorderPath });
     servers.push(server);
 
     const response = await fetch(`${server.manifest.baseUrl}/bot${botToken}/getMe`);
