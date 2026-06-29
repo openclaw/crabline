@@ -16,6 +16,22 @@ const servers: StartedWhatsAppFakeServer[] = [];
 const directories: string[] = [];
 const silentLogger = createSilentLogger();
 
+type BaileysUpsertMessage = {
+  key?: {
+    fromMe?: boolean | null | undefined;
+    participant?: string | null | undefined;
+    remoteJid?: string | null | undefined;
+  };
+  message?: {
+    conversation?: string | null | undefined;
+  } | null;
+  pushName?: string | null | undefined;
+};
+
+type BaileysMessagesUpsertEvent = {
+  messages: BaileysUpsertMessage[];
+};
+
 type MemorySignalStore = {
   get<T extends keyof SignalDataTypeMap>(
     type: T,
@@ -322,6 +338,10 @@ describe("whatsapp fake provider server", () => {
     socket.ev.on("connection.update", (update) => {
       connectionUpdates.push(update);
     });
+    const messageUpserts: BaileysMessagesUpsertEvent[] = [];
+    socket.ev.on("messages.upsert", (event) => {
+      messageUpserts.push(event);
+    });
 
     try {
       await waitForCondition(
@@ -349,6 +369,66 @@ describe("whatsapp fake provider server", () => {
       expect(recorder).toContain('"method":"WEBSOCKET"');
       expect(recorder).toContain('"tag":"message"');
       expect(recorder).toContain('"to":"15551234567@s.whatsapp.net"');
+
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          chatJid: "120363001234567890@g.us",
+          pushName: "Fake Sender",
+          senderJid: "15551234567@s.whatsapp.net",
+          text: "hello from admin inbound",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+      await expect(inbound.json()).resolves.toMatchObject({
+        message: {
+          key: {
+            fromMe: false,
+            participant: "15551234567@s.whatsapp.net",
+            remoteJid: "120363001234567890@g.us",
+          },
+          message: {
+            conversation: "hello from admin inbound",
+          },
+          pushName: "Fake Sender",
+        },
+        ok: true,
+      });
+
+      await waitForCondition(
+        () =>
+          messageUpserts
+            .flatMap((event) => event.messages)
+            .some(
+              (message) =>
+                message.key?.remoteJid === "120363001234567890@g.us" &&
+                message.key.participant === "15551234567@s.whatsapp.net" &&
+                message.message?.conversation === "hello from admin inbound",
+            ),
+        "Baileys inbound messages.upsert",
+      );
+      expect(
+        messageUpserts
+          .flatMap((event) => event.messages)
+          .find(
+            (message) =>
+              message.key?.remoteJid === "120363001234567890@g.us" &&
+              message.message?.conversation === "hello from admin inbound",
+          ),
+      ).toMatchObject({
+        key: {
+          fromMe: false,
+          participant: "15551234567@s.whatsapp.net",
+          remoteJid: "120363001234567890@g.us",
+        },
+        message: {
+          conversation: "hello from admin inbound",
+        },
+        pushName: "Fake Sender",
+      });
     } finally {
       socket.end(undefined);
     }

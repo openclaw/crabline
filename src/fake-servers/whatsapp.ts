@@ -12,7 +12,10 @@ import {
   startHttpJsonServer,
   type FakeServerRequestEvent,
 } from "./http.js";
-import { attachWhatsAppBaileysWebSocketServer } from "./whatsapp-baileys-websocket.js";
+import {
+  attachWhatsAppBaileysWebSocketServer,
+  type WhatsAppBaileysInboundMessage,
+} from "./whatsapp-baileys-websocket.js";
 
 const WHATSAPP_USER_JID_RE = /^\d{7,15}(?::\d+)?@s\.whatsapp\.net$/iu;
 const WHATSAPP_LEGACY_USER_JID_RE = /^\d{7,15}@c\.us$/iu;
@@ -24,13 +27,14 @@ type WhatsAppFakeServerState = {
   adminToken: string;
   apiRoot: string;
   displayPhoneNumber: string;
+  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): void;
   nextMessageId: number;
   phoneNumberId: string;
   recorderPath: string;
   selfJid: string;
 };
 
-export type WhatsAppBaileysMessage = ReturnType<typeof createWhatsAppMessage>;
+export type WhatsAppBaileysMessage = WhatsAppBaileysInboundMessage;
 
 export type WhatsAppFakeServerManifest = {
   accessToken: string;
@@ -362,6 +366,9 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       event.message = result.message;
     }
     await appendEvent(params.state, event);
+    if (result.message) {
+      params.state.deliverInboundMessage(result.message);
+    }
     return result.response;
   }
 
@@ -405,6 +412,7 @@ export async function startWhatsAppFakeServer(
     accessToken: params.accessToken ?? "crabline-whatsapp-access-token",
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     apiRoot: "",
+    deliverInboundMessage: () => undefined,
     displayPhoneNumber: "15550000000",
     nextMessageId: 1,
     phoneNumberId: "TEST_PHONE_NUMBER_ID",
@@ -429,6 +437,7 @@ export async function startWhatsAppFakeServer(
     path: "/crabline/whatsapp/ws/chat",
     selfJid: state.selfJid,
   });
+  state.deliverInboundMessage = (message) => baileysWebSocketServer.deliverInboundMessage(message);
   return {
     async close() {
       await baileysWebSocketServer.close();

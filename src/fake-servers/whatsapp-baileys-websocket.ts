@@ -22,7 +22,7 @@ import {
 } from "./whatsapp-wire/binary-node.js";
 import { decodeHandshakeMessage, encodeHandshakeMessage } from "./whatsapp-wire/handshake.js";
 import { KEY_BUNDLE_TYPE, xmppPreKey, xmppSignedPreKey } from "./whatsapp-wire/signal.js";
-import { WebSocketServer, type RawData, type WebSocket } from "ws";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type { FakeServerRequestEvent } from "./http.js";
 
 // Keep the fake server independent from Baileys at runtime. Tests use Baileys
@@ -37,6 +37,7 @@ const WHATSAPP_NOISE_CERT_CHAIN = Buffer.from(
 
 export type WhatsAppBaileysWebSocketServer = {
   close(): Promise<void>;
+  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): void;
 };
 
 export type WhatsAppBaileysWebSocketServerParams = {
@@ -44,6 +45,20 @@ export type WhatsAppBaileysWebSocketServerParams = {
   httpServer: Server;
   path: string;
   selfJid: string;
+};
+
+export type WhatsAppBaileysInboundMessage = {
+  key: {
+    fromMe: boolean;
+    id: string;
+    participant?: string | undefined;
+    remoteJid: string;
+  };
+  message: {
+    conversation: string;
+  };
+  messageTimestamp: number;
+  pushName?: string | undefined;
 };
 
 type MockSignalBundle = {
@@ -253,6 +268,13 @@ class WhatsAppBaileysWebSocketSession {
     void this.#handleMessage(data).catch((error: unknown) => {
       this.socket.close(1011, error instanceof Error ? error.message : String(error));
     });
+  }
+
+  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): void {
+    if (this.#handshakeState !== "open" || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    this.#sendNode(createInboundMessageNode(message));
   }
 
   async #handleMessage(data: RawData): Promise<void> {
@@ -488,6 +510,7 @@ export function attachWhatsAppBaileysWebSocketServer(
   params: WhatsAppBaileysWebSocketServerParams,
 ): WhatsAppBaileysWebSocketServer {
   const signalBundles = new Map<string, MockSignalBundle>();
+  const sessions = new Set<WhatsAppBaileysWebSocketSession>();
   const wss = new WebSocketServer({ noServer: true });
   const handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -507,6 +530,8 @@ export function attachWhatsAppBaileysWebSocketServer(
       selfJid: params.selfJid,
       signalBundles,
     });
+    sessions.add(session);
+    socket.once("close", () => sessions.delete(session));
     socket.on("message", (data) => session.handleMessage(data));
   });
   return {
@@ -525,11 +550,40 @@ export function attachWhatsAppBaileysWebSocketServer(
         });
       });
     },
+    deliverInboundMessage(message) {
+      for (const session of sessions) {
+        session.deliverInboundMessage(message);
+      }
+    },
   };
 }
 
 function children(node: BinaryNode): BinaryNode[] {
   return Array.isArray(node.content) ? node.content : [];
+}
+
+function createInboundMessageNode(message: WhatsAppBaileysInboundMessage): BinaryNode {
+  const from = message.key.remoteJid;
+  const attrs: Record<string, string> = {
+    from,
+    id: message.key.id,
+    notify: message.pushName ?? "Test User",
+    t: String(message.messageTimestamp),
+  };
+  if (isGroupJid(from) && message.key.participant) {
+    attrs.participant = message.key.participant;
+  }
+  return {
+    attrs,
+    content: [
+      {
+        attrs: {},
+        content: encodePlaintextConversationMessage(message.message.conversation),
+        tag: "plaintext",
+      },
+    ],
+    tag: "message",
+  };
 }
 
 function createIv(counter: number): NodeBuffer {
@@ -549,6 +603,26 @@ function encodeLengthPrefixed(data: Uint8Array): NodeBuffer {
 
 function firstChild(node: BinaryNode): BinaryNode | undefined {
   return children(node)[0];
+}
+
+function encodePlaintextConversationMessage(text: string): NodeBuffer {
+  const textBytes = Buffer.from(text, "utf8");
+  return Buffer.from([0x0a, ...encodeVarint(textBytes.byteLength), ...textBytes]);
+}
+
+function encodeVarint(value: number): number[] {
+  const bytes: number[] = [];
+  let remaining = value;
+  while (remaining >= 0x80) {
+    bytes.push((remaining & 0x7f) | 0x80);
+    remaining = Math.floor(remaining / 0x80);
+  }
+  bytes.push(remaining);
+  return bytes;
+}
+
+function isGroupJid(jid: string): boolean {
+  return jid.endsWith("@g.us");
 }
 
 function requireAttr(node: BinaryNode, name: string): string {
