@@ -5,7 +5,7 @@
 Deterministic local messaging-channel mocks for OpenClaw QA.
 
 `crabline` is config-driven, CI-friendly, and deliberately has no `openclaw`
-dependency. It can run fixture-level local mocks, and it can also serve fake
+dependency. It can run fixture-level local mocks, and it can also serve local
 provider APIs that OpenClaw live adapters can target during deterministic QA.
 
 ## What It Provides
@@ -15,14 +15,14 @@ provider APIs that OpenClaw live adapters can target during deterministic QA.
   `whatsapp`, and `zalo`
 - a `script` bridge for channels that are still exercised by external commands
 - per-provider local webhook endpoints for inbound events
-- fake provider servers for live-adapter smoke tests, starting with Slack,
+- local provider servers for live-adapter smoke tests, starting with Slack,
   Telegram, and WhatsApp
 - JSONL recorder files for deterministic wait/watch behavior
 - nonce-based `send`, `roundtrip`, `agent`, `probe`, `run`, `watch`, and
   `doctor` commands
 - text output by default and stable `--json` output for automation
 
-Crabline fake servers are not live-provider coverage. They let OpenClaw run its
+Crabline local servers are not live-provider coverage. They let OpenClaw run its
 normal channel adapter code against a local provider-shaped API. Release lanes
 still need the `live` driver and real provider credentials.
 
@@ -119,7 +119,7 @@ The built-in providers are:
 The `script` adapter can bridge any other OpenClaw channel by running local
 commands for `probe`, `send`, `waitForInbound`, or `watch`.
 
-## Fake Provider Servers
+## Local Provider Servers
 
 `serve` starts provider-shaped HTTP APIs for OpenClaw live adapters. This is the
 preferred Smoke CI path because OpenClaw still uses its normal channel adapter,
@@ -142,7 +142,7 @@ The JSON manifest contains:
 - `endpoints.adminInboundUrl`: authenticated POST endpoint for Events API-shaped
   test user messages
 - `endpoints.eventsUrl`: local Slack Events API endpoint
-- `recorderPath`: JSONL file of fake provider API/admin traffic
+- `recorderPath`: JSONL file of local provider API/admin traffic
 
 The admin token is generated randomly unless `--admin-token <token>` is
 provided. Implemented Slack Web API endpoints include `auth.test`,
@@ -163,7 +163,7 @@ The JSON manifest contains:
   test user messages
 - `endpoints.adminInboundUrl`: authenticated POST endpoint for test user
   messages; OpenClaw reads them through Telegram `getUpdates`
-- `recorderPath`: JSONL file of fake provider API/admin traffic
+- `recorderPath`: JSONL file of local provider API/admin traffic
 
 The admin token is generated randomly unless `--admin-token <token>` is
 provided. The inbound endpoint rejects requests without the matching admin
@@ -183,29 +183,29 @@ crabline --json serve whatsapp --ready-file .crabline/whatsapp-server.json
 
 The JSON manifest contains:
 
-- `endpoints.apiRoot`: Crabline WhatsApp fake provider API root
+- `endpoints.apiRoot`: Crabline WhatsApp local provider API root
 - `endpoints.baileysWebSocketUrl`: Baileys-compatible WebSocket URL for
-  `waWebSocketUrl`, including the fake provider access token query parameter
-- `accessToken`: bearer token for fake provider requests
+  `waWebSocketUrl`, including the local provider access token query parameter
+- `accessToken`: bearer token for local provider requests
 - `adminToken`: send this as the `X-Crabline-Admin-Token` header when posting
   test user messages
-- `selfJid`: fake authenticated WhatsApp user JID
+- `selfJid`: local authenticated WhatsApp user JID
 - `env.CRABLINE_WHATSAPP_ACCESS_TOKEN`: same value as `accessToken`
 - `env.CRABLINE_WHATSAPP_API_ROOT`: same value as `endpoints.apiRoot`
 - `env.CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL`: same value as
   `endpoints.baileysWebSocketUrl`
 - `env.CRABLINE_WHATSAPP_RECORDER_PATH`: recorder file for HTTP traffic and
   Baileys WebSocket stanzas
-- `env.CRABLINE_WHATSAPP_SELF_JID`: fake authenticated WhatsApp user JID
+- `env.CRABLINE_WHATSAPP_SELF_JID`: local authenticated WhatsApp user JID
 - `endpoints.adminInboundUrl`: authenticated POST endpoint for test user
   messages using the WhatsApp Business webhook payload shape
-- `endpoints.messagesUrl`: fake text send endpoint for Graph-style callers
-- `endpoints.presenceUrl`: fake presence endpoint for Graph-style callers
-- `recorderPath`: JSONL file of fake provider API/admin traffic and Baileys
+- `endpoints.messagesUrl`: local text send endpoint for Graph-style callers
+- `endpoints.presenceUrl`: local presence endpoint for Graph-style callers
+- `recorderPath`: JSONL file of local provider API/admin traffic and Baileys
   WebSocket stanzas
 
 Pass `endpoints.baileysWebSocketUrl` to Baileys as `waWebSocketUrl` when a
-runtime needs to connect through the fake provider. The fake server completes
+runtime needs to connect through the local provider. The local server completes
 the Baileys Noise handshake, serves bootstrap/device/prekey queries, and records
 encrypted outbound WebSocket stanzas. The WebSocket endpoint rejects clients
 that do not present the access token embedded in the manifest URL. The admin

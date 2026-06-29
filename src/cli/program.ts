@@ -7,12 +7,12 @@ import { formatJson, formatRunResultText } from "../core/reporters.js";
 import { computeExitCode, runFixtureCommand, runSuite } from "../core/run.js";
 import { CrablineError, ensureErrorMessage } from "../core/errors.js";
 import {
-  isCrablineFakeProviderChannel,
-  startCrablineFakeProviderServer,
-  type CrablineFakeProviderChannel,
-  type CrablineFakeProviderManifest,
-  type StartCrablineFakeProviderServerParams,
-} from "../fake-servers/index.js";
+  isCrablineServerChannel,
+  startCrablineServer,
+  type CrablineServerChannel,
+  type CrablineServerManifest,
+  type StartCrablineServerParams,
+} from "../servers/index.js";
 
 type GlobalOptions = {
   config?: string;
@@ -44,7 +44,7 @@ type ServeCommandOptions = {
 type ServeParamFactory = (
   shared: ServeSharedOptions,
   commandOptions: ServeCommandOptions,
-) => StartCrablineFakeProviderServerParams;
+) => StartCrablineServerParams;
 
 const SERVE_PARAM_FACTORIES = {
   slack: (shared, commandOptions) => ({
@@ -68,7 +68,7 @@ const SERVE_PARAM_FACTORIES = {
     channel: "whatsapp",
     selfJid: commandOptions.selfJid,
   }),
-} satisfies Record<CrablineFakeProviderChannel, ServeParamFactory>;
+} satisfies Record<CrablineServerChannel, ServeParamFactory>;
 
 function print(value: string): void {
   process.stdout.write(`${value}\n`);
@@ -235,38 +235,38 @@ export function createProgram(
 
   program
     .command("serve <provider>")
-    .description("Start a fake provider server that OpenClaw live adapters can target")
+    .description("Start a local provider server that OpenClaw live adapters can target")
     .option("--host <host>", "Bind host", "127.0.0.1")
     .option("--port <port>", "Bind port", "0")
     .option("--admin-token <token>", "Admin token for inbound test messages")
-    .option("--access-token <token>", "Fake WhatsApp access token")
-    .option("--bot-token <token>", "Fake Telegram or Slack bot token")
-    .option("--bot-username <username>", "Fake Telegram bot username", "crabline_bot")
+    .option("--access-token <token>", "WhatsApp access token")
+    .option("--bot-token <token>", "Telegram or Slack bot token")
+    .option("--bot-username <username>", "Telegram bot username", "crabline_bot")
     .option("--recorder <path>", "JSONL recorder path")
     .option("--ready-file <path>", "Write the server runtime manifest to this path")
-    .option("--self-jid <jid>", "Fake WhatsApp self JID")
-    .option("--signing-secret <secret>", "Fake Slack signing secret")
+    .option("--self-jid <jid>", "WhatsApp self JID")
+    .option("--signing-secret <secret>", "Slack signing secret")
     .option("--once", "Start, print the runtime manifest, and stop immediately", false)
     .action(async (provider, commandOptions: ServeCommandOptions) => {
       const options = program.opts() as GlobalOptions;
-      if (!isCrablineFakeProviderChannel(provider)) {
-        throw new CrablineError(`Unsupported fake provider server: ${provider}`, {
+      if (!isCrablineServerChannel(provider)) {
+        throw new CrablineError(`Unsupported server channel: ${provider}`, {
           kind: "config",
         });
       }
       const port = Number(commandOptions.port);
       if (!Number.isInteger(port) || port < 0 || port > 65_535) {
-        throw new CrablineError(`Invalid fake server port: ${commandOptions.port}`, {
+        throw new CrablineError(`Invalid local server port: ${commandOptions.port}`, {
           kind: "config",
         });
       }
       const factory = SERVE_PARAM_FACTORIES[provider];
       if (!factory) {
-        throw new CrablineError(`Unsupported fake provider server: ${provider}`, {
+        throw new CrablineError(`Unsupported server channel: ${provider}`, {
           kind: "config",
         });
       }
-      const server = await startCrablineFakeProviderServer(
+      const server = await startCrablineServer(
         factory(
           {
             host: commandOptions.host,
@@ -315,16 +315,16 @@ function waitForShutdown(close: () => Promise<void>): Promise<void> {
   });
 }
 
-function renderServeText(manifest: CrablineFakeProviderManifest) {
+function renderServeText(manifest: CrablineServerManifest) {
   const lines = [
-    `${manifest.provider} fake server ready`,
+    `${manifest.provider} local server ready`,
     `  apiRoot: ${manifest.endpoints.apiRoot}`,
     `  inbound: ${manifest.endpoints.adminInboundUrl}`,
     `  recorder: ${manifest.recorderPath}`,
   ];
   const providerFields = renderServeProviderFields(manifest);
   if (!providerFields) {
-    throw new CrablineError(`Unsupported fake provider server: ${String(manifest.provider)}`, {
+    throw new CrablineError(`Unsupported server manifest provider: ${String(manifest.provider)}`, {
       kind: "config",
     });
   }
@@ -332,7 +332,7 @@ function renderServeText(manifest: CrablineFakeProviderManifest) {
   return lines.join("\n");
 }
 
-function renderServeProviderFields(manifest: CrablineFakeProviderManifest): string[] | undefined {
+function renderServeProviderFields(manifest: CrablineServerManifest): string[] | undefined {
   if (manifest.provider === "telegram") {
     return [`  adminToken: ${manifest.adminToken}`, `  botToken: ${manifest.botToken}`];
   }

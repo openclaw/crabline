@@ -195,7 +195,7 @@ describe("cli", () => {
     expect(captured.stderr.join("")).toContain(`Unable to load config file "${configPath}"`);
   });
 
-  it("prints a fake Telegram server runtime manifest", async () => {
+  it("prints a Telegram server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, ".crabline", "telegram-server.json");
@@ -238,7 +238,7 @@ describe("cli", () => {
     await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "telegram"');
   });
 
-  it("prints a fake Slack server runtime manifest", async () => {
+  it("prints a Slack server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, ".crabline", "slack-server.json");
@@ -288,7 +288,7 @@ describe("cli", () => {
     await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "slack"');
   });
 
-  it("prints a fake WhatsApp server runtime manifest", async () => {
+  it("prints a WhatsApp server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, ".crabline", "whatsapp-server.json");

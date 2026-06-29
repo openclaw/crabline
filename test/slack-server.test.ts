@@ -1,10 +1,10 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { startSlackFakeServer, type StartedSlackFakeServer } from "../src/index.js";
+import { startSlackServer, type StartedSlackServer } from "../src/index.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
-const servers: StartedSlackFakeServer[] = [];
+const servers: StartedSlackServer[] = [];
 const directories: string[] = [];
 
 afterEach(async () => {
@@ -12,10 +12,10 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
-async function startTestSlackServer(): Promise<StartedSlackFakeServer> {
+async function startTestSlackServer(): Promise<StartedSlackServer> {
   const directory = await createTempDir();
   directories.push(directory);
-  const server = await startSlackFakeServer({
+  const server = await startSlackServer({
     adminToken: "admin-token",
     botToken: "xoxb-fake",
     recorderPath: path.join(directory, "slack.jsonl"),
@@ -25,7 +25,7 @@ async function startTestSlackServer(): Promise<StartedSlackFakeServer> {
 }
 
 async function slackApi(
-  server: StartedSlackFakeServer,
+  server: StartedSlackServer,
   method: string,
   body: Record<string, unknown> = {},
 ): Promise<Response> {
@@ -40,7 +40,7 @@ async function slackApi(
 }
 
 async function postMessage(
-  server: StartedSlackFakeServer,
+  server: StartedSlackServer,
   body: Record<string, unknown>,
 ): Promise<{ ts: string }> {
   const response = await slackApi(server, "chat.postMessage", body);
@@ -49,7 +49,7 @@ async function postMessage(
   return payload;
 }
 
-describe("slack fake provider server", () => {
+describe("slack local provider server", () => {
   it("serves Slack auth and conversation APIs", async () => {
     const server = await startTestSlackServer();
 

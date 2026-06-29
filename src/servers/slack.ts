@@ -11,7 +11,7 @@ import {
   readInteger,
   readTrimmedString,
   startHttpJsonServer,
-  type FakeServerRequestEvent,
+  type ServerRequestEvent,
 } from "./http.js";
 import {
   SLACK_CHANNEL_ID_RULE,
@@ -36,7 +36,7 @@ type SlackMessage = {
   user: string;
 };
 
-type SlackFakeServerState = {
+type SlackServerState = {
   adminToken: string;
   botId: string;
   botToken: string;
@@ -49,7 +49,7 @@ type SlackFakeServerState = {
   messagesByChannel: Map<string, SlackMessage[]>;
 };
 
-export type SlackFakeServerManifest = {
+export type SlackServerManifest = {
   adminToken: string;
   baseUrl: string;
   botToken: string;
@@ -69,12 +69,12 @@ export type SlackFakeServerManifest = {
   version: 1;
 };
 
-export type StartedSlackFakeServer = {
+export type StartedSlackServer = {
   close(): Promise<void>;
-  manifest: SlackFakeServerManifest;
+  manifest: SlackServerManifest;
 };
 
-export type StartSlackFakeServerParams = {
+export type StartSlackServerParams = {
   adminToken?: string | undefined;
   botId?: string | undefined;
   botToken?: string | undefined;
@@ -106,7 +106,7 @@ function slackRateLimited(retryAfterSeconds = 1): Response {
 function requireSlackToken(
   request: IncomingMessage,
   body: Record<string, unknown>,
-  state: SlackFakeServerState,
+  state: SlackServerState,
 ): Response | undefined {
   const authorization = request.headers.authorization;
   const tokenFromHeader =
@@ -194,12 +194,12 @@ function hasStructuredMessageContent(value: unknown): boolean {
   return Boolean(value && typeof value === "object");
 }
 
-function messagesForChannel(state: SlackFakeServerState, channel: string): SlackMessage[] {
+function messagesForChannel(state: SlackServerState, channel: string): SlackMessage[] {
   return state.messagesByChannel.get(channel) ?? [];
 }
 
 function hasThreadParent(
-  state: SlackFakeServerState,
+  state: SlackServerState,
   params: {
     channel: string;
     threadTs: string;
@@ -210,17 +210,17 @@ function hasThreadParent(
   );
 }
 
-function nextSlackTs(state: SlackFakeServerState): string {
+function nextSlackTs(state: SlackServerState): string {
   const index = state.nextTsIndex++;
   return `${1_700_000_000 + Math.floor(index / 1_000_000)}.${String(index % 1_000_000).padStart(6, "0")}`;
 }
 
-function nextDmChannelId(state: SlackFakeServerState): string {
+function nextDmChannelId(state: SlackServerState): string {
   const index = state.nextDmIndex++;
   return `D${String(index).padStart(9, "0")}`;
 }
 
-function dmChannelForUser(state: SlackFakeServerState, userId: string): string {
+function dmChannelForUser(state: SlackServerState, userId: string): string {
   const existing = state.userDmChannels.get(userId);
   if (existing) {
     return existing;
@@ -230,14 +230,14 @@ function dmChannelForUser(state: SlackFakeServerState, userId: string): string {
   return channelId;
 }
 
-function appendMessage(state: SlackFakeServerState, message: SlackMessage): SlackMessage {
+function appendMessage(state: SlackServerState, message: SlackMessage): SlackMessage {
   const messages = state.messagesByChannel.get(message.channel) ?? [];
   messages.push(message);
   state.messagesByChannel.set(message.channel, messages);
   return message;
 }
 
-async function appendEvent(state: SlackFakeServerState, event: FakeServerRequestEvent) {
+async function appendEvent(state: SlackServerState, event: ServerRequestEvent) {
   await fs.mkdir(path.dirname(state.recorderPath), { recursive: true });
   await fs.appendFile(state.recorderPath, `${JSON.stringify(event)}\n`, "utf8");
 }
@@ -261,7 +261,7 @@ function redactSlackAuthQuery(value: Record<string, string>): Record<string, str
 }
 
 function createSlackMessage(
-  state: SlackFakeServerState,
+  state: SlackServerState,
   params: {
     channel: string;
     text: string;
@@ -312,7 +312,7 @@ async function handleSlackApi(params: {
   body: Record<string, unknown>;
   method: string;
   request: IncomingMessage;
-  state: SlackFakeServerState;
+  state: SlackServerState;
 }): Promise<Response> {
   const authError = requireSlackToken(params.request, params.body, params.state);
   if (authError) {
@@ -470,7 +470,7 @@ async function handleSlackApi(params: {
 
 async function handleAdminInbound(params: {
   body: Record<string, unknown>;
-  state: SlackFakeServerState;
+  state: SlackServerState;
 }): Promise<Response> {
   const channel = requireSlackChannelId(params.body.channel);
   if (channel instanceof Response) {
@@ -505,7 +505,7 @@ async function handleAdminInbound(params: {
   return slackOk({ event: asSlackEventCallback(message), message });
 }
 
-async function handleRequest(params: { request: IncomingMessage; state: SlackFakeServerState }) {
+async function handleRequest(params: { request: IncomingMessage; state: SlackServerState }) {
   const url = new URL(params.request.url ?? "/", "http://127.0.0.1");
   if (url.pathname === "/crabline/slack/inbound") {
     if (params.request.method !== "POST") {
@@ -556,17 +556,17 @@ async function handleRequest(params: { request: IncomingMessage; state: SlackFak
   });
 }
 
-export async function startSlackFakeServer(
-  params: StartSlackFakeServerParams = {},
-): Promise<StartedSlackFakeServer> {
-  const state: SlackFakeServerState = {
+export async function startSlackServer(
+  params: StartSlackServerParams = {},
+): Promise<StartedSlackServer> {
+  const state: SlackServerState = {
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     botId: params.botId ?? "BCRABLINE",
     botToken: params.botToken ?? "xoxb-crabline-slack-token",
     botUserId: params.botUserId ?? "UCRABBOT",
     nextDmIndex: 1,
     nextTsIndex: 100,
-    recorderPath: params.recorderPath ?? path.resolve(".crabline", "fake-servers", "slack.jsonl"),
+    recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "slack.jsonl"),
     signingSecret: params.signingSecret ?? "crabline-slack-signing-secret",
     userDmChannels: new Map(),
     messagesByChannel: new Map(),

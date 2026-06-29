@@ -23,9 +23,9 @@ import {
 import { decodeHandshakeMessage, encodeHandshakeMessage } from "./whatsapp-wire/handshake.js";
 import { KEY_BUNDLE_TYPE, xmppPreKey, xmppSignedPreKey } from "./whatsapp-wire/signal.js";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import type { FakeServerRequestEvent } from "./http.js";
+import type { ServerRequestEvent } from "./http.js";
 
-// Keep the fake server independent from Baileys at runtime. Tests use Baileys
+// Keep the local server independent from Baileys at runtime. Tests use Baileys
 // as a black-box client to verify this narrow WhatsApp Web wire subset.
 const EMPTY_BUFFER = Buffer.alloc(0);
 const IV_LENGTH = 12;
@@ -42,7 +42,7 @@ export type WhatsAppBaileysWebSocketServer = {
 
 export type WhatsAppBaileysWebSocketServerParams = {
   accessToken: string;
-  appendEvent(event: FakeServerRequestEvent): Promise<void>;
+  appendEvent(event: ServerRequestEvent): Promise<void>;
   httpServer: Server;
   path: string;
   selfJid: string;
@@ -258,7 +258,7 @@ class WhatsAppBaileysWebSocketSession {
   constructor(
     private readonly socket: WebSocket,
     private readonly params: {
-      appendEvent(event: FakeServerRequestEvent): Promise<void>;
+      appendEvent(event: ServerRequestEvent): Promise<void>;
       path: string;
       selfJid: string;
       signalBundles: Map<string, MockSignalBundle>;

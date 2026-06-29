@@ -3,21 +3,31 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  CRABLINE_FAKE_PROVIDER_CHANNELS,
+  CRABLINE_SERVER_CHANNELS,
   createOpenClawCrablineAgentDelivery,
   createOpenClawCrablineChannelReportNotes,
   createOpenClawCrablineFakeProviderBinding,
+  createOpenClawCrablineProviderBinding,
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent,
+  isCrablineFakeProviderChannel,
+  isCrablineServerChannel,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
+  probeOpenClawCrablineFakeProvider,
+  probeOpenClawCrablineProvider,
   resolveOpenClawCrablineChannelDriverSelection,
   runOpenClawCrablineChannelDriverSmoke,
+  startCrablineFakeProviderServer,
+  startCrablineServer,
   startOpenClawCrablineAdapter,
   type CrablineFakeProviderManifest,
+  type CrablineServerManifest,
 } from "../src/index.js";
 
-const manifest: CrablineFakeProviderManifest = {
+const manifest: CrablineServerManifest = {
   adminToken: "crabline-admin-token",
   baseUrl: "http://127.0.0.1:1234",
   botToken: "424242:crabline-telegram-token",
@@ -33,7 +43,7 @@ const manifest: CrablineFakeProviderManifest = {
   version: 1,
 };
 
-const whatsappManifest: CrablineFakeProviderManifest = {
+const whatsappManifest: CrablineServerManifest = {
   accessToken: "crabline-whatsapp-access-token",
   adminToken: "crabline-whatsapp-admin-token",
   baseUrl: "http://127.0.0.1:5678",
@@ -60,7 +70,7 @@ const whatsappManifest: CrablineFakeProviderManifest = {
   version: 1,
 };
 
-const slackManifest: CrablineFakeProviderManifest = {
+const slackManifest: CrablineServerManifest = {
   adminToken: "crabline-slack-admin-token",
   baseUrl: "http://127.0.0.1:2468",
   botToken: "xoxb-crabline-slack-token",
@@ -80,7 +90,18 @@ const slackManifest: CrablineFakeProviderManifest = {
   version: 1,
 };
 
-describe("OpenClaw fake provider bridge", () => {
+describe("OpenClaw local provider bridge", () => {
+  it("keeps legacy fake-provider root aliases", () => {
+    const legacyManifest: CrablineFakeProviderManifest = manifest;
+
+    expect(CRABLINE_FAKE_PROVIDER_CHANNELS).toBe(CRABLINE_SERVER_CHANNELS);
+    expect(isCrablineFakeProviderChannel).toBe(isCrablineServerChannel);
+    expect(startCrablineFakeProviderServer).toBe(startCrablineServer);
+    expect(createOpenClawCrablineFakeProviderBinding).toBe(createOpenClawCrablineProviderBinding);
+    expect(probeOpenClawCrablineFakeProvider).toBe(probeOpenClawCrablineProvider);
+    expect(legacyManifest.provider).toBe("telegram");
+  });
+
   it("resolves channel-driver metadata through Crabline", () => {
     expect(resolveOpenClawCrablineChannelDriverSelection({})).toEqual({
       capabilityMatrixPath: OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
@@ -102,8 +123,8 @@ describe("OpenClaw fake provider bridge", () => {
     );
   });
 
-  it("maps a Telegram fake provider into OpenClaw channel config", () => {
-    const binding = createOpenClawCrablineFakeProviderBinding(manifest);
+  it("maps a Telegram local provider into OpenClaw channel config", () => {
+    const binding = createOpenClawCrablineProviderBinding(manifest);
 
     expect(binding).toMatchObject({
       accountId: "default",
@@ -158,8 +179,8 @@ describe("OpenClaw fake provider bridge", () => {
     });
   });
 
-  it("maps a WhatsApp fake provider into OpenClaw channel config", () => {
-    const binding = createOpenClawCrablineFakeProviderBinding(whatsappManifest);
+  it("maps a WhatsApp local provider into OpenClaw channel config", () => {
+    const binding = createOpenClawCrablineProviderBinding(whatsappManifest);
 
     expect(binding).toMatchObject({
       accountId: "default",
@@ -202,8 +223,8 @@ describe("OpenClaw fake provider bridge", () => {
     });
   });
 
-  it("maps a Slack fake provider into OpenClaw channel config", () => {
-    const binding = createOpenClawCrablineFakeProviderBinding(slackManifest);
+  it("maps a Slack local provider into OpenClaw channel config", () => {
+    const binding = createOpenClawCrablineProviderBinding(slackManifest);
 
     expect(binding).toMatchObject({
       accountId: "default",
@@ -466,11 +487,11 @@ describe("OpenClaw fake provider bridge", () => {
     });
   });
 
-  it("posts WhatsApp OpenClaw inbound with admin headers into the fake provider", async () => {
+  it("posts WhatsApp OpenClaw inbound with admin headers into the local provider", async () => {
     const adapter = await startOpenClawCrablineAdapter({ channel: "whatsapp" });
     try {
       if (adapter.manifest.provider !== "whatsapp") {
-        throw new Error("Expected WhatsApp fake provider manifest.");
+        throw new Error("Expected WhatsApp local provider manifest.");
       }
 
       const inbound = adapter.createInbound({
@@ -501,7 +522,7 @@ describe("OpenClaw fake provider bridge", () => {
     }
   });
 
-  it("runs OpenClaw channel-driver smoke and writes fake-provider artifacts", async () => {
+  it("runs OpenClaw channel-driver smoke and writes provider artifacts", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-smoke-"));
     try {
       const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
@@ -522,6 +543,7 @@ describe("OpenClaw fake provider bridge", () => {
         result: {
           ok: true,
           provider: "telegram",
+          recorderPath: "artifacts/crabline/telegram-fake-provider.jsonl",
           probe: {
             ok: true,
             result: {
@@ -536,7 +558,7 @@ describe("OpenClaw fake provider bridge", () => {
       ) as { provider?: string };
       expect(writtenManifest.provider).toBe("telegram");
       expect(createOpenClawCrablineChannelReportNotes(selection)).toEqual([
-        "Channel driver: crabline fake provider for telegram.",
+        "Channel driver: crabline local provider for telegram.",
         "Channel capability report: crabline-fake-provider-capabilities.json.",
         "Channel driver smoke: crabline-fake-provider-smoke.json.",
         "Crabline starts local provider-shaped servers; OpenClaw uses its normal channel adapter against those endpoints.",

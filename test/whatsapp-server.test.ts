@@ -10,10 +10,10 @@ import {
 } from "baileys";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { startWhatsAppFakeServer, type StartedWhatsAppFakeServer } from "../src/index.js";
+import { startWhatsAppServer, type StartedWhatsAppServer } from "../src/index.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
-const servers: StartedWhatsAppFakeServer[] = [];
+const servers: StartedWhatsAppServer[] = [];
 const directories: string[] = [];
 const silentLogger = createSilentLogger();
 
@@ -128,11 +128,11 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
-describe("whatsapp fake provider server", () => {
+describe("whatsapp local provider server", () => {
   it("serves Graph-style sends and injected inbound webhook payloads", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const server = await startWhatsAppFakeServer({
+    const server = await startWhatsAppServer({
       adminToken: "fake-whatsapp-admin-token",
       accessToken: "fake-whatsapp-token",
       recorderPath: path.join(directory, "whatsapp.jsonl"),
@@ -310,7 +310,7 @@ describe("whatsapp fake provider server", () => {
   it("does not accept admin inbound messages when recorder append fails", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const server = await startWhatsAppFakeServer({
+    const server = await startWhatsAppServer({
       adminToken: "fake-whatsapp-admin-token",
       accessToken: "fake-whatsapp-token",
       recorderPath: directory,
@@ -334,10 +334,10 @@ describe("whatsapp fake provider server", () => {
     await expect(inbound.json()).resolves.toMatchObject({ ok: false });
   });
 
-  it("rejects Baileys WebSocket upgrades without the fake provider access token", async () => {
+  it("rejects Baileys WebSocket upgrades without the local provider access token", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const server = await startWhatsAppFakeServer({
+    const server = await startWhatsAppServer({
       accessToken: "fake-whatsapp-token",
       recorderPath: path.join(directory, "whatsapp.jsonl"),
     });
@@ -357,7 +357,7 @@ describe("whatsapp fake provider server", () => {
   it("accepts a real Baileys socket over waWebSocketUrl and records outbound stanzas", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const server = await startWhatsAppFakeServer({
+    const server = await startWhatsAppServer({
       recorderPath: path.join(directory, "whatsapp.jsonl"),
       selfJid: "15550000001:0@s.whatsapp.net",
     });

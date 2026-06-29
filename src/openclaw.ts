@@ -1,11 +1,11 @@
 import {
-  CRABLINE_FAKE_PROVIDER_CHANNELS,
-  isCrablineFakeProviderChannel,
-  startCrablineFakeProviderServer,
-  type CrablineFakeProviderChannel,
-  type CrablineFakeProviderManifest,
-  type StartedCrablineFakeProviderServer,
-} from "./fake-servers/index.js";
+  CRABLINE_SERVER_CHANNELS,
+  isCrablineServerChannel,
+  startCrablineServer,
+  type CrablineServerChannel,
+  type CrablineServerManifest,
+  type StartedCrablineServer,
+} from "./servers/index.js";
 import { SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/slack.js";
 import { TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/telegram.js";
 import { WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/whatsapp.js";
@@ -61,7 +61,7 @@ const OPENCLAW_CRABLINE_PROVIDER_BRIDGE_LIST = Object.values(
 ) as readonly OpenClawCrablineProviderBridge[];
 
 function createOpenClawCrablineProviderAdapter(
-  manifest: CrablineFakeProviderManifest,
+  manifest: CrablineServerManifest,
 ): OpenClawCrablineProviderAdapter {
   const bridge = OPENCLAW_CRABLINE_PROVIDER_BRIDGE_LIST.find(
     (candidate) => candidate.provider === manifest.provider,
@@ -69,16 +69,16 @@ function createOpenClawCrablineProviderAdapter(
   if (bridge) {
     return bridge.createAdapterFromManifest(manifest);
   }
-  throw new Error("Unsupported OpenClaw fake provider binding.");
+  throw new Error("Unsupported OpenClaw provider binding.");
 }
 
-export function resolveOpenClawCrablineChannel(input?: string | null): CrablineFakeProviderChannel {
+export function resolveOpenClawCrablineChannel(input?: string | null): CrablineServerChannel {
   const channel = input?.trim().toLowerCase() || OPENCLAW_CRABLINE_DEFAULT_CHANNEL;
-  if (isCrablineFakeProviderChannel(channel)) {
+  if (isCrablineServerChannel(channel)) {
     return channel;
   }
   throw new Error(
-    `--channel must be one of ${CRABLINE_FAKE_PROVIDER_CHANNELS.join(", ")} for --channel-driver crabline, got "${input}".`,
+    `--channel must be one of ${CRABLINE_SERVER_CHANNELS.join(", ")} for --channel-driver crabline, got "${input}".`,
   );
 }
 
@@ -93,20 +93,20 @@ export function resolveOpenClawCrablineChannelDriverSelection(params: {
   };
 }
 
-export async function probeOpenClawCrablineFakeProvider(
-  manifest: CrablineFakeProviderManifest,
+export async function probeOpenClawCrablineProvider(
+  manifest: CrablineServerManifest,
 ): Promise<unknown> {
   return await createOpenClawCrablineProviderAdapter(manifest).probe();
 }
 
-export function createOpenClawCrablineFakeProviderBinding(
-  manifest: CrablineFakeProviderManifest,
+export function createOpenClawCrablineProviderBinding(
+  manifest: CrablineServerManifest,
 ): OpenClawCrablineGatewayBinding {
   return createOpenClawCrablineProviderAdapter(manifest).createBinding();
 }
 
 export function createOpenClawCrablineAgentDelivery(params: {
-  manifest: CrablineFakeProviderManifest;
+  manifest: CrablineServerManifest;
   target: string;
 }): OpenClawCrablineAgentDelivery {
   return createOpenClawCrablineProviderAdapter(params.manifest).createAgentDelivery(
@@ -116,14 +116,14 @@ export function createOpenClawCrablineAgentDelivery(params: {
 
 export function createOpenClawCrablineInbound(params: {
   input: OpenClawCrablineInboundInput;
-  manifest: CrablineFakeProviderManifest;
+  manifest: CrablineServerManifest;
 }): OpenClawCrablineInbound {
   return createOpenClawCrablineProviderAdapter(params.manifest).createInbound(params.input);
 }
 
 export function createOpenClawCrablineOutboundFromRecorderEvent(params: {
   event: unknown;
-  manifest: CrablineFakeProviderManifest;
+  manifest: CrablineServerManifest;
   targetByProviderTarget: ReadonlyMap<string, string>;
 }): OpenClawCrablineOutboundMessage | null {
   return createOpenClawCrablineProviderAdapter(params.manifest).createOutboundFromRecorderEvent({
@@ -135,7 +135,7 @@ export function createOpenClawCrablineOutboundFromRecorderEvent(params: {
 export async function startOpenClawCrablineAdapter(
   params: StartOpenClawCrablineAdapterParams,
 ): Promise<StartedOpenClawCrablineAdapter> {
-  const server: StartedCrablineFakeProviderServer = await startCrablineFakeProviderServer({
+  const server: StartedCrablineServer = await startCrablineServer({
     channel: params.channel,
     recorderPath: params.recorderPath,
   });
@@ -183,7 +183,7 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
         result: {
           driver: "crabline",
           selectedChannel: params.selection.channel,
-          supportedChannels: [...CRABLINE_FAKE_PROVIDER_CHANNELS],
+          supportedChannels: [...CRABLINE_SERVER_CHANNELS],
         },
       },
       manifestPath: path.basename(manifestPath),
@@ -211,7 +211,7 @@ export function createOpenClawCrablineChannelReportNotes(
   }
 
   return [
-    `Channel driver: ${selection.channelDriver} fake provider for ${selection.channel}.`,
+    `Channel driver: ${selection.channelDriver} local provider for ${selection.channel}.`,
     `Channel capability report: ${selection.capabilityMatrixPath}.`,
     `Channel driver smoke: ${selection.smokeArtifactPath}.`,
     "Crabline starts local provider-shaped servers; OpenClaw uses its normal channel adapter against those endpoints.",
