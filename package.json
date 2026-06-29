@@ -62,9 +62,9 @@
     "@typescript/native-preview": "7.0.0-dev.20260629.1",
     "@vitest/coverage-v8": "^4.1.8",
     "baileys": "7.0.0-rc13",
-    "oxfmt": "^0.47.0",
+    "oxfmt": "^0.56.0",
     "oxlint": "^1.69.0",
-    "oxlint-tsgolint": "^0.22.1",
+    "oxlint-tsgolint": "^0.23.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
