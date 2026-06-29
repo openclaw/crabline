@@ -429,9 +429,13 @@ export async function startWhatsAppFakeServer(
   });
   const baseUrl = httpServer.baseUrl;
   const apiRoot = `${baseUrl}/crabline/whatsapp`;
-  const baileysWebSocketUrl = `${baseUrl.replace(/^http/u, "ws")}/crabline/whatsapp/ws/chat`;
+  const baileysWebSocketUrl = `${baseUrl.replace(
+    /^http/u,
+    "ws",
+  )}/crabline/whatsapp/ws/chat?access_token=${encodeURIComponent(state.accessToken)}`;
   state.apiRoot = apiRoot;
   const baileysWebSocketServer = attachWhatsAppBaileysWebSocketServer({
+    accessToken: state.accessToken,
     appendEvent: (event) => appendEvent(state, event),
     httpServer: httpServer.server,
     path: "/crabline/whatsapp/ws/chat",

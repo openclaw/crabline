@@ -147,7 +147,7 @@ Manifest fields:
 
 - `endpoints.apiRoot`: Crabline WhatsApp fake provider API root
 - `endpoints.baileysWebSocketUrl`: Baileys-compatible WebSocket URL for
-  `waWebSocketUrl`
+  `waWebSocketUrl`, including the fake provider access token query parameter
 - `accessToken`: bearer token for fake provider requests
 - `adminToken`: value for the `X-Crabline-Admin-Token` header on admin ingress
 - `selfJid`: fake authenticated WhatsApp user JID
@@ -168,8 +168,9 @@ Manifest fields:
 Pass `endpoints.baileysWebSocketUrl` to Baileys as `waWebSocketUrl` when a
 runtime needs to connect through the fake provider. The fake server completes
 the Baileys Noise handshake, serves bootstrap/device/prekey queries, and records
-encrypted outbound WebSocket stanzas. The admin token is generated randomly
-unless `--admin-token <token>` is provided.
+encrypted outbound WebSocket stanzas. The WebSocket endpoint rejects clients
+that do not present the access token embedded in the manifest URL. The admin
+token is generated randomly unless `--admin-token <token>` is provided.
 
 OpenClaw bridge callers should post injected user messages with the
 `providerUrl`, `providerHeaders`, and `providerBody` returned by

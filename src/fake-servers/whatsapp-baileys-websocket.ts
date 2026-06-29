@@ -41,6 +41,7 @@ export type WhatsAppBaileysWebSocketServer = {
 };
 
 export type WhatsAppBaileysWebSocketServerParams = {
+  accessToken: string;
   appendEvent(event: FakeServerRequestEvent): Promise<void>;
   httpServer: Server;
   path: string;
@@ -515,6 +516,11 @@ export function attachWhatsAppBaileysWebSocketServer(
   const handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname !== params.path) {
+      socket.destroy();
+      return;
+    }
+    if (url.searchParams.get("access_token") !== params.accessToken) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }

@@ -9,6 +9,7 @@ import {
   type SignalDataTypeMap,
 } from "baileys";
 import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket } from "ws";
 import { startWhatsAppFakeServer, type StartedWhatsAppFakeServer } from "../src/index.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
@@ -95,6 +96,33 @@ async function waitForCondition(
   throw new Error(`Timed out waiting for ${label}.`);
 }
 
+async function expectWebSocketUpgradeRejected(url: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const socket = new WebSocket(url);
+    let settled = false;
+    const timeout = setTimeout(() => {
+      finish(() => reject(new Error("Expected WebSocket upgrade to fail.")));
+      socket.terminate();
+    }, 1_000);
+    const finish = (complete: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      complete();
+    };
+    socket.once("open", () => {
+      finish(() => {
+        socket.terminate();
+        reject(new Error("Expected WebSocket upgrade to be rejected before open."));
+      });
+    });
+    socket.once("error", () => finish(resolve));
+    socket.once("close", () => finish(resolve));
+  });
+}
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(directories.splice(0).map(disposeTempDir));
@@ -111,9 +139,13 @@ describe("whatsapp fake provider server", () => {
     });
     servers.push(server);
 
-    expect(server.manifest.endpoints.baileysWebSocketUrl).toMatch(
-      /^ws:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/ws\/chat$/u,
-    );
+    const baileysWebSocketUrl = new URL(server.manifest.endpoints.baileysWebSocketUrl);
+    expect(baileysWebSocketUrl).toMatchObject({
+      hostname: "127.0.0.1",
+      pathname: "/crabline/whatsapp/ws/chat",
+      protocol: "ws:",
+    });
+    expect(baileysWebSocketUrl.searchParams.get("access_token")).toBe("fake-whatsapp-token");
     const health = await fetch(`${server.manifest.endpoints.apiRoot}/health`);
     await expect(health.json()).resolves.toMatchObject({
       ok: true,
@@ -300,6 +332,26 @@ describe("whatsapp fake provider server", () => {
     });
     expect(inbound.status).toBe(500);
     await expect(inbound.json()).resolves.toMatchObject({ ok: false });
+  });
+
+  it("rejects Baileys WebSocket upgrades without the fake provider access token", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startWhatsAppFakeServer({
+      accessToken: "fake-whatsapp-token",
+      recorderPath: path.join(directory, "whatsapp.jsonl"),
+    });
+    servers.push(server);
+
+    const unauthenticatedUrl = new URL(server.manifest.endpoints.baileysWebSocketUrl);
+    unauthenticatedUrl.search = "";
+    await expect(
+      expectWebSocketUpgradeRejected(unauthenticatedUrl.toString()),
+    ).resolves.toBeUndefined();
+
+    const wrongTokenUrl = new URL(server.manifest.endpoints.baileysWebSocketUrl);
+    wrongTokenUrl.searchParams.set("access_token", "wrong-token");
+    await expect(expectWebSocketUpgradeRejected(wrongTokenUrl.toString())).resolves.toBeUndefined();
   });
 
   it("accepts a real Baileys socket over waWebSocketUrl and records outbound stanzas", async () => {

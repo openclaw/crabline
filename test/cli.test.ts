@@ -340,7 +340,7 @@ describe("cli", () => {
       /^http:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/messages$/u,
     );
     expect(manifest.endpoints?.baileysWebSocketUrl).toMatch(
-      /^ws:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/ws\/chat$/u,
+      /^ws:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/ws\/chat\?access_token=test-whatsapp-access-token$/u,
     );
     expect(manifest.env?.CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL).toBe(
       manifest.endpoints?.baileysWebSocketUrl,
