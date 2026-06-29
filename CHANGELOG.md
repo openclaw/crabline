@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4 - 2026-06-29
+
+- Add the Baileys WebSocket WhatsApp fake provider server for OpenClaw WebSocket URL smoke runs.
+
 ## 0.1.3 - 2026-06-26
 
 - Add the Slack local provider server and WhatsApp runtime socket factory to the releasable package.
