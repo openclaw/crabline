@@ -49,7 +49,7 @@
     "check": "pnpm verify"
   },
   "dependencies": {
-    "commander": "^14.0.3",
+    "commander": "^15.0.0",
     "curve25519-js": "^0.0.4",
     "picocolors": "^1.1.1",
     "ws": "^8.21.0",
