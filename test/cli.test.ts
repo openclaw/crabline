@@ -320,7 +320,13 @@ describe("cli", () => {
     const manifest = JSON.parse(captured.stdout.join("")) as {
       accessToken?: string;
       adminToken?: string;
-      endpoints?: { adminInboundUrl?: string; apiRoot?: string; messagesUrl?: string };
+      endpoints?: {
+        adminInboundUrl?: string;
+        apiRoot?: string;
+        baileysWebSocketUrl?: string;
+        messagesUrl?: string;
+      };
+      env?: { CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL?: string };
       provider?: string;
     };
     expect(manifest.provider).toBe("whatsapp");
@@ -332,6 +338,12 @@ describe("cli", () => {
     );
     expect(manifest.endpoints?.messagesUrl).toMatch(
       /^http:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/messages$/u,
+    );
+    expect(manifest.endpoints?.baileysWebSocketUrl).toMatch(
+      /^ws:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/ws\/chat$/u,
+    );
+    expect(manifest.env?.CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL).toBe(
+      manifest.endpoints?.baileysWebSocketUrl,
     );
     await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "whatsapp"');
   });

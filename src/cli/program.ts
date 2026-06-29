@@ -340,6 +340,7 @@ function renderServeProviderFields(manifest: CrablineFakeProviderManifest): stri
     return [
       `  adminToken: ${manifest.adminToken}`,
       `  accessToken: ${manifest.accessToken}`,
+      `  baileysWebSocket: ${manifest.endpoints.baileysWebSocketUrl}`,
       `  messages: ${manifest.endpoints.messagesUrl}`,
       `  presence: ${manifest.endpoints.presenceUrl}`,
       `  selfJid: ${manifest.selfJid}`,

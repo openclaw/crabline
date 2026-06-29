@@ -36,10 +36,9 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           createChannelDriverSmokeEnv: (env) => ({
             ...env,
             CRABLINE_WHATSAPP_ADMIN_TOKEN: whatsapp.adminToken,
-            CRABLINE_WHATSAPP_ACCESS_TOKEN: whatsapp.accessToken,
-            CRABLINE_WHATSAPP_API_ROOT: whatsapp.endpoints.apiRoot,
             CRABLINE_WHATSAPP_RECORDER_PATH: whatsapp.recorderPath,
             CRABLINE_WHATSAPP_SELF_JID: whatsapp.selfJid,
+            OPENCLAW_WHATSAPP_WEB_SOCKET_URL: whatsapp.endpoints.baileysWebSocketUrl,
           }),
           createGatewayConfig: (openclawConfig = {}) => {
             const channels = isRecord(openclawConfig.channels) ? openclawConfig.channels : {};

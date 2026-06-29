@@ -1,72 +1,82 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
 import {
-  CRABLINE_WHATSAPP_ACCESS_TOKEN_ENV,
-  CRABLINE_WHATSAPP_API_ROOT_ENV,
-  CRABLINE_WHATSAPP_RECORDER_PATH_ENV,
-  CRABLINE_WHATSAPP_SELF_JID_ENV,
-  createWhatsAppSocket,
-  startWhatsAppFakeServer,
-  WhatsAppBaileysMockRegistry,
-  type StartedWhatsAppFakeServer,
-} from "../src/index.js";
+  initAuthCreds,
+  makeCacheableSignalKeyStore,
+  makeWASocket,
+  type AuthenticationCreds,
+  type SignalDataSet,
+  type SignalDataTypeMap,
+} from "baileys";
+import { afterEach, describe, expect, it } from "vitest";
+import { startWhatsAppFakeServer, type StartedWhatsAppFakeServer } from "../src/index.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const servers: StartedWhatsAppFakeServer[] = [];
 const directories: string[] = [];
-const WHATSAPP_FACTORY_ENV_KEYS = [
-  CRABLINE_WHATSAPP_ACCESS_TOKEN_ENV,
-  CRABLINE_WHATSAPP_API_ROOT_ENV,
-  CRABLINE_WHATSAPP_RECORDER_PATH_ENV,
-  CRABLINE_WHATSAPP_SELF_JID_ENV,
-] as const;
+const silentLogger = createSilentLogger();
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
+type MemorySignalStore = {
+  get<T extends keyof SignalDataTypeMap>(
+    type: T,
+    ids: string[],
+  ): Promise<{ [id: string]: SignalDataTypeMap[T] }>;
+  set(data: SignalDataSet): Promise<void>;
+};
+
+function createSilentLogger() {
+  const logger = {
+    child: () => logger,
+    debug: () => undefined,
+    error: () => undefined,
+    info: () => undefined,
+    level: "silent",
+    trace: () => undefined,
+    warn: () => undefined,
+  };
+  return logger;
 }
 
-async function waitForCondition(predicate: () => boolean, label: string): Promise<void> {
-  const deadline = Date.now() + 1_000;
+function createMemorySignalStore(): MemorySignalStore {
+  const store = new Map<string, unknown>();
+  return {
+    async get(type, ids) {
+      const result: Record<string, unknown> = {};
+      for (const id of ids) {
+        const value = store.get(`${type}.${id}`);
+        if (value !== undefined) {
+          result[id] = value;
+        }
+      }
+      return result as { [id: string]: SignalDataTypeMap[typeof type] };
+    },
+    async set(data) {
+      for (const [type, entries] of Object.entries(data)) {
+        for (const [id, value] of Object.entries(entries ?? {})) {
+          const key = `${type}.${id}`;
+          if (value === null) {
+            store.delete(key);
+          } else {
+            store.set(key, value);
+          }
+        }
+      }
+    },
+  };
+}
+
+async function waitForCondition(
+  predicate: () => boolean | Promise<boolean>,
+  label: string,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
-    if (predicate()) {
+    if (await predicate()) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Timed out waiting for ${label}.`);
-}
-
-function captureEnv() {
-  return Object.fromEntries(WHATSAPP_FACTORY_ENV_KEYS.map((key) => [key, process.env[key]]));
-}
-
-function restoreEnv(previous: Record<string, string | undefined>) {
-  for (const key of WHATSAPP_FACTORY_ENV_KEYS) {
-    const value = previous[key];
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
-}
-
-function readBaileysMessageId(message: unknown): string | undefined {
-  const key = isRecord(message) ? message.key : undefined;
-  const id = isRecord(key) ? key.id : undefined;
-  return typeof id === "string" ? id : undefined;
-}
-
-function readInboundResponseMessageId(payload: unknown): string | undefined {
-  return isRecord(payload) ? readBaileysMessageId(payload.message) : undefined;
-}
-
-function readUpsertMessageId(payload: unknown): string | undefined {
-  const firstMessage = isRecord(payload)
-    ? (payload.messages as Array<Record<string, unknown>> | undefined)?.[0]
-    : undefined;
-  return readBaileysMessageId(firstMessage);
 }
 
 afterEach(async () => {
@@ -75,7 +85,7 @@ afterEach(async () => {
 });
 
 describe("whatsapp fake provider server", () => {
-  it("serves WhatsApp Web listener-style sends and injected inbound messages", async () => {
+  it("serves Graph-style sends and injected inbound webhook payloads", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startWhatsAppFakeServer({
@@ -84,12 +94,10 @@ describe("whatsapp fake provider server", () => {
       recorderPath: path.join(directory, "whatsapp.jsonl"),
     });
     servers.push(server);
-    const inboundEvents: unknown[] = [];
-    const socket = server.createBaileysMockSocket();
-    socket.ev.on("messages.upsert", (payload) => {
-      inboundEvents.push(payload);
-    });
 
+    expect(server.manifest.endpoints.baileysWebSocketUrl).toMatch(
+      /^ws:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/ws\/chat$/u,
+    );
     const health = await fetch(`${server.manifest.endpoints.apiRoot}/health`);
     await expect(health.json()).resolves.toMatchObject({
       ok: true,
@@ -246,30 +254,12 @@ describe("whatsapp fake provider server", () => {
         object: "whatsapp_business_account",
       },
     });
-    expect(inboundEvents).toEqual([
-      expect.objectContaining({
-        messages: [
-          expect.objectContaining({
-            key: expect.objectContaining({
-              fromMe: false,
-              participant: "15551234567@s.whatsapp.net",
-              remoteJid: "120363001234567890@g.us",
-            }),
-            message: {
-              conversation: "user nonce-1",
-            },
-            pushName: "Fake Sender",
-          }),
-        ],
-        type: "notify",
-      }),
-    ]);
     const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
     expect(recorder).not.toContain("forged user nonce");
     expect(recorder).toContain('"path":"/crabline/whatsapp/inbound"');
   });
 
-  it("does not emit admin inbound messages when recorder append fails", async () => {
+  it("does not accept admin inbound messages when recorder append fails", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startWhatsAppFakeServer({
@@ -278,11 +268,6 @@ describe("whatsapp fake provider server", () => {
       recorderPath: directory,
     });
     servers.push(server);
-    const inboundEvents: unknown[] = [];
-    const socket = server.createBaileysMockSocket();
-    socket.ev.on("messages.upsert", (payload) => {
-      inboundEvents.push(payload);
-    });
 
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
@@ -299,229 +284,69 @@ describe("whatsapp fake provider server", () => {
     });
     expect(inbound.status).toBe(500);
     await expect(inbound.json()).resolves.toMatchObject({ ok: false });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(inboundEvents).toEqual([]);
   });
 
-  it("exposes a Baileys-shaped mock socket over the fake provider server", async () => {
+  it("accepts a real Baileys socket over waWebSocketUrl and records outbound stanzas", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startWhatsAppFakeServer({
-      accessToken: "fake-whatsapp-token",
       recorderPath: path.join(directory, "whatsapp.jsonl"),
+      selfJid: "15550000001:0@s.whatsapp.net",
     });
     servers.push(server);
-    const socket = server.createBaileysMockSocket();
-    const emitted: unknown[] = [];
-    socket.ev.on("messages.upsert", (payload) => {
-      emitted.push(payload);
-    });
-
-    const message = await socket.sendMessage("15551234567@s.whatsapp.net", {
-      text: "hello through baileys shape",
-    });
-    await socket.sendPresenceUpdate("composing", "15551234567@s.whatsapp.net");
-
-    expect(message).toMatchObject({
-      key: {
-        fromMe: true,
-        remoteJid: "15551234567@s.whatsapp.net",
+    const creds: AuthenticationCreds = {
+      ...initAuthCreds(),
+      me: {
+        id: "15550000001:0@s.whatsapp.net",
+        name: "Crabline Test Bot",
       },
-      message: {
-        conversation: "hello through baileys shape",
+    };
+    const socket = makeWASocket({
+      auth: {
+        creds,
+        keys: makeCacheableSignalKeyStore(createMemorySignalStore(), silentLogger),
       },
+      browser: ["crabline", "test", "1.0"],
+      connectTimeoutMs: 2_000,
+      defaultQueryTimeoutMs: 750,
+      fireInitQueries: false,
+      keepAliveIntervalMs: 10_000,
+      logger: silentLogger,
+      markOnlineOnConnect: false,
+      printQRInTerminal: false,
+      syncFullHistory: false,
+      waWebSocketUrl: server.manifest.endpoints.baileysWebSocketUrl,
+      version: [2, 3000, 1035194821],
     });
-    expect(emitted).toHaveLength(1);
-    const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
-    expect(recorder).toContain('"path":"/crabline/whatsapp/messages"');
-    expect(recorder).toContain('"path":"/crabline/whatsapp/presence"');
-  });
-
-  it("exposes an env-driven Baileys runtime socket factory backed by the recorder", async () => {
-    const directory = await createTempDir();
-    directories.push(directory);
-    const server = await startWhatsAppFakeServer({
-      accessToken: "fake-whatsapp-token",
-      adminToken: "fake-whatsapp-admin-token",
-      baileysRegistry: new WhatsAppBaileysMockRegistry(),
-      recorderPath: path.join(directory, "whatsapp.jsonl"),
-      selfJid: "15550000001@s.whatsapp.net",
+    const connectionUpdates: unknown[] = [];
+    socket.ev.on("connection.update", (update) => {
+      connectionUpdates.push(update);
     });
-    servers.push(server);
-    const previousEnv = captureEnv();
-    process.env[CRABLINE_WHATSAPP_ACCESS_TOKEN_ENV] = server.manifest.accessToken;
-    process.env[CRABLINE_WHATSAPP_API_ROOT_ENV] = server.manifest.endpoints.apiRoot;
-    process.env[CRABLINE_WHATSAPP_RECORDER_PATH_ENV] = server.manifest.recorderPath;
-    process.env[CRABLINE_WHATSAPP_SELF_JID_ENV] = server.manifest.selfJid;
 
-    const socket = await createWhatsAppSocket(false, false);
     try {
-      const connectionUpdates: unknown[] = [];
-      const inboundEvents: unknown[] = [];
-      socket.ev.on("connection.update", (payload) => {
-        connectionUpdates.push(payload);
-      });
-      socket.ev.on("messages.upsert", (payload) => {
-        const firstMessage = isRecord(payload)
-          ? (payload.messages as Array<Record<string, unknown>> | undefined)?.[0]
-          : undefined;
-        const key = isRecord(firstMessage) ? firstMessage.key : undefined;
-        if (isRecord(key) && key.fromMe === false) {
-          inboundEvents.push(payload);
-        }
-      });
-
       await waitForCondition(
-        () => connectionUpdates.some((update) => isRecord(update) && update.connection === "open"),
-        "WhatsApp runtime socket connection open",
+        () =>
+          connectionUpdates.some(
+            (update) =>
+              !!update &&
+              typeof update === "object" &&
+              (update as { connection?: unknown }).connection === "open",
+          ),
+        "Baileys connection open",
       );
-      const sentMessage = await socket.sendMessage("15551234567@s.whatsapp.net", {
-        text: "hello through env socket",
+      await socket.sendMessage("15551234567@s.whatsapp.net", {
+        text: "hello through real baileys",
       });
-      await socket.sendPresenceUpdate("composing", "15551234567@s.whatsapp.net");
-      await socket.readMessages([{ id: "wamid.READ", remoteJid: "15551234567@s.whatsapp.net" }]);
-
-      expect(sentMessage).toMatchObject({
-        key: {
-          fromMe: true,
-          remoteJid: "15551234567@s.whatsapp.net",
-        },
-        message: {
-          conversation: "hello through env socket",
-        },
-      });
-      await expect(socket.groupFetchAllParticipating()).resolves.toEqual({});
-      await expect(socket.groupMetadata("120363001234567890@g.us")).resolves.toEqual({
-        id: "120363001234567890@g.us",
-        participants: [],
-        subject: "Test Group",
-      });
-
-      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
-        body: JSON.stringify({
-          chatJid: "120363001234567890@g.us",
-          pushName: "Fake Sender",
-          senderJid: "15551234567@s.whatsapp.net",
-          text: "user nonce from recorder",
-        }),
-        headers: {
-          "content-type": "application/json",
-          "x-crabline-admin-token": "fake-whatsapp-admin-token",
-        },
-        method: "POST",
-      });
-      expect(inbound.status).toBe(200);
-      const inboundBody: unknown = await inbound.json();
-      const inboundMessageId = readInboundResponseMessageId(inboundBody);
-      expect(inboundMessageId).toMatch(/^wamid\.FAKE/u);
-      await waitForCondition(() => inboundEvents.length === 1, "WhatsApp recorder inbound event");
-      expect(inboundEvents).toEqual([
-        expect.objectContaining({
-          messages: [
-            expect.objectContaining({
-              key: expect.objectContaining({
-                fromMe: false,
-                participant: "15551234567@s.whatsapp.net",
-                remoteJid: "120363001234567890@g.us",
-              }),
-              message: {
-                conversation: "user nonce from recorder",
-              },
-              pushName: "Fake Sender",
-            }),
-          ],
-          type: "notify",
-        }),
-      ]);
-      expect(readUpsertMessageId(inboundEvents[0])).toBe(inboundMessageId);
-
-      socket.end();
-      expect(connectionUpdates).toContainEqual(
-        expect.objectContaining({
-          connection: "close",
-        }),
-      );
-    } finally {
-      socket.end();
-      restoreEnv(previousEnv);
-    }
-  });
-
-  it("fans out recorder inbound lines to runtime sockets sharing a recorder path", async () => {
-    const directory = await createTempDir();
-    directories.push(directory);
-    const server = await startWhatsAppFakeServer({
-      accessToken: "fake-whatsapp-token",
-      adminToken: "fake-whatsapp-admin-token",
-      baileysRegistry: new WhatsAppBaileysMockRegistry(),
-      recorderPath: path.join(directory, "whatsapp.jsonl"),
-      selfJid: "15550000001@s.whatsapp.net",
-    });
-    servers.push(server);
-    const previousEnv = captureEnv();
-    process.env[CRABLINE_WHATSAPP_ACCESS_TOKEN_ENV] = server.manifest.accessToken;
-    process.env[CRABLINE_WHATSAPP_API_ROOT_ENV] = server.manifest.endpoints.apiRoot;
-    process.env[CRABLINE_WHATSAPP_RECORDER_PATH_ENV] = server.manifest.recorderPath;
-    process.env[CRABLINE_WHATSAPP_SELF_JID_ENV] = server.manifest.selfJid;
-
-    const firstSocket = await createWhatsAppSocket(false, false);
-    const secondSocket = await createWhatsAppSocket(false, false);
-    try {
-      const firstInboundEvents: unknown[] = [];
-      const secondInboundEvents: unknown[] = [];
-      firstSocket.ev.on("messages.upsert", (payload) => {
-        firstInboundEvents.push(payload);
-      });
-      secondSocket.ev.on("messages.upsert", (payload) => {
-        secondInboundEvents.push(payload);
-      });
-
-      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
-        body: JSON.stringify({
-          chatJid: "120363001234567890@g.us",
-          pushName: "Fake Sender",
-          senderJid: "15551234567@s.whatsapp.net",
-          text: "fanout nonce",
-        }),
-        headers: {
-          "content-type": "application/json",
-          "x-crabline-admin-token": "fake-whatsapp-admin-token",
-        },
-        method: "POST",
-      });
-      expect(inbound.status).toBe(200);
-      const inboundBody: unknown = await inbound.json();
-      const inboundMessageId = readInboundResponseMessageId(inboundBody);
-      expect(inboundMessageId).toMatch(/^wamid\.FAKE/u);
-
       await waitForCondition(
-        () => firstInboundEvents.length === 1 && secondInboundEvents.length === 1,
-        "WhatsApp recorder fan-out",
+        () => fs.readFile(server.manifest.recorderPath, "utf8").then(Boolean, () => false),
+        "WhatsApp recorder",
       );
-      const expectedPayload = expect.objectContaining({
-        messages: [
-          expect.objectContaining({
-            key: expect.objectContaining({
-              fromMe: false,
-              participant: "15551234567@s.whatsapp.net",
-              remoteJid: "120363001234567890@g.us",
-            }),
-            message: {
-              conversation: "fanout nonce",
-            },
-            pushName: "Fake Sender",
-          }),
-        ],
-        type: "notify",
-      });
-      expect(firstInboundEvents).toEqual([expectedPayload]);
-      expect(secondInboundEvents).toEqual([expectedPayload]);
-      expect(readUpsertMessageId(firstInboundEvents[0])).toBe(inboundMessageId);
-      expect(readUpsertMessageId(secondInboundEvents[0])).toBe(inboundMessageId);
+      const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
+      expect(recorder).toContain('"method":"WEBSOCKET"');
+      expect(recorder).toContain('"tag":"message"');
+      expect(recorder).toContain('"to":"15551234567@s.whatsapp.net"');
     } finally {
-      firstSocket.end();
-      secondSocket.end();
-      restoreEnv(previousEnv);
+      socket.end(undefined);
     }
   });
 });

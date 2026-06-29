@@ -8,8 +8,6 @@ import {
   createOpenClawCrablineFakeProviderBinding,
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent,
-  createWhatsAppBaileysMockSocket,
-  DEFAULT_WHATSAPP_BAILEYS_MOCK_REGISTRY,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
@@ -42,6 +40,7 @@ const whatsappManifest: CrablineFakeProviderManifest = {
   endpoints: {
     adminInboundUrl: "http://127.0.0.1:5678/crabline/whatsapp/inbound",
     apiRoot: "http://127.0.0.1:5678/crabline/whatsapp",
+    baileysWebSocketUrl: "ws://127.0.0.1:5678/crabline/whatsapp/ws/chat",
     messagesUrl: "http://127.0.0.1:5678/crabline/whatsapp/messages",
     presenceUrl: "http://127.0.0.1:5678/crabline/whatsapp/presence",
   },
@@ -49,6 +48,7 @@ const whatsappManifest: CrablineFakeProviderManifest = {
     CRABLINE_WHATSAPP_ADMIN_TOKEN: "crabline-whatsapp-admin-token",
     CRABLINE_WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
     CRABLINE_WHATSAPP_API_ROOT: "http://127.0.0.1:5678/crabline/whatsapp",
+    CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL: "ws://127.0.0.1:5678/crabline/whatsapp/ws/chat",
     CRABLINE_WHATSAPP_RECORDER_PATH: "/tmp/crabline/whatsapp.jsonl",
     CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
   },
@@ -193,10 +193,9 @@ describe("OpenClaw fake provider bridge", () => {
     });
     expect(binding.createChannelDriverSmokeEnv({})).toMatchObject({
       CRABLINE_WHATSAPP_ADMIN_TOKEN: "crabline-whatsapp-admin-token",
-      CRABLINE_WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
-      CRABLINE_WHATSAPP_API_ROOT: "http://127.0.0.1:5678/crabline/whatsapp",
       CRABLINE_WHATSAPP_RECORDER_PATH: "/tmp/crabline/whatsapp.jsonl",
       CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
+      OPENCLAW_WHATSAPP_WEB_SOCKET_URL: "ws://127.0.0.1:5678/crabline/whatsapp/ws/chat",
     });
   });
 
@@ -464,22 +463,12 @@ describe("OpenClaw fake provider bridge", () => {
     });
   });
 
-  it("posts WhatsApp OpenClaw inbound with admin headers into the Baileys listener path", async () => {
+  it("posts WhatsApp OpenClaw inbound with admin headers into the fake provider", async () => {
     const adapter = await startOpenClawCrablineAdapter({ channel: "whatsapp" });
     try {
       if (adapter.manifest.provider !== "whatsapp") {
         throw new Error("Expected WhatsApp fake provider manifest.");
       }
-      const inboundEvents: unknown[] = [];
-      const socket = createWhatsAppBaileysMockSocket({
-        accessToken: adapter.manifest.accessToken,
-        apiRoot: adapter.manifest.endpoints.apiRoot,
-        registry: DEFAULT_WHATSAPP_BAILEYS_MOCK_REGISTRY,
-        selfJid: adapter.manifest.selfJid,
-      });
-      socket.ev.on("messages.upsert", (payload) => {
-        inboundEvents.push(payload);
-      });
 
       const inbound = adapter.createInbound({
         input: {
@@ -504,24 +493,6 @@ describe("OpenClaw fake provider bridge", () => {
       });
       expect(accepted.status).toBe(200);
       await expect(accepted.json()).resolves.toMatchObject({ ok: true });
-      expect(inboundEvents).toEqual([
-        expect.objectContaining({
-          messages: [
-            expect.objectContaining({
-              key: expect.objectContaining({
-                fromMe: false,
-                participant: "15551234567@s.whatsapp.net",
-                remoteJid: "120363001234567890@g.us",
-              }),
-              message: {
-                conversation: "hello from qa",
-              },
-              pushName: "Alice",
-            }),
-          ],
-          type: "notify",
-        }),
-      ]);
     } finally {
       await adapter.close();
     }
