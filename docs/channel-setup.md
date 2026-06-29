@@ -135,7 +135,8 @@ The admin ingress accepts JSON like:
 ```
 
 OpenClaw consumes that message through Telegram `getUpdates`; outbound adapter
-sends are recorded through Telegram `sendMessage`.
+sends are recorded through Telegram `sendMessage` and the media send endpoints
+`sendPhoto`, `sendDocument`, `sendVideo`, and `sendAnimation`.
 
 WhatsApp:
 

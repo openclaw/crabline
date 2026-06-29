@@ -351,6 +351,28 @@ describe("OpenClaw local provider bridge", () => {
       text: "  hello\n",
       to: "dm:alice",
     });
+
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest,
+        targetByProviderTarget: new Map([["100001", "dm:alice"]]),
+        event: {
+          type: "api",
+          path: "/botTOKEN/sendPhoto",
+          body: {
+            caption: "media caption",
+            chat_id: "100001",
+            photo: "fixture.png",
+          },
+        },
+      }),
+    ).toEqual({
+      accountId: "default",
+      senderId: "openclaw",
+      senderName: "OpenClaw QA",
+      text: "media caption",
+      to: "dm:alice",
+    });
   });
 
   it("maps WhatsApp QA targets, inbound messages, and recorder events", () => {

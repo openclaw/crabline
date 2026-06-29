@@ -31,7 +31,20 @@ type TelegramMessage = {
     title?: string;
     type: "group" | "private" | "supergroup";
   };
+  animation?: {
+    file_id: string;
+    file_name?: string;
+    file_unique_id: string;
+    mime_type?: string;
+  };
+  caption?: string;
   date: number;
+  document?: {
+    file_id: string;
+    file_name?: string;
+    file_unique_id: string;
+    mime_type?: string;
+  };
   from: {
     first_name: string;
     id: number;
@@ -40,7 +53,19 @@ type TelegramMessage = {
   };
   message_id: number;
   message_thread_id?: number;
-  text: string;
+  photo?: Array<{
+    file_id: string;
+    file_unique_id: string;
+    height: number;
+    width: number;
+  }>;
+  text?: string;
+  video?: {
+    file_id: string;
+    file_name?: string;
+    file_unique_id: string;
+    mime_type?: string;
+  };
 };
 
 type TelegramUpdate = {
@@ -105,15 +130,48 @@ async function parseRequestBody(request: IncomingMessage): Promise<Record<string
     return {};
   }
   const contentType = request.headers["content-type"] ?? "";
-  if (
-    Array.isArray(contentType)
-      ? contentType.some((entry) => entry.includes("json"))
-      : contentType.includes("json")
-  ) {
+  const contentTypes = Array.isArray(contentType) ? contentType : [contentType];
+  if (contentTypes.some((entry) => entry.includes("json"))) {
     return JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+  }
+  const multipartType = contentTypes.find((entry) => entry.includes("multipart/form-data"));
+  if (multipartType) {
+    return parseMultipartFormDataBody(body, multipartType);
   }
   const params = new URLSearchParams(body.toString("utf8"));
   return Object.fromEntries(params.entries());
+}
+
+function parseMultipartFormDataBody(body: Buffer, contentType: string): Record<string, unknown> {
+  const boundary = /(?:^|;\s*)boundary=(?:"([^"]+)"|([^;]+))/iu.exec(contentType);
+  const boundaryValue = boundary?.[1] ?? boundary?.[2];
+  if (!boundaryValue) {
+    return {};
+  }
+  const fields: Record<string, unknown> = {};
+  const delimiter = `--${boundaryValue}`;
+  for (const rawPart of body.toString("binary").split(delimiter)) {
+    const part = rawPart.replace(/^\r?\n/u, "").replace(/\r?\n$/u, "");
+    if (!part || part === "--") {
+      continue;
+    }
+    const separatorIndex = part.indexOf("\r\n\r\n");
+    if (separatorIndex < 0) {
+      continue;
+    }
+    const rawHeaders = part.slice(0, separatorIndex);
+    const rawContent = part.slice(separatorIndex + 4).replace(/\r?\n--$/u, "");
+    const disposition = rawHeaders
+      .split(/\r?\n/u)
+      .find((header) => header.toLowerCase().startsWith("content-disposition:"));
+    const name = /(?:^|;\s*)name="([^"]+)"/iu.exec(disposition ?? "")?.[1];
+    if (!name) {
+      continue;
+    }
+    const filename = /(?:^|;\s*)filename="([^"]*)"/iu.exec(disposition ?? "")?.[1];
+    fields[name] = filename && filename.length > 0 ? filename : rawContent;
+  }
+  return fields;
 }
 
 function closeServer(server: Server): Promise<void> {
@@ -219,6 +277,37 @@ function createOutboundMessage(
   };
 }
 
+function createOutboundMediaMessage(
+  state: TelegramServerState,
+  body: Record<string, unknown>,
+  mediaKind: "animation" | "document" | "photo" | "video",
+): TelegramMessage | undefined {
+  const chatId = telegramChatId(body.chat_id);
+  if (chatId === undefined) {
+    return undefined;
+  }
+  const threadId = toIntegerValue(body.message_thread_id);
+  const caption = toStringValue(body.caption);
+  const fileName = toStringValue(body[mediaKind]);
+  const media = {
+    file_id: `crabline-${mediaKind}-${state.nextMessageId}`,
+    ...(fileName ? { file_name: fileName } : {}),
+    file_unique_id: `crabline-${mediaKind}-unique-${state.nextMessageId}`,
+  };
+  return {
+    chat: createChat(chatId),
+    date: Math.floor(Date.now() / 1000),
+    from: createBotUser(state),
+    ...(caption ? { caption } : {}),
+    [mediaKind]:
+      mediaKind === "photo"
+        ? [{ ...media, height: 1, width: 1 }]
+        : { ...media, mime_type: "application/octet-stream" },
+    message_id: state.nextMessageId++,
+    ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
+  };
+}
+
 function createEditedMessage(
   state: TelegramServerState,
   body: Record<string, unknown>,
@@ -319,6 +408,18 @@ async function handleTelegramApi(params: {
       return message
         ? telegramOk(message)
         : telegramError("Bad Request: chat_id and text are required");
+    }
+    case "sendAnimation":
+    case "sendDocument":
+    case "sendPhoto":
+    case "sendVideo": {
+      const mediaKind = params.method.slice("send".length).toLowerCase() as
+        | "animation"
+        | "document"
+        | "photo"
+        | "video";
+      const message = createOutboundMediaMessage(params.state, params.body, mediaKind);
+      return message ? telegramOk(message) : telegramError("Bad Request: chat_id is required");
     }
     case "getUpdates": {
       const offset = toIntegerValue(params.body.offset);

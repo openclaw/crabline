@@ -84,6 +84,25 @@ describe("telegram local provider server", () => {
       },
     });
 
+    const mediaBody = new FormData();
+    mediaBody.set("chat_id", "-1001234567890");
+    mediaBody.set("message_thread_id", "42");
+    mediaBody.set("caption", "hello fake telegram media");
+    mediaBody.set("photo", new Blob(["png"], { type: "image/png" }), "fixture.png");
+    const sendPhoto = await fetch(`${server.manifest.baseUrl}/bot123456:fake-token/sendPhoto`, {
+      body: mediaBody,
+      method: "POST",
+    });
+    await expect(sendPhoto.json()).resolves.toMatchObject({
+      ok: true,
+      result: {
+        caption: "hello fake telegram media",
+        chat: { id: -1001234567890, type: "supergroup" },
+        message_thread_id: 42,
+        photo: [{ height: 1, width: 1 }],
+      },
+    });
+
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
         chatId: "-1001234567890",

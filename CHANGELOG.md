@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6 - 2026-06-29
+
+- Add Telegram media send support to the local server for `sendPhoto`, `sendDocument`, `sendVideo`, and `sendAnimation`.
+
 ## 0.1.5 - 2026-06-29
 
 - Rename fake-server internals and public server APIs while preserving fake-provider compatibility aliases and artifact paths.

@@ -11,6 +11,8 @@ import {
 const TELEGRAM_DIRECT_CHAT_ID = "100001";
 const TELEGRAM_GROUP_CHAT_ID = "-1001234567890";
 const TELEGRAM_DEFAULT_SENDER_ID = 100001;
+const TELEGRAM_OUTBOUND_METHOD_RE =
+  /\/(sendAnimation|sendDocument|sendMessage|sendPhoto|sendVideo)$/u;
 
 function normalizeTelegramChatId(kind: "direct" | "group", id: string) {
   return /^-?\d+$/u.test(id.trim())
@@ -123,14 +125,15 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (!isRecord(event) || event.type !== "api" || typeof event.path !== "string") {
           return null;
         }
-        if (!event.path.endsWith("/sendMessage") || !isRecord(event.body)) {
+        const method = TELEGRAM_OUTBOUND_METHOD_RE.exec(event.path)?.[1];
+        if (!method || !isRecord(event.body)) {
           return null;
         }
         const chatId = readString(event.body.chat_id);
         const text =
-          typeof event.body.text === "string" && event.body.text.trim()
+          method === "sendMessage" && typeof event.body.text === "string" && event.body.text.trim()
             ? event.body.text
-            : undefined;
+            : readString(event.body.caption);
         if (!chatId || !text) {
           return null;
         }
