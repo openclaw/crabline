@@ -8,3 +8,9 @@ minimumReleaseAgeExclude:
 
 nodeLinker: hoisted
 blockExoticSubdeps: true
+overrides:
+  vite: 8.0.16
+allowBuilds:
+  baileys: false
+  esbuild: true
+  protobufjs: false
