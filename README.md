@@ -141,9 +141,11 @@ The JSON manifest contains:
 - `endpoints.adminInboundUrl`: authenticated POST endpoint for inbound messages
 - `recorderPath`: JSONL file of local provider API/admin traffic
 
-The server implements the Mattermost REST and WebSocket paths used for text DM
-and channel roundtrips. Admin-injected messages are delivered as native
-`posted` events; outbound sends are recorded through `POST /api/v4/posts`.
+The server implements a Mattermost API subset for text DM and channel
+roundtrips, including REST authentication/status codes, WebSocket
+authentication and `hello`, sequenced events, typing, and post
+create/edit/delete events. Admin ingress is only the test control plane;
+injected messages are delivered to clients as native `posted` events.
 
 Slack:
 

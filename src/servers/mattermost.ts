@@ -24,6 +24,17 @@ type MattermostPost = {
   user_id: string;
 };
 
+type MattermostWebSocketEvent = {
+  broadcast: {
+    channel_id: string;
+    omit_users: null | Record<string, boolean>;
+    team_id: string;
+    user_id: string;
+  };
+  data: Record<string, unknown>;
+  event: string;
+};
+
 type MattermostServerState = {
   adminToken: string;
   botToken: string;
@@ -31,11 +42,11 @@ type MattermostServerState = {
   botUsername: string;
   channels: Map<string, { id: string; name: string; display_name: string; type: string }>;
   nextPost: number;
-  pendingEvents: string[];
+  pendingEvents: MattermostWebSocketEvent[];
   posts: Map<string, MattermostPost>;
   recorderPath: string;
   users: Map<string, { id: string; username: string; update_at: number }>;
-  websocketClients: Set<WebSocket>;
+  websocketClients: Map<WebSocket, number>;
 };
 
 export type MattermostServerManifest = {
@@ -82,12 +93,43 @@ async function appendEvent(state: MattermostServerState, event: ServerRequestEve
 }
 
 function authorized(request: IncomingMessage, token: string): boolean {
-  return request.headers.authorization === `Bearer ${token}`;
+  const [scheme, value] = request.headers.authorization?.trim().split(/\s+/, 2) ?? [];
+  return scheme?.toLowerCase() === "bearer" && value === token;
 }
 
-function postEvent(post: MattermostPost, senderName: string, channelType: string): string {
-  return JSON.stringify({
-    event: "posted",
+function mattermostError(message: string, status: number): Response {
+  return jsonResponse(
+    {
+      id: `api.context.${status}`,
+      message,
+      request_id: "",
+      status_code: status,
+    },
+    status,
+  );
+}
+
+function eventBroadcast(params: {
+  channelId?: string;
+  omitUsers?: Record<string, boolean>;
+  userId?: string;
+}): MattermostWebSocketEvent["broadcast"] {
+  return {
+    channel_id: params.channelId ?? "",
+    omit_users: params.omitUsers ?? null,
+    team_id: "",
+    user_id: params.userId ?? "",
+  };
+}
+
+function postEvent(
+  event: "post_deleted" | "post_edited" | "posted",
+  post: MattermostPost,
+  senderName: string,
+  channelType: string,
+): MattermostWebSocketEvent {
+  return {
+    event,
     data: {
       channel_display_name: post.channel_id,
       channel_id: post.channel_id,
@@ -96,19 +138,30 @@ function postEvent(post: MattermostPost, senderName: string, channelType: string
       post: JSON.stringify(post),
       sender_name: senderName,
     },
-    broadcast: { channel_id: post.channel_id, user_id: post.user_id },
-  });
+    broadcast: eventBroadcast({ channelId: post.channel_id, userId: post.user_id }),
+  };
 }
 
-function broadcast(state: MattermostServerState, message: string): void {
-  if (state.websocketClients.size === 0) {
-    state.pendingEvents.push(message);
+function sendEvent(
+  state: MattermostServerState,
+  client: WebSocket,
+  event: MattermostWebSocketEvent,
+) {
+  const seq = state.websocketClients.get(client);
+  if (seq === undefined || client.readyState !== WebSocket.OPEN) {
     return;
   }
-  for (const client of state.websocketClients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(message);
-    }
+  client.send(JSON.stringify({ ...event, seq }));
+  state.websocketClients.set(client, seq + 1);
+}
+
+function broadcast(state: MattermostServerState, event: MattermostWebSocketEvent): void {
+  if (state.websocketClients.size === 0) {
+    state.pendingEvents.push(event);
+    return;
+  }
+  for (const client of state.websocketClients.keys()) {
+    sendEvent(state, client, event);
   }
 }
 
@@ -159,7 +212,7 @@ async function handleAdminInbound(params: {
     state: params.state,
     userId: senderId,
   });
-  broadcast(params.state, postEvent(post, senderName, channelType));
+  broadcast(params.state, postEvent("posted", post, senderName, channelType));
   return jsonResponse({ ok: true, post });
 }
 
@@ -177,60 +230,103 @@ async function handleApi(params: {
   if (method === "GET" && usernameMatch?.[1]) {
     const username = decodeURIComponent(usernameMatch[1]);
     const user = [...state.users.values()].find((entry) => entry.username === username);
-    return user ? jsonResponse(user) : jsonResponse({ message: "User not found" }, 404);
+    return user ? jsonResponse(user) : mattermostError("User not found", 404);
   }
   const userMatch = /^\/users\/([^/]+)$/u.exec(apiPath);
   if (method === "GET" && userMatch?.[1]) {
     const user = state.users.get(userMatch[1]);
-    return user ? jsonResponse(user) : jsonResponse({ message: "User not found" }, 404);
+    return user ? jsonResponse(user) : mattermostError("User not found", 404);
   }
   const channelMatch = /^\/channels\/([^/]+)$/u.exec(apiPath);
   if (method === "GET" && channelMatch?.[1]) {
     const channel = state.channels.get(channelMatch[1]);
-    return channel ? jsonResponse(channel) : jsonResponse({ message: "Channel not found" }, 404);
+    return channel ? jsonResponse(channel) : mattermostError("Channel not found", 404);
   }
   if (method === "POST" && apiPath === "/channels/direct") {
     const userIds = Array.isArray(body) ? body : [];
+    if (userIds.length !== 2 || userIds.some((value) => typeof value !== "string" || !value)) {
+      return mattermostError("Two user IDs are required", 400);
+    }
     const channelId = mattermostId(`dm:${userIds.map(String).sort().join(":")}`);
     const channel = { display_name: "", id: channelId, name: channelId, type: "D" };
     state.channels.set(channelId, channel);
-    return jsonResponse(channel);
+    return jsonResponse(channel, 201);
   }
   if (method === "POST" && apiPath === "/users/me/typing") {
+    const channelId = readTrimmedString(body.channel_id);
+    if (!channelId) {
+      return mattermostError("channel_id is required", 400);
+    }
+    broadcast(state, {
+      broadcast: eventBroadcast({
+        channelId,
+        omitUsers: { [state.botUserId]: true },
+      }),
+      data: {
+        channel_id: channelId,
+        ...(readTrimmedString(body.parent_id)
+          ? { parent_id: readTrimmedString(body.parent_id) }
+          : {}),
+        user_id: state.botUserId,
+      },
+      event: "typing",
+    });
     return jsonResponse({});
   }
   if (method === "POST" && apiPath === "/posts") {
     const channelId = readTrimmedString(body.channel_id);
     const message = readTrimmedString(body.message);
     if (!channelId || !message) {
-      return jsonResponse({ message: "channel_id and message are required" }, 400);
+      return mattermostError("channel_id and message are required", 400);
     }
-    return jsonResponse(
-      createPost({
-        channelId,
-        message,
-        rootId: readTrimmedString(body.root_id),
-        state,
-        userId: state.botUserId,
-      }),
-      201,
-    );
+    const post = createPost({
+      channelId,
+      message,
+      rootId: readTrimmedString(body.root_id),
+      state,
+      userId: state.botUserId,
+    });
+    const channelType = state.channels.get(channelId)?.type ?? "O";
+    broadcast(state, postEvent("posted", post, state.botUsername, channelType));
+    return jsonResponse(post, 201);
   }
   const postMatch = /^\/posts\/([^/]+)$/u.exec(apiPath);
   if (postMatch?.[1] && method === "PUT") {
     const post = state.posts.get(postMatch[1]);
     if (!post) {
-      return jsonResponse({ message: "Post not found" }, 404);
+      return mattermostError("Post not found", 404);
     }
     const updated = { ...post, message: readTrimmedString(body.message) ?? post.message };
     state.posts.set(updated.id, updated);
+    broadcast(
+      state,
+      postEvent(
+        "post_edited",
+        updated,
+        state.botUsername,
+        state.channels.get(updated.channel_id)?.type ?? "O",
+      ),
+    );
     return jsonResponse(updated);
   }
   if (postMatch?.[1] && method === "DELETE") {
-    state.posts.delete(postMatch[1]);
+    const post = state.posts.get(postMatch[1]);
+    if (!post) {
+      return mattermostError("Post not found", 404);
+    }
+    state.posts.delete(post.id);
+    broadcast(
+      state,
+      postEvent(
+        "post_deleted",
+        post,
+        state.botUsername,
+        state.channels.get(post.channel_id)?.type ?? "O",
+      ),
+    );
     return new Response(null, { status: 204 });
   }
-  return jsonResponse({ message: "Not found" }, 404);
+  return mattermostError("Not found", 404);
 }
 
 async function handleRequest(request: IncomingMessage, state: MattermostServerState) {
@@ -255,7 +351,7 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
     return new Response("not found", { status: 404 });
   }
   if (!authorized(request, state.botToken)) {
-    return jsonResponse({ message: "Invalid or missing token" }, 401);
+    return mattermostError("Invalid or missing token", 401);
   }
   const body = method === "GET" || method === "DELETE" ? {} : await parseRequestBody(request);
   await appendEvent(state, {
@@ -290,25 +386,73 @@ function attachWebSocketServer(params: {
   params.server.on("upgrade", onUpgrade);
   websocketServer.on("connection", (client) => {
     client.on("message", (raw: RawData) => {
-      let message: { action?: string; data?: { token?: string }; seq?: number };
+      let message: {
+        action?: string;
+        data?: { channel_id?: string; parent_id?: string; token?: string };
+        seq?: number;
+      };
       try {
         message = JSON.parse(raw.toString()) as typeof message;
       } catch {
         client.close(1003, "invalid json");
         return;
       }
-      if (
-        message.action !== "authentication_challenge" ||
-        message.data?.token !== params.state.botToken
-      ) {
-        client.close(1008, "authentication failed");
+      const seq = message.seq ?? 0;
+      if (!params.state.websocketClients.has(client)) {
+        if (
+          message.action !== "authentication_challenge" ||
+          message.data?.token !== params.state.botToken
+        ) {
+          client.send(
+            JSON.stringify({
+              error: { id: "api.context.unauthorized", message: "Authentication failed" },
+              seq_reply: seq,
+              status: "FAIL",
+            }),
+          );
+          return;
+        }
+        params.state.websocketClients.set(client, 0);
+        client.send(JSON.stringify({ seq_reply: seq, status: "OK" }));
+        sendEvent(params.state, client, {
+          broadcast: eventBroadcast({ userId: params.state.botUserId }),
+          data: {
+            connection_id: mattermostId(`connection-${Date.now()}-${Math.random()}`),
+            server_version: "crabline-mattermost.1",
+          },
+          event: "hello",
+        });
+        for (const event of params.state.pendingEvents.splice(0)) {
+          sendEvent(params.state, client, event);
+        }
         return;
       }
-      params.state.websocketClients.add(client);
-      client.send(JSON.stringify({ seq_reply: message.seq ?? 0, status: "OK" }));
-      for (const event of params.state.pendingEvents.splice(0)) {
-        client.send(event);
+      if (message.action === "user_typing" && message.data?.channel_id) {
+        broadcast(params.state, {
+          broadcast: eventBroadcast({
+            channelId: message.data.channel_id,
+            omitUsers: { [params.state.botUserId]: true },
+          }),
+          data: {
+            parent_id: message.data.parent_id ?? "",
+            user_id: params.state.botUserId,
+          },
+          event: "typing",
+        });
+        client.send(JSON.stringify({ seq_reply: seq, status: "OK" }));
+        return;
       }
+      if (message.action === "ping") {
+        client.send(JSON.stringify({ data: { text: "pong" }, seq_reply: seq, status: "OK" }));
+        return;
+      }
+      client.send(
+        JSON.stringify({
+          error: { id: "api.websocket.invalid_action", message: "Unsupported action" },
+          seq_reply: seq,
+          status: "FAIL",
+        }),
+      );
     });
     client.once("close", () => params.state.websocketClients.delete(client));
   });
@@ -339,7 +483,7 @@ export async function startMattermostServer(
     posts: new Map(),
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "mattermost.jsonl"),
     users: new Map([[botUserId, { id: botUserId, update_at: Date.now(), username: botUsername }]]),
-    websocketClients: new Set(),
+    websocketClients: new Map(),
   };
   const httpServer = await startHttpJsonServer({
     handle: (request) => handleRequest(request, state),
