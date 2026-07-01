@@ -50,6 +50,7 @@ export type OpenClawCrablineInboundInput = {
   senderName?: string | undefined;
   text: string;
   threadId?: string | undefined;
+  nativeCommand?: { name: string } | undefined;
 };
 
 export type OpenClawCrablineInbound = {

@@ -108,6 +108,7 @@ describe("telegram local provider server", () => {
         chatId: "-1001234567890",
         fromId: 100001,
         messageThreadId: 42,
+        entities: [{ length: 5, offset: 0, type: "bot_command" }],
         text: "user nonce-1",
       }),
       headers: adminHeaders(server),
@@ -119,6 +120,7 @@ describe("telegram local provider server", () => {
         message: {
           chat: { id: -1001234567890 },
           from: { id: 100001, is_bot: false },
+          entities: [{ length: 5, offset: 0, type: "bot_command" }],
           message_thread_id: 42,
           text: "user nonce-1",
         },
