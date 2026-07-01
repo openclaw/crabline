@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7 - 2026-07-01
+
+- Add Telegram native command entities to OpenClaw admin inbound injection.
+
 ## 0.1.6 - 2026-06-29
 
 - Add Telegram media send support to the local server for `sendPhoto`, `sendDocument`, `sendVideo`, and `sendAnimation`.
