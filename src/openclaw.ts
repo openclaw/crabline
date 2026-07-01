@@ -7,6 +7,7 @@ import {
   type StartedCrablineServer,
 } from "./servers/index.js";
 import { SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/slack.js";
+import { SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/signal.js";
 import { TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/telegram.js";
 import { WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/whatsapp.js";
 import {
@@ -51,6 +52,7 @@ export type {
 } from "./openclaw/shared.js";
 
 const OPENCLAW_CRABLINE_PROVIDER_BRIDGES = {
+  signal: SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
   slack: SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
   telegram: TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
   whatsapp: WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,

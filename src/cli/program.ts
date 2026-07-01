@@ -28,6 +28,7 @@ type ServeSharedOptions = {
 };
 
 type ServeCommandOptions = {
+  account?: string | undefined;
   accessToken?: string | undefined;
   adminToken?: string | undefined;
   botToken?: string | undefined;
@@ -47,6 +48,12 @@ type ServeParamFactory = (
 ) => StartCrablineServerParams;
 
 const SERVE_PARAM_FACTORIES = {
+  signal: (shared, commandOptions) => ({
+    ...shared,
+    account: commandOptions.account,
+    adminToken: commandOptions.adminToken,
+    channel: "signal",
+  }),
   slack: (shared, commandOptions) => ({
     ...shared,
     adminToken: commandOptions.adminToken,
@@ -239,6 +246,7 @@ export function createProgram(
     .option("--host <host>", "Bind host", "127.0.0.1")
     .option("--port <port>", "Bind port", "0")
     .option("--admin-token <token>", "Admin token for inbound test messages")
+    .option("--account <number>", "Signal account number")
     .option("--access-token <token>", "WhatsApp access token")
     .option("--bot-token <token>", "Telegram or Slack bot token")
     .option("--bot-username <username>", "Telegram bot username", "crabline_bot")
@@ -333,6 +341,16 @@ function renderServeText(manifest: CrablineServerManifest) {
 }
 
 function renderServeProviderFields(manifest: CrablineServerManifest): string[] | undefined {
+  if (manifest.provider === "signal") {
+    return [`  adminToken: ${manifest.adminToken}`, `  account: ${manifest.account}`];
+  }
+  if (manifest.provider === "slack") {
+    return [
+      `  adminToken: ${manifest.adminToken}`,
+      `  botToken: ${manifest.botToken}`,
+      `  signingSecret: ${manifest.signingSecret}`,
+    ];
+  }
   if (manifest.provider === "telegram") {
     return [`  adminToken: ${manifest.adminToken}`, `  botToken: ${manifest.botToken}`];
   }
