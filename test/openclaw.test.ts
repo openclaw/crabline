@@ -59,6 +59,25 @@ const signalManifest: CrablineServerManifest = {
   version: 1,
 };
 
+const mattermostManifest: CrablineServerManifest = {
+  adminToken: "crabline-mattermost-admin-token",
+  baseUrl: "http://127.0.0.1:9753",
+  botToken: "crabline-mattermost-token",
+  botUserId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+  endpoints: {
+    adminInboundUrl: "http://127.0.0.1:9753/crabline/mattermost/inbound",
+    apiRoot: "http://127.0.0.1:9753/api/v4",
+    websocketUrl: "ws://127.0.0.1:9753/api/v4/websocket",
+  },
+  env: {
+    MATTERMOST_BOT_TOKEN: "crabline-mattermost-token",
+    MATTERMOST_URL: "http://127.0.0.1:9753",
+  },
+  provider: "mattermost",
+  recorderPath: "/tmp/crabline/mattermost.jsonl",
+  version: 1,
+};
+
 const whatsappManifest: CrablineServerManifest = {
   accessToken: "crabline-whatsapp-access-token",
   adminToken: "crabline-whatsapp-admin-token",
@@ -137,8 +156,11 @@ describe("OpenClaw local provider bridge", () => {
     expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " SIGNAL " })).toMatchObject({
       channel: "signal",
     });
+    expect(
+      resolveOpenClawCrablineChannelDriverSelection({ channel: " MATTERMOST " }),
+    ).toMatchObject({ channel: "mattermost" });
     expect(() => resolveOpenClawCrablineChannelDriverSelection({ channel: "discord" })).toThrow(
-      '--channel must be one of signal, slack, telegram, whatsapp for --channel-driver crabline, got "discord"',
+      '--channel must be one of mattermost, signal, slack, telegram, whatsapp for --channel-driver crabline, got "discord"',
     );
   });
 
@@ -639,6 +661,102 @@ describe("OpenClaw local provider bridge", () => {
     });
   });
 
+  it("maps Mattermost QA targets, inbound messages, and recorder events", () => {
+    const delivery = createOpenClawCrablineAgentDelivery({
+      manifest: mattermostManifest,
+      target: "dm:alice",
+    });
+    expect(delivery).toMatchObject({
+      channel: "mattermost",
+      replyChannel: "mattermost",
+    });
+    expect(delivery.to).toMatch(/^user:[a-z0-9]{26}$/u);
+
+    expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest: mattermostManifest,
+        target: "thread:general/parent",
+      }),
+    ).toThrow("Mattermost thread targets require OpenClaw QA thread forwarding.");
+
+    const inbound = createOpenClawCrablineInbound({
+      manifest: mattermostManifest,
+      input: {
+        conversation: { id: "alice", kind: "direct" },
+        senderId: "alice",
+        senderName: "Alice",
+        text: "hello",
+      },
+    });
+    expect(inbound).toMatchObject({
+      providerBody: {
+        channelType: "D",
+        senderName: "Alice",
+        text: "hello",
+      },
+      providerUrl: "http://127.0.0.1:9753/crabline/mattermost/inbound",
+      qaTarget: "dm:alice",
+    });
+    expect(inbound.providerBody.senderId).toBe(delivery.to.slice("user:".length));
+
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: mattermostManifest,
+        targetByProviderTarget: new Map([[inbound.providerTargetKey, "dm:alice"]]),
+        event: {
+          body: { channel_id: inbound.providerTargetKey, message: "hello from openclaw" },
+          method: "POST",
+          path: "/api/v4/posts",
+          type: "api",
+        },
+      }),
+    ).toEqual({
+      accountId: "default",
+      senderId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      senderName: "OpenClaw QA",
+      text: "hello from openclaw",
+      to: "dm:alice",
+    });
+
+    const binding = createOpenClawCrablineProviderBinding(mattermostManifest);
+    expect(binding).toMatchObject({
+      channel: "mattermost",
+      requiredPluginIds: ["mattermost"],
+    });
+    expect(binding.createGatewayConfig()).toMatchObject({
+      channels: { mattermost: { chatmode: "onmessage", streaming: "off" } },
+    });
+
+    const threadInbound = createOpenClawCrablineInbound({
+      manifest: mattermostManifest,
+      input: {
+        conversation: { id: "general", kind: "group" },
+        senderId: "alice",
+        text: "thread reply",
+        threadId: "parent",
+      },
+    });
+    expect(threadInbound.providerTargetKey).toMatch(/:thread:[a-z0-9]{26}$/u);
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: mattermostManifest,
+        targetByProviderTarget: new Map([
+          [threadInbound.providerTargetKey, "thread:general/parent"],
+        ]),
+        event: {
+          body: {
+            channel_id: threadInbound.providerBody.channelId,
+            message: "thread response",
+            root_id: threadInbound.providerBody.rootId,
+          },
+          method: "POST",
+          path: "/api/v4/posts",
+          type: "api",
+        },
+      }),
+    ).toMatchObject({ to: "thread:general/parent" });
+  });
+
   it("posts WhatsApp OpenClaw inbound with admin headers into the local provider", async () => {
     const adapter = await startOpenClawCrablineAdapter({ channel: "whatsapp" });
     try {
@@ -687,7 +805,7 @@ describe("OpenClaw local provider bridge", () => {
         result: {
           driver: "crabline",
           selectedChannel: "telegram",
-          supportedChannels: ["signal", "slack", "telegram", "whatsapp"],
+          supportedChannels: ["mattermost", "signal", "slack", "telegram", "whatsapp"],
         },
       });
       expect(result.smoke).toMatchObject({

@@ -125,6 +125,26 @@ commands for `probe`, `send`, `waitForInbound`, or `watch`.
 preferred Smoke CI path because OpenClaw still uses its normal channel adapter,
 but the provider endpoint is local and deterministic.
 
+Mattermost:
+
+```bash
+crabline --json serve mattermost --ready-file .crabline/mattermost-server.json
+```
+
+The JSON manifest contains:
+
+- `baseUrl`: OpenClaw `channels.mattermost.baseUrl` / `MATTERMOST_URL`
+- `botToken`: OpenClaw `channels.mattermost.botToken` / `MATTERMOST_BOT_TOKEN`
+- `endpoints.websocketUrl`: native Mattermost WebSocket endpoint
+- `adminToken`: send this as the `X-Crabline-Admin-Token` header when posting
+  test user messages
+- `endpoints.adminInboundUrl`: authenticated POST endpoint for inbound messages
+- `recorderPath`: JSONL file of local provider API/admin traffic
+
+The server implements the Mattermost REST and WebSocket paths used for text DM
+and channel roundtrips. Admin-injected messages are delivered as native
+`posted` events; outbound sends are recorded through `POST /api/v4/posts`.
+
 Slack:
 
 ```bash

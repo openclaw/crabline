@@ -48,6 +48,13 @@ type ServeParamFactory = (
 ) => StartCrablineServerParams;
 
 const SERVE_PARAM_FACTORIES = {
+  mattermost: (shared, commandOptions) => ({
+    ...shared,
+    adminToken: commandOptions.adminToken,
+    botToken: commandOptions.botToken,
+    botUsername: commandOptions.botUsername,
+    channel: "mattermost",
+  }),
   signal: (shared, commandOptions) => ({
     ...shared,
     account: commandOptions.account,
@@ -248,8 +255,8 @@ export function createProgram(
     .option("--admin-token <token>", "Admin token for inbound test messages")
     .option("--account <number>", "Signal account number")
     .option("--access-token <token>", "WhatsApp access token")
-    .option("--bot-token <token>", "Telegram or Slack bot token")
-    .option("--bot-username <username>", "Telegram bot username", "crabline_bot")
+    .option("--bot-token <token>", "Mattermost, Telegram, or Slack bot token")
+    .option("--bot-username <username>", "Mattermost or Telegram bot username", "crabline_bot")
     .option("--recorder <path>", "JSONL recorder path")
     .option("--ready-file <path>", "Write the server runtime manifest to this path")
     .option("--self-jid <jid>", "WhatsApp self JID")
@@ -341,6 +348,13 @@ function renderServeText(manifest: CrablineServerManifest) {
 }
 
 function renderServeProviderFields(manifest: CrablineServerManifest): string[] | undefined {
+  if (manifest.provider === "mattermost") {
+    return [
+      `  adminToken: ${manifest.adminToken}`,
+      `  botToken: ${manifest.botToken}`,
+      `  websocket: ${manifest.endpoints.websocketUrl}`,
+    ];
+  }
   if (manifest.provider === "signal") {
     return [`  adminToken: ${manifest.adminToken}`, `  account: ${manifest.account}`];
   }
