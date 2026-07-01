@@ -26,6 +26,7 @@ type MatrixEvent = {
 };
 
 type MatrixRoom = {
+  createdSequence: number;
   id: string;
   name: string;
   state: MatrixEvent[];
@@ -153,6 +154,7 @@ function createEvent(params: {
 
 function createRoom(params: {
   botUserId: string;
+  createdSequence: number;
   direct?: boolean;
   id: string;
   name: string;
@@ -160,6 +162,7 @@ function createRoom(params: {
   state: MatrixServerState;
 }): MatrixRoom {
   const room: MatrixRoom = {
+    createdSequence: params.createdSequence,
     id: params.id,
     name: params.name,
     state: [],
@@ -206,7 +209,7 @@ function syncRoom(room: MatrixRoom, since: number | undefined) {
   return {
     account_data: { events: [] },
     ephemeral: { events: [] },
-    state: { events: since === undefined ? room.state : [] },
+    state: { events: since === undefined || room.createdSequence > since ? room.state : [] },
     timeline: { events, limited: false, prev_batch: `s${since ?? 0}` },
     unread_notifications: { highlight_count: 0, notification_count: 0 },
   };
@@ -262,6 +265,7 @@ async function handleAdminInbound(params: {
     params.state.rooms.get(roomId) ??
     createRoom({
       botUserId: params.state.botUserId,
+      createdSequence: params.state.nextSequence++,
       direct,
       id: roomId,
       name: readTrimmedString(params.body.roomName) ?? roomId,
@@ -457,6 +461,7 @@ export async function startMatrixServer(
     roomId,
     createRoom({
       botUserId: state.botUserId,
+      createdSequence: 0,
       id: roomId,
       name: params.roomName ?? "Crabline Matrix Room",
       serverName,

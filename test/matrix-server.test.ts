@@ -112,44 +112,57 @@ describe("Matrix local provider server", () => {
       });
     });
     client.startClient({ initialSyncLimit: 10 });
-    await ready;
+    try {
+      await ready;
 
-    const inbound = new Promise<MatrixEvent>((resolve) => {
-      client.on(RoomEvent.Timeline, (event) => {
-        if (event.getSender() === "@alice:matrix.test" && event.getType() === "m.room.message") {
-          resolve(event);
-        }
+      const dynamicRoomId = "!dynamic:matrix.test";
+      const inbound = new Promise<MatrixEvent>((resolve) => {
+        client.on(RoomEvent.Timeline, (event) => {
+          if (event.getSender() === "@alice:matrix.test" && event.getType() === "m.room.message") {
+            resolve(event);
+          }
+        });
       });
-    });
-    const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
-      body: JSON.stringify({
-        roomId: "!qa:matrix.test",
-        senderId: "@alice:matrix.test",
-        senderName: "Alice",
-        text: "hello from Alice",
-      }),
-      headers: {
-        "content-type": "application/json",
-        "x-crabline-admin-token": "admin-secret",
-      },
-      method: "POST",
-    });
-    expect(response.status).toBe(200);
+      const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          roomId: dynamicRoomId,
+          roomName: "Dynamic QA Room",
+          senderId: "@alice:matrix.test",
+          senderName: "Alice",
+          text: "hello from Alice",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin-secret",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
 
-    const event = await inbound;
-    expect(event.getRoomId()).toBe("!qa:matrix.test");
-    expect(event.getType()).toBe("m.room.message");
-    expect(event.getContent()).toMatchObject({ body: "hello from Alice", msgtype: "m.text" });
-    expect(client.getRoom("!qa:matrix.test")?.getMember("@alice:matrix.test")?.membership).toBe(
-      "join",
-    );
+      const event = await inbound;
+      expect(event.getRoomId()).toBe(dynamicRoomId);
+      expect(event.getType()).toBe("m.room.message");
+      expect(event.getContent()).toMatchObject({ body: "hello from Alice", msgtype: "m.text" });
+      await expect
+        .poll(() =>
+          client
+            .getRoom(dynamicRoomId)
+            ?.currentState.getStateEvents("m.room.name", "")
+            ?.getContent(),
+        )
+        .toEqual({ name: "Dynamic QA Room" });
+      const room = client.getRoom(dynamicRoomId);
+      expect(room?.getMember(server.manifest.botUserId)?.membership).toBe("join");
+      expect(room?.getMember("@alice:matrix.test")?.membership).toBe("join");
 
-    const profile = await client.getProfileInfo("@alice:matrix.test");
-    expect(profile).toEqual({ displayname: "Alice" });
+      const profile = await client.getProfileInfo("@alice:matrix.test");
+      expect(profile).toEqual({ displayname: "Alice" });
 
-    const sent = await client.sendTextMessage("!qa:matrix.test", "hello from the SDK");
-    expect(sent.event_id).toMatch(/^\$/u);
-    client.stopClient();
+      const sent = await client.sendTextMessage(dynamicRoomId, "hello from the SDK");
+      expect(sent.event_id).toMatch(/^\$/u);
+    } finally {
+      client.stopClient();
+    }
   });
 
   it("provisions direct rooms with native Matrix membership evidence", async () => {
