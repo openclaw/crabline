@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   createAdminInboundRequest,
   createOpenClawCrablineProviderBridge,
@@ -7,12 +8,21 @@ import {
   readString,
 } from "../shared.js";
 
+function signalDirectId(id: string): string {
+  const value = id.trim();
+  if (/^\+?\d{3,}$/u.test(value)) {
+    return value.startsWith("+") ? value : `+${value}`;
+  }
+  const suffix = createHash("sha256").update(value).digest().readUInt32BE() % 10_000_000;
+  return `+1555${String(suffix).padStart(7, "0")}`;
+}
+
 function signalTarget(kind: "direct" | "group", id: string): string {
   const value = id.trim();
   if (!value) {
     throw new Error("Signal target is required.");
   }
-  return kind === "group" ? `group:${value}` : value;
+  return kind === "group" ? `group:${value}` : signalDirectId(value);
 }
 
 export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
@@ -67,15 +77,16 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         if (!conversationId || !senderId) {
           throw new Error("Signal conversation and sender are required.");
         }
+        const sourceNumber = signalDirectId(senderId);
         return {
           ...createAdminInboundRequest(signal),
           providerBody: {
             ...(kind === "group" ? { groupId: conversationId } : {}),
             ...(input.senderName ? { sourceName: input.senderName } : {}),
-            sourceNumber: senderId,
+            sourceNumber,
             text: input.text,
           },
-          providerTargetKey: kind === "group" ? `group:${conversationId}` : senderId,
+          providerTargetKey: kind === "group" ? `group:${conversationId}` : sourceNumber,
           qaTarget: qaTargetForInbound(input),
           stateConversation: { id: conversationId, kind },
         };

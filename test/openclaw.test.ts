@@ -541,6 +541,38 @@ describe("OpenClaw local provider bridge", () => {
       to: "group:group-1",
     });
 
+    const directDelivery = createOpenClawCrablineAgentDelivery({
+      manifest: signalManifest,
+      target: "dm:qa-operator",
+    });
+    expect(directDelivery.to).toMatch(/^\+1555\d{7}$/u);
+
+    const directInbound = createOpenClawCrablineInbound({
+      manifest: signalManifest,
+      input: {
+        conversation: { id: "qa-operator", kind: "direct" },
+        senderId: "qa-operator",
+        text: "hello",
+      },
+    });
+    expect(directInbound.providerBody).toMatchObject({ sourceNumber: directDelivery.to });
+    expect(directInbound.providerTargetKey).toBe(directDelivery.to);
+
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: signalManifest,
+        targetByProviderTarget: new Map([[directInbound.providerTargetKey, "dm:qa-operator"]]),
+        event: {
+          body: {
+            method: "send",
+            params: { message: "direct reply", recipient: [directDelivery.to] },
+          },
+          path: "/api/v1/rpc",
+          type: "api",
+        },
+      }),
+    ).toMatchObject({ text: "direct reply", to: "dm:qa-operator" });
+
     expect(
       createOpenClawCrablineInbound({
         manifest: signalManifest,
