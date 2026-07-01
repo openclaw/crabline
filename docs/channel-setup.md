@@ -72,8 +72,8 @@ execution.
 
 ## Local Provider Servers
 
-Server-backed channels currently include Mattermost, Signal, Slack, Telegram,
-and WhatsApp.
+Server-backed channels currently include Mattermost, Matrix, Signal, Slack,
+Telegram, and WhatsApp.
 
 ### Mattermost
 
@@ -100,9 +100,36 @@ implements Mattermost REST error/status behavior plus WebSocket authentication,
 subset. OpenClaw configuration and QA target mapping remain in the separate
 OpenClaw bridge.
 
-Local provider servers sit below OpenClaw's normal channel adapters. QA starts the
-server, writes the emitted runtime manifest into OpenClaw config/env, and then
-OpenClaw talks to the local provider instead of the public provider.
+### Matrix
+
+Start the server:
+
+```bash
+crabline --json serve matrix --ready-file .crabline/matrix-server.json
+```
+
+Use the manifest's `baseUrl`, `accessToken`, and `botUserId` as OpenClaw's
+Matrix homeserver, access token, and user ID. Set encryption to `false` and,
+because the server is loopback HTTP, enable
+`channels.matrix.network.dangerouslyAllowPrivateNetwork`. The OpenClaw bridge
+applies those settings automatically.
+
+Admin inbound accepts native `roomId`, `senderId`, and `text` fields plus
+optional `senderName` and `threadId`. It queues a native `m.room.message` event
+for delivery through Matrix `/sync`. Outbound room sends through
+`PUT /_matrix/client/v3/rooms/:roomId/send/:eventType/:txnId` are written to the
+manifest recorder.
+
+The provider server implements the unencrypted Client-Server API subset needed
+by the normal Matrix SDK: versions, `whoami`, filters, push rules, joined rooms
+and members, room state, `/sync`, room sends, typing, and read receipts. The
+`/crabline/matrix/inbound` endpoint is a test control plane and is not part of
+the Matrix API. OpenClaw configuration and QA target mapping remain in the
+separate OpenClaw bridge.
+
+Local provider servers sit below OpenClaw's normal channel adapters. QA starts
+the server, writes the emitted runtime manifest into OpenClaw config/env, and
+then OpenClaw talks to the local provider instead of the public provider.
 
 Slack:
 

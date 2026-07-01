@@ -15,8 +15,8 @@ provider APIs that OpenClaw live adapters can target during deterministic QA.
   `whatsapp`, and `zalo`
 - a `script` bridge for channels that are still exercised by external commands
 - per-provider local webhook endpoints for inbound events
-- local provider servers for live-adapter smoke tests for Signal, Slack,
-  Telegram, and WhatsApp
+- local provider servers for live-adapter smoke tests for Mattermost, Matrix,
+  Signal, Slack, Telegram, and WhatsApp
 - JSONL recorder files for deterministic wait/watch behavior
 - nonce-based `send`, `roundtrip`, `agent`, `probe`, `run`, `watch`, and
   `doctor` commands
@@ -146,6 +146,30 @@ roundtrips, including REST authentication/status codes, WebSocket
 authentication and `hello`, sequenced events, typing, and post
 create/edit/delete events. Admin ingress is only the test control plane;
 injected messages are delivered to clients as native `posted` events.
+
+Matrix:
+
+```bash
+crabline --json serve matrix --ready-file .crabline/matrix-server.json
+```
+
+The JSON manifest contains:
+
+- `baseUrl`: OpenClaw `channels.matrix.homeserver`
+- `accessToken`: OpenClaw `channels.matrix.accessToken`
+- `botUserId`: OpenClaw `channels.matrix.userId`
+- `endpoints.clientApiRoot`: Matrix Client-Server API root
+- `adminToken`: send this as the `X-Crabline-Admin-Token` header when posting
+  test user messages
+- `endpoints.adminInboundUrl`: authenticated POST control endpoint for inbound
+  messages
+- `recorderPath`: JSONL file of local provider API/admin traffic
+
+The server implements an unencrypted Matrix Client-Server API subset including
+`whoami`, filters, push rules, joined rooms and members, room state, `/sync`,
+room event sends, typing, and read receipts. Admin ingress is only the test
+control plane; injected messages are delivered to clients as native
+`m.room.message` events through `/sync`.
 
 Slack:
 

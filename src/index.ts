@@ -1,6 +1,7 @@
 export { resolveTelegramAdapterConfig } from "./providers/builtin/telegram.js";
 export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
 export { startMattermostServer } from "./servers/mattermost.js";
+export { startMatrixServer } from "./servers/matrix.js";
 export { startSignalServer } from "./servers/signal.js";
 export { startSlackServer, startSlackServer as startSlackFakeServer } from "./servers/slack.js";
 export {
@@ -76,6 +77,11 @@ export type {
   StartedMattermostServer,
   StartMattermostServerParams,
 } from "./servers/mattermost.js";
+export type {
+  MatrixServerManifest,
+  StartedMatrixServer,
+  StartMatrixServerParams,
+} from "./servers/matrix.js";
 export type {
   SignalServerManifest,
   StartedSignalServer,

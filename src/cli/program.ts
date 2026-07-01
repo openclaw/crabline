@@ -55,6 +55,12 @@ const SERVE_PARAM_FACTORIES = {
     botUsername: commandOptions.botUsername,
     channel: "mattermost",
   }),
+  matrix: (shared, commandOptions) => ({
+    ...shared,
+    accessToken: commandOptions.accessToken,
+    adminToken: commandOptions.adminToken,
+    channel: "matrix",
+  }),
   signal: (shared, commandOptions) => ({
     ...shared,
     account: commandOptions.account,
@@ -254,7 +260,7 @@ export function createProgram(
     .option("--port <port>", "Bind port", "0")
     .option("--admin-token <token>", "Admin token for inbound test messages")
     .option("--account <number>", "Signal account number")
-    .option("--access-token <token>", "WhatsApp access token")
+    .option("--access-token <token>", "Matrix or WhatsApp access token")
     .option("--bot-token <token>", "Mattermost, Telegram, or Slack bot token")
     .option("--bot-username <username>", "Mattermost or Telegram bot username", "crabline_bot")
     .option("--recorder <path>", "JSONL recorder path")
@@ -333,7 +339,7 @@ function waitForShutdown(close: () => Promise<void>): Promise<void> {
 function renderServeText(manifest: CrablineServerManifest) {
   const lines = [
     `${manifest.provider} local server ready`,
-    `  apiRoot: ${manifest.endpoints.apiRoot}`,
+    `  apiRoot: ${manifest.provider === "matrix" ? manifest.endpoints.clientApiRoot : manifest.endpoints.apiRoot}`,
     `  inbound: ${manifest.endpoints.adminInboundUrl}`,
     `  recorder: ${manifest.recorderPath}`,
   ];
@@ -353,6 +359,14 @@ function renderServeProviderFields(manifest: CrablineServerManifest): string[] |
       `  adminToken: ${manifest.adminToken}`,
       `  botToken: ${manifest.botToken}`,
       `  websocket: ${manifest.endpoints.websocketUrl}`,
+    ];
+  }
+  if (manifest.provider === "matrix") {
+    return [
+      `  adminToken: ${manifest.adminToken}`,
+      `  accessToken: ${manifest.accessToken}`,
+      `  botUserId: ${manifest.botUserId}`,
+      `  sync: ${manifest.endpoints.syncUrl}`,
     ];
   }
   if (manifest.provider === "signal") {

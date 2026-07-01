@@ -5,6 +5,12 @@ import {
   type StartMattermostServerParams,
 } from "./mattermost.js";
 import {
+  startMatrixServer,
+  type MatrixServerManifest,
+  type StartedMatrixServer,
+  type StartMatrixServerParams,
+} from "./matrix.js";
+import {
   startSignalServer,
   type SignalServerManifest,
   type StartedSignalServer,
@@ -32,6 +38,7 @@ import { CrablineError } from "../core/errors.js";
 
 export const CRABLINE_SERVER_CHANNELS = Object.freeze([
   "mattermost",
+  "matrix",
   "signal",
   "slack",
   "telegram",
@@ -42,6 +49,7 @@ export type CrablineServerChannel = (typeof CRABLINE_SERVER_CHANNELS)[number];
 
 export type CrablineServerManifest =
   | MattermostServerManifest
+  | MatrixServerManifest
   | SignalServerManifest
   | SlackServerManifest
   | TelegramServerManifest
@@ -49,6 +57,7 @@ export type CrablineServerManifest =
 
 export type StartedCrablineServer =
   | StartedMattermostServer
+  | StartedMatrixServer
   | StartedSignalServer
   | StartedSlackServer
   | StartedTelegramServer
@@ -56,6 +65,7 @@ export type StartedCrablineServer =
 
 export type StartCrablineServerParams =
   | (StartMattermostServerParams & { channel: "mattermost" })
+  | (StartMatrixServerParams & { channel: "matrix" })
   | (StartSignalServerParams & { channel: "signal" })
   | (StartSlackServerParams & { channel: "slack" })
   | (StartTelegramServerParams & { channel: "telegram" })
@@ -70,6 +80,9 @@ export function isCrablineServerChannel(value: string): value is CrablineServerC
 export function startCrablineServer(
   params: StartMattermostServerParams & { channel: "mattermost" },
 ): Promise<StartedMattermostServer>;
+export function startCrablineServer(
+  params: StartMatrixServerParams & { channel: "matrix" },
+): Promise<StartedMatrixServer>;
 export function startCrablineServer(
   params: StartSignalServerParams & { channel: "signal" },
 ): Promise<StartedSignalServer>;
@@ -90,6 +103,9 @@ export async function startCrablineServer(
 ): Promise<StartedCrablineServer> {
   if (params.channel === "mattermost") {
     return await startMattermostServer(params);
+  }
+  if (params.channel === "matrix") {
+    return await startMatrixServer(params);
   }
   if (params.channel === "signal") {
     return await startSignalServer(params);
