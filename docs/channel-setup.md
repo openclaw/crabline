@@ -263,6 +263,7 @@ token is generated randomly unless `--admin-token <token>` is provided.
 OpenClaw bridge callers should post injected user messages with the
 `providerUrl`, `providerHeaders`, and `providerBody` returned by
 `createOpenClawCrablineInbound()`.
+
 The admin ingress accepts JSON like:
 
 ```json
@@ -275,6 +276,43 @@ The admin ingress accepts JSON like:
 
 Outbound text sends and composing presence are recorded through the fake
 provider messages and presence endpoints.
+
+### Zalo Server
+
+Start the server:
+
+```bash
+crabline --json serve zalo --ready-file .crabline/zalo-server.json
+```
+
+Set trusted `ZALO_API_URL` to `endpoints.apiRoot` and configure the emitted
+`botToken` as `channels.zalo.botToken` or `ZALO_BOT_TOKEN`. The OpenClaw bridge
+does this mapping without adding provider-server-specific behavior to the Zalo
+adapter.
+
+The server accepts the provider-native `/bot<TOKEN>/<METHOD>` API shape over
+GET or POST. It implements bot identity, single-update long polling, text and
+photo sends, chat actions, and webhook lifecycle calls. A configured webhook
+receives the native top-level Zalo update with `X-Bot-Api-Secret-Token`;
+otherwise injected messages are returned by `getUpdates`. Provider errors use
+Zalo's `{ ok, error_code, description }` shape.
+
+The authenticated admin ingress is only a test control plane. Post a message
+such as:
+
+```json
+{
+  "chatId": "group-1",
+  "chatType": "GROUP",
+  "senderId": "user-1",
+  "senderName": "Alice",
+  "text": "user nonce-123"
+}
+```
+
+Crabline translates that state change into the normal Zalo polling or webhook
+transport. Outbound `sendMessage` and `sendPhoto` calls are written to the
+manifest's `recorderPath` with the bot token redacted.
 
 ## Webhook Payload
 

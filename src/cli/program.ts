@@ -88,6 +88,13 @@ const SERVE_PARAM_FACTORIES = {
     channel: "whatsapp",
     selfJid: commandOptions.selfJid,
   }),
+  zalo: (shared, commandOptions) => ({
+    ...shared,
+    adminToken: commandOptions.adminToken,
+    botToken: commandOptions.botToken,
+    botName: commandOptions.botUsername,
+    channel: "zalo",
+  }),
 } satisfies Record<CrablineServerChannel, ServeParamFactory>;
 
 function print(value: string): void {
@@ -261,8 +268,12 @@ export function createProgram(
     .option("--admin-token <token>", "Admin token for inbound test messages")
     .option("--account <number>", "Signal account number")
     .option("--access-token <token>", "Matrix or WhatsApp access token")
-    .option("--bot-token <token>", "Mattermost, Telegram, or Slack bot token")
-    .option("--bot-username <username>", "Mattermost or Telegram bot username", "crabline_bot")
+    .option("--bot-token <token>", "Mattermost, Slack, Telegram, or Zalo bot token")
+    .option(
+      "--bot-username <username>",
+      "Mattermost, Telegram, or Zalo bot username",
+      "crabline_bot",
+    )
     .option("--recorder <path>", "JSONL recorder path")
     .option("--ready-file <path>", "Write the server runtime manifest to this path")
     .option("--self-jid <jid>", "WhatsApp self JID")
@@ -390,6 +401,13 @@ function renderServeProviderFields(manifest: CrablineServerManifest): string[] |
       `  messages: ${manifest.endpoints.messagesUrl}`,
       `  presence: ${manifest.endpoints.presenceUrl}`,
       `  selfJid: ${manifest.selfJid}`,
+    ];
+  }
+  if (manifest.provider === "zalo") {
+    return [
+      `  adminToken: ${manifest.adminToken}`,
+      `  botToken: ${manifest.botToken}`,
+      `  botId: ${manifest.botId}`,
     ];
   }
   return undefined;
