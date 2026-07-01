@@ -13,6 +13,20 @@ afterEach(async () => {
 });
 
 describe("signal local provider server", () => {
+  it("advertises valid URLs when bound to IPv6", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startSignalServer({
+      host: "::1",
+      recorderPath: path.join(directory, "signal-ipv6.jsonl"),
+    });
+    servers.push(server);
+
+    expect(new URL(server.manifest.baseUrl).hostname).toBe("[::1]");
+    const check = await fetch(`${server.manifest.baseUrl}/api/v1/check`);
+    expect(check.status).toBe(200);
+  });
+
   it("serves native RPC and delivers authenticated inbound messages over SSE", async () => {
     const directory = await createTempDir();
     directories.push(directory);

@@ -246,7 +246,7 @@ export async function startSignalServer(
     await closeServer(server);
     throw new Error("Unable to resolve Signal local server address.");
   }
-  const baseUrl = `http://${host}:${address.port}`;
+  const baseUrl = `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`;
   return {
     async close() {
       clearInterval(keepalive);
