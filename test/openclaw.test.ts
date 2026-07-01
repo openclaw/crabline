@@ -146,6 +146,24 @@ const slackManifest: CrablineServerManifest = {
   version: 1,
 };
 
+const zaloManifest: CrablineServerManifest = {
+  adminToken: "crabline-zalo-admin-token",
+  baseUrl: "http://127.0.0.1:7531",
+  botId: "1459232241454765289",
+  botToken: "crabline-zalo-bot-token",
+  endpoints: {
+    adminInboundUrl: "http://127.0.0.1:7531/crabline/zalo/inbound",
+    apiRoot: "http://127.0.0.1:7531",
+  },
+  env: {
+    ZALO_API_URL: "http://127.0.0.1:7531",
+    ZALO_BOT_TOKEN: "crabline-zalo-bot-token",
+  },
+  provider: "zalo",
+  recorderPath: "/tmp/crabline/zalo.jsonl",
+  version: 1,
+};
+
 describe("OpenClaw local provider bridge", () => {
   it("keeps legacy fake-provider root aliases", () => {
     const legacyManifest: CrablineFakeProviderManifest = manifest;
@@ -183,9 +201,73 @@ describe("OpenClaw local provider bridge", () => {
     expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " MATRIX " })).toMatchObject({
       channel: "matrix",
     });
+    expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " ZALO " })).toMatchObject({
+      channel: "zalo",
+    });
     expect(() => resolveOpenClawCrablineChannelDriverSelection({ channel: "discord" })).toThrow(
-      '--channel must be one of mattermost, matrix, signal, slack, telegram, whatsapp for --channel-driver crabline, got "discord"',
+      '--channel must be one of mattermost, matrix, signal, slack, telegram, whatsapp, zalo for --channel-driver crabline, got "discord"',
     );
+  });
+
+  it("maps a Zalo local provider into OpenClaw config and runtime env", () => {
+    const binding = createOpenClawCrablineProviderBinding(zaloManifest);
+
+    expect(binding).toMatchObject({
+      accountId: "default",
+      channel: "zalo",
+      requiredPluginIds: ["zalo"],
+    });
+    expect(binding.createChannelDriverSmokeEnv({ EXISTING: "value" })).toMatchObject({
+      EXISTING: "value",
+      ZALO_API_URL: "http://127.0.0.1:7531",
+      ZALO_BOT_TOKEN: "crabline-zalo-bot-token",
+    });
+    expect(binding.createGatewayConfig()).toMatchObject({
+      channels: {
+        zalo: {
+          allowFrom: ["*"],
+          botToken: "crabline-zalo-bot-token",
+          dmPolicy: "open",
+          enabled: true,
+          groupAllowFrom: ["*"],
+          groupPolicy: "open",
+        },
+      },
+    });
+
+    expect(
+      createOpenClawCrablineInbound({
+        input: {
+          conversation: { id: "group-1", kind: "group" },
+          senderId: "user-1",
+          senderName: "Alice",
+          text: "hello",
+        },
+        manifest: zaloManifest,
+      }),
+    ).toMatchObject({
+      providerBody: {
+        chatId: "group-1",
+        chatType: "GROUP",
+        senderId: "user-1",
+        senderName: "Alice",
+        text: "hello",
+      },
+      providerTargetKey: "group-1",
+    });
+
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        event: {
+          body: { chat_id: "group-1", text: "bot reply" },
+          method: "POST",
+          path: "/bot<redacted>/sendMessage",
+          type: "api",
+        },
+        manifest: zaloManifest,
+        targetByProviderTarget: new Map([["group-1", "group:group-1"]]),
+      }),
+    ).toMatchObject({ text: "bot reply", to: "group:group-1" });
   });
 
   it("maps a Signal local provider into OpenClaw channel config", () => {
@@ -911,7 +993,15 @@ describe("OpenClaw local provider bridge", () => {
         result: {
           driver: "crabline",
           selectedChannel: "telegram",
-          supportedChannels: ["mattermost", "matrix", "signal", "slack", "telegram", "whatsapp"],
+          supportedChannels: [
+            "mattermost",
+            "matrix",
+            "signal",
+            "slack",
+            "telegram",
+            "whatsapp",
+            "zalo",
+          ],
         },
       });
       expect(result.smoke).toMatchObject({

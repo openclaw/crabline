@@ -12,6 +12,7 @@ export {
   startWhatsAppServer,
   startWhatsAppServer as startWhatsAppFakeServer,
 } from "./servers/whatsapp.js";
+export { startZaloServer } from "./servers/zalo.js";
 export {
   CRABLINE_SERVER_CHANNELS,
   CRABLINE_SERVER_CHANNELS as CRABLINE_FAKE_PROVIDER_CHANNELS,
@@ -112,6 +113,11 @@ export type {
   WhatsAppServerManifest as WhatsAppFakeServerManifest,
   WhatsAppServerManifest,
 } from "./servers/whatsapp.js";
+export type {
+  StartedZaloServer,
+  StartZaloServerParams,
+  ZaloServerManifest,
+} from "./servers/zalo.js";
 export type {
   CrablineServerChannel as CrablineFakeProviderChannel,
   CrablineServerChannel,
