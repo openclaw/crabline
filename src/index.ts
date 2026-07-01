@@ -1,5 +1,6 @@
 export { resolveTelegramAdapterConfig } from "./providers/builtin/telegram.js";
 export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
+export { startMattermostServer } from "./servers/mattermost.js";
 export { startSignalServer } from "./servers/signal.js";
 export { startSlackServer, startSlackServer as startSlackFakeServer } from "./servers/slack.js";
 export {
@@ -70,6 +71,11 @@ export type {
   WaitContext,
   WatchContext,
 } from "./providers/types.js";
+export type {
+  MattermostServerManifest,
+  StartedMattermostServer,
+  StartMattermostServerParams,
+} from "./servers/mattermost.js";
 export type {
   SignalServerManifest,
   StartedSignalServer,

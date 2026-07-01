@@ -72,6 +72,34 @@ execution.
 
 ## Local Provider Servers
 
+Server-backed channels currently include Mattermost, Signal, Slack, Telegram,
+and WhatsApp.
+
+### Mattermost
+
+Start the server:
+
+```bash
+crabline --json serve mattermost --ready-file .crabline/mattermost-server.json
+```
+
+Use the manifest's `baseUrl` and `botToken` as OpenClaw's Mattermost endpoint
+and credential. Because the server is loopback HTTP, trusted QA configuration
+must also set `channels.mattermost.network.dangerouslyAllowPrivateNetwork` to
+`true`. The OpenClaw bridge does this automatically.
+
+Admin inbound accepts `channelId`, `senderId`, `text`, optional `senderName`,
+`channelType`, and `rootId`. It emits the message through Mattermost's native
+`/api/v4/websocket` `posted` event. Text sends through `POST /api/v4/posts` are
+written to the manifest's recorder. QA agent delivery currently supports DM and
+channel targets; thread targets require the later OpenClaw QA wiring step.
+
+The server itself is provider-shaped and has no OpenClaw runtime dependency. It
+implements Mattermost REST error/status behavior plus WebSocket authentication,
+`hello`, event sequencing, typing, and post mutation events for the supported
+subset. OpenClaw configuration and QA target mapping remain in the separate
+OpenClaw bridge.
+
 Local provider servers sit below OpenClaw's normal channel adapters. QA starts the
 server, writes the emitted runtime manifest into OpenClaw config/env, and then
 OpenClaw talks to the local provider instead of the public provider.

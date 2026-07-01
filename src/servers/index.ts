@@ -1,4 +1,10 @@
 import {
+  startMattermostServer,
+  type MattermostServerManifest,
+  type StartedMattermostServer,
+  type StartMattermostServerParams,
+} from "./mattermost.js";
+import {
   startSignalServer,
   type SignalServerManifest,
   type StartedSignalServer,
@@ -25,6 +31,7 @@ import {
 import { CrablineError } from "../core/errors.js";
 
 export const CRABLINE_SERVER_CHANNELS = Object.freeze([
+  "mattermost",
   "signal",
   "slack",
   "telegram",
@@ -34,18 +41,21 @@ export const CRABLINE_SERVER_CHANNELS = Object.freeze([
 export type CrablineServerChannel = (typeof CRABLINE_SERVER_CHANNELS)[number];
 
 export type CrablineServerManifest =
+  | MattermostServerManifest
   | SignalServerManifest
   | SlackServerManifest
   | TelegramServerManifest
   | WhatsAppServerManifest;
 
 export type StartedCrablineServer =
+  | StartedMattermostServer
   | StartedSignalServer
   | StartedSlackServer
   | StartedTelegramServer
   | StartedWhatsAppServer;
 
 export type StartCrablineServerParams =
+  | (StartMattermostServerParams & { channel: "mattermost" })
   | (StartSignalServerParams & { channel: "signal" })
   | (StartSlackServerParams & { channel: "slack" })
   | (StartTelegramServerParams & { channel: "telegram" })
@@ -57,6 +67,9 @@ export function isCrablineServerChannel(value: string): value is CrablineServerC
   return CRABLINE_SERVER_CHANNEL_SET.has(value);
 }
 
+export function startCrablineServer(
+  params: StartMattermostServerParams & { channel: "mattermost" },
+): Promise<StartedMattermostServer>;
 export function startCrablineServer(
   params: StartSignalServerParams & { channel: "signal" },
 ): Promise<StartedSignalServer>;
@@ -75,6 +88,9 @@ export function startCrablineServer(
 export async function startCrablineServer(
   params: StartCrablineServerParams,
 ): Promise<StartedCrablineServer> {
+  if (params.channel === "mattermost") {
+    return await startMattermostServer(params);
+  }
   if (params.channel === "signal") {
     return await startSignalServer(params);
   }

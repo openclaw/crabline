@@ -104,7 +104,7 @@ export async function startHttpJsonServer(params: {
     });
   }
   return {
-    baseUrl: `http://${params.host}:${address.port}`,
+    baseUrl: `http://${params.host.includes(":") ? `[${params.host}]` : params.host}:${address.port}`,
     async close() {
       await closeServer(server);
     },
