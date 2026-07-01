@@ -1,5 +1,6 @@
 export { resolveTelegramAdapterConfig } from "./providers/builtin/telegram.js";
 export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
+export { startSignalServer } from "./servers/signal.js";
 export { startSlackServer, startSlackServer as startSlackFakeServer } from "./servers/slack.js";
 export {
   startTelegramServer,
@@ -69,6 +70,11 @@ export type {
   WaitContext,
   WatchContext,
 } from "./providers/types.js";
+export type {
+  SignalServerManifest,
+  StartedSignalServer,
+  StartSignalServerParams,
+} from "./servers/signal.js";
 export type {
   SlackServerManifest as SlackFakeServerManifest,
   SlackServerManifest,

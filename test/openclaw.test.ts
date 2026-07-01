@@ -43,6 +43,22 @@ const manifest: CrablineServerManifest = {
   version: 1,
 };
 
+const signalManifest: CrablineServerManifest = {
+  account: "+15550000000",
+  adminToken: "crabline-signal-admin-token",
+  baseUrl: "http://127.0.0.1:1357",
+  endpoints: {
+    adminInboundUrl: "http://127.0.0.1:1357/crabline/signal/inbound",
+    apiRoot: "http://127.0.0.1:1357",
+    eventsUrl: "http://127.0.0.1:1357/api/v1/events",
+    rpcUrl: "http://127.0.0.1:1357/api/v1/rpc",
+  },
+  env: {},
+  provider: "signal",
+  recorderPath: "/tmp/crabline/signal.jsonl",
+  version: 1,
+};
+
 const whatsappManifest: CrablineServerManifest = {
   accessToken: "crabline-whatsapp-access-token",
   adminToken: "crabline-whatsapp-admin-token",
@@ -118,9 +134,37 @@ describe("OpenClaw local provider bridge", () => {
     expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " SLACK " })).toMatchObject({
       channel: "slack",
     });
+    expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " SIGNAL " })).toMatchObject({
+      channel: "signal",
+    });
     expect(() => resolveOpenClawCrablineChannelDriverSelection({ channel: "discord" })).toThrow(
-      '--channel must be one of slack, telegram, whatsapp for --channel-driver crabline, got "discord"',
+      '--channel must be one of signal, slack, telegram, whatsapp for --channel-driver crabline, got "discord"',
     );
+  });
+
+  it("maps a Signal local provider into OpenClaw channel config", () => {
+    const binding = createOpenClawCrablineProviderBinding(signalManifest);
+
+    expect(binding).toMatchObject({
+      accountId: "default",
+      channel: "signal",
+      requiredPluginIds: ["signal"],
+    });
+    expect(binding.createGatewayConfig()).toMatchObject({
+      channels: {
+        signal: {
+          account: "+15550000000",
+          allowFrom: ["*"],
+          apiMode: "native",
+          autoStart: false,
+          dmPolicy: "open",
+          enabled: true,
+          groupAllowFrom: ["*"],
+          groupPolicy: "open",
+          httpUrl: "http://127.0.0.1:1357",
+        },
+      },
+    });
   });
 
   it("maps a Telegram local provider into OpenClaw channel config", () => {
@@ -509,6 +553,92 @@ describe("OpenClaw local provider bridge", () => {
     });
   });
 
+  it("maps Signal QA targets, inbound messages, and recorder events", () => {
+    expect(
+      createOpenClawCrablineAgentDelivery({ manifest: signalManifest, target: "group:group-1" }),
+    ).toEqual({
+      channel: "signal",
+      replyChannel: "signal",
+      replyTo: "group:group-1",
+      to: "group:group-1",
+    });
+
+    const directDelivery = createOpenClawCrablineAgentDelivery({
+      manifest: signalManifest,
+      target: "dm:qa-operator",
+    });
+    expect(directDelivery.to).toMatch(/^\+1555\d{7}$/u);
+
+    const directInbound = createOpenClawCrablineInbound({
+      manifest: signalManifest,
+      input: {
+        conversation: { id: "qa-operator", kind: "direct" },
+        senderId: "qa-operator",
+        text: "hello",
+      },
+    });
+    expect(directInbound.providerBody).toMatchObject({ sourceNumber: directDelivery.to });
+    expect(directInbound.providerTargetKey).toBe(directDelivery.to);
+
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: signalManifest,
+        targetByProviderTarget: new Map([[directInbound.providerTargetKey, "dm:qa-operator"]]),
+        event: {
+          body: {
+            method: "send",
+            params: { message: "direct reply", recipient: [directDelivery.to] },
+          },
+          path: "/api/v1/rpc",
+          type: "api",
+        },
+      }),
+    ).toMatchObject({ text: "direct reply", to: "dm:qa-operator" });
+
+    expect(
+      createOpenClawCrablineInbound({
+        manifest: signalManifest,
+        input: {
+          conversation: { id: "group-1", kind: "group" },
+          senderId: "+15551234567",
+          senderName: "Alice",
+          text: "hello",
+        },
+      }),
+    ).toMatchObject({
+      providerBody: {
+        groupId: "group-1",
+        sourceName: "Alice",
+        sourceNumber: "+15551234567",
+        text: "hello",
+      },
+      providerTargetKey: "group:group-1",
+      providerUrl: "http://127.0.0.1:1357/crabline/signal/inbound",
+      qaTarget: "group:group-1",
+    });
+
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: signalManifest,
+        targetByProviderTarget: new Map([["group:group-1", "group:qa"]]),
+        event: {
+          body: {
+            method: "send",
+            params: { groupId: "group-1", message: "hello from openclaw" },
+          },
+          path: "/api/v1/rpc",
+          type: "api",
+        },
+      }),
+    ).toEqual({
+      accountId: "default",
+      senderId: "openclaw",
+      senderName: "OpenClaw QA",
+      text: "hello from openclaw",
+      to: "group:qa",
+    });
+  });
+
   it("posts WhatsApp OpenClaw inbound with admin headers into the local provider", async () => {
     const adapter = await startOpenClawCrablineAdapter({ channel: "whatsapp" });
     try {
@@ -557,7 +687,7 @@ describe("OpenClaw local provider bridge", () => {
         result: {
           driver: "crabline",
           selectedChannel: "telegram",
-          supportedChannels: ["slack", "telegram", "whatsapp"],
+          supportedChannels: ["signal", "slack", "telegram", "whatsapp"],
         },
       });
       expect(result.smoke).toMatchObject({

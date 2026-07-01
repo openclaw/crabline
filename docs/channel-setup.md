@@ -106,6 +106,38 @@ The admin ingress accepts JSON like:
 OpenClaw consumes that message through Slack Events API shape; outbound adapter
 sends are recorded through Slack `chat.postMessage`.
 
+Signal:
+
+```bash
+crabline --json serve signal --ready-file .crabline/signal-server.json
+```
+
+Manifest fields:
+
+- `endpoints.apiRoot`: `signal-cli daemon --http`-compatible API root
+- `account`: mock Signal account served by the daemon
+- `adminToken`: value for the `X-Crabline-Admin-Token` header on admin ingress
+- `endpoints.adminInboundUrl`: authenticated admin ingress for test user messages
+- `endpoints.eventsUrl`: `signal-cli` SSE receive endpoint
+- `endpoints.rpcUrl`: `signal-cli` JSON-RPC endpoint
+- `recorderPath`: JSONL provider traffic recorder
+
+The admin ingress accepts JSON like:
+
+```json
+{
+  "groupId": "signal-group-1",
+  "sourceName": "Alice",
+  "sourceNumber": "+15551234567",
+  "text": "user nonce-123"
+}
+```
+
+Clients consume that message through the `signal-cli` SSE surface; outbound text
+sends are recorded through its `send` JSON-RPC method. The local server also
+accepts typing, receipt, and reaction RPCs. OpenClaw-specific config and target
+mapping live in Crabline's OpenClaw bridge, outside the provider server.
+
 Telegram:
 
 ```bash

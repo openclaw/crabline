@@ -15,7 +15,7 @@ provider APIs that OpenClaw live adapters can target during deterministic QA.
   `whatsapp`, and `zalo`
 - a `script` bridge for channels that are still exercised by external commands
 - per-provider local webhook endpoints for inbound events
-- local provider servers for live-adapter smoke tests, starting with Slack,
+- local provider servers for live-adapter smoke tests for Signal, Slack,
   Telegram, and WhatsApp
 - JSONL recorder files for deterministic wait/watch behavior
 - nonce-based `send`, `roundtrip`, `agent`, `probe`, `run`, `watch`, and
@@ -148,6 +148,28 @@ The admin token is generated randomly unless `--admin-token <token>` is
 provided. Implemented Slack Web API endpoints include `auth.test`,
 `chat.postMessage`, `conversations.open`, `conversations.info`,
 `conversations.history`, and `conversations.replies`.
+
+Signal:
+
+```bash
+crabline --json serve signal --ready-file .crabline/signal-server.json
+```
+
+The JSON manifest contains:
+
+- `endpoints.apiRoot`: `signal-cli daemon --http`-compatible API root
+- `account`: mock Signal account served by the daemon
+- `adminToken`: send this as the `X-Crabline-Admin-Token` header when posting
+  test user messages
+- `endpoints.adminInboundUrl`: authenticated POST endpoint for inbound messages
+- `endpoints.eventsUrl`: `signal-cli` SSE receive endpoint
+- `endpoints.rpcUrl`: `signal-cli` JSON-RPC endpoint
+- `recorderPath`: JSONL file of local provider API/admin traffic
+
+The server implements the HTTP surface exposed by `signal-cli daemon --http`:
+`check`, `events`, and the JSON-RPC methods needed for text sends, typing,
+receipts, and reactions. Admin ingress injects text-only receive events. It does
+not replace the `signal-cli` client or pretend to be Signal's public service.
 
 Telegram:
 
