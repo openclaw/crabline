@@ -45,6 +45,11 @@ type TelegramMessage = {
     file_unique_id: string;
     mime_type?: string;
   };
+  entities?: Array<{
+    length: number;
+    offset: number;
+    type: string;
+  }>;
   from: {
     first_name: string;
     id: number;
@@ -343,6 +348,16 @@ function createInboundUpdate(
   const fromUsername = toStringValue(body.fromUsername ?? body.from_username);
   const messageId = toIntegerValue(body.messageId ?? body.message_id);
   const updateId = toIntegerValue(body.updateId ?? body.update_id);
+  const entities = Array.isArray(body.entities)
+    ? body.entities.filter(
+        (entry): entry is { length: number; offset: number; type: string } =>
+          typeof entry === "object" &&
+          entry !== null &&
+          typeof (entry as { length?: unknown }).length === "number" &&
+          typeof (entry as { offset?: unknown }).offset === "number" &&
+          typeof (entry as { type?: unknown }).type === "string",
+      )
+    : undefined;
   if (messageId !== undefined) {
     state.nextMessageId = Math.max(state.nextMessageId, messageId + 1);
   }
@@ -360,6 +375,7 @@ function createInboundUpdate(
         ...(fromUsername ? { username: fromUsername } : {}),
       },
       message_id: messageId ?? state.nextMessageId++,
+      ...(entities && entities.length > 0 ? { entities } : {}),
       ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
       text,
     },

@@ -110,6 +110,17 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
             fromId: readInteger(input.senderId) ?? TELEGRAM_DEFAULT_SENDER_ID,
             fromName: input.senderName ?? input.senderId,
             ...(threadId !== undefined ? { messageThreadId: threadId } : {}),
+            ...(input.nativeCommand
+              ? {
+                  entities: [
+                    {
+                      length: input.nativeCommand.name.length + 1,
+                      offset: 0,
+                      type: "bot_command",
+                    },
+                  ],
+                }
+              : {}),
             text: input.text,
           },
           providerTargetKey: telegramTargetKey(chatId, threadId),

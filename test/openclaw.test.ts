@@ -396,9 +396,10 @@ describe("OpenClaw local provider bridge", () => {
       manifest,
       input: {
         conversation: { id: "alice", kind: "direct" },
+        nativeCommand: { name: "stop" },
         senderId: "alice",
         senderName: "Alice",
-        text: "hello",
+        text: "/stop",
       },
     });
     expect(inbound).toEqual({
@@ -406,7 +407,8 @@ describe("OpenClaw local provider bridge", () => {
         chatId: "100001",
         fromId: 100001,
         fromName: "Alice",
-        text: "hello",
+        entities: [{ length: 5, offset: 0, type: "bot_command" }],
+        text: "/stop",
       },
       providerHeaders: {
         "content-type": "application/json",
