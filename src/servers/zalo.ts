@@ -165,7 +165,7 @@ async function deliverWebhookUpdate(
 ): Promise<Response | undefined> {
   try {
     const response = await fetch(webhook.url, {
-      body: JSON.stringify(update),
+      body: JSON.stringify({ ok: true, result: update }),
       headers: {
         "content-type": "application/json",
         "x-bot-api-secret-token": webhook.secretToken,

@@ -293,7 +293,8 @@ adapter.
 The server accepts the provider-native `/bot<TOKEN>/<METHOD>` API shape over
 GET or POST. It implements bot identity, single-update long polling, text and
 photo sends, chat actions, and webhook lifecycle calls. A configured webhook
-receives the native top-level Zalo update with `X-Bot-Api-Secret-Token`;
+receives the native Zalo `{ ok, result }` event envelope with
+`X-Bot-Api-Secret-Token`;
 otherwise injected messages are returned by `getUpdates`. Provider errors use
 Zalo's `{ ok, error_code, description }` shape.
 

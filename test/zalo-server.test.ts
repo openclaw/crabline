@@ -134,8 +134,11 @@ describe("Zalo local provider server", () => {
       expect(received).toHaveLength(1);
       expect(received[0]).toMatchObject({
         body: {
-          event_name: "message.text.received",
-          message: { text: "hello" },
+          ok: true,
+          result: {
+            event_name: "message.text.received",
+            message: { text: "hello" },
+          },
         },
         secret: "webhook-secret",
       });
