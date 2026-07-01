@@ -78,7 +78,7 @@ export const OPENCLAW_SUPPORT_CATALOG = [
   createBridgeEntry("nostr", "OpenClaw plugin channel via script bridge."),
   createBridgeEntry(
     "signal",
-    "OpenClaw channel via script bridge; native local provider server available.",
+    "OpenClaw channel via script bridge; signal-cli HTTP-compatible local server available.",
   ),
   {
     notes: "Built-in local Slack mock with events webhook shape.",

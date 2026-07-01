@@ -157,19 +157,19 @@ crabline --json serve signal --ready-file .crabline/signal-server.json
 
 The JSON manifest contains:
 
-- `endpoints.apiRoot`: set OpenClaw `channels.signal.httpUrl` to this value
-- `account`: set OpenClaw `channels.signal.account` to this value
+- `endpoints.apiRoot`: `signal-cli daemon --http`-compatible API root
+- `account`: mock Signal account served by the daemon
 - `adminToken`: send this as the `X-Crabline-Admin-Token` header when posting
   test user messages
 - `endpoints.adminInboundUrl`: authenticated POST endpoint for inbound messages
-- `endpoints.eventsUrl`: native Signal SSE receive endpoint
-- `endpoints.rpcUrl`: native Signal JSON-RPC endpoint
+- `endpoints.eventsUrl`: `signal-cli` SSE receive endpoint
+- `endpoints.rpcUrl`: `signal-cli` JSON-RPC endpoint
 - `recorderPath`: JSONL file of local provider API/admin traffic
 
-The server implements OpenClaw's native Signal `check`, `events`, and JSON-RPC
-surfaces. It supports text sends, typing, receipts, reactions, and text-only
-inbound messages; it does not emulate `signal-cli`, registration, linking, or
-Signal cryptography.
+The server implements the HTTP surface exposed by `signal-cli daemon --http`:
+`check`, `events`, and the JSON-RPC methods needed for text sends, typing,
+receipts, and reactions. Admin ingress injects text-only receive events. It does
+not replace the `signal-cli` client or pretend to be Signal's public service.
 
 Telegram:
 

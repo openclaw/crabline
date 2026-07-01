@@ -22,6 +22,7 @@ describe("signal local provider server", () => {
 
     const check = await fetch(`${server.manifest.baseUrl}/api/v1/check`);
     expect(check.status).toBe(200);
+    await expect(check.text()).resolves.toBe("");
 
     const send = await fetch(server.manifest.endpoints.rpcUrl, {
       body: JSON.stringify({
@@ -68,7 +69,7 @@ describe("signal local provider server", () => {
     const chunk = await reader?.read();
     controller.abort();
     expect(new TextDecoder().decode(chunk?.value)).toContain(
-      'event: receive\ndata: {"envelope":{"sourceName":"Alice","sourceNumber":"+15557654321","timestamp":1700000000000,"dataMessage":{"message":"user nonce-1","timestamp":1700000000000,"groupInfo":{"groupId":"signal-group-1"}}}}',
+      'event:receive\ndata:{"envelope":{"sourceName":"Alice","sourceNumber":"+15557654321","timestamp":1700000000000,"dataMessage":{"message":"user nonce-1","timestamp":1700000000000,"groupInfo":{"groupId":"signal-group-1"}}}}',
     );
 
     const recorded = await fs.readFile(recorderPath, "utf8");

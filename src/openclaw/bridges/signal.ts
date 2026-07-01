@@ -24,7 +24,7 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         if (!response.ok) {
           throw new Error(`Crabline Signal check probe failed with HTTP ${response.status}.`);
         }
-        return await response.json();
+        return { ok: true, status: response.status };
       },
       createBinding() {
         return {

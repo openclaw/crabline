@@ -24,6 +24,8 @@ type SignalServerState = {
   recorderPath: string;
 };
 
+const SIGNAL_CLI_SSE_KEEPALIVE_MS = 15_000;
+
 export type SignalServerManifest = {
   account: string;
   adminToken: string;
@@ -63,7 +65,7 @@ function rpcResponse(id: unknown, result: unknown): Response {
 }
 
 function emitSignalEvent(state: SignalServerState, payload: unknown): void {
-  const event = `event: receive\ndata: ${JSON.stringify(payload)}\n\n`;
+  const event = `event:receive\ndata:${JSON.stringify(payload)}\n\n`;
   if (state.clients.size === 0) {
     state.pendingEvents.push(event);
     return;
@@ -181,7 +183,7 @@ async function handleRequest(params: {
       query: queryRecord(url),
       type: "api",
     });
-    fetchResponse = jsonResponse({ ok: true });
+    fetchResponse = new Response(null, { status: 200 });
   } else if (url.pathname === "/api/v1/rpc" && params.request.method === "POST") {
     const body = await parseRequestBody(params.request);
     await appendEvent(params.state, {
@@ -226,6 +228,12 @@ export async function startSignalServer(
       }
     });
   });
+  const keepalive = setInterval(() => {
+    for (const client of state.clients) {
+      client.write(":\n");
+    }
+  }, SIGNAL_CLI_SSE_KEEPALIVE_MS);
+  keepalive.unref();
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(params.port ?? 0, host, () => {
@@ -241,6 +249,7 @@ export async function startSignalServer(
   const baseUrl = `http://${host}:${address.port}`;
   return {
     async close() {
+      clearInterval(keepalive);
       for (const client of state.clients) {
         client.end();
       }
