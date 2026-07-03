@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import fs from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import {
@@ -14,12 +13,14 @@ import {
   type ServerRequestEvent,
   writeResponse,
 } from "./http.js";
+import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 
 type SignalServerState = {
   account: string;
   adminToken: string;
   clients: Set<ServerResponse>;
   nextTimestamp: number;
+  onEvent: ServerEventObserver | undefined;
   pendingEvents: string[];
   recorderPath: string;
 };
@@ -51,13 +52,13 @@ export type StartSignalServerParams = {
   account?: string | undefined;
   adminToken?: string | undefined;
   host?: string | undefined;
+  onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
 };
 
 async function appendEvent(state: SignalServerState, event: ServerRequestEvent): Promise<void> {
-  await fs.mkdir(path.dirname(state.recorderPath), { recursive: true });
-  await fs.appendFile(state.recorderPath, `${JSON.stringify(event)}\n`, "utf8");
+  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
 function rpcResponse(id: unknown, result: unknown): Response {
@@ -209,6 +210,7 @@ export async function startSignalServer(
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     clients: new Set(),
     nextTimestamp: Date.now(),
+    onEvent: params.onEvent,
     pendingEvents: [],
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "signal.jsonl"),
   };

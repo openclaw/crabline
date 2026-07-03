@@ -1,5 +1,6 @@
 import { ADMIN_TOKEN_HEADER } from "../servers/http.js";
 import type { CrablineServerChannel, CrablineServerManifest } from "../servers/index.js";
+import type { ServerEventObserver } from "../servers/recorder.js";
 
 export const DEFAULT_ACCOUNT_ID = "default";
 export const OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH =
@@ -73,6 +74,7 @@ export type OpenClawCrablineOutboundMessage = {
 
 export type StartOpenClawCrablineAdapterParams = {
   channel: CrablineServerChannel;
+  onEvent?: ServerEventObserver | undefined;
   openclawConfig?: Record<string, unknown> | undefined;
   recorderPath?: string | undefined;
 };

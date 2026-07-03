@@ -125,6 +125,11 @@ commands for `probe`, `send`, `waitForInbound`, or `watch`.
 preferred Smoke CI path because OpenClaw still uses its normal channel adapter,
 but the provider endpoint is local and deterministic.
 
+Library callers can pass `onEvent` to `startCrablineServer`, an individual
+provider server, or `startOpenClawCrablineAdapter`. Crabline awaits the callback
+after appending each API/admin event to `recorderPath`, so callers can react in
+process while retaining the JSONL artifact as durable evidence.
+
 Mattermost:
 
 ```bash

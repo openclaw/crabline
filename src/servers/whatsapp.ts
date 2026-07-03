@@ -1,6 +1,5 @@
 import type { IncomingMessage } from "node:http";
 import { randomBytes } from "node:crypto";
-import fs from "node:fs/promises";
 import path from "node:path";
 import {
   adminAuthError,
@@ -12,6 +11,7 @@ import {
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
+import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 import {
   attachWhatsAppBaileysWebSocketServer,
   type WhatsAppBaileysInboundMessage,
@@ -29,6 +29,7 @@ type WhatsAppServerState = {
   displayPhoneNumber: string;
   deliverInboundMessage(message: WhatsAppBaileysInboundMessage): void;
   nextMessageId: number;
+  onEvent: ServerEventObserver | undefined;
   phoneNumberId: string;
   recorderPath: string;
   selfJid: string;
@@ -70,6 +71,7 @@ export type StartWhatsAppServerParams = {
   accessToken?: string | undefined;
   adminToken?: string | undefined;
   host?: string | undefined;
+  onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
   selfJid?: string | undefined;
@@ -130,8 +132,7 @@ function graphAuthError(): Response {
 }
 
 async function appendEvent(state: WhatsAppServerState, event: ServerRequestEvent) {
-  await fs.mkdir(path.dirname(state.recorderPath), { recursive: true });
-  await fs.appendFile(state.recorderPath, `${JSON.stringify(event)}\n`, "utf8");
+  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
 function isWhatsAppJid(value: string): boolean {
@@ -415,6 +416,7 @@ export async function startWhatsAppServer(
     deliverInboundMessage: () => undefined,
     displayPhoneNumber: "15550000000",
     nextMessageId: 1,
+    onEvent: params.onEvent,
     phoneNumberId: "TEST_PHONE_NUMBER_ID",
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "whatsapp.jsonl"),
     selfJid: params.selfJid ?? "15550000000@s.whatsapp.net",

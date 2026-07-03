@@ -449,8 +449,12 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("starts a bound OpenClaw adapter from channel and config", async () => {
+    const observedEvents: unknown[] = [];
     const adapter = await startOpenClawCrablineAdapter({
       channel: "telegram",
+      onEvent: (event) => {
+        observedEvents.push(event);
+      },
       openclawConfig: {
         channels: {
           telegram: {
@@ -474,6 +478,13 @@ describe("OpenClaw local provider bridge", () => {
         channel: "telegram",
         to: "100001",
       });
+      if (adapter.manifest.provider !== "telegram") {
+        throw new Error("Expected Telegram local provider manifest.");
+      }
+      await fetch(`${adapter.manifest.baseUrl}/bot${adapter.manifest.botToken}/getMe`);
+      expect(observedEvents).toEqual([
+        expect.objectContaining({ method: "GET", path: "/bot<redacted>/getMe", type: "api" }),
+      ]);
     } finally {
       await adapter.close();
     }
