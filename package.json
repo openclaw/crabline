@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/crabline",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Standalone CLI for deterministic messaging provider E2E tests",
   "homepage": "https://github.com/openclaw/crabline#readme",
   "bugs": {
