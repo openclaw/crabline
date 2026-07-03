@@ -344,7 +344,7 @@ export async function startZaloServer(
         return await handleAdminInbound(request, state, url);
       }
       const match = /^\/bot([^/]+)\/([^/]+)$/u.exec(url.pathname);
-      if (!match || (request.method !== "GET" && request.method !== "POST")) {
+      if (!match || request.method !== "POST") {
         return zaloError("Not found", 404);
       }
       if (match[1] !== state.botToken) {

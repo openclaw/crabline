@@ -71,12 +71,15 @@ describe("Zalo local provider server", () => {
       },
     });
 
-    const timeout = await fetch(`${server.manifest.baseUrl}/botzalo-token/getUpdates?timeout=0`);
+    const timeout = await fetch(`${server.manifest.baseUrl}/botzalo-token/getUpdates?timeout=0`, {
+      method: "POST",
+    });
     expect(timeout.status).toBe(408);
     await expect(timeout.json()).resolves.toMatchObject({ error_code: 408, ok: false });
 
     const sendMessage = await fetch(
       `${server.manifest.baseUrl}/botzalo-token/sendMessage?chat_id=group-1&text=hello`,
+      { method: "POST" },
     );
     await expect(sendMessage.json()).resolves.toMatchObject({
       ok: true,
@@ -145,6 +148,7 @@ describe("Zalo local provider server", () => {
 
       const blockedPolling = await fetch(
         `${server.manifest.baseUrl}/botzalo-token/getUpdates?timeout=0`,
+        { method: "POST" },
       );
       expect(blockedPolling.status).toBe(400);
 
@@ -162,9 +166,17 @@ describe("Zalo local provider server", () => {
     const server = await startZaloServer({ botToken: "zalo-token" });
     servers.push(server);
 
-    const invalidToken = await fetch(`${server.manifest.baseUrl}/botwrong/getMe`);
+    const invalidToken = await fetch(`${server.manifest.baseUrl}/botwrong/getMe`, {
+      method: "POST",
+    });
     expect(invalidToken.status).toBe(401);
     await expect(invalidToken.json()).resolves.toMatchObject({ error_code: 401, ok: false });
+
+    const getSend = await fetch(
+      `${server.manifest.baseUrl}/botzalo-token/sendMessage?chat_id=chat-1&text=hello`,
+    );
+    expect(getSend.status).toBe(404);
+    await expect(getSend.json()).resolves.toMatchObject({ error_code: 404, ok: false });
 
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "hello" }),

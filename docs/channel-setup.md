@@ -291,7 +291,7 @@ does this mapping without adding provider-server-specific behavior to the Zalo
 adapter.
 
 The server accepts the provider-native `/bot<TOKEN>/<METHOD>` API shape over
-GET or POST. It implements bot identity, single-update long polling, text and
+POST only. It implements bot identity, single-update long polling, text and
 photo sends, chat actions, and webhook lifecycle calls. A configured webhook
 receives the native Zalo `{ ok, result }` event envelope with
 `X-Bot-Api-Secret-Token`;
