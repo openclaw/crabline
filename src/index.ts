@@ -53,6 +53,8 @@ export { OPENCLAW_SUPPORT_CATALOG } from "./providers/catalog.js";
 export { createRegistry } from "./providers/registry.js";
 export type { CatalogEntry } from "./providers/catalog.js";
 export type { Registry } from "./providers/registry.js";
+export type { ServerRequestEvent } from "./servers/http.js";
+export type { ServerEventObserver } from "./servers/recorder.js";
 export type {
   BuiltinAdapterId,
   FixtureDefinition,

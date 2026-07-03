@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import fs from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
@@ -13,6 +12,7 @@ import {
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
+import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 
 type MattermostPost = {
   channel_id: string;
@@ -42,6 +42,7 @@ type MattermostServerState = {
   botUsername: string;
   channels: Map<string, { id: string; name: string; display_name: string; type: string }>;
   nextPost: number;
+  onEvent: ServerEventObserver | undefined;
   pendingEvents: MattermostWebSocketEvent[];
   posts: Map<string, MattermostPost>;
   recorderPath: string;
@@ -79,6 +80,7 @@ export type StartMattermostServerParams = {
   botUserId?: string | undefined;
   botUsername?: string | undefined;
   host?: string | undefined;
+  onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
 };
@@ -88,8 +90,7 @@ export function mattermostId(value: string): string {
 }
 
 async function appendEvent(state: MattermostServerState, event: ServerRequestEvent): Promise<void> {
-  await fs.mkdir(path.dirname(state.recorderPath), { recursive: true });
-  await fs.appendFile(state.recorderPath, `${JSON.stringify(event)}\n`, "utf8");
+  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
 function authorized(request: IncomingMessage, token: string): boolean {
@@ -479,6 +480,7 @@ export async function startMattermostServer(
     botUsername,
     channels: new Map(),
     nextPost: 1,
+    onEvent: params.onEvent,
     pendingEvents: [],
     posts: new Map(),
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "mattermost.jsonl"),

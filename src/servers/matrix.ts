@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import fs from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import {
@@ -13,6 +12,7 @@ import {
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
+import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 
 type MatrixEvent = {
   content: Record<string, unknown>;
@@ -43,6 +43,7 @@ type MatrixServerState = {
   nextEvent: number;
   nextFilter: number;
   nextSequence: number;
+  onEvent: ServerEventObserver | undefined;
   recorderPath: string;
   rooms: Map<string, MatrixRoom>;
   serverName: string;
@@ -81,6 +82,7 @@ export type StartMatrixServerParams = {
   botUserId?: string | undefined;
   deviceId?: string | undefined;
   host?: string | undefined;
+  onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
   roomId?: string | undefined;
@@ -93,8 +95,7 @@ function matrixId(prefix: "$" | "!", value: string, serverName: string): string 
 }
 
 async function appendEvent(state: MatrixServerState, event: ServerRequestEvent): Promise<void> {
-  await fs.mkdir(path.dirname(state.recorderPath), { recursive: true });
-  await fs.appendFile(state.recorderPath, `${JSON.stringify(event)}\n`, "utf8");
+  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
 function authorized(request: IncomingMessage, token: string): boolean {
@@ -451,6 +452,7 @@ export async function startMatrixServer(
     nextEvent: 1,
     nextFilter: 1,
     nextSequence: 1,
+    onEvent: params.onEvent,
     recorderPath: params.recorderPath ?? path.resolve("artifacts/crabline/matrix.jsonl"),
     rooms: new Map(),
     serverName,

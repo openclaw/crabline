@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import fs from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import {
@@ -12,6 +11,7 @@ import {
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
+import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 
 type ZaloChatType = "GROUP" | "PRIVATE";
 
@@ -40,6 +40,7 @@ type ZaloServerState = {
   botName: string;
   botToken: string;
   nextMessage: number;
+  onEvent: ServerEventObserver | undefined;
   pendingRequests: PendingUpdateRequest[];
   recorderPath: string;
   updates: ZaloUpdate[];
@@ -75,13 +76,13 @@ export type StartZaloServerParams = {
   botName?: string | undefined;
   botToken?: string | undefined;
   host?: string | undefined;
+  onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
 };
 
 async function appendEvent(state: ZaloServerState, event: ServerRequestEvent): Promise<void> {
-  await fs.mkdir(path.dirname(state.recorderPath), { recursive: true });
-  await fs.appendFile(state.recorderPath, `${JSON.stringify(event)}\n`, "utf8");
+  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
 function zaloOk(result?: unknown): Response {
@@ -332,6 +333,7 @@ export async function startZaloServer(
     botName: params.botName ?? "bot.crabline",
     botToken: params.botToken ?? "crabline-zalo-bot-token",
     nextMessage: 1,
+    onEvent: params.onEvent,
     pendingRequests: [],
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "zalo.jsonl"),
     updates: [],

@@ -1,9 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { CrablineError } from "../core/errors.js";
 import { adminAuthError, hasAdminToken } from "./http.js";
+import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 
 type TelegramServerEvent = {
   at: string;
@@ -21,6 +21,7 @@ type TelegramServerState = {
   botUsername: string;
   nextMessageId: number;
   nextUpdateId: number;
+  onEvent: ServerEventObserver | undefined;
   recorderPath: string;
   updates: TelegramUpdate[];
 };
@@ -105,6 +106,7 @@ export type StartTelegramServerParams = {
   botToken?: string | undefined;
   botUsername?: string | undefined;
   host?: string | undefined;
+  onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
 };
@@ -232,8 +234,7 @@ function telegramChatId(value: unknown): number | string | undefined {
 }
 
 async function appendEvent(state: TelegramServerState, event: TelegramServerEvent) {
-  await fs.mkdir(path.dirname(state.recorderPath), { recursive: true });
-  await fs.appendFile(state.recorderPath, `${JSON.stringify(event)}\n`, "utf8");
+  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
 function createBotUser(state: TelegramServerState) {
@@ -508,6 +509,7 @@ export async function startTelegramServer(
     botUsername: params.botUsername ?? "crabline_bot",
     nextMessageId: 1,
     nextUpdateId: 1,
+    onEvent: params.onEvent,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "telegram.jsonl"),
     updates: [],
   };

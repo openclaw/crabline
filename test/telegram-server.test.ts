@@ -230,4 +230,28 @@ describe("telegram local provider server", () => {
     expect(recordedEvents).not.toContain(botToken);
     expect(recordedEvents).toContain('"path":"/bot<redacted>/getMe"');
   });
+
+  it("notifies observers after recording each event", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "telegram.jsonl");
+    const observedEvents: unknown[] = [];
+    const server = await startTelegramServer({
+      botToken: "123456:fake-token",
+      onEvent: async (event) => {
+        const recordedEvents = await fs.readFile(recorderPath, "utf8");
+        expect(recordedEvents).toContain(`${JSON.stringify(event)}\n`);
+        observedEvents.push(event);
+      },
+      recorderPath,
+    });
+    servers.push(server);
+
+    const response = await fetch(`${server.manifest.baseUrl}/bot123456:fake-token/getMe`);
+    await expect(response.json()).resolves.toMatchObject({ ok: true });
+
+    expect(observedEvents).toEqual([
+      expect.objectContaining({ method: "GET", path: "/bot<redacted>/getMe", type: "api" }),
+    ]);
+  });
 });

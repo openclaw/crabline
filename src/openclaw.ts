@@ -145,6 +145,7 @@ export async function startOpenClawCrablineAdapter(
 ): Promise<StartedOpenClawCrablineAdapter> {
   const server: StartedCrablineServer = await startCrablineServer({
     channel: params.channel,
+    onEvent: params.onEvent,
     recorderPath: params.recorderPath,
   });
   const providerAdapter = createOpenClawCrablineProviderAdapter(server.manifest);

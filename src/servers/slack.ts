@@ -1,6 +1,5 @@
 import type { IncomingMessage } from "node:http";
 import { randomBytes } from "node:crypto";
-import fs from "node:fs/promises";
 import path from "node:path";
 import {
   adminAuthError,
@@ -19,6 +18,7 @@ import {
   SLACK_TS_RULE,
   SLACK_USER_ID_RULE,
 } from "../providers/slack-ids.js";
+import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 
 type SlackMessage = {
   attachments?: unknown;
@@ -43,6 +43,7 @@ type SlackServerState = {
   botUserId: string;
   nextDmIndex: number;
   nextTsIndex: number;
+  onEvent: ServerEventObserver | undefined;
   recorderPath: string;
   signingSecret: string;
   userDmChannels: Map<string, string>;
@@ -80,6 +81,7 @@ export type StartSlackServerParams = {
   botToken?: string | undefined;
   botUserId?: string | undefined;
   host?: string | undefined;
+  onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
   signingSecret?: string | undefined;
@@ -238,8 +240,7 @@ function appendMessage(state: SlackServerState, message: SlackMessage): SlackMes
 }
 
 async function appendEvent(state: SlackServerState, event: ServerRequestEvent) {
-  await fs.mkdir(path.dirname(state.recorderPath), { recursive: true });
-  await fs.appendFile(state.recorderPath, `${JSON.stringify(event)}\n`, "utf8");
+  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
 function redactSlackAuthFields(value: Record<string, unknown>): Record<string, unknown> {
@@ -566,6 +567,7 @@ export async function startSlackServer(
     botUserId: params.botUserId ?? "UCRABBOT",
     nextDmIndex: 1,
     nextTsIndex: 100,
+    onEvent: params.onEvent,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "slack.jsonl"),
     signingSecret: params.signingSecret ?? "crabline-slack-signing-secret",
     userDmChannels: new Map(),
