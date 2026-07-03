@@ -2,7 +2,7 @@
 
 ## 0.1.8 - 2026-07-03
 
-- Add Signal, Mattermost, Matrix, and Zalo provider servers with isolated OpenClaw bridges.
+- Add the Zalo provider server with an isolated OpenClaw bridge.
 
 ## 0.1.7 - 2026-07-01
 
