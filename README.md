@@ -16,7 +16,7 @@ provider APIs that OpenClaw live adapters can target during deterministic QA.
 - a `script` bridge for channels that are still exercised by external commands
 - per-provider local webhook endpoints for inbound events
 - local provider servers for live-adapter smoke tests for Mattermost, Matrix,
-  Signal, Slack, Telegram, and WhatsApp
+  Signal, Slack, Telegram, WhatsApp, and Zalo
 - JSONL recorder files for deterministic wait/watch behavior
 - nonce-based `send`, `roundtrip`, `agent`, `probe`, `run`, `watch`, and
   `doctor` commands
@@ -283,6 +283,43 @@ token is generated randomly unless `--admin-token <token>` is provided.
 OpenClaw bridge callers should post injected user messages with the
 `providerUrl`, `providerHeaders`, and `providerBody` returned by
 `createOpenClawCrablineInbound()`.
+
+Zalo:
+
+```bash
+crabline --json serve zalo --ready-file .crabline/zalo-server.json
+```
+
+The JSON manifest contains:
+
+- `endpoints.apiRoot`: trusted `ZALO_API_URL`
+- `botToken`: OpenClaw `channels.zalo.botToken` / `ZALO_BOT_TOKEN`
+- `botId`: local Zalo bot identity
+- `adminToken`: send this as the `X-Crabline-Admin-Token` header when posting
+  test user messages
+- `endpoints.adminInboundUrl`: authenticated POST control endpoint for inbound
+  messages
+- `recorderPath`: JSONL file of local provider API/admin traffic
+
+The server implements the Zalo Bot API subset used by OpenClaw: `getMe`,
+single-update long polling through `getUpdates`, `sendMessage`, `sendPhoto`,
+`sendChatAction`, and webhook registration, inspection, and deletion. These Bot
+API methods accept GET query parameters or POST requests. Admin
+ingress injects a native Zalo update into the active polling or webhook
+transport. OpenClaw-specific endpoint, config, and target mapping remain in the
+isolated bridge.
+
+The admin ingress accepts JSON like:
+
+```json
+{
+  "chatId": "6ede9afa66b88fe6d6a9",
+  "chatType": "PRIVATE",
+  "senderId": "6ede9afa66b88fe6d6a9",
+  "senderName": "Alice",
+  "text": "user nonce-123"
+}
+```
 
 ## Target IDs
 

@@ -34,6 +34,12 @@ import {
   type StartWhatsAppServerParams,
   type WhatsAppServerManifest,
 } from "./whatsapp.js";
+import {
+  startZaloServer,
+  type StartedZaloServer,
+  type StartZaloServerParams,
+  type ZaloServerManifest,
+} from "./zalo.js";
 import { CrablineError } from "../core/errors.js";
 
 export const CRABLINE_SERVER_CHANNELS = Object.freeze([
@@ -43,6 +49,7 @@ export const CRABLINE_SERVER_CHANNELS = Object.freeze([
   "slack",
   "telegram",
   "whatsapp",
+  "zalo",
 ] as const);
 
 export type CrablineServerChannel = (typeof CRABLINE_SERVER_CHANNELS)[number];
@@ -53,7 +60,8 @@ export type CrablineServerManifest =
   | SignalServerManifest
   | SlackServerManifest
   | TelegramServerManifest
-  | WhatsAppServerManifest;
+  | WhatsAppServerManifest
+  | ZaloServerManifest;
 
 export type StartedCrablineServer =
   | StartedMattermostServer
@@ -61,7 +69,8 @@ export type StartedCrablineServer =
   | StartedSignalServer
   | StartedSlackServer
   | StartedTelegramServer
-  | StartedWhatsAppServer;
+  | StartedWhatsAppServer
+  | StartedZaloServer;
 
 export type StartCrablineServerParams =
   | (StartMattermostServerParams & { channel: "mattermost" })
@@ -69,7 +78,8 @@ export type StartCrablineServerParams =
   | (StartSignalServerParams & { channel: "signal" })
   | (StartSlackServerParams & { channel: "slack" })
   | (StartTelegramServerParams & { channel: "telegram" })
-  | (StartWhatsAppServerParams & { channel: "whatsapp" });
+  | (StartWhatsAppServerParams & { channel: "whatsapp" })
+  | (StartZaloServerParams & { channel: "zalo" });
 
 const CRABLINE_SERVER_CHANNEL_SET = new Set<string>(CRABLINE_SERVER_CHANNELS);
 
@@ -96,6 +106,9 @@ export function startCrablineServer(
   params: StartWhatsAppServerParams & { channel: "whatsapp" },
 ): Promise<StartedWhatsAppServer>;
 export function startCrablineServer(
+  params: StartZaloServerParams & { channel: "zalo" },
+): Promise<StartedZaloServer>;
+export function startCrablineServer(
   params: StartCrablineServerParams,
 ): Promise<StartedCrablineServer>;
 export async function startCrablineServer(
@@ -118,6 +131,9 @@ export async function startCrablineServer(
   }
   if (params.channel === "whatsapp") {
     return await startWhatsAppServer(params);
+  }
+  if (params.channel === "zalo") {
+    return await startZaloServer(params);
   }
   throw new CrablineError("Unsupported server channel.", { kind: "config" });
 }
