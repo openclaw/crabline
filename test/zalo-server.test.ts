@@ -21,7 +21,7 @@ function adminHeaders(server: StartedZaloServer) {
 }
 
 describe("Zalo local provider server", () => {
-  it("serves the Bot API and delivers admin inbound through getUpdates", async () => {
+  it("serves the Bot API over GET and POST and delivers admin inbound", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const recorderPath = path.join(directory, "zalo.jsonl");
@@ -71,15 +71,12 @@ describe("Zalo local provider server", () => {
       },
     });
 
-    const timeout = await fetch(`${server.manifest.baseUrl}/botzalo-token/getUpdates?timeout=0`, {
-      method: "POST",
-    });
+    const timeout = await fetch(`${server.manifest.baseUrl}/botzalo-token/getUpdates?timeout=0`);
     expect(timeout.status).toBe(408);
     await expect(timeout.json()).resolves.toMatchObject({ error_code: 408, ok: false });
 
     const sendMessage = await fetch(
       `${server.manifest.baseUrl}/botzalo-token/sendMessage?chat_id=group-1&text=hello`,
-      { method: "POST" },
     );
     await expect(sendMessage.json()).resolves.toMatchObject({
       ok: true,
@@ -166,17 +163,9 @@ describe("Zalo local provider server", () => {
     const server = await startZaloServer({ botToken: "zalo-token" });
     servers.push(server);
 
-    const invalidToken = await fetch(`${server.manifest.baseUrl}/botwrong/getMe`, {
-      method: "POST",
-    });
+    const invalidToken = await fetch(`${server.manifest.baseUrl}/botwrong/getMe`);
     expect(invalidToken.status).toBe(401);
     await expect(invalidToken.json()).resolves.toMatchObject({ error_code: 401, ok: false });
-
-    const getSend = await fetch(
-      `${server.manifest.baseUrl}/botzalo-token/sendMessage?chat_id=chat-1&text=hello`,
-    );
-    expect(getSend.status).toBe(404);
-    await expect(getSend.json()).resolves.toMatchObject({ error_code: 404, ok: false });
 
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "hello" }),

@@ -304,7 +304,7 @@ The JSON manifest contains:
 The server implements the Zalo Bot API subset used by OpenClaw: `getMe`,
 single-update long polling through `getUpdates`, `sendMessage`, `sendPhoto`,
 `sendChatAction`, and webhook registration, inspection, and deletion. These Bot
-API methods accept POST requests only. Admin
+API methods accept GET query parameters or POST requests. Admin
 ingress injects a native Zalo update into the active polling or webhook
 transport. OpenClaw-specific endpoint, config, and target mapping remain in the
 isolated bridge.
