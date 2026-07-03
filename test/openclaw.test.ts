@@ -268,6 +268,19 @@ describe("OpenClaw local provider bridge", () => {
         targetByProviderTarget: new Map([["group-1", "group:group-1"]]),
       }),
     ).toMatchObject({ text: "bot reply", to: "group:group-1" });
+
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        event: {
+          body: { chat_id: "group-1", text: "GET bot reply" },
+          method: "GET",
+          path: "/bot<redacted>/sendMessage",
+          type: "api",
+        },
+        manifest: zaloManifest,
+        targetByProviderTarget: new Map([["group-1", "group:group-1"]]),
+      }),
+    ).toMatchObject({ text: "GET bot reply", to: "group:group-1" });
   });
 
   it("maps a Signal local provider into OpenClaw channel config", () => {

@@ -86,7 +86,7 @@ export const ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProv
         if (
           !isRecord(event) ||
           event.type !== "api" ||
-          event.method !== "POST" ||
+          (event.method !== "GET" && event.method !== "POST") ||
           !isRecord(event.body) ||
           (event.path !== "/bot<redacted>/sendMessage" && event.path !== "/bot<redacted>/sendPhoto")
         ) {
