@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.8 - 2026-07-03
+
+- Add Signal, Mattermost, Matrix, and Zalo provider servers with isolated OpenClaw bridges.
+
 ## 0.1.7 - 2026-07-01
 
 - Add Telegram native command entities to OpenClaw admin inbound injection.
