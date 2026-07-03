@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.9 - 2026-07-03
+
+- Add in-process provider event observers while retaining JSONL recorder artifacts.
+
 ## 0.1.8 - 2026-07-03
 
 - Add the Zalo provider server with an isolated OpenClaw bridge.
