@@ -59,7 +59,7 @@
   "devDependencies": {
     "@types/node": "^26.0.1",
     "@types/ws": "^8.18.1",
-    "@typescript/native-preview": "7.0.0-dev.20260630.1",
+    "@typescript/native-preview": "7.0.0-dev.20260706.1",
     "@vitest/coverage-v8": "^4.1.9",
     "baileys": "7.0.0-rc13",
     "matrix-js-sdk": "41.6.0",
