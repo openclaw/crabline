@@ -31,7 +31,7 @@
   },
   "scripts": {
     "prebuild": "rm -rf dist",
-    "build": "tsgo -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist coverage",
     "dev": "tsx src/bin/crabline.ts",
     "doctor": "tsx src/bin/crabline.ts doctor",
@@ -44,7 +44,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
-    "typecheck": "tsgo -p tsconfig.test.json",
+    "typecheck": "tsc -p tsconfig.test.json",
     "verify": "pnpm lint && pnpm test:coverage",
     "check": "pnpm verify"
   },
@@ -57,18 +57,18 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^26.0.1",
+    "@types/node": "^26.1.0",
     "@types/ws": "^8.18.1",
-    "@typescript/native-preview": "7.0.0-dev.20260630.1",
-    "@vitest/coverage-v8": "^4.1.9",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "@vitest/coverage-v8": "^4.1.10",
     "baileys": "7.0.0-rc13",
-    "matrix-js-sdk": "41.6.0",
-    "oxfmt": "^0.56.0",
-    "oxlint": "^1.69.0",
-    "oxlint-tsgolint": "^0.23.0",
-    "tsx": "^4.22.4",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.9"
+    "matrix-js-sdk": "41.9.0",
+    "oxfmt": "^0.58.0",
+    "oxlint": "^1.73.0",
+    "oxlint-tsgolint": "^0.24.0",
+    "tsx": "^4.23.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=22"
