@@ -94,6 +94,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         const to = telegramTargetKey(chatId, threadId);
         return {
           channel: "telegram",
+          providerTargetKey: to,
           to,
           replyChannel: "telegram",
           replyTo: to,

@@ -493,6 +493,7 @@ describe("OpenClaw local provider bridge", () => {
   it("maps QA targets, inbound messages, and recorder events", () => {
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:alice" })).toEqual({
       channel: "telegram",
+      providerTargetKey: "100001",
       to: "100001",
       replyChannel: "telegram",
       replyTo: "100001",
@@ -581,6 +582,7 @@ describe("OpenClaw local provider bridge", () => {
       }),
     ).toEqual({
       channel: "whatsapp",
+      providerTargetKey: "15551234567@s.whatsapp.net",
       to: "15551234567@s.whatsapp.net",
       replyChannel: "whatsapp",
       replyTo: "15551234567@s.whatsapp.net",
@@ -645,6 +647,7 @@ describe("OpenClaw local provider bridge", () => {
       }),
     ).toEqual({
       channel: "slack",
+      providerTargetKey: "C1234567890:thread:1700000000.000100",
       to: "C1234567890",
       replyChannel: "slack",
       replyTo: "C1234567890:thread:1700000000.000100",
@@ -712,6 +715,7 @@ describe("OpenClaw local provider bridge", () => {
       createOpenClawCrablineAgentDelivery({ manifest: signalManifest, target: "group:group-1" }),
     ).toEqual({
       channel: "signal",
+      providerTargetKey: "group:group-1",
       replyChannel: "signal",
       replyTo: "group:group-1",
       to: "group:group-1",
@@ -889,7 +893,7 @@ describe("OpenClaw local provider bridge", () => {
     ).toMatchObject({ to: "thread:general/parent" });
   });
 
-  it("maps Matrix native rooms, inbound messages, and recorder events", () => {
+  it("maps Matrix logical and native rooms, actors, and recorder events", () => {
     const roomId = "!qa:matrix.test";
     expect(
       createOpenClawCrablineAgentDelivery({
@@ -898,13 +902,21 @@ describe("OpenClaw local provider bridge", () => {
       }),
     ).toEqual({
       channel: "matrix",
+      providerTargetKey: roomId,
       replyChannel: "matrix",
       replyTo: `room:${roomId}`,
       to: `room:${roomId}`,
     });
-    expect(() =>
-      createOpenClawCrablineAgentDelivery({ manifest: matrixManifest, target: "channel:general" }),
-    ).toThrow("Matrix targets must be native room IDs.");
+    const logicalDelivery = createOpenClawCrablineAgentDelivery({
+      manifest: matrixManifest,
+      target: "channel:general",
+    });
+    expect(logicalDelivery).toMatchObject({
+      channel: "matrix",
+      providerTargetKey: expect.stringMatching(/^![a-f0-9]{16}:matrix\.test$/u),
+      replyTo: expect.stringMatching(/^room:![a-f0-9]{16}:matrix\.test$/u),
+      to: expect.stringMatching(/^room:![a-f0-9]{16}:matrix\.test$/u),
+    });
     expect(() =>
       createOpenClawCrablineAgentDelivery({
         manifest: matrixManifest,
@@ -932,7 +944,58 @@ describe("OpenClaw local provider bridge", () => {
       providerTargetKey: roomId,
       providerUrl: "http://127.0.0.1:8642/crabline/matrix/inbound",
       qaTarget: `group:${roomId}`,
+      stateConversation: { id: roomId, kind: "group" },
     });
+
+    const logicalInbound = createOpenClawCrablineInbound({
+      manifest: matrixManifest,
+      input: {
+        conversation: { id: "driver-dm", kind: "direct" },
+        senderId: "driver",
+        senderName: "Driver",
+        text: "hello @openclaw",
+      },
+    });
+    expect(logicalInbound).toMatchObject({
+      providerBody: {
+        direct: true,
+        roomId: expect.stringMatching(/^![a-f0-9]{16}:matrix\.test$/u),
+        senderId: "@driver:matrix.test",
+        text: "hello @openclaw:matrix.test",
+      },
+      providerTargetKey: expect.stringMatching(/^![a-f0-9]{16}:matrix\.test$/u),
+      qaTarget: "dm:driver-dm",
+      stateConversation: { id: "driver-dm", kind: "direct" },
+    });
+
+    const observerInbound = createOpenClawCrablineInbound({
+      manifest: matrixManifest,
+      input: {
+        conversation: { id: "main", kind: "group" },
+        senderId: "observer",
+        text: "observe",
+      },
+    });
+    expect(observerInbound).toMatchObject({
+      providerBody: { senderId: "@observer:matrix.test" },
+      qaTarget: "group:main",
+      stateConversation: { id: "main", kind: "group" },
+    });
+
+    const logicalRoomId = logicalDelivery.providerTargetKey;
+    expect(logicalRoomId).toBeDefined();
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: matrixManifest,
+        targetByProviderTarget: new Map([[logicalRoomId!, "group:general"]]),
+        event: {
+          body: { body: "logical room reply", msgtype: "m.text" },
+          method: "PUT",
+          path: `/_matrix/client/v3/rooms/${encodeURIComponent(logicalRoomId!)}/send/m.room.message/txn-logical`,
+          type: "api",
+        },
+      }),
+    ).toMatchObject({ text: "logical room reply", to: "group:general" });
 
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({

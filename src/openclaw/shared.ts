@@ -37,6 +37,7 @@ export type OpenClawCrablineGatewayBinding = {
 
 export type OpenClawCrablineAgentDelivery = {
   channel: string;
+  providerTargetKey: string;
   replyChannel: string;
   replyTo: string;
   to: string;

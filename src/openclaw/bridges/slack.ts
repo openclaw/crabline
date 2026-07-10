@@ -110,11 +110,13 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
       createAgentDelivery(parsed) {
         const to = requireSlackSendTargetId(parsed.id, "Slack target");
         const threadTs = requireSlackThreadTs(parsed.threadId, "Slack target thread");
+        const providerTargetKey = slackTargetKey(to, threadTs);
         return {
           channel: "slack",
+          providerTargetKey,
           to,
           replyChannel: "slack",
-          replyTo: slackTargetKey(to, threadTs),
+          replyTo: providerTargetKey,
         };
       },
       createInbound(input) {

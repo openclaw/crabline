@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   createAdminInboundRequest,
   createOpenClawCrablineProviderBridge,
@@ -7,12 +8,33 @@ import {
   readString,
 } from "../shared.js";
 
-function matrixRoomId(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("!") || !trimmed.includes(":")) {
-    throw new Error("Matrix targets must be native room IDs.");
+function matrixServerName(botUserId: string): string {
+  const separator = botUserId.lastIndexOf(":");
+  if (separator <= 1 || separator === botUserId.length - 1) {
+    throw new Error("Crabline Matrix bot user id must include a server name.");
   }
-  return trimmed;
+  return botUserId.slice(separator + 1);
+}
+
+function matrixRoomId(value: string, botUserId: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("!") && trimmed.includes(":")) {
+    return trimmed;
+  }
+  const digest = createHash("sha256").update(trimmed).digest("hex").slice(0, 16);
+  return `!${digest}:${matrixServerName(botUserId)}`;
+}
+
+function matrixUserId(value: string, botUserId: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("@") && trimmed.includes(":")) {
+    return trimmed;
+  }
+  const normalized = trimmed.toLowerCase();
+  const localpart = /^[a-z0-9._=/-]+$/u.test(normalized)
+    ? normalized
+    : createHash("sha256").update(trimmed).digest("hex").slice(0, 16);
+  return `@${localpart}:${matrixServerName(botUserId)}`;
 }
 
 function targetKey(roomId: string, threadId?: string): string {
@@ -78,17 +100,18 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         if (parsed.threadId) {
           throw new Error("Matrix thread targets require OpenClaw QA thread forwarding.");
         }
-        const roomId = matrixRoomId(parsed.id);
+        const roomId = matrixRoomId(parsed.id, matrix.botUserId);
         const to = `room:${roomId}`;
         return {
           channel: "matrix",
+          providerTargetKey: roomId,
           replyChannel: "matrix",
           replyTo: to,
           to,
         };
       },
       createInbound(input) {
-        const roomId = matrixRoomId(input.conversation.id);
+        const roomId = matrixRoomId(input.conversation.id, matrix.botUserId);
         const threadId = input.threadId?.trim() || undefined;
         const direct = input.conversation.kind === "direct";
         return {
@@ -96,9 +119,9 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           providerBody: {
             roomId,
             direct,
-            senderId: input.senderId,
+            senderId: matrixUserId(input.senderId, matrix.botUserId),
             ...(input.senderName ? { senderName: input.senderName } : {}),
-            text: input.text,
+            text: input.text.replace(/@openclaw(?!:)/gu, matrix.botUserId),
             ...(threadId ? { threadId } : {}),
           },
           providerTargetKey: targetKey(roomId, threadId),

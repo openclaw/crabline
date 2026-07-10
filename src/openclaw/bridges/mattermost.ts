@@ -74,7 +74,14 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
         }
         const id = nativeId(parsed.id);
         const to = parsed.kind === "direct" ? `user:${id}` : `channel:${id}`;
-        return { channel: "mattermost", replyChannel: "mattermost", replyTo: to, to };
+        return {
+          channel: "mattermost",
+          providerTargetKey:
+            parsed.kind === "direct" ? directChannelId(mattermost.botUserId, id) : id,
+          replyChannel: "mattermost",
+          replyTo: to,
+          to,
+        };
       },
       createInbound(input) {
         const kind = input.conversation.kind === "direct" ? "direct" : "group";

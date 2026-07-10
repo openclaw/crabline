@@ -75,6 +75,7 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         const to = requireWhatsAppJid(parsed.id, "WhatsApp target");
         return {
           channel: "whatsapp",
+          providerTargetKey: to,
           to,
           replyChannel: "whatsapp",
           replyTo: to,

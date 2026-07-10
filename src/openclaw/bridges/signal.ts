@@ -68,7 +68,13 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
       },
       createAgentDelivery(parsed) {
         const to = signalTarget(parsed.kind, parsed.id);
-        return { channel: "signal", replyChannel: "signal", replyTo: to, to };
+        return {
+          channel: "signal",
+          providerTargetKey: to,
+          replyChannel: "signal",
+          replyTo: to,
+          to,
+        };
       },
       createInbound(input) {
         const kind = input.conversation.kind === "direct" ? "direct" : "group";
