@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   acquireOpenClawCrablineSmokeRunLock,
+  processStartedAtMsFromElapsed,
   releaseOpenClawCrablineSmokeRunLock,
 } from "../src/openclaw/smoke-lock.js";
 import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "../src/openclaw/shared.js";
@@ -15,6 +16,14 @@ const disableHeartbeat = (_renew: () => Promise<void>, _intervalMs: number) => (
 });
 
 describe("OpenClaw smoke lock cleanup", () => {
+  it("derives process identity from timezone-independent elapsed time", () => {
+    expect(processStartedAtMsFromElapsed("01:02", 1_000_000)).toBe(938_000);
+    expect(processStartedAtMsFromElapsed("03:04:05", 20_000_000)).toBe(8_955_000);
+    expect(processStartedAtMsFromElapsed("2-03:04:05", 200_000_000)).toBe(16_155_000);
+    expect(processStartedAtMsFromElapsed("25:00:00", 200_000_000)).toBeNull();
+    expect(processStartedAtMsFromElapsed("not elapsed", 200_000_000)).toBeNull();
+  });
+
   it("secures an empty Windows lock directory before writing sensitive contents", async () => {
     const outputDir = await createTempDir();
     const destinationPath = path.join(outputDir, "current.json");

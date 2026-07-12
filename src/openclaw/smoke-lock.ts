@@ -393,16 +393,43 @@ const getProcessStartedAtMs: GetProcessStartedAtMs = (pid) => {
           ],
           { encoding: "utf8", timeout: 1_000, windowsHide: true },
         )
-      : spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      : spawnSync("ps", ["-o", "etime=", "-p", String(pid)], {
           encoding: "utf8",
           timeout: 1_000,
         });
   if (result.status !== 0) {
     return null;
   }
-  const startedAtMs = Date.parse(result.stdout.trim());
-  return Number.isFinite(startedAtMs) && startedAtMs > 0 ? startedAtMs : null;
+  const startedAtMs =
+    process.platform === "win32"
+      ? Date.parse(result.stdout.trim())
+      : processStartedAtMsFromElapsed(result.stdout, Date.now());
+  return startedAtMs !== null && Number.isFinite(startedAtMs) && startedAtMs > 0
+    ? startedAtMs
+    : null;
 };
+
+export function processStartedAtMsFromElapsed(value: string, nowMs: number): number | null {
+  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d{2}):(\d{2})$/u.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  const [, daysText, hoursText, minutesText, secondsText] = match;
+  const days = Number(daysText ?? 0);
+  const hours = Number(hoursText ?? 0);
+  const minutes = Number(minutesText);
+  const seconds = Number(secondsText);
+  if (
+    ![days, hours, minutes, seconds].every(Number.isSafeInteger) ||
+    hours > 23 ||
+    minutes > 59 ||
+    seconds > 59
+  ) {
+    return null;
+  }
+  const elapsedSeconds = ((days * 24 + hours) * 60 + minutes) * 60 + seconds;
+  return Math.trunc(nowMs - elapsedSeconds * 1_000);
+}
 
 function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): boolean {
   const { owner } = record;
