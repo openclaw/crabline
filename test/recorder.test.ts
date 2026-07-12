@@ -195,6 +195,14 @@ describe("recorder", () => {
     ).resolves.toMatchObject({ id: `bounded-${eventCount - 1}` });
     expect(cursor.seen.size).toBe(4096);
     expect(cursor.seen.has(JSON.stringify(["slack", "slack:C123", "bounded-0"]))).toBe(false);
+    await expect(
+      waitForRecordedInbound({
+        cursor,
+        filePath,
+        matches: (event) => event.id === `bounded-${eventCount - 1}`,
+        timeoutMs: 30,
+      }),
+    ).resolves.toBeNull();
   });
 
   it("does not collapse distinct records whose fields contain delimiters", async () => {
