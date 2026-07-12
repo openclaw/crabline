@@ -158,10 +158,12 @@ export async function runFixtureCommand(params: {
         try {
           while (Date.now() < inboundDeadline) {
             const timeoutMs = inboundDeadline - Date.now();
+            const controller = new AbortController();
             const candidate = await raceInboundDeadline(
               provider.waitForInbound({
                 ...contextBase,
                 nonce,
+                signal: controller.signal,
                 since,
                 threadId: accepted.threadId,
                 timeoutMs,
@@ -169,6 +171,7 @@ export async function runFixtureCommand(params: {
               timeoutMs,
             );
             if (candidate === INBOUND_DEADLINE_REACHED) {
+              controller.abort(new Error("Inbound wait deadline reached."));
               break;
             }
             if (!candidate) {

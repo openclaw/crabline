@@ -160,7 +160,7 @@ class LazyProviderAdapter implements ProviderAdapter {
   }
 
   waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
-    return this.#runOperation((provider) => provider.waitForInbound(context));
+    return this.#runOperation((provider) => provider.waitForInbound(context), context.signal);
   }
 
   watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
@@ -330,7 +330,10 @@ class LazyProviderAdapter implements ProviderAdapter {
     await provider.cleanup?.();
   }
 
-  #runOperation<T>(run: (provider: ProviderAdapter) => Promise<T>): Promise<T> {
+  #runOperation<T>(
+    run: (provider: ProviderAdapter) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
     if (this.#cleanedUp) {
       return Promise.reject(this.#cleanedUpError());
     }
@@ -348,7 +351,32 @@ class LazyProviderAdapter implements ProviderAdapter {
         const result = run(provider);
         dispatch.reached = true;
         markDispatched?.();
-        return await result;
+        if (!signal) {
+          return await result;
+        }
+        return await new Promise<T>((resolve, reject) => {
+          const finish = () => signal.removeEventListener("abort", abort);
+          const abort = () => {
+            finish();
+            reject(signal.reason ?? new Error("Provider operation aborted."));
+          };
+          if (signal.aborted) {
+            abort();
+            void result.catch(() => undefined);
+            return;
+          }
+          signal.addEventListener("abort", abort, { once: true });
+          void result.then(
+            (value) => {
+              finish();
+              resolve(value);
+            },
+            (error: unknown) => {
+              finish();
+              reject(error);
+            },
+          );
+        });
       } catch (error) {
         dispatch.reached = true;
         markDispatched?.();

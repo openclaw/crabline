@@ -168,6 +168,7 @@ function runScript<T>(params: {
   payload: unknown;
   schema: z.ZodType<T>;
   shell?: string | undefined;
+  signal?: AbortSignal | undefined;
   timeoutGraceMs?: number | undefined;
   timeoutMs: number;
 }): Promise<T> {
@@ -186,6 +187,12 @@ function runScript<T>(params: {
     let outputBytes = 0;
     let settled = false;
     let timeoutGrace: NodeJS.Timeout | undefined;
+    const abort = () => {
+      finish(() => {
+        terminateChild(child);
+        reject(params.signal?.reason ?? new Error("Script command aborted."));
+      });
+    };
 
     const finish = (callback: () => void) => {
       if (settled) {
@@ -194,6 +201,7 @@ function runScript<T>(params: {
       settled = true;
       clearTimeout(timeout);
       clearTimeout(timeoutGrace);
+      params.signal?.removeEventListener("abort", abort);
       callback();
     };
 
@@ -306,6 +314,11 @@ function runScript<T>(params: {
     }, params.timeoutMs);
     timeout.unref();
 
+    if (params.signal?.aborted) {
+      abort();
+      return;
+    }
+    params.signal?.addEventListener("abort", abort, { once: true });
     child.stdin.end(JSON.stringify(params.payload));
   });
 }
@@ -414,6 +427,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       },
       schema: ScriptInboundResultSchema,
       shell: this.#config.shell,
+      signal: context.signal,
       timeoutGraceMs: SCRIPT_WAIT_EXIT_GRACE_MS,
       timeoutMs: context.timeoutMs,
     });

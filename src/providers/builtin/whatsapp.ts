@@ -150,6 +150,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
         ) &&
         matchesInbound(event, context.fixture.inboundMatch, context.nonce),
       since: context.since,
+      signal: context.signal,
       timeoutMs: context.timeoutMs,
     });
   }
