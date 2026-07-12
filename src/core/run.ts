@@ -89,33 +89,38 @@ export async function runFixtureCommand(params: {
   let result: CommandRunResult | undefined;
   try {
     if (!provider.supports.includes(mode)) {
-      return (result = {
+      result = {
         diagnostics: [`provider ${fixture.provider} does not support mode ${mode}`],
         failureKind: "config",
         fixtureId: fixture.id,
         mode,
         ok: false,
         providerId: fixture.provider,
-      });
+      };
     }
 
-    for (const envName of [
-      ...fixture.env,
-      ...(params.manifest.providers[fixture.provider]?.env ?? []),
-    ]) {
-      if (!process.env[envName]) {
-        return (result = {
-          diagnostics: [`missing env: ${envName}`],
-          failureKind: "config",
-          fixtureId: fixture.id,
-          mode,
-          ok: false,
-          providerId: fixture.provider,
-        });
+    if (!result) {
+      for (const envName of [
+        ...fixture.env,
+        ...(params.manifest.providers[fixture.provider]?.env ?? []),
+      ]) {
+        if (!process.env[envName]) {
+          result = {
+            diagnostics: [`missing env: ${envName}`],
+            failureKind: "config",
+            fixtureId: fixture.id,
+            mode,
+            ok: false,
+            providerId: fixture.provider,
+          };
+          break;
+        }
       }
     }
 
-    if (mode === "probe") {
+    if (result) {
+      // Preflight failures still flow through provider cleanup before returning.
+    } else if (mode === "probe") {
       try {
         const probeResult = await provider.probe(contextBase);
         return (result = {
@@ -129,165 +134,165 @@ export async function runFixtureCommand(params: {
       } catch (error) {
         return (result = toFailure(fixture.id, fixture.provider, mode, error, "connectivity"));
       }
-    }
-
-    if (fixture.inboundMatch.strategy === "regex" && fixture.inboundMatch.pattern) {
-      try {
-        RegExp(fixture.inboundMatch.pattern, "u");
-        const safetyError = inboundRegexSafetyError(fixture.inboundMatch.pattern);
-        if (safetyError) {
-          throw new Error(safetyError);
-        }
-      } catch (error) {
-        return (result = toFailure(
-          fixture.id,
-          fixture.provider,
-          mode,
-          new CrablineError(`Invalid inbound regex: ${ensureErrorMessage(error)}`, {
-            cause: error,
-            kind: "config",
-          }),
-          "config",
-        ));
-      }
-    }
-
-    let attempts = 0;
-    const maxAttempts = fixture.retries + 1;
-    let lastFailure: CommandRunResult | null = null;
-
-    while (attempts < maxAttempts) {
-      attempts += 1;
-      const nonce = createNonce(fixture.id);
-
-      try {
-        const outboundText = createOutboundText({ ...fixture, mode }, nonce);
-        const since = new Date().toISOString();
-        let accepted;
+    } else {
+      if (fixture.inboundMatch.strategy === "regex" && fixture.inboundMatch.pattern) {
         try {
-          accepted = await provider.send({
-            ...contextBase,
-            mode,
-            nonce,
-            text: outboundText,
-          });
+          RegExp(fixture.inboundMatch.pattern, "u");
+          const safetyError = inboundRegexSafetyError(fixture.inboundMatch.pattern);
+          if (safetyError) {
+            throw new Error(safetyError);
+          }
         } catch (error) {
-          lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "outbound", nonce);
-          continue;
-        }
-        if (!accepted.accepted) {
-          lastFailure = toFailure(
+          return (result = toFailure(
             fixture.id,
             fixture.provider,
             mode,
-            new CrablineError(`Provider rejected outbound message ${accepted.messageId}.`, {
-              kind: "outbound",
+            new CrablineError(`Invalid inbound regex: ${ensureErrorMessage(error)}`, {
+              cause: error,
+              kind: "config",
             }),
-            "outbound",
-            nonce,
-          );
-          continue;
+            "config",
+          ));
         }
-        diagnostics.push(`accepted message ${accepted.messageId}`);
+      }
 
-        if (mode === "send") {
+      let attempts = 0;
+      const maxAttempts = fixture.retries + 1;
+      let lastFailure: CommandRunResult | null = null;
+
+      while (attempts < maxAttempts) {
+        attempts += 1;
+        const nonce = createNonce(fixture.id);
+
+        try {
+          const outboundText = createOutboundText({ ...fixture, mode }, nonce);
+          const since = new Date().toISOString();
+          let accepted;
+          try {
+            accepted = await provider.send({
+              ...contextBase,
+              mode,
+              nonce,
+              text: outboundText,
+            });
+          } catch (error) {
+            lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "outbound", nonce);
+            continue;
+          }
+          if (!accepted.accepted) {
+            lastFailure = toFailure(
+              fixture.id,
+              fixture.provider,
+              mode,
+              new CrablineError(`Provider rejected outbound message ${accepted.messageId}.`, {
+                kind: "outbound",
+              }),
+              "outbound",
+              nonce,
+            );
+            continue;
+          }
+          diagnostics.push(`accepted message ${accepted.messageId}`);
+
+          if (mode === "send") {
+            return (result = {
+              diagnostics,
+              fixtureId: fixture.id,
+              mode,
+              nonce,
+              ok: true,
+              providerId: fixture.provider,
+            });
+          }
+
+          const inboundDeadline = Date.now() + fixture.timeoutMs;
+          const seenInbound = new Set<string>();
+          let inbound;
+          try {
+            while (Date.now() < inboundDeadline) {
+              const timeoutMs = inboundDeadline - Date.now();
+              const controller = new AbortController();
+              const wait = provider.waitForInbound({
+                ...contextBase,
+                nonce,
+                signal: controller.signal,
+                since,
+                threadId: accepted.threadId,
+                timeoutMs,
+              });
+              const candidate = await raceInboundDeadline(wait, timeoutMs);
+              if (candidate === INBOUND_DEADLINE_REACHED) {
+                if (!(await abortAndDrainInboundWait(wait, controller))) {
+                  abortDrainFailed = true;
+                  throw new CrablineError(
+                    `Provider inbound wait did not settle within ${INBOUND_ABORT_GRACE_MS}ms after abort.`,
+                    { kind: "inbound" },
+                  );
+                }
+                break;
+              }
+              if (!candidate) {
+                break;
+              }
+
+              const key = JSON.stringify([candidate.provider, candidate.threadId, candidate.id]);
+              if (seenInbound.has(key)) {
+                await sleep(Math.min(10, Math.max(0, inboundDeadline - Date.now())));
+                continue;
+              }
+              seenInbound.add(key);
+
+              if (matchesInbound(candidate, fixture.inboundMatch, nonce)) {
+                inbound = candidate;
+                break;
+              }
+            }
+          } catch (error) {
+            lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "inbound", nonce);
+            if (abortDrainFailed) {
+              break;
+            }
+            continue;
+          }
+          if (!inbound) {
+            lastFailure = {
+              diagnostics: [
+                ...diagnostics,
+                `timed out waiting for inbound after ${fixture.timeoutMs}ms`,
+              ],
+              failureKind: "timeout",
+              fixtureId: fixture.id,
+              mode,
+              nonce,
+              ok: false,
+              providerId: fixture.provider,
+            };
+            await sleep(50);
+            continue;
+          }
+
           return (result = {
-            diagnostics,
+            diagnostics: [...diagnostics, `matched inbound ${inbound.id}`],
             fixtureId: fixture.id,
             mode,
             nonce,
             ok: true,
             providerId: fixture.provider,
           });
-        }
-
-        const inboundDeadline = Date.now() + fixture.timeoutMs;
-        const seenInbound = new Set<string>();
-        let inbound;
-        try {
-          while (Date.now() < inboundDeadline) {
-            const timeoutMs = inboundDeadline - Date.now();
-            const controller = new AbortController();
-            const wait = provider.waitForInbound({
-              ...contextBase,
-              nonce,
-              signal: controller.signal,
-              since,
-              threadId: accepted.threadId,
-              timeoutMs,
-            });
-            const candidate = await raceInboundDeadline(wait, timeoutMs);
-            if (candidate === INBOUND_DEADLINE_REACHED) {
-              if (!(await abortAndDrainInboundWait(wait, controller))) {
-                abortDrainFailed = true;
-                throw new CrablineError(
-                  `Provider inbound wait did not settle within ${INBOUND_ABORT_GRACE_MS}ms after abort.`,
-                  { kind: "inbound" },
-                );
-              }
-              break;
-            }
-            if (!candidate) {
-              break;
-            }
-
-            const key = JSON.stringify([candidate.provider, candidate.threadId, candidate.id]);
-            if (seenInbound.has(key)) {
-              await sleep(Math.min(10, Math.max(0, inboundDeadline - Date.now())));
-              continue;
-            }
-            seenInbound.add(key);
-
-            if (matchesInbound(candidate, fixture.inboundMatch, nonce)) {
-              inbound = candidate;
-              break;
-            }
-          }
         } catch (error) {
-          lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "inbound", nonce);
-          if (abortDrainFailed) {
-            break;
-          }
-          continue;
+          lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "assertion", nonce);
         }
-        if (!inbound) {
-          lastFailure = {
-            diagnostics: [
-              ...diagnostics,
-              `timed out waiting for inbound after ${fixture.timeoutMs}ms`,
-            ],
-            failureKind: "timeout",
-            fixtureId: fixture.id,
-            mode,
-            nonce,
-            ok: false,
-            providerId: fixture.provider,
-          };
-          await sleep(50);
-          continue;
-        }
-
-        return (result = {
-          diagnostics: [...diagnostics, `matched inbound ${inbound.id}`],
-          fixtureId: fixture.id,
-          mode,
-          nonce,
-          ok: true,
-          providerId: fixture.provider,
-        });
-      } catch (error) {
-        lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "assertion", nonce);
       }
-    }
 
-    return (result = lastFailure ?? {
-      diagnostics: ["unknown failure"],
-      failureKind: "assertion",
-      fixtureId: fixture.id,
-      mode,
-      ok: false,
-      providerId: fixture.provider,
-    });
+      return (result = lastFailure ?? {
+        diagnostics: ["unknown failure"],
+        failureKind: "assertion",
+        fixtureId: fixture.id,
+        mode,
+        ok: false,
+        providerId: fixture.provider,
+      });
+    }
   } finally {
     const cleanupErrors: unknown[] = [];
     try {

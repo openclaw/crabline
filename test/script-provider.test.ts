@@ -747,6 +747,45 @@ describe("script provider", () => {
     }
   });
 
+  it("redacts environment secrets before configured command substrings", async () => {
+    const context = await createContext();
+    const envName = ["SCRIPT", "TOKEN"].join("_");
+    const marker = "overlap-prefix-configured-fragment-overlap-suffix";
+    const originalValue = process.env[envName];
+    process.env[envName] = marker;
+
+    try {
+      const failingScript = path.join(path.dirname(context.manifestPath), "send-overlap.mjs");
+      await writeText(
+        failingScript,
+        `process.stderr.write(process.env[${JSON.stringify(envName)}]);process.exitCode=7;`,
+      );
+      context.config.script!.commands.send = `node ${JSON.stringify(failingScript)}`;
+      context.config.script!.commands.watch = "configured-fragment";
+      const provider = new ScriptProviderAdapter(context);
+
+      const failure = await provider
+        .send({
+          ...context,
+          mode: "send",
+          nonce: "nonce",
+          text: "payload",
+        })
+        .catch((error: unknown) => error);
+      const message = ensureErrorMessage(failure);
+
+      expect(message).toContain("[redacted environment value]");
+      expect(message).not.toContain("overlap-prefix");
+      expect(message).not.toContain("overlap-suffix");
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env[envName];
+      } else {
+        process.env[envName] = originalValue;
+      }
+    }
+  });
+
   it("uses stdout diagnostics when stderr is only whitespace", async () => {
     const context = await createContext();
     const failingScript = path.join(path.dirname(context.manifestPath), "send-stdout-error.mjs");
