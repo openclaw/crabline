@@ -347,9 +347,9 @@ export async function postZaloWebhook(params: {
   activeRequests?: Set<ClientRequest>;
   addresses?: WebhookAddress[] | undefined;
   body: string;
-  secretToken: string;
   timeoutMs: number;
   url: URL;
+  verificationValue: string;
 }): Promise<number> {
   const activeRequests = params.activeRequests ?? new Set<ClientRequest>();
   const deadlineAt = Date.now() + params.timeoutMs;
@@ -367,7 +367,7 @@ export async function postZaloWebhook(params: {
       return await postWebhook(
         params.url,
         params.body,
-        params.secretToken,
+        params.verificationValue,
         attemptTimeoutMs,
         address,
         activeRequests,
@@ -492,9 +492,9 @@ async function deliverWebhookUpdate(
       activeRequests: state.activeWebhookRequests,
       addresses: target.addresses,
       body: JSON.stringify({ ok: true, result: update }),
-      secretToken: webhook.secretToken,
       timeoutMs: remainingMs,
       url,
+      verificationValue: webhook.secretToken,
     });
     if (status < 200 || status >= 300) {
       return zaloError(`Webhook delivery failed with HTTP ${status}`, 502);

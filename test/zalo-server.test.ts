@@ -392,9 +392,9 @@ describe("Zalo local provider server", () => {
             { address: "127.0.0.1", family: 4 },
           ],
           body: '{"ok":true}',
-          secretToken: "secret",
           timeoutMs: 1_000,
           url: new URL(`http://webhook.test:${address.port}/zalo`),
+          verificationValue: "secret",
         }),
       ).resolves.toBe(200);
       expect(received).toEqual(['{"ok":true}']);
