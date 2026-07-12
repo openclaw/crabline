@@ -28,6 +28,7 @@ describe("production package", () => {
       optionalDependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
       types?: string;
+      version?: string;
     };
 
     expect(pkg.dependencies?.["@types/node"]).toBeDefined();
@@ -77,7 +78,70 @@ describe("production package", () => {
         }
       }),
     );
-  }, 30_000);
+
+    const installRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-production-install-"));
+    const packDirectory = path.join(installRoot, "pack");
+    const consumerDirectory = path.join(installRoot, "consumer");
+    try {
+      await Promise.all([
+        fs.mkdir(packDirectory, { recursive: true }),
+        fs.mkdir(consumerDirectory, { recursive: true }),
+      ]);
+      const packed = await npmPack(root, packDirectory);
+      const tarballPath = path.join(packDirectory, packed.filename);
+      await fs.writeFile(
+        path.join(consumerDirectory, "package.json"),
+        JSON.stringify({ name: "crabline-production-consumer", private: true }),
+      );
+      await execFileAsync(
+        "npm",
+        [
+          "install",
+          "--ignore-scripts",
+          "--no-audit",
+          "--no-fund",
+          "--no-package-lock",
+          "--omit=dev",
+          tarballPath,
+        ],
+        {
+          cwd: consumerDirectory,
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      );
+
+      const installedRoot = path.join(consumerDirectory, "node_modules", "@openclaw", "crabline");
+      const installedPackage = JSON.parse(
+        await fs.readFile(path.join(installedRoot, "package.json"), "utf8"),
+      ) as typeof pkg;
+      expect(installedPackage.version).toBe(pkg.version);
+      for (const packageName of DEV_ONLY_RUNTIME_PACKAGES) {
+        await expect(
+          fs.stat(path.join(consumerDirectory, "node_modules", packageName)),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      }
+
+      const { stdout: importOutput } = await execFileAsync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          'const pkg = await import("@openclaw/crabline"); console.log(typeof pkg.startCrablineServer);',
+        ],
+        { cwd: consumerDirectory },
+      );
+      expect(importOutput.trim()).toBe("function");
+
+      const installedCliPath = path.join(installedRoot, cliPath!);
+      const { stdout: installedCliHelp } = await execFileAsync(process.execPath, [
+        installedCliPath,
+        "--help",
+      ]);
+      expect(installedCliHelp).toContain("Usage: crabline");
+    } finally {
+      await fs.rm(installRoot, { force: true, recursive: true });
+    }
+  }, 120_000);
 
   it("uses portable cleanup scripts", async () => {
     const root = process.cwd();
@@ -119,6 +183,7 @@ describe("production package", () => {
 
   it("extracts pack metadata around lifecycle output", () => {
     const pack: NpmPackMetadata = {
+      filename: "openclaw-crabline-0.1.9.tgz",
       files: [{ path: "dist/src/bin/crabline.js" }],
     };
     const outputs = [
@@ -133,6 +198,7 @@ describe("production package", () => {
 });
 
 type NpmPackMetadata = {
+  filename: string;
   files: Array<{ mode?: number; path: string; size?: number }>;
 };
 
@@ -141,6 +207,18 @@ async function npmPackDryRun(root: string): Promise<NpmPackMetadata> {
     cwd: root,
     maxBuffer: 10 * 1024 * 1024,
   });
+  return parseNpmPackOutput(stdout);
+}
+
+async function npmPack(root: string, destination: string): Promise<NpmPackMetadata> {
+  const { stdout } = await execFileAsync(
+    "npm",
+    ["pack", "--json", "--pack-destination", destination],
+    {
+      cwd: root,
+      maxBuffer: 10 * 1024 * 1024,
+    },
+  );
   return parseNpmPackOutput(stdout);
 }
 
@@ -219,7 +297,10 @@ function findJsonDocumentEnd(output: string, start: number): number {
 
 function isNpmPackMetadata(value: unknown): value is NpmPackMetadata {
   return (
-    Boolean(value) && typeof value === "object" && Array.isArray((value as NpmPackMetadata).files)
+    Boolean(value) &&
+    typeof value === "object" &&
+    typeof (value as NpmPackMetadata).filename === "string" &&
+    Array.isArray((value as NpmPackMetadata).files)
   );
 }
 
