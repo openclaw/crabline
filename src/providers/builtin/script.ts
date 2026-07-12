@@ -80,18 +80,59 @@ function formatValidationError(error: z.ZodError): string {
     .join("; ");
 }
 
-const sensitiveCommandValuePattern =
-  /(?:^|[\s;&|])(?:[A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS|PRIVATE|CREDENTIAL|AUTH)[A-Za-z0-9_]*\s*=|--(?:api[-_]?key|auth|credential|pass(?:word)?|private[-_]?key|secret|token)(?:=|\s))/iu;
+const sensitiveEnvironmentNameFragmentPattern =
+  /(?:AUTH|BEARER|CREDENTIAL|KEY|PASS|PRIVATE|SECRET|TOKEN)/iu;
+const nonSensitiveWorkingDirectoryNames = new Set(["PWD", "OLDPWD"]);
+
+function isSensitiveEnvironmentName(name: string): boolean {
+  const upperName = name.toUpperCase();
+  return (
+    sensitiveEnvironmentNameFragmentPattern.test(upperName) ||
+    (!nonSensitiveWorkingDirectoryNames.has(upperName) && upperName.includes("PWD")) ||
+    /PAT(?!H)/u.test(upperName)
+  );
+}
+
+function commandContainsSensitiveValue(command: string): boolean {
+  const assignments = [
+    ...command.matchAll(/(?:^|[\s;&|])["']?([A-Za-z_][A-Za-z0-9_]*)\s*\+?=/gu),
+    ...command.matchAll(/\$env:([A-Za-z_][A-Za-z0-9_]*)\s*\+?=/giu),
+    ...command.matchAll(/\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}\s*\+?=/giu),
+  ];
+  if (assignments.some((match) => isSensitiveEnvironmentName(match[1] ?? ""))) {
+    return true;
+  }
+  return [...command.matchAll(/(?:^|[\s;&|])["']?--([A-Za-z0-9][A-Za-z0-9_-]*)(?:=|\s)/gu)].some(
+    (match) => isSensitiveEnvironmentName((match[1] ?? "").replaceAll("-", "_")),
+  );
+}
+
+function redactSensitiveEnvironmentValues(detail: string): string {
+  let redacted = detail;
+  const values = Object.entries(process.env)
+    .filter(
+      ([name, value]) =>
+        isSensitiveEnvironmentName(name) && value !== undefined && value.length > 0,
+    )
+    .map(([, value]) => value!)
+    .sort((left, right) => right.length - left.length);
+
+  for (const value of new Set(values)) {
+    redacted = redacted.split(value).join("[redacted environment value]");
+  }
+  return redacted;
+}
 
 function formatScriptError(summary: string, detail: string, command: string): string {
-  const trimmed = detail.trim();
-  if (!trimmed) {
+  if (!detail.trim()) {
     return summary;
   }
-  if (sensitiveCommandValuePattern.test(command)) {
+  if (commandContainsSensitiveValue(command)) {
     return `${summary}\n[script diagnostics redacted]`;
   }
-  const redacted = trimmed.split(command).join("[configured script command]").trim();
+  const redacted = redactSensitiveEnvironmentValues(
+    detail.split(command).join("[configured script command]"),
+  ).trim();
   return redacted ? `${summary}\n${redacted}` : summary;
 }
 
@@ -213,7 +254,7 @@ function runScript<T>(params: {
             new CrablineError(
               formatScriptError(
                 `Script command failed${signal ? ` (${signal})` : ""}.`,
-                stderrText.trim() || stdoutText.trim(),
+                stderrText.trim() ? stderrText : stdoutText,
                 params.command,
               ),
               { kind: "connectivity" },
