@@ -85,5 +85,37 @@ describe("WhatsApp provider lifecycle", () => {
 
     await Promise.all([provider.cleanup(), provider.cleanup()]);
     expect(close).toHaveBeenCalledTimes(1);
+    await expect(provider.probe(context)).rejects.toThrow(/has been cleaned up/u);
+    expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes an in-flight listener when cleanup wins the startup race", async () => {
+    let resolveStart:
+      | ((server: { close(): Promise<void>; endpointUrl: string }) => void)
+      | undefined;
+    const close = vi.fn(async () => undefined);
+    webhookMocks.startWebhookServer.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+    const config = createConfig();
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createContext(config);
+
+    const probe = provider.probe(context);
+    await vi.waitFor(() => expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1));
+
+    const cleanup = provider.cleanup();
+    await expect(provider.probe(context)).rejects.toThrow(/has been cleaned up/u);
+    resolveStart?.({
+      close,
+      endpointUrl: "http://127.0.0.1:43210/whatsapp/webhook",
+    });
+
+    await expect(probe).rejects.toThrow(/has been cleaned up/u);
+    await cleanup;
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1);
   });
 });

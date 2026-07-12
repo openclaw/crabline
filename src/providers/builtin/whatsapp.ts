@@ -68,8 +68,9 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
   readonly #webhook: LocalMockWebhookConfig | undefined;
+  #cleanedUp = false;
+  #cleanupPromise: Promise<void> | null = null;
   #server: StartedWebhookServer | null = null;
-  #serverClosing: Promise<void> | null = null;
   #serverStarting: Promise<StartedWebhookServer> | null = null;
 
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
@@ -149,20 +150,12 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   override async cleanup(): Promise<void> {
-    if (this.#serverClosing) {
-      await this.#serverClosing;
-    } else {
-      const closing = this.#closeWebhookServer();
-      this.#serverClosing = closing;
-      try {
-        await closing;
-      } finally {
-        if (this.#serverClosing === closing) {
-          this.#serverClosing = null;
-        }
-      }
-    }
-    await super.cleanup();
+    this.#cleanedUp = true;
+    this.#cleanupPromise ??= (async () => {
+      await this.#closeWebhookServer();
+      await super.cleanup();
+    })();
+    await this.#cleanupPromise;
   }
 
   async #handleWebhook(request: Request): Promise<Response> {
@@ -208,8 +201,8 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   async #ensureWebhookServer(): Promise<StartedWebhookServer> {
-    if (this.#serverClosing) {
-      await this.#serverClosing;
+    if (this.#cleanedUp) {
+      throw this.#cleanedUpError();
     }
     if (this.#server) {
       return this.#server;
@@ -221,9 +214,10 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     const host = this.#webhook?.host ?? DEFAULT_WHATSAPP_WEBHOOK.host;
     const port = this.#webhook?.port ?? DEFAULT_WHATSAPP_WEBHOOK.port;
     const webhookPath = this.#webhook?.path ?? DEFAULT_WHATSAPP_WEBHOOK.path;
-    const starting = (async () => {
+    const starting = (async (): Promise<StartedWebhookServer> => {
+      let server: StartedWebhookServer;
       try {
-        return await startWebhookServer({
+        server = await startWebhookServer({
           handle: (request) => this.#handleWebhook(request),
           host,
           path: webhookPath,
@@ -235,13 +229,17 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
           { cause: error, kind: "connectivity" },
         );
       }
+
+      this.#server = server;
+      if (this.#cleanedUp) {
+        throw this.#cleanedUpError();
+      }
+      return server;
     })();
     this.#serverStarting = starting;
 
     try {
-      const server = await starting;
-      this.#server = server;
-      return server;
+      return await starting;
     } finally {
       if (this.#serverStarting === starting) {
         this.#serverStarting = null;
@@ -250,14 +248,15 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   async #closeWebhookServer(): Promise<void> {
-    let server = this.#server;
-    if (!server && this.#serverStarting) {
+    const starting = this.#serverStarting;
+    if (starting) {
       try {
-        server = await this.#serverStarting;
+        await starting;
       } catch {
-        return;
+        // A failed startup has no listener; a cleanup race publishes one below.
       }
     }
+    const server = this.#server;
     if (!server) {
       return;
     }
@@ -266,6 +265,10 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       this.#server = null;
     }
     await server.close();
+  }
+
+  #cleanedUpError(): CrablineError {
+    return new CrablineError(`Provider "${this.id}" has been cleaned up.`, { kind: "config" });
   }
 }
 
