@@ -225,6 +225,7 @@ export async function publishOpenClawCrablineArtifactGeneration(
       : {}),
   };
   const store = await securePrivateDirectory(storePath, directoryOptions);
+  await params.lock.assertOwned();
   const currentPointer = await readOpenClawCrablineArtifactPointer(outputDir);
   if (currentPointer) {
     await assertCurrentGenerationExists(outputDir, currentPointer);
