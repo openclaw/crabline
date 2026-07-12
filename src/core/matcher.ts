@@ -1,4 +1,5 @@
 import { extractNonces } from "./nonces.js";
+import { compileInboundRegex } from "./safe-regex.js";
 import type { InboundEnvelope, InboundMatchConfig } from "../providers/types.js";
 
 export function matchesInbound(
@@ -36,7 +37,7 @@ export function matchesInbound(
   }
 
   if (config.strategy === "regex") {
-    return new RegExp(config.pattern, "u").test(text);
+    return compileInboundRegex(config.pattern).test(text);
   }
 
   return text.includes(config.pattern);
