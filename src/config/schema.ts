@@ -597,12 +597,26 @@ export const FixtureSchema = z.strictObject({
   timeoutMs: z.number().int().min(100).default(30_000),
 });
 
-export const ManifestSchema = z.strictObject({
+const MANIFEST_EXTENSION_KEY_PATTERN = /^x-[a-z0-9][a-z0-9._-]*$/u;
+
+function omitManifestExtensions(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return value;
+  }
+
+  const entries = Object.entries(value);
+  const manifestEntries = entries.filter(([key]) => !MANIFEST_EXTENSION_KEY_PATTERN.test(key));
+  return manifestEntries.length === entries.length ? value : Object.fromEntries(manifestEntries);
+}
+
+const StrictManifestSchema = z.strictObject({
   configVersion: z.literal(1).default(1),
   fixtures: z.array(FixtureSchema).default([]),
   providers: z.record(z.string(), ProviderConfigSchema).default({}),
   userName: z.string().min(1).default("crabline"),
 });
+
+export const ManifestSchema = z.preprocess(omitManifestExtensions, StrictManifestSchema);
 
 export type BuiltinAdapterId = BuiltinAdapterName;
 export type FixtureDefinition = z.infer<typeof FixtureSchema>;

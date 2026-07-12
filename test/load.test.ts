@@ -55,6 +55,25 @@ describe("config load", () => {
     expect(loaded.path).toBe(configPath);
   });
 
+  it("loads the shipped OpenClaw bridge fixture with YAML anchors", async () => {
+    const configPath = path.resolve("fixtures/examples/openclaw-bridge.yaml");
+
+    const loaded = await loadManifest(configPath);
+
+    expect(loaded.manifest.providers["slack-openclaw"]).toMatchObject({
+      adapter: "script",
+      platform: "slack",
+      script: {
+        commands: {
+          probe: "node ./scripts/openclaw-bridge-probe.mjs",
+          send: "node ./scripts/openclaw-bridge-send.mjs",
+          waitForInbound: "node ./scripts/openclaw-bridge-wait.mjs",
+        },
+      },
+    });
+    expect(loaded.manifest).not.toHaveProperty("x-openclaw-bridge");
+  });
+
   it("rejects invalid inbound regular expressions during config load", async () => {
     const directory = await createTempDir();
     directories.push(directory);
