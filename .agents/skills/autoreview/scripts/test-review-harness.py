@@ -132,11 +132,14 @@ def write_fixture_file(repo: Path, content: str) -> None:
 
 
 def run(command: list[str], cwd: Path) -> None:
-    subprocess.run(command, cwd=cwd, check=True)
+    env = os.environ.copy()
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    subprocess.run(command, cwd=cwd, check=True, env=env)
 
 
 def create_fixture_repo(repo: Path, fixture: str) -> None:
-    run(["git", "init", "--quiet"], repo)
+    run(["git", "-c", "init.templateDir=", "init", "--quiet"], repo)
     run(["git", "config", "user.name", "Review Fixture"], repo)
     run(["git", "config", "user.email", "review-fixture@example.com"], repo)
 

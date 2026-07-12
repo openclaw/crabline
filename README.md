@@ -86,10 +86,11 @@ Provider ids are local profile names. Fixtures reference them through
 `provider`. Built-in adapters infer their platform from `adapter`; `platform` is
 required only for `adapter: script`.
 
-Built-in provider credentials are optional metadata only. `doctor` checks
-explicit `env` declarations, script command availability, and config shape; it
-does not require live Slack, Discord, Telegram, WhatsApp, Matrix, iMessage, or
-other platform secrets for local mocks.
+Most built-in provider credentials are optional mock metadata. The WhatsApp
+webhook requires `appSecret` and `verifyToken` because every verification or
+delivery request is authenticated. `doctor` checks explicit `env` declarations,
+script command availability, and config shape without requiring live platform
+credentials.
 
 When configured, Discord `publicKey`, Slack `signingSecret`, Telegram
 `secretToken`, and Zalo `webhookSecret` enforce the provider-native webhook
@@ -120,8 +121,9 @@ The built-in providers are:
 - `whatsapp`
 - `zalo`
 
-The `script` adapter can bridge any other OpenClaw channel by running local
-commands for `probe`, `send`, `waitForInbound`, or `watch`.
+The `script` adapter can bridge any OpenClaw channel represented by the
+configured `platform` enum by running local commands for `probe`, `send`,
+`waitForInbound`, or `watch`.
 
 ## Local Provider Servers
 

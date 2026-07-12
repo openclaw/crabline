@@ -41,5 +41,5 @@ if ($null -ne $Python) {
     exit $LASTEXITCODE
 }
 
-Write-Error 'Python 3 is required to run test-review-harness.'
+[Console]::Error.WriteLine('Python 3 is required to run test-review-harness.')
 exit 127
