@@ -1789,6 +1789,9 @@ describe("OpenClaw local provider bridge", () => {
         manifestPath: result.manifestPath,
         result: { ok: true, provider: "telegram" },
       });
+      expect(result.warnings).toEqual([
+        "OpenClaw Crabline smoke committed but lock cleanup failed: lock release retries exhausted",
+      ]);
     } finally {
       await fs.rm(outputDir, { recursive: true, force: true });
     }
@@ -1811,6 +1814,38 @@ describe("OpenClaw local provider bridge", () => {
               const adapter = await startOpenClawCrablineAdapter(params);
               return {
                 ...adapter,
+                probe: async () => {
+                  throw primaryFailure;
+                },
+              };
+            },
+          },
+        ),
+      ).rejects.toBe(primaryFailure);
+      expect(primaryFailure.cause).toBe(cleanupFailure);
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the primary provider probe failure when adapter cleanup also fails", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-probe-errors-"));
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    const primaryFailure = new Error("probe failed");
+    const cleanupFailure = new Error("adapter close failed");
+    try {
+      await expect(
+        runSmokeWithDependencies(
+          { outputDir, selection },
+          {
+            startAdapter: async (params) => {
+              const adapter = await startOpenClawCrablineAdapter(params);
+              return {
+                ...adapter,
+                close: async () => {
+                  await adapter.close();
+                  throw cleanupFailure;
+                },
                 probe: async () => {
                   throw primaryFailure;
                 },

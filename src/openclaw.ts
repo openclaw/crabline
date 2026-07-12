@@ -224,10 +224,44 @@ export async function runOpenClawCrablineChannelDriverSmoke(
       recorderPath,
     });
     let probe: unknown;
+    let probeFailed = false;
+    let probeFailure: unknown;
     try {
       probe = await adapter.probe();
-    } finally {
+    } catch (error) {
+      probeFailed = true;
+      probeFailure = error;
+    }
+    try {
       await adapter.close();
+    } catch (cleanupError) {
+      if (!probeFailed) {
+        throw cleanupError;
+      }
+      if (probeFailure instanceof Error) {
+        const existingCause = probeFailure.cause;
+        Object.defineProperty(probeFailure, "cause", {
+          configurable: true,
+          value:
+            existingCause === undefined
+              ? cleanupError
+              : new AggregateError(
+                  [existingCause, cleanupError],
+                  "OpenClaw Crabline provider probe cleanup also failed.",
+                ),
+        });
+        throw probeFailure;
+      }
+      const combinedError = new Error("OpenClaw Crabline provider probe and cleanup both failed.", {
+        cause: cleanupError,
+      });
+      Object.defineProperty(combinedError, "errors", {
+        value: [probeFailure, cleanupError],
+      });
+      throw combinedError;
+    }
+    if (probeFailed) {
+      throw probeFailure;
     }
 
     const capabilityReport = {
@@ -266,6 +300,7 @@ export async function runOpenClawCrablineChannelDriverSmoke(
         manifestPath: generation.manifestPath,
         smoke: generation.smoke,
         smokeArtifactPath: generation.smokeArtifactPath,
+        ...(generation.warnings ? { warnings: generation.warnings } : {}),
       },
     };
   } catch (error) {
@@ -299,6 +334,14 @@ export async function runOpenClawCrablineChannelDriverSmoke(
       });
       throw combinedError;
     }
+    const detail = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+    outcome.result = {
+      ...outcome.result,
+      warnings: [
+        ...(outcome.result.warnings ?? []),
+        `OpenClaw Crabline smoke committed but lock cleanup failed: ${detail}`,
+      ],
+    };
   }
 
   if (!outcome.committed) {
