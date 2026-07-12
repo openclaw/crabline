@@ -520,7 +520,7 @@ function attachWebSocketServer(params: {
       params.state.websocketClients.delete(client);
     });
     if (unauthenticatedClients.size >= params.maxUnauthenticatedClients) {
-      client.close(1013, "too many unauthenticated clients");
+      client.terminate();
       return;
     }
     unauthenticatedClients.add(client);
