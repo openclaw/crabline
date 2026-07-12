@@ -422,10 +422,14 @@ permissions, including when an older manifest was more permissive. POSIX hosts
 use mode `0600`. Windows hosts require `powershell.exe` with `Set-Acl`; Crabline
 resolves it from the absolute local `SystemRoot`, creates an empty temporary
 file, applies and verifies a protected DACL containing only the current user SID
-with full control, and only then writes credentials. If `SystemRoot`, the ACL
-tooling, or verification is unavailable, publication aborts without replacing
-the previous manifest. Locks abandoned by terminated smoke processes are
-reclaimed on the next run.
+with full control, keeps the creator handle open, verifies the file identity,
+and only then writes credentials. The identity is checked again before and after
+the atomic replacement. If `SystemRoot`, the ACL tooling, or verification is
+unavailable, publication aborts without replacing the previous manifest. Lock
+owners record both PID and process-start identity. Dead owners, and stale locks
+whose PID was reused by the next Crabline process, are reclaimed on the next
+run. A 10-minute lease also bounds stale locks when an unrelated live process
+has inherited the abandoned PID.
 
 For release or live verification, use OpenClaw's live driver:
 
