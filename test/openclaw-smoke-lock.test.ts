@@ -9,6 +9,7 @@ import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "../src/openclaw/shared.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const disableHeartbeat = (_renew: () => Promise<void>, _intervalMs: number) => ({
+  assertHealthy() {},
   async stop() {},
 });
 
@@ -205,7 +206,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         startHeartbeat: (heartbeat, intervalMs) => {
           expect(intervalMs).toBe(333);
           renew = heartbeat;
-          return { stop };
+          return { assertHealthy() {}, stop };
         },
       });
 
@@ -301,6 +302,61 @@ describe("OpenClaw smoke lock cleanup", () => {
       expect(replacementLock).toBeDefined();
       await firstLock.release();
       await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("retries strict owner parsing failures during release", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const ownerPath = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+      "owner.json",
+    );
+    try {
+      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        startHeartbeat: disableHeartbeat,
+      });
+      const owner = await fs.readFile(ownerPath, "utf8");
+      await fs.writeFile(ownerPath, "not json\n");
+      const sleep = vi.fn(async () => {
+        await fs.writeFile(ownerPath, owner);
+      });
+
+      await expect(releaseOpenClawCrablineSmokeRunLock(lock, { sleep })).resolves.toBeUndefined();
+      expect(sleep).toHaveBeenCalledTimes(1);
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("fails ownership preparation after a heartbeat renewal error", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const ownerPath = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+      "owner.json",
+    );
+    try {
+      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        leaseMs: 30,
+      });
+      const owner = await fs.readFile(ownerPath, "utf8");
+      await fs.writeFile(
+        ownerPath,
+        `${JSON.stringify({ ...JSON.parse(owner), token: "replacement-owner" })}\n`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      await expect(lock.prepareForRelease()).rejects.toThrow(
+        "OpenClaw Crabline smoke lock heartbeat failed.",
+      );
+
+      await fs.writeFile(ownerPath, owner);
+      await expect(lock.release()).resolves.toBeUndefined();
     } finally {
       await disposeTempDir(outputDir);
     }
