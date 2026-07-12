@@ -139,6 +139,14 @@ function mattermostError(message: string, status: number): Response {
   );
 }
 
+function decodeMattermostPathSegment(value: string): string | Response {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return mattermostError("Invalid path parameter", 400);
+  }
+}
+
 function eventBroadcast(params: {
   channelId?: string;
   omitUsers?: Record<string, boolean>;
@@ -207,6 +215,9 @@ function broadcast(
   event: MattermostWebSocketEvent,
   queueIfUndelivered = true,
 ): boolean {
+  if (event.broadcast.omit_users?.[state.botUserId]) {
+    return true;
+  }
   if (
     Buffer.byteLength(JSON.stringify({ ...event, seq: 0 }), "utf8") >
     state.maxWebSocketBufferedBytes
@@ -330,7 +341,10 @@ async function handleApi(params: {
   }
   const usernameMatch = /^\/users\/username\/([^/]+)$/u.exec(apiPath);
   if (method === "GET" && usernameMatch?.[1]) {
-    const username = decodeURIComponent(usernameMatch[1]);
+    const username = decodeMattermostPathSegment(usernameMatch[1]);
+    if (username instanceof Response) {
+      return username;
+    }
     const user = [...state.users.values()].find((entry) => entry.username === username);
     return user ? jsonResponse(user) : mattermostError("User not found", 404);
   }
@@ -345,11 +359,18 @@ async function handleApi(params: {
     return channel ? jsonResponse(channel) : mattermostError("Channel not found", 404);
   }
   if (method === "POST" && apiPath === "/channels/direct") {
-    const userIds = Array.isArray(body) ? body : [];
-    if (userIds.length !== 2 || userIds.some((value) => typeof value !== "string" || !value)) {
+    const userIds = Array.isArray(body) ? body.map(readTrimmedString) : [];
+    if (userIds.length !== 2 || userIds.some((value) => !value)) {
       return mattermostError("Two user IDs are required", 400);
     }
-    const channelId = mattermostId(`dm:${userIds.map(String).sort().join(":")}`);
+    const [firstUserId, secondUserId] = userIds as [string, string];
+    if (firstUserId === secondUserId) {
+      return mattermostError("Direct channel users must be distinct", 400);
+    }
+    if (!state.users.has(firstUserId) || !state.users.has(secondUserId)) {
+      return mattermostError("User not found", 404);
+    }
+    const channelId = mattermostId(`dm:${userIds.sort().join(":")}`);
     const channel = { display_name: "", id: channelId, name: channelId, type: "D" };
     state.channels.set(channelId, channel);
     return jsonResponse(channel, 201);
@@ -395,10 +416,20 @@ async function handleApi(params: {
     if (!channel) {
       return mattermostError("Channel not found", 404);
     }
+    const rootId = readTrimmedString(body.root_id) || readTrimmedString(body.post_id);
+    if (rootId) {
+      const rootPost = state.posts.get(rootId);
+      if (!rootPost) {
+        return mattermostError("Root post not found", 404);
+      }
+      if (rootPost.channel_id !== channelId) {
+        return mattermostError("Root post belongs to another channel", 400);
+      }
+    }
     const post = createPost({
       channelId,
       message,
-      rootId: readTrimmedString(body.root_id),
+      rootId,
       state,
       userId: state.botUserId,
     });
@@ -410,6 +441,9 @@ async function handleApi(params: {
     const post = state.posts.get(postMatch[1]);
     if (!post) {
       return mattermostError("Post not found", 404);
+    }
+    if (post.user_id !== state.botUserId) {
+      return mattermostError("You do not have permission to edit this post", 403);
     }
     const updated = { ...post, message: readTrimmedString(body.message) ?? post.message };
     state.posts.set(updated.id, updated);
@@ -429,6 +463,9 @@ async function handleApi(params: {
     const post = state.posts.get(postMatch[1]);
     if (!post) {
       return mattermostError("Post not found", 404);
+    }
+    if (post.user_id !== state.botUserId) {
+      return mattermostError("You do not have permission to delete this post", 403);
     }
     state.posts.delete(post.id);
     broadcast(
@@ -588,18 +625,37 @@ function attachWebSocketServer(params: {
         }
         return;
       }
-      if (message.action === "user_typing" && message.data?.channel_id) {
-        broadcast(params.state, {
-          broadcast: eventBroadcast({
-            channelId: message.data.channel_id,
-            omitUsers: { [params.state.botUserId]: true },
-          }),
-          data: {
-            parent_id: message.data.parent_id ?? "",
-            user_id: params.state.botUserId,
+      if (message.action === "user_typing") {
+        const channelId = readTrimmedString(message.data?.channel_id);
+        if (!channelId || !params.state.channels.has(channelId)) {
+          client.send(
+            JSON.stringify({
+              error: {
+                id: "api.channel.get.find.app_error",
+                message: "Channel not found",
+              },
+              seq_reply: seq,
+              status: "FAIL",
+            }),
+          );
+          return;
+        }
+        broadcast(
+          params.state,
+          {
+            broadcast: eventBroadcast({
+              channelId,
+              omitUsers: { [params.state.botUserId]: true },
+            }),
+            data: {
+              channel_id: channelId,
+              parent_id: readTrimmedString(message.data?.parent_id) ?? "",
+              user_id: params.state.botUserId,
+            },
+            event: "typing",
           },
-          event: "typing",
-        });
+          false,
+        );
         client.send(JSON.stringify({ seq_reply: seq, status: "OK" }));
         return;
       }

@@ -52,6 +52,20 @@ function waitForSocketClose(socket: WebSocket): Promise<{ code: number; reason: 
   });
 }
 
+function expectNoSocketMessage(socket: WebSocket, timeoutMs = 50): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.off("message", onMessage);
+      resolve();
+    }, timeoutMs);
+    const onMessage = (data: WebSocket.RawData) => {
+      clearTimeout(timer);
+      reject(new Error(`Unexpected WebSocket message: ${data.toString()}`));
+    };
+    socket.once("message", onMessage);
+  });
+}
+
 describe("Mattermost local provider server", () => {
   it("returns Mattermost errors for non-object and oversized request bodies", async () => {
     const directory = await createTempDir();
@@ -329,9 +343,18 @@ describe("Mattermost local provider server", () => {
     const server = await startMattermostServer({
       adminToken: "admin",
       botToken: "fake",
-      maxPendingInboundEvents: 1,
+      maxPendingInboundEvents: 2,
     });
     servers.push(server);
+    const registered = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ channelId: "channel-1", senderId: "user-1", text: "register user" }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(registered.status).toBe(200);
     const direct = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
       body: JSON.stringify([server.manifest.botUserId, "user-1"]),
       headers: {
@@ -386,6 +409,210 @@ describe("Mattermost local provider server", () => {
         status_code: 404,
       });
     }
+  });
+
+  it("requires distinct known users for direct channels", async () => {
+    const server = await startMattermostServer({ adminToken: "admin", botToken: "fake" });
+    servers.push(server);
+    for (const senderId of ["user-1", "user-2"]) {
+      const registered = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ channelId: "channel-1", senderId, text: "register" }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+      expect(registered.status).toBe(200);
+    }
+
+    for (const [userIds, status, message] of [
+      [["user-1", "user-1"], 400, "Direct channel users must be distinct"],
+      [[server.manifest.botUserId, "missing"], 404, "User not found"],
+      [[server.manifest.botUserId, "user-1"], 201, undefined],
+    ] as const) {
+      const response = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
+        body: JSON.stringify(userIds),
+        headers: {
+          authorization: "Bearer fake",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(status);
+      await expect(response.json()).resolves.toMatchObject(message ? { message } : { type: "D" });
+    }
+  });
+
+  it("validates post roots and restricts mutations to bot-owned posts", async () => {
+    const server = await startMattermostServer({ adminToken: "admin", botToken: "fake" });
+    servers.push(server);
+    const inboundPosts: Array<{ channel_id: string; id: string }> = [];
+    for (const [channelId, text] of [
+      ["channel-a", "user root"],
+      ["channel-b", "other root"],
+    ]) {
+      const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ channelId, senderId: "user-1", text }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+      const payload = (await response.json()) as { post: { channel_id: string; id: string } };
+      inboundPosts.push(payload.post);
+    }
+    const [root, otherRoot] = inboundPosts as [
+      { channel_id: string; id: string },
+      { channel_id: string; id: string },
+    ];
+
+    const reply = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+      body: JSON.stringify({
+        channel_id: root.channel_id,
+        message: "bot reply",
+        post_id: root.id,
+        root_id: "",
+      }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(reply.status).toBe(201);
+    await expect(reply.json()).resolves.toMatchObject({ root_id: root.id });
+
+    for (const [rootId, status, message] of [
+      ["missing-root", 404, "Root post not found"],
+      [otherRoot.id, 400, "Root post belongs to another channel"],
+    ] as const) {
+      const response = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+        body: JSON.stringify({
+          channel_id: root.channel_id,
+          message: "invalid reply",
+          root_id: rootId,
+        }),
+        headers: {
+          authorization: "Bearer fake",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(status);
+      await expect(response.json()).resolves.toMatchObject({ message });
+    }
+
+    for (const method of ["PUT", "DELETE"] as const) {
+      const response = await fetch(`${server.manifest.endpoints.apiRoot}/posts/${root.id}`, {
+        ...(method === "PUT"
+          ? {
+              body: JSON.stringify({ message: "forbidden edit" }),
+              headers: {
+                authorization: "Bearer fake",
+                "content-type": "application/json",
+              },
+            }
+          : { headers: { authorization: "Bearer fake" } }),
+        method,
+      });
+      expect(response.status).toBe(403);
+    }
+  });
+
+  it("keeps typing channel-scoped, omitted from the sender, and ephemeral", async () => {
+    const server = await startMattermostServer({ adminToken: "admin", botToken: "fake" });
+    servers.push(server);
+    const socket = new WebSocket(server.manifest.endpoints.websocketUrl);
+    await waitForSocketOpen(socket);
+    const authenticated = nextMessages(socket, 2);
+    socket.send(
+      JSON.stringify({
+        action: "authentication_challenge",
+        data: { token: "fake" },
+        seq: 1,
+      }),
+    );
+    await authenticated;
+
+    const posted = nextMessage(socket);
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ channelId: "channel-1", senderId: "user-1", text: "register" }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(inbound.status).toBe(200);
+    await expect(posted).resolves.toMatchObject({ event: "posted" });
+
+    const noRestTypingEvent = expectNoSocketMessage(socket);
+    const restTyping = await fetch(`${server.manifest.endpoints.apiRoot}/users/me/typing`, {
+      body: JSON.stringify({ channel_id: "channel-1" }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(restTyping.status).toBe(200);
+    await noRestTypingEvent;
+
+    const typingAck = nextMessage(socket);
+    socket.send(
+      JSON.stringify({
+        action: "user_typing",
+        data: { channel_id: "channel-1", parent_id: "root-1" },
+        seq: 2,
+      }),
+    );
+    await expect(typingAck).resolves.toEqual({ seq_reply: 2, status: "OK" });
+
+    const rejected = nextMessage(socket);
+    socket.send(
+      JSON.stringify({
+        action: "user_typing",
+        data: { channel_id: "missing" },
+        seq: 3,
+      }),
+    );
+    await expect(rejected).resolves.toMatchObject({
+      error: { id: "api.channel.get.find.app_error" },
+      seq_reply: 3,
+      status: "FAIL",
+    });
+    const closed = waitForSocketClose(socket);
+    socket.close();
+    await closed;
+
+    const reconnected = new WebSocket(server.manifest.endpoints.websocketUrl);
+    await waitForSocketOpen(reconnected);
+    const reauthenticated = nextMessages(reconnected, 2);
+    reconnected.send(
+      JSON.stringify({
+        action: "authentication_challenge",
+        data: { token: "fake" },
+        seq: 4,
+      }),
+    );
+    await reauthenticated;
+    await expectNoSocketMessage(reconnected);
+    reconnected.close();
+  });
+
+  it("returns a native client error for malformed escaped path segments", async () => {
+    const server = await startMattermostServer({ botToken: "fake" });
+    servers.push(server);
+    const response = await fetch(`${server.manifest.endpoints.apiRoot}/users/username/%`, {
+      headers: { authorization: "Bearer fake" },
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      message: "Invalid path parameter",
+      status_code: 400,
+    });
   });
 
   it("disconnects slow WebSocket clients and queues undelivered events", async () => {
