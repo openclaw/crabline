@@ -6,6 +6,30 @@ import { type ManifestDefinition, ManifestSchema } from "./schema.js";
 
 const DEFAULT_CONFIG_CANDIDATES = ["crabline.yaml", "crabline.yml", "crabline.json"] as const;
 
+function configLoadError(resolvedPath: string, error: unknown, detail: string): CrablineError {
+  return new CrablineError(`Unable to load config file "${resolvedPath}": ${detail}`, {
+    cause: error,
+    kind: "config",
+  });
+}
+
+function formatYamlParseError(error: unknown): string {
+  if (!(error instanceof Error) || error.name !== "YAMLParseError") {
+    return "YAML parse failed.";
+  }
+  const yamlError = error as Error & {
+    code?: unknown;
+    linePos?: Array<{ col?: unknown; line?: unknown }>;
+  };
+  const code = typeof yamlError.code === "string" ? ` (${yamlError.code})` : "";
+  const position = yamlError.linePos?.[0];
+  const location =
+    typeof position?.line === "number" && typeof position.col === "number"
+      ? ` at line ${position.line}, column ${position.col}`
+      : "";
+  return `YAML parse error${code}${location}.`;
+}
+
 export async function resolveConfigPath(explicitPath?: string): Promise<string> {
   if (explicitPath) {
     return path.resolve(explicitPath);
@@ -40,17 +64,28 @@ export async function loadManifest(
   configPath?: string,
 ): Promise<{ manifest: ManifestDefinition; path: string }> {
   const resolvedPath = await resolveConfigPath(configPath);
+  let raw: string;
   try {
-    const raw = await readFile(resolvedPath, "utf8");
-    const parsed = resolvedPath.endsWith(".json")
-      ? JSON.parse(raw)
-      : YAML.parse(raw, { merge: true });
+    raw = await readFile(resolvedPath, "utf8");
+  } catch (error) {
+    throw configLoadError(resolvedPath, error, ensureErrorMessage(error));
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = resolvedPath.endsWith(".json") ? JSON.parse(raw) : YAML.parse(raw, { merge: true });
+  } catch (error) {
+    throw configLoadError(
+      resolvedPath,
+      error,
+      resolvedPath.endsWith(".json") ? ensureErrorMessage(error) : formatYamlParseError(error),
+    );
+  }
+
+  try {
     const manifest = ManifestSchema.parse(parsed);
     return { manifest, path: resolvedPath };
   } catch (error) {
-    throw new CrablineError(
-      `Unable to load config file "${resolvedPath}": ${ensureErrorMessage(error)}`,
-      { cause: error, kind: "config" },
-    );
+    throw configLoadError(resolvedPath, error, ensureErrorMessage(error));
   }
 }
