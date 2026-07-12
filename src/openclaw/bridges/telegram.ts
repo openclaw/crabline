@@ -34,6 +34,9 @@ function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
     }
     return value;
   }
+  if (kind === "group" && /^@[A-Za-z][A-Za-z0-9_]{4,31}$/u.test(value)) {
+    return value;
+  }
   const hash = createHash("sha256").update(`${kind}:${value}`).digest().readBigUInt64BE();
   if (kind === "group") {
     return String(-(TELEGRAM_SYMBOLIC_GROUP_ID_BASE + (hash % TELEGRAM_SYMBOLIC_GROUP_ID_RANGE)));
@@ -72,12 +75,12 @@ function parseTelegramThreadTargetId(value: unknown): number | undefined {
     return undefined;
   }
   const trimmed = readString(value);
-  if (!trimmed || !/^\d+$/u.test(trimmed)) {
-    throw new Error("Telegram thread target must be a safe non-negative integer.");
+  if (!trimmed || !/^[1-9]\d*$/u.test(trimmed)) {
+    throw new Error("Telegram thread target must be a safe positive integer.");
   }
   const threadId = Number(trimmed);
   if (!Number.isSafeInteger(threadId)) {
-    throw new Error("Telegram thread target must be a safe non-negative integer.");
+    throw new Error("Telegram thread target must be a safe positive integer.");
   }
   return threadId;
 }
@@ -157,7 +160,12 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         };
       },
       createAgentDelivery(parsed) {
-        const kind = parsed.native && /^-\d+$/u.test(parsed.id.trim()) ? "group" : parsed.kind;
+        const kind =
+          parsed.native &&
+          (/^-\d+$/u.test(parsed.id.trim()) ||
+            /^@[A-Za-z][A-Za-z0-9_]{4,31}$/u.test(parsed.id.trim()))
+            ? "group"
+            : parsed.kind;
         const chatId = normalizeTelegramChatId(kind, parsed.id);
         const threadId = parseTelegramThreadTargetId(parsed.threadId);
         const to = telegramTargetKey(chatId, threadId);
