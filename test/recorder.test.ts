@@ -1,4 +1,4 @@
-import { appendFile, open, rename, writeFile, type FileHandle } from "node:fs/promises";
+import { appendFile, open, readFile, rename, writeFile, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -77,6 +77,55 @@ describe("recorder", () => {
     await expect(readRecordedInbound(filePath)).resolves.toEqual([
       expect.objectContaining({ id: "evt-batch-1" }),
       expect.objectContaining({ id: "evt-batch-2" }),
+    ]);
+  });
+
+  it("indexes batch identities without rescanning completed recorder history", async () => {
+    const filePath = await createRecorderPath();
+    const sentAt = new Date().toISOString();
+    const event = (id: string) => ({
+      author: "user" as const,
+      id,
+      provider: "whatsapp",
+      sentAt,
+      text: "x".repeat(128),
+      threadId: "15551234567",
+    });
+    await appendRecordedInboundBatch(
+      filePath,
+      Array.from({ length: 64 }, (_, index) => event(`history-${index}`)),
+    );
+    await appendRecordedInboundBatch(filePath, [event("tail-1")]);
+
+    const handle = await open(filePath, "r+");
+    try {
+      await handle.write("!", 0, "utf8");
+    } finally {
+      await handle.close();
+    }
+
+    await expect(appendRecordedInboundBatch(filePath, [event("tail-2")])).resolves.toEqual([
+      expect.objectContaining({ id: "tail-2" }),
+    ]);
+    expect(await readFile(filePath, "utf8")).toContain('"id":"tail-2"');
+  });
+
+  it("resets batch identities when the recorder is replaced", async () => {
+    const filePath = await createRecorderPath();
+    const event = {
+      author: "user" as const,
+      id: "reused-after-rotation",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "accepted in each recorder generation",
+      threadId: "15551234567",
+    };
+    await appendRecordedInboundBatch(filePath, [event]);
+    await rename(filePath, `${filePath}.old`);
+    await writeFile(filePath, "", "utf8");
+
+    await expect(appendRecordedInboundBatch(filePath, [event])).resolves.toEqual([
+      expect.objectContaining({ id: event.id }),
     ]);
   });
 
