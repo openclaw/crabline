@@ -878,4 +878,95 @@ describe("lazy provider lifecycle", () => {
     });
     expect(cleanup).toHaveBeenCalledOnce();
   });
+
+  it("keeps a lazy watch active when the source return reports done false", async () => {
+    const { context } = createTelegramManifest("/tmp/unused.jsonl");
+    const event = (id: string) => ({
+      author: "assistant" as const,
+      id,
+      provider: "test",
+      sentAt: new Date().toISOString(),
+      text: id,
+      threadId: "thread",
+    });
+    let returnCalls = 0;
+    const concrete: ProviderAdapter = {
+      id: "test",
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      async waitForInbound() {
+        return null;
+      },
+      watch() {
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              async next() {
+                return { done: false as const, value: event("watch-event") };
+              },
+              async return() {
+                returnCalls += 1;
+                return returnCalls === 1
+                  ? { done: false as const, value: event("return-value") }
+                  : { done: true as const, value: undefined };
+              },
+            };
+          },
+        };
+      },
+    };
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory: async () => concrete,
+      id: "test",
+      normalizeTarget: concrete.normalizeTarget.bind(concrete),
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+    });
+    const iterator = provider.watch(context)[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { id: "watch-event" },
+    });
+    await expect(iterator.return!()).resolves.toMatchObject({
+      done: false,
+      value: { id: "return-value" },
+    });
+    await expect(iterator.return!()).resolves.toEqual({ done: true, value: undefined });
+    expect(returnCalls).toBe(2);
+    await provider.cleanup();
+  });
+
+  it("preserves lazy factory errors", async () => {
+    const factoryError = new Error("constructor rejected provider configuration");
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory: async () => {
+        throw factoryError;
+      },
+      id: "test",
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe"],
+    });
+    const { context } = createTelegramManifest("/tmp/unused.jsonl");
+
+    await expect(provider.probe(context)).rejects.toBe(factoryError);
+    await provider.cleanup();
+  });
 });

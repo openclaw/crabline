@@ -138,7 +138,6 @@ export class LazyProviderAdapter implements ProviderAdapter {
   readonly status;
   readonly supports;
 
-  readonly #adapterName: string;
   readonly #factory: ProviderFactory;
   readonly #normalizeTarget: ProviderAdapter["normalizeTarget"];
   readonly #activeWatches = new Set<ActiveWatch>();
@@ -157,7 +156,6 @@ export class LazyProviderAdapter implements ProviderAdapter {
     status: ProviderSupportStatus;
     supports: ProviderAdapter["supports"];
   }) {
-    this.#adapterName = params.adapterName;
     this.#factory = params.factory;
     this.#normalizeTarget = params.normalizeTarget;
     this.id = params.id;
@@ -215,18 +213,40 @@ export class LazyProviderAdapter implements ProviderAdapter {
       this.#activeWatches.delete(activeWatch);
     };
     const close = () => {
+      if (closed) {
+        return Promise.resolve({ done: true as const, value: undefined as never });
+      }
       closePromise ??= (async () => {
         controller.abort();
         try {
-          return source.return
+          const result = source.return
             ? await source.return()
             : { done: true as const, value: undefined as never };
+          if (result.done) {
+            finish();
+          }
+          return result;
+        } catch (error) {
+          finish();
+          throw error;
         } finally {
           dispatch.reach();
-          finish();
         }
       })();
-      return closePromise;
+      const closing = closePromise;
+      void closing.then(
+        () => {
+          if (closePromise === closing) {
+            closePromise = null;
+          }
+        },
+        () => {
+          if (closePromise === closing) {
+            closePromise = null;
+          }
+        },
+      );
+      return closing;
     };
     const iterator: AsyncIterableIterator<InboundEnvelope> = {
       async next() {
@@ -260,7 +280,9 @@ export class LazyProviderAdapter implements ProviderAdapter {
     activeWatch = {
       abort: () => controller.abort(),
       close: async () => {
-        await close();
+        while (!(await close()).done) {
+          // Async iterators may yield final values before acknowledging return.
+        }
       },
       dispatch,
     };
@@ -315,10 +337,7 @@ export class LazyProviderAdapter implements ProviderAdapter {
       })
       .catch((error: unknown) => {
         this.#providerPromise = null;
-        throw new CrablineError(
-          `Provider adapter "${this.#adapterName}" could not load. Install its optional peer dependencies before using this adapter.`,
-          { cause: error, kind: "config" },
-        );
+        throw error;
       });
     return await this.#providerPromise;
   }

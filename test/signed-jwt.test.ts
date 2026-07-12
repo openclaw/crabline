@@ -23,6 +23,27 @@ describe("signed JWT remote key cache", () => {
     ).toBe(now);
   });
 
+  it("subtracts response Age from cache freshness", () => {
+    const now = 1_700_000_000_000;
+
+    expect(
+      resolveHttpCacheExpiry(
+        new Response(null, {
+          headers: { age: "120", "cache-control": "public, max-age=3600" },
+        }),
+        now,
+      ),
+    ).toBe(now + 3_480_000);
+    expect(
+      resolveHttpCacheExpiry(
+        new Response(null, {
+          headers: { age: "7200", "cache-control": "public, max-age=3600" },
+        }),
+        now,
+      ),
+    ).toBe(now);
+  });
+
   it("single-flights unknown-key refreshes and applies a global cooldown", async () => {
     let now = 1_700_000_000_000;
     let fetches = 0;
@@ -91,5 +112,56 @@ describe("signed JWT remote key cache", () => {
     });
 
     await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toThrow("timed out");
+  });
+
+  it("backs off failed key fetches", async () => {
+    let now = 1_700_000_000_000;
+    let fetches = 0;
+    const fetchError = new Error("JWKS unavailable");
+    const resolveKey = createCachedJwtKeyResolver<string>({
+      async fetchKeys() {
+        fetches += 1;
+        throw fetchError;
+      },
+      keyId: (value) => value,
+      now: () => now,
+      refreshCooldownMs: 10_000,
+      unknownKeyMessage: "unknown key",
+    });
+
+    await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
+    await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
+    expect(fetches).toBe(1);
+
+    now += 10_001;
+    await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
+    expect(fetches).toBe(2);
+  });
+
+  it("invalidates negative entries when a refreshed key set contains them", async () => {
+    let now = 1_700_000_000_000;
+    let fetches = 0;
+    const resolveKey = createCachedJwtKeyResolver<string>({
+      async fetchKeys() {
+        fetches += 1;
+        return {
+          expiresAt: now + (fetches < 3 ? 1_000 : 60_000),
+          values: fetches < 3 ? ["known"] : ["known", "rotated"],
+        };
+      },
+      keyId: (value) => value,
+      now: () => now,
+      refreshCooldownMs: 10_000,
+      unknownKeyMessage: "unknown key",
+    });
+
+    await expect(resolveKey({ alg: "RS256", kid: "known" })).resolves.toBe("known");
+    await expect(resolveKey({ alg: "RS256", kid: "rotated" })).rejects.toThrow("unknown key");
+    expect(fetches).toBe(2);
+
+    now += 2_000;
+    await expect(resolveKey({ alg: "RS256", kid: "known" })).resolves.toBe("known");
+    await expect(resolveKey({ alg: "RS256", kid: "rotated" })).resolves.toBe("rotated");
+    expect(fetches).toBe(3);
   });
 });

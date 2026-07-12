@@ -1,9 +1,17 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { ManifestDefinition, ProviderConfig } from "../src/config/schema.js";
+import {
+  BUILTIN_ADAPTERS,
+  type ManifestDefinition,
+  type ProviderConfig,
+} from "../src/config/schema.js";
 import { TelegramProviderAdapter } from "../src/providers/builtin/telegram.js";
 import { createRegistry } from "../src/providers/registry.js";
+import {
+  normalizeBuiltinTarget,
+  type BuiltinProviderAdapterId,
+} from "../src/providers/target-normalizers.js";
 import type { ProviderContext, SendContext, WaitContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
@@ -107,6 +115,138 @@ describe("registry", () => {
       channelId: "-1001234567890",
       threadId: "-1001234567890:42",
     });
+  });
+
+  it.each([
+    [
+      "discord",
+      {
+        channelId: "123456789012345678",
+        id: "123456789012345678",
+        metadata: {},
+        threadId: "223456789012345678",
+      },
+    ],
+    ["feishu", { channelId: "oc_abc123", id: "oc_abc123", metadata: {}, threadId: "om_abc123" }],
+    [
+      "googlechat",
+      {
+        channelId: "spaces/AAAABbbbCCC",
+        id: "spaces/AAAABbbbCCC",
+        metadata: {},
+        threadId: "spaces/AAAABbbbCCC/threads/BBBBccccDDD",
+      },
+    ],
+    [
+      "imessage",
+      {
+        channelId: "+15551234567",
+        id: "+15551234567",
+        metadata: {},
+        threadId: "iMessage;-;chat-guid",
+      },
+    ],
+    [
+      "loopback",
+      {
+        channelId: "room-a",
+        id: "room-a",
+        metadata: {},
+        threadId: "loopback:room-a:topic",
+      },
+    ],
+    [
+      "matrix",
+      {
+        channelId: "!abcdef:matrix.org",
+        id: "!abcdef:matrix.org",
+        metadata: {},
+        threadId: "$eventid:matrix.org",
+      },
+    ],
+    [
+      "mattermost",
+      {
+        channelId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        metadata: {},
+        threadId: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+      },
+    ],
+    [
+      "msteams",
+      {
+        channelId: "19:conversation@thread.v2",
+        id: "19:conversation@thread.v2",
+        metadata: {},
+        threadId: "reply-chain",
+      },
+    ],
+    [
+      "slack",
+      {
+        channelId: "C1234567890",
+        id: "C1234567890",
+        metadata: {},
+        threadId: "1700000000.000100",
+      },
+    ],
+    [
+      "telegram",
+      {
+        channelId: "-1001234567890",
+        id: "-1001234567890",
+        metadata: {},
+        threadId: "-1001234567890:42",
+      },
+    ],
+    [
+      "whatsapp",
+      {
+        channelId: "15551234567",
+        id: "15551234567",
+        metadata: {},
+        threadId: "15551234567",
+      },
+    ],
+    [
+      "zalo",
+      {
+        channelId: "123456789012",
+        id: "123456789012",
+        metadata: {},
+        threadId: "987654321012",
+      },
+    ],
+  ] satisfies Array<
+    readonly [BuiltinProviderAdapterId, ManifestDefinition["fixtures"][number]["target"]]
+  >)("keeps the %s lazy adapter in parity with its target codec", (adapter, target) => {
+    expect(BUILTIN_ADAPTERS).toContain(adapter);
+    const fixture = {
+      ...manifest.fixtures[0]!,
+      id: `${adapter}-parity`,
+      provider: adapter,
+      target,
+    };
+    const config = {
+      adapter,
+      capabilities: ["probe"],
+      env: [],
+      platform: adapter,
+      status: "active",
+    } as ProviderConfig;
+    const registry = createRegistry(
+      {
+        ...manifest,
+        fixtures: [fixture],
+        providers: { [adapter]: config },
+      },
+      "/tmp/crabline.yaml",
+    );
+
+    expect(registry.resolve(adapter, fixture.id).normalizeTarget(target)).toEqual(
+      normalizeBuiltinTarget(adapter, target),
+    );
   });
 
   it("applies provider-specific validation through lazy adapters", () => {

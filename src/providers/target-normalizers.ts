@@ -153,6 +153,15 @@ export function createGenericLocalMockTargetCodec(
       }
       if (target.threadId) {
         normalized.channelId ??= encode(target.id);
+        if (
+          target.threadId.startsWith(prefix) &&
+          !target.threadId.startsWith(`${normalized.channelId}:`)
+        ) {
+          throw new CrablineError(
+            `${platform} canonical thread parent must match the target channel.`,
+            { kind: "config" },
+          );
+        }
         normalized.threadId = target.threadId.startsWith(prefix)
           ? target.threadId
           : `${normalized.channelId}:${target.threadId}`;
