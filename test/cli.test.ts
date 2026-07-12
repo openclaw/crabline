@@ -437,7 +437,7 @@ describe("cli", () => {
     await fs.utimes(lockPath, staleTime, staleTime);
 
     await expect(publishReadyFile(readyFile, "manifest\n")).rejects.toMatchObject({
-      code: "ENOTEMPTY",
+      code: "ELOCKED",
     });
     await expect(fs.readFile(sentinelPath, "utf8")).resolves.toBe("unrelated\n");
   });
@@ -645,7 +645,7 @@ describe("cli", () => {
     expect(removeReadyFile).toHaveBeenCalledTimes(1);
   });
 
-  it("uses a lifecycle-scale stale threshold while holding ready-file ownership", async () => {
+  it("uses one heartbeat lease policy for ready-file ownership", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, "server.json");
@@ -681,8 +681,8 @@ describe("cli", () => {
 
     expect(lockState.options).toHaveLength(1);
     expect(lockState.options[0]).toMatchObject({
-      stale: 24 * 60 * 60 * 1_000,
-      update: 60_000,
+      stale: 60_000,
+      update: 1_000,
     });
   });
 
