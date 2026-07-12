@@ -408,4 +408,46 @@ describe("WhatsApp provider lifecycle", () => {
       await disposeTempDir(directory);
     }
   });
+
+  it("bounds oversized bodies and aborts incomplete requests during cleanup", async () => {
+    let handle: WebhookHandler | undefined;
+    const close = vi.fn(async () => undefined);
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handle = params.handle;
+      return {
+        close,
+        endpointUrl: "http://127.0.0.1:43210/whatsapp/webhook",
+      };
+    });
+    const config = createConfig();
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    await provider.probe(createContext(config));
+
+    const oversized = await handle!(
+      new Request("http://127.0.0.1:43210/whatsapp/webhook", {
+        body: "x".repeat(1024 * 1024 + 1),
+        method: "POST",
+      }),
+    );
+    expect(oversized.status).toBe(413);
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{"));
+      },
+    });
+    const incomplete = handle!(
+      new Request("http://127.0.0.1:43210/whatsapp/webhook", {
+        body: stream,
+        duplex: "half",
+        method: "POST",
+      }),
+    );
+    await Promise.resolve();
+
+    const cleanup = provider.cleanup();
+    await expect(cleanup).resolves.toBeUndefined();
+    await expect(incomplete).resolves.toMatchObject({ status: 503 });
+    expect(close).toHaveBeenCalledTimes(1);
+  });
 });

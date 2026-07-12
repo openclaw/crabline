@@ -86,6 +86,7 @@ export function normalizeMattermostWebhookPayload(payload: unknown) {
   }
 
   const channelId = optionalString(payload, "channel_id");
+  const postId = optionalString(payload, "post_id");
   const rootId = optionalString(payload, "root_id");
   const text = optionalString(payload, "text");
   if (!channelId || !text) {
@@ -96,7 +97,9 @@ export function normalizeMattermostWebhookPayload(payload: unknown) {
 
   return {
     author: authorFromBotFlag(false),
-    ...(optionalString(payload, "post_id") ? { id: optionalString(payload, "post_id") } : {}),
+    ...(postId
+      ? { id: requireNativeInboundId(postId, MATTERMOST_ID_RULE, "Mattermost post_id") }
+      : {}),
     raw: payload,
     text,
     threadId: rootId

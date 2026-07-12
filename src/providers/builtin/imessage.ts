@@ -49,7 +49,7 @@ export class IMessageProviderAdapter extends LocalMockProviderAdapter implements
 export function matchesIMessageThread(
   candidateThreadId: string,
   expectedThreadId: string | undefined,
-  target: { id: string },
+  target: { channelId?: string | undefined; id: string },
   raw?: unknown,
 ): boolean {
   const rawPayload = isRecord(raw) ? raw : undefined;
@@ -59,6 +59,9 @@ export function matchesIMessageThread(
     return true;
   }
   const expectedIdentifiers = new Set([expectedThreadId, target.id]);
+  if (target.channelId) {
+    expectedIdentifiers.add(target.channelId);
+  }
   return (
     expectedIdentifiers.has(candidateThreadId) ||
     (recipientAlias !== undefined && expectedIdentifiers.has(recipientAlias))
@@ -82,9 +85,12 @@ function normalizeIMessageWebhookPayload(payload: unknown) {
   const threadId = optionalString(data, "chatGuid") ?? optionalString(data, "chatIdentifier");
   const text = optionalString(data, "text") ?? optionalString(data, "message");
   if (!threadId || !text) {
-    throw new CrablineError("iMessage webhook payload requires chatGuid and text", {
-      kind: "inbound",
-    });
+    throw new CrablineError(
+      "iMessage webhook payload requires chatGuid or chatIdentifier and text",
+      {
+        kind: "inbound",
+      },
+    );
   }
 
   return {

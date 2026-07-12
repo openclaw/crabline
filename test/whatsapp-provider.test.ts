@@ -83,7 +83,7 @@ describe("WhatsApp webhook normalizer", () => {
             changes: [
               {
                 value: {
-                  messages: [{ from: "invalid-id", text: { body: "hello" } }],
+                  messages: [{ from: "invalid-id", id: "wamid.invalid", text: { body: "hello" } }],
                 },
               },
             ],
@@ -94,6 +94,24 @@ describe("WhatsApp webhook normalizer", () => {
     ],
   ])("rejects malformed or invalid payloads: %s", (payload, message) => {
     expect(() => normalizeWhatsAppWebhookPayload(payload)).toThrow(message);
+  });
+
+  it("requires provider message ids for native webhook deliveries", () => {
+    expect(() =>
+      normalizeWhatsAppWebhookPayload({
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  messages: [{ from: "15551234567", text: { body: "missing id" } }],
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow("messages[].id");
   });
 
   it("preserves generic fallback thread payloads", () => {

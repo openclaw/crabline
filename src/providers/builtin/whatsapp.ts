@@ -11,6 +11,7 @@ import {
   waitForRecordedInbound,
   watchRecordedInbound,
   type RecordedInboundCursor,
+  type RecordedInboundEnvelope,
 } from "../recorder.js";
 import type {
   InboundEnvelope,
@@ -59,6 +60,83 @@ const DEFAULT_WHATSAPP_WEBHOOK = {
   port: 8789,
 } as const;
 const MAX_WAIT_CURSORS = 64;
+const MAX_WHATSAPP_WEBHOOK_BODY_BYTES = 1024 * 1024;
+const WHATSAPP_WEBHOOK_BODY_TIMEOUT_MS = 5_000;
+
+class WhatsAppWebhookBodyError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+async function readWhatsAppWebhookBody(
+  request: Request,
+  lifecycleSignal: AbortSignal,
+): Promise<string> {
+  if (!request.body) {
+    return "";
+  }
+
+  const timeoutController = new AbortController();
+  const timeout = setTimeout(() => {
+    timeoutController.abort(new WhatsAppWebhookBodyError("webhook request body timed out", 408));
+  }, WHATSAPP_WEBHOOK_BODY_TIMEOUT_MS);
+  timeout.unref();
+  const signal = AbortSignal.any([lifecycleSignal, request.signal, timeoutController.signal]);
+  const reader = request.body.getReader();
+  const chunks: Buffer[] = [];
+  let bodyBytes = 0;
+  let completed = false;
+  let failure: unknown;
+
+  try {
+    while (true) {
+      const result = await new Promise<Awaited<ReturnType<typeof reader.read>>>(
+        (resolve, reject) => {
+          if (signal.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          const abort = () => reject(signal.reason);
+          signal.addEventListener("abort", abort, { once: true });
+          void reader.read().then(
+            (value) => {
+              signal.removeEventListener("abort", abort);
+              resolve(value);
+            },
+            (error) => {
+              signal.removeEventListener("abort", abort);
+              reject(error);
+            },
+          );
+        },
+      );
+      if (result.done) {
+        completed = true;
+        return Buffer.concat(chunks).toString("utf8");
+      }
+      const chunk = Buffer.from(result.value);
+      bodyBytes += chunk.length;
+      if (bodyBytes > MAX_WHATSAPP_WEBHOOK_BODY_BYTES) {
+        throw new WhatsAppWebhookBodyError("request body too large", 413);
+      }
+      chunks.push(chunk);
+    }
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    if (!completed) {
+      void reader.cancel(failure ?? signal.reason).catch(() => undefined);
+    } else {
+      reader.releaseLock();
+    }
+  }
+}
 
 export function resolveWhatsAppAdapterConfig(
   config: ProviderConfig,
@@ -311,7 +389,18 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       return new Response("forbidden", { status: 403 });
     }
 
-    const rawBody = await request.text();
+    let rawBody: string;
+    try {
+      rawBody = await readWhatsAppWebhookBody(request, this.#lifecycleAbort.signal);
+    } catch (error) {
+      if (this.#cleanupBegun) {
+        return this.#cleanedUpResponse();
+      }
+      if (error instanceof WhatsAppWebhookBodyError) {
+        return new Response(error.message, { status: error.status });
+      }
+      return new Response("invalid request body", { status: 400 });
+    }
     if (
       !hasValidWhatsAppSignature(
         rawBody,
@@ -587,10 +676,15 @@ function normalizeWhatsAppMessage(
   }
 
   const messageId = optionalString(message, "id");
+  if (!messageId) {
+    throw new CrablineError("WhatsApp webhook payload requires messages[].id", {
+      kind: "inbound",
+    });
+  }
   const timestamp = optionalString(message, "timestamp");
   return {
     author: authorFromBotFlag(false),
-    ...(messageId ? { id: messageId } : {}),
+    id: messageId,
     raw: message,
     ...(timestamp ? { sentAt: whatsAppTimestampToIso(timestamp) } : {}),
     text: body,
@@ -661,7 +755,10 @@ function isAddressInChannel(threadId: string, channelId?: string): boolean {
   return threadId === channelId || threadId.startsWith(`${channelId}:`);
 }
 
-function isOutboundRecord(event: InboundEnvelope): boolean {
+function isOutboundRecord(event: RecordedInboundEnvelope): boolean {
+  if (event.recordedDirection !== undefined) {
+    return event.recordedDirection === "outbound";
+  }
   return (
     event.raw !== null &&
     typeof event.raw === "object" &&

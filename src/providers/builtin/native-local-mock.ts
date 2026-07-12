@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { CrablineError } from "../../core/errors.js";
-import type { NativeIdRule } from "../native-ids.js";
+import { numericNativeId, type NativeIdRule } from "../native-ids.js";
 import type { InboundEnvelope } from "../types.js";
 
 export type { NativeIdRule } from "../native-ids.js";
@@ -34,7 +34,9 @@ export function optionalNumberString(
   key: string,
 ): string | undefined {
   const child = value[key];
-  return typeof child === "number" || typeof child === "bigint" ? child.toString() : undefined;
+  return typeof child === "number" || typeof child === "bigint"
+    ? numericNativeId(child)
+    : undefined;
 }
 
 export function optionalStringish(value: Record<string, unknown>, key: string): string | undefined {

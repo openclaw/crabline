@@ -86,6 +86,74 @@ describe("iMessage thread matching", () => {
       await provider.cleanup();
     }
   });
+
+  it("matches aliases against a distinct normalized channel id", async () => {
+    const config = await createLocalMockConfig("imessage", "/imessage/webhook");
+    const provider = new IMessageProviderAdapter("imessage", config, "crabline");
+    const context = createProviderContext("imessage", config, {
+      channelId: "+15551234567",
+      id: "fixture-contact",
+      metadata: {},
+      threadId: "iMessage;-;old-guid",
+    });
+    context.fixture.inboundMatch.author = "any";
+
+    try {
+      const endpoint = (await provider.probe(context)).details
+        .find((detail) => detail.startsWith("webhook endpoint "))
+        ?.replace("webhook endpoint ", "");
+      expect(endpoint).toBeDefined();
+      const waiting = provider.waitForInbound({
+        ...context,
+        nonce: "normalized-channel-alias",
+        since: new Date(Date.now() - 1000).toISOString(),
+        timeoutMs: 500,
+      });
+      const response = await fetch(endpoint!, {
+        body: JSON.stringify({
+          chatGuid: "iMessage;-;new-guid",
+          chatIdentifier: "+15551234567",
+          guid: "imsg-guid-channel-alias",
+          text: "normalized channel alias",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(waiting).resolves.toMatchObject({
+        id: "imsg-guid-channel-alias",
+        threadId: "iMessage;-;new-guid",
+      });
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
+  it("reports both accepted thread identifier fields for malformed payloads", async () => {
+    const config = await createLocalMockConfig("imessage", "/imessage/webhook");
+    const provider = new IMessageProviderAdapter("imessage", config, "crabline");
+    const context = createProviderContext("imessage", config, {
+      id: "+15551234567",
+      metadata: {},
+    });
+
+    try {
+      const endpoint = (await provider.probe(context)).details
+        .find((detail) => detail.startsWith("webhook endpoint "))
+        ?.replace("webhook endpoint ", "");
+      const response = await fetch(endpoint!, {
+        body: JSON.stringify({ text: "missing recipient" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.text()).resolves.toMatch(/chatGuid or chatIdentifier/u);
+    } finally {
+      await provider.cleanup();
+    }
+  });
 });
 
 runLocalMockProviderContract({

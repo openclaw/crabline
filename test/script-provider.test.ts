@@ -663,6 +663,44 @@ describe("script provider", () => {
     expect(inspect(failure, { depth: null })).not.toContain(String(numericMarker));
   });
 
+  it("redacts the immutable payload snapshot sent to delayed commands", async () => {
+    const context = await createContext();
+    const originalValue = "sent-before-mutation";
+    const replacementValue = "replacement-after-spawn";
+    const sensitiveKey = ["access", "Token"].join("");
+    context.fixture.target.metadata[sensitiveKey] = originalValue;
+    const directory = path.dirname(context.manifestPath);
+    const sendScript = path.join(directory, "send-delayed-payload-redaction.mjs");
+    const watchScript = path.join(directory, "watch-delayed-payload-redaction.mjs");
+    const delayedFailure =
+      'let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{const input=JSON.parse(raw);setTimeout(()=>{process.stderr.write(input.fixture.target.metadata[["access","Token"].join("")]);process.exitCode=7;},25);});';
+    await writeText(sendScript, delayedFailure);
+    await writeText(watchScript, delayedFailure);
+    context.config.script!.commands.send = `node ${JSON.stringify(sendScript)}`;
+    context.config.script!.commands.watch = `node ${JSON.stringify(watchScript)}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    const sending = provider.send({
+      ...context,
+      mode: "send",
+      nonce: "nonce",
+      text: "payload",
+    });
+    context.fixture.target.metadata[sensitiveKey] = replacementValue;
+    const sendError = await sending.catch((error: unknown) => error);
+
+    expect(ensureErrorMessage(sendError)).toContain("[redacted configured value]");
+    expect(inspect(sendError, { depth: null })).not.toContain(originalValue);
+
+    context.fixture.target.metadata[sensitiveKey] = originalValue;
+    const watching = provider.watch(context).next();
+    context.fixture.target.metadata[sensitiveKey] = replacementValue;
+    const watchError = await watching.catch((error: unknown) => error);
+
+    expect(ensureErrorMessage(watchError)).toContain("[redacted configured value]");
+    expect(inspect(watchError, { depth: null })).not.toContain(originalValue);
+  });
+
   it("redacts inherited secret values from script diagnostics", async () => {
     const context = await createContext();
     const sentinel = "fixture-redaction-value\nsecond-line\n";
