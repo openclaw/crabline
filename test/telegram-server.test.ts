@@ -134,6 +134,23 @@ describe("telegram local provider server", () => {
         message_thread_id: 42,
       },
     });
+
+    const collectibleUsername = await fetch(
+      `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
+      {
+        body: JSON.stringify({
+          chat_id: "@tiny",
+          text: "collectible username",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    await expect(collectibleUsername.json()).resolves.toMatchObject({
+      result: {
+        chat: { id: "@tiny", type: "supergroup" },
+      },
+    });
   });
 
   it("serves Telegram Bot API calls and queues injected inbound updates", async () => {
@@ -1236,9 +1253,13 @@ describe("telegram local provider server", () => {
     for (const body of [
       { chatId: unsafe, text: "unsafe chat" },
       { chatId: 42, fromId: unsafe, text: "unsafe sender" },
+      { chatId: 42, fromId: unsafe, photo: [] },
       { chatId: 42, messageId: unsafe, text: "unsafe message" },
+      { chatId: 42, messageId: unsafe, photo: [] },
       { chatId: 42, messageThreadId: unsafe, text: "unsafe topic" },
+      { chatId: 42, messageThreadId: unsafe, photo: [] },
       { chatId: 42, text: "unsafe update", updateId: unsafe },
+      { chatId: 42, photo: [], updateId: unsafe },
     ]) {
       const response = await injectUpdate(server, body);
       expect(response.status).toBe(400);

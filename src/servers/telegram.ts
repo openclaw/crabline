@@ -29,7 +29,7 @@ const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 const TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT = 5;
 const TELEGRAM_WEBHOOK_RETRY_BASE_MS = 100;
 const TELEGRAM_WEBHOOK_DELIVERY_TIMEOUT_MS = 3_000;
-const TELEGRAM_CHAT_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{4,31}$/u;
+const TELEGRAM_CHAT_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{0,31}$/u;
 const TELEGRAM_MEDIA_FIELDS = [
   "animation",
   "audio",
@@ -491,6 +491,24 @@ function hasTelegramMedia(value: Record<string, unknown>): boolean {
   return TELEGRAM_MEDIA_FIELDS.some((field) => value[field] !== undefined);
 }
 
+function hasValidExplicitTelegramIdentities(body: Record<string, unknown>): boolean {
+  return (
+    [body.chatId, body.chat_id].every(
+      (value) => value === undefined || telegramChatId(value) !== undefined,
+    ) &&
+    [
+      body.fromId,
+      body.from_id,
+      body.messageId,
+      body.message_id,
+      body.messageThreadId,
+      body.message_thread_id,
+      body.updateId,
+      body.update_id,
+    ].every((value) => value === undefined || toIntegerValue(value) !== undefined)
+  );
+}
+
 function isValidIgnoredTelegramUpdate(body: Record<string, unknown>): boolean {
   const updateIdValue = body.updateId ?? body.update_id;
   const updateId = toIntegerValue(updateIdValue);
@@ -502,7 +520,11 @@ function isValidIgnoredTelegramUpdate(body: Record<string, unknown>): boolean {
       updateId === undefined ||
       !chat ||
       telegramChatId(chat.id) === undefined ||
-      toIntegerValue(message.message_id) === undefined
+      toIntegerValue(message.message_id) === undefined ||
+      (message.from !== undefined &&
+        (!isJsonObject(message.from) || toIntegerValue(message.from.id) === undefined)) ||
+      (message.message_thread_id !== undefined &&
+        toIntegerValue(message.message_thread_id) === undefined)
     ) {
       return false;
     }
@@ -510,7 +532,12 @@ function isValidIgnoredTelegramUpdate(body: Record<string, unknown>): boolean {
   }
 
   const chatId = telegramChatId(body.chatId ?? body.chat_id);
-  if (chatId !== undefined && hasTelegramMedia(body) && toStringValue(body.text) === undefined) {
+  if (
+    chatId !== undefined &&
+    hasValidExplicitTelegramIdentities(body) &&
+    hasTelegramMedia(body) &&
+    toStringValue(body.text) === undefined
+  ) {
     return true;
   }
 
