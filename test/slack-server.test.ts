@@ -326,6 +326,17 @@ describe("slack local provider server", () => {
       messages: [{ text: "hello fake slack" }, { text: "thread reply" }],
       ok: true,
     });
+    await expect(
+      (
+        await slackApi(server, "conversations.replies", {
+          channel: "C1234567890",
+          ts: reply.ts,
+        })
+      ).json(),
+    ).resolves.toMatchObject({
+      messages: [{ text: "hello fake slack" }, { text: "thread reply" }],
+      ok: true,
+    });
 
     await expect(
       (
