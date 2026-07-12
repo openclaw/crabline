@@ -514,6 +514,45 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("falls back to start time when current process identity is unavailable", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    try {
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(lockDirectory, "owner.json"),
+        `${JSON.stringify({
+          channel: "telegram",
+          createdAtMs: 1_000,
+          pid: 4_242,
+          processIdentity: "test:prior",
+          processStartedAtMs: 100,
+          token: "prior",
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        getProcessIdentity: () => null,
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 1_100,
+        pid: 4_242,
+        processIdentity: null,
+        processStartedAtMs: 200,
+      });
+
+      await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
+      await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("keeps an expired legacy lock while its PID is still alive", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };

@@ -484,7 +484,10 @@ function hasProcessIdentityMismatch(owner: SmokeLockOwner, runtime: SmokeLockRun
     owner.pid === runtime.currentPid
       ? runtime.currentProcessIdentity
       : runtime.getProcessIdentity(owner.pid);
-  return actualProcessIdentity !== null && owner.processIdentity !== actualProcessIdentity;
+  return actualProcessIdentity === null
+    ? owner.pid === runtime.currentPid &&
+        owner.processStartedAtMs !== runtime.currentProcessStartedAtMs
+    : owner.processIdentity !== actualProcessIdentity;
 }
 
 function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): boolean {
