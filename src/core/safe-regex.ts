@@ -1,5 +1,13 @@
 const MAX_INBOUND_REGEX_LENGTH = 512;
 
+function isEscaped(pattern: string, index: number): boolean {
+  let backslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && pattern[cursor] === "\\"; cursor -= 1) {
+    backslashes += 1;
+  }
+  return backslashes % 2 === 1;
+}
+
 export function inboundRegexSafetyError(pattern: string): string | undefined {
   if (pattern.length > MAX_INBOUND_REGEX_LENGTH) {
     return `must contain at most ${MAX_INBOUND_REGEX_LENGTH} characters`;
@@ -33,7 +41,7 @@ export function inboundRegexSafetyError(pattern: string): string | undefined {
       character === "*" ||
       character === "+" ||
       character === "{" ||
-      (character === "?" && pattern[index - 1] !== "(")
+      (character === "?" && (pattern[index - 1] !== "(" || isEscaped(pattern, index - 1)))
     ) {
       return "must not contain repetition operators";
     }
