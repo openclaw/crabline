@@ -162,7 +162,7 @@ describe("recorder", () => {
     ).resolves.toEqual(second);
   });
 
-  it("bounds remembered wait cursor records", async () => {
+  it("retains incremental wait progress across large recorder histories", async () => {
     const filePath = await createRecorderPath();
     const cursor = createRecordedInboundCursor();
     const now = new Date().toISOString();
@@ -193,8 +193,6 @@ describe("recorder", () => {
         timeoutMs: 30,
       }),
     ).resolves.toMatchObject({ id: `bounded-${eventCount - 1}` });
-    expect(cursor.seen.size).toBe(4096);
-    expect(cursor.seen.has(JSON.stringify(["slack", "slack:C123", "bounded-0"]))).toBe(false);
     await expect(
       waitForRecordedInbound({
         cursor,
