@@ -19,7 +19,7 @@ const BLOCKED_IPV4_ADDRESSES = createBlockedIpv4Addresses();
 const BLOCKED_IPV6_ADDRESSES = createBlockedIpv6Addresses();
 const GLOBAL_IPV4_EXCEPTIONS = createGlobalIpv4Exceptions();
 const GLOBAL_IPV6_EXCEPTIONS = createGlobalIpv6Exceptions();
-const GLOBAL_IPV6_RANGES = createGlobalIpv6Ranges();
+const ALLOCATED_GLOBAL_IPV6_RANGES = createAllocatedGlobalIpv6Ranges();
 
 function createBlockedIpv4Addresses(): BlockList {
   const blockList = new BlockList();
@@ -93,9 +93,42 @@ function createGlobalIpv6Exceptions(): BlockList {
   return blockList;
 }
 
-function createGlobalIpv6Ranges(): BlockList {
+function createAllocatedGlobalIpv6Ranges(): BlockList {
   const blockList = new BlockList();
-  blockList.addSubnet("2000::", 3, "ipv6");
+  // IANA reserves unlisted portions of 2000::/3 for future allocation.
+  for (const [address, prefix] of [
+    ["2001:200::", 23],
+    ["2001:400::", 23],
+    ["2001:600::", 23],
+    ["2001:800::", 22],
+    ["2001:c00::", 23],
+    ["2001:e00::", 23],
+    ["2001:1200::", 23],
+    ["2001:1400::", 22],
+    ["2001:1800::", 23],
+    ["2001:1a00::", 23],
+    ["2001:1c00::", 22],
+    ["2001:2000::", 19],
+    ["2001:4000::", 23],
+    ["2001:4200::", 23],
+    ["2001:4400::", 23],
+    ["2001:4600::", 23],
+    ["2001:4800::", 23],
+    ["2001:4a00::", 23],
+    ["2001:4c00::", 23],
+    ["2001:5000::", 20],
+    ["2001:8000::", 19],
+    ["2001:a000::", 20],
+    ["2001:b000::", 20],
+    ["2003::", 18],
+    ["2400::", 12],
+    ["2600::", 12],
+    ["2800::", 12],
+    ["2a00::", 12],
+    ["2c00::", 12],
+  ] as const) {
+    blockList.addSubnet(address, prefix, "ipv6");
+  }
   blockList.addSubnet("64:ff9b::", 96, "ipv6");
   return blockList;
 }
@@ -119,7 +152,7 @@ function isBlockedWebhookAddress(address: string): boolean {
     }
     return (
       BLOCKED_IPV6_ADDRESSES.check(normalized, "ipv6") ||
-      !GLOBAL_IPV6_RANGES.check(normalized, "ipv6")
+      !ALLOCATED_GLOBAL_IPV6_RANGES.check(normalized, "ipv6")
     );
   }
   return false;
