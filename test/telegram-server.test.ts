@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
-import { Agent, request as httpRequest } from "node:http";
+import { Agent, request as httpRequest, type IncomingMessage } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startTelegramServer, type StartedTelegramServer } from "../src/index.js";
+import { handleTelegramGetUpdates } from "../src/servers/telegram.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedTelegramServer[] = [];
@@ -473,6 +474,60 @@ describe("telegram local provider server", () => {
     await expect(replacementPoll.then((response) => response.json())).resolves.toMatchObject({
       ok: true,
       result: [{ message: { text: "replacement poll remains active" }, update_id: 100 }],
+    });
+  });
+
+  it("supersedes an active long poll with a timeout-zero replacement", async () => {
+    const server = await startTelegramServer({ botToken: "test-token" });
+    servers.push(server);
+
+    const firstPoll = getUpdates(server, { offset: 100, timeout: 30 });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const replacement = await getUpdates(server, { offset: 100, timeout: 0 });
+
+    expect(replacement.status).toBe(200);
+    await expect(replacement.json()).resolves.toEqual({ ok: true, result: [] });
+    const conflicted = await firstPoll;
+    expect(conflicted.status).toBe(409);
+    await expect(conflicted.json()).resolves.toMatchObject({
+      description:
+        "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running",
+      error_code: 409,
+      ok: false,
+    });
+  });
+
+  it("supersedes an active long poll before returning queued updates", async () => {
+    const pollResults: string[] = [];
+    const response = await handleTelegramGetUpdates({
+      body: { timeout: 30 },
+      request: {} as IncomingMessage,
+      state: {
+        activeUpdatePoll: {
+          finish(result) {
+            pollResults.push(result);
+          },
+        },
+        closing: false,
+        updates: [
+          {
+            message: {
+              chat: { id: 123, type: "private" },
+              date: 1,
+              from: { first_name: "QA User", id: 100001, is_bot: false },
+              message_id: 1,
+              text: "already queued",
+            },
+            update_id: 1,
+          },
+        ],
+      },
+    });
+
+    expect(pollResults).toEqual(["conflict"]);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      result: [{ message: { text: "already queued" }, update_id: 1 }],
     });
   });
 
