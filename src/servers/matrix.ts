@@ -35,10 +35,10 @@ type MatrixRoom = {
     sequence: number;
   }>;
   id: string;
+  lastDroppedTimelineSequence: number | undefined;
   name: string;
   state: MatrixEvent[];
   timeline: Array<{ sequence: number; event: MatrixEvent }>;
-  timelineDropped: boolean;
   typingTimeouts: Map<string, NodeJS.Timeout>;
   typingUsers: Set<string>;
   users: Map<string, { avatar_url?: string; display_name?: string }>;
@@ -186,10 +186,10 @@ function createRoom(params: {
     createdSequence: params.createdSequence,
     ephemeral: [],
     id: params.id,
+    lastDroppedTimelineSequence: undefined,
     name: params.name,
     state: [],
     timeline: [],
-    timelineDropped: false,
     typingTimeouts: new Map(),
     typingUsers: new Set(),
     users: new Map([[params.botUserId, { display_name: "OpenClaw QA" }]]),
@@ -233,8 +233,8 @@ function appendTimelineEvent(
 ): void {
   room.timeline.push(entry);
   if (room.timeline.length > MAX_MATRIX_TIMELINE_EVENTS) {
-    room.timelineDropped = true;
-    room.timeline.splice(0, room.timeline.length - MAX_MATRIX_TIMELINE_EVENTS);
+    const dropped = room.timeline.splice(0, room.timeline.length - MAX_MATRIX_TIMELINE_EVENTS);
+    room.lastDroppedTimelineSequence = dropped.at(-1)?.sequence;
   }
 }
 
@@ -312,11 +312,9 @@ function syncRoom(room: MatrixRoom, since: number | undefined, timelineLimit: nu
       ? available
       : available.slice(Math.max(0, available.length - timelineLimit));
   const firstSequence = timeline[0]?.sequence;
-  const retainedFirstSequence = room.timeline[0]?.sequence;
   const historyWasTrimmed =
-    room.timelineDropped &&
-    retainedFirstSequence !== undefined &&
-    (since === undefined || since < retainedFirstSequence - 1);
+    room.lastDroppedTimelineSequence !== undefined &&
+    (since === undefined || since < room.lastDroppedTimelineSequence);
   return {
     account_data: { events: [] },
     ephemeral: {
