@@ -24,6 +24,11 @@ const webhookMocks = vi.hoisted(() => ({
   actualStartWebhookServer: undefined as StartWebhookServer | undefined,
   startWebhookServer: vi.fn<StartWebhookServer>(),
 }));
+const telegramLifecycle = vi.hoisted(() => ({
+  importBarrier: undefined as Promise<void> | undefined,
+  onBeginCleanup: undefined as (() => void) | undefined,
+  onProbe: undefined as (() => void) | undefined,
+}));
 
 vi.mock("../src/providers/recorder.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/providers/recorder.js")>();
@@ -49,6 +54,26 @@ vi.mock("../src/providers/webhook-server.js", async (importOriginal) => {
     startWebhookServer: webhookMocks.startWebhookServer,
   };
 });
+vi.mock("../src/providers/builtin/telegram.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/providers/builtin/telegram.js")>();
+  await telegramLifecycle.importBarrier;
+  return {
+    ...actual,
+    TelegramProviderAdapter: class extends actual.TelegramProviderAdapter {
+      override async probe(context: ProviderContext) {
+        if (telegramLifecycle.onProbe) {
+          telegramLifecycle.onProbe();
+          return { details: [], healthy: true };
+        }
+        return await super.probe(context);
+      }
+
+      beginCleanup(): void {
+        telegramLifecycle.onBeginCleanup?.();
+      }
+    },
+  };
+});
 
 beforeEach(() => {
   recorderMocks.appendRecordedInbound.mockReset();
@@ -63,6 +88,9 @@ beforeEach(() => {
   recorderMocks.watchRecordedInbound.mockImplementation(recorderMocks.actualWatchRecordedInbound!);
   webhookMocks.startWebhookServer.mockReset();
   webhookMocks.startWebhookServer.mockImplementation(webhookMocks.actualStartWebhookServer!);
+  telegramLifecycle.importBarrier = undefined;
+  telegramLifecycle.onBeginCleanup = undefined;
+  telegramLifecycle.onProbe = undefined;
 });
 
 function createTelegramManifest(recorderPath: string): {
@@ -236,6 +264,42 @@ describe("lazy provider lifecycle", () => {
     } finally {
       await waiting?.catch(() => undefined);
       await cleanup?.catch(() => undefined);
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("dispatches admitted work before beginning concrete cleanup", async () => {
+    const directory = await createTempDir();
+    const recorderPath = path.join(directory, "telegram.jsonl");
+    let releaseImport: (() => void) | undefined;
+    const events: string[] = [];
+    telegramLifecycle.importBarrier = new Promise<void>((resolve) => {
+      releaseImport = resolve;
+    });
+    telegramLifecycle.onProbe = () => events.push("probe");
+    telegramLifecycle.onBeginCleanup = () => events.push("beginCleanup");
+
+    try {
+      const { context, manifest } = createTelegramManifest(recorderPath);
+      const provider = createRegistry(manifest, context.manifestPath).resolve(
+        "telegram",
+        context.fixture.id,
+      );
+      const probing = provider.probe(context);
+      const cleanup = provider.cleanup?.();
+
+      await Promise.resolve();
+      expect(events).toEqual([]);
+
+      releaseImport?.();
+      await expect(probing).resolves.toEqual({ details: [], healthy: true });
+      await cleanup;
+      expect(events).toEqual(["probe", "beginCleanup"]);
+    } finally {
+      releaseImport?.();
+      telegramLifecycle.importBarrier = undefined;
+      telegramLifecycle.onBeginCleanup = undefined;
+      telegramLifecycle.onProbe = undefined;
       await disposeTempDir(directory);
     }
   });
