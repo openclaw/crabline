@@ -32,6 +32,14 @@ async function createRecorderPath(): Promise<string> {
   return path.join(directory, "inbound.jsonl");
 }
 
+function runAfterDelay<T>(operation: () => Promise<T>, delayMs = 25): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    setTimeout(() => {
+      void operation().then(resolve, reject);
+    }, delayMs);
+  });
+}
+
 describe("recorder", () => {
   it("returns an empty list for a missing recorder file", async () => {
     const filePath = await createRecorderPath();
@@ -760,21 +768,22 @@ describe("recorder", () => {
       timeoutMs: 500,
     });
 
-    setTimeout(() => {
-      void appendRecordedInbound(filePath, {
+    const append = runAfterDelay(() =>
+      appendRecordedInbound(filePath, {
         author: "assistant",
         id: "evt-2",
         provider: "slack",
         sentAt: new Date().toISOString(),
         text: "match me",
         threadId: "slack:C123",
-      });
-    }, 25);
+      }),
+    );
 
     await expect(waitPromise).resolves.toMatchObject({
       id: "evt-2",
       text: "match me",
     });
+    await append;
   });
 
   it("retains unread events when a cursor returns an earlier match", async () => {
@@ -998,14 +1007,13 @@ describe("recorder", () => {
         timeoutMs: 500,
       });
 
-      setTimeout(() => {
-        void appendFile(filePath, `${tail.slice(splitAt)}\n`, "utf8");
-      }, 25);
+      const append = runAfterDelay(() => appendFile(filePath, `${tail.slice(splitAt)}\n`, "utf8"));
 
       await expect(waitPromise).resolves.toMatchObject({
         id: "evt-tail",
         text: "completed tail",
       });
+      await append;
       const fileSize = Buffer.byteLength(`${history}${tail}\n`);
       expect(bytesRead).toBeGreaterThanOrEqual(fileSize);
       expect(bytesRead).toBeLessThan(fileSize * 2);
@@ -1101,9 +1109,9 @@ describe("recorder", () => {
       timeoutMs: 500,
     });
 
-    setTimeout(() => {
+    const replace = runAfterDelay(async () => {
       const replacementPath = `${filePath}.replacement`;
-      void writeFile(
+      await writeFile(
         replacementPath,
         `${JSON.stringify({
           author: "assistant",
@@ -1115,13 +1123,15 @@ describe("recorder", () => {
           threadId: "slack:C123",
         })}\n`,
         "utf8",
-      ).then(() => rename(replacementPath, filePath));
-    }, 25);
+      );
+      await rename(replacementPath, filePath);
+    });
 
     await expect(waitPromise).resolves.toMatchObject({
       id: "after-replacement",
       threadId: "slack:C123",
     });
+    await replace;
   });
 
   it("preserves the offset when atomic replacement retains recorder history", async () => {
@@ -1197,8 +1207,8 @@ describe("recorder", () => {
       timeoutMs: 500,
     });
 
-    setTimeout(() => {
-      void writeFile(
+    const truncate = runAfterDelay(() =>
+      writeFile(
         filePath,
         `${JSON.stringify({
           author: "assistant",
@@ -1210,13 +1220,14 @@ describe("recorder", () => {
           threadId: "slack:C123",
         })}\n`,
         "utf8",
-      );
-    }, 25);
+      ),
+    );
 
     await expect(waitPromise).resolves.toMatchObject({
       id: "after-truncate",
       threadId: "slack:C123",
     });
+    await truncate;
   });
 
   it("streams new inbound events", async () => {
@@ -1227,20 +1238,21 @@ describe("recorder", () => {
       pollMs: 10,
     })[Symbol.asyncIterator]();
 
-    setTimeout(() => {
-      void appendRecordedInbound(filePath, {
+    const append = runAfterDelay(() =>
+      appendRecordedInbound(filePath, {
         author: "user",
         id: "evt-3",
         provider: "slack",
         sentAt: new Date().toISOString(),
         text: "tail me",
         threadId: "slack:C999",
-      });
-    }, 25);
+      }),
+    );
 
     const next = await iterator.next();
     expect(next.done).toBe(false);
     expect(next.value?.id).toBe("evt-3");
+    await append;
   });
 
   it("stops before yielding buffered events after abort", async () => {
@@ -1318,19 +1330,20 @@ describe("recorder", () => {
         pollMs: 10,
       })[Symbol.asyncIterator]();
 
-      setTimeout(() => {
-        void appendRecordedInbound(filePath, {
+      const append = runAfterDelay(() =>
+        appendRecordedInbound(filePath, {
           author: "user",
           id: "evt-tail",
           provider: "slack",
           sentAt: new Date().toISOString(),
           text: "tail me",
           threadId: "slack:C999",
-        });
-      }, 25);
+        }),
+      );
 
       const next = await iterator.next();
       expect(next.value?.id).toBe("evt-tail");
+      await append;
       expect(bytesRead).toBeGreaterThanOrEqual(Buffer.byteLength(history));
       expect(bytesRead).toBeLessThan(Buffer.byteLength(history) * 2);
     } finally {

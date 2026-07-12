@@ -17,7 +17,11 @@ import {
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
-import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import {
+  recordCommittedServerEvent,
+  recordServerEvent,
+  type ServerEventObserver,
+} from "./recorder.js";
 import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 import { closeWebSocketServer } from "./websocket.js";
 
@@ -55,6 +59,9 @@ type MattermostWebSocketEvent = {
   };
   data: Record<string, unknown>;
   event: string;
+};
+type MattermostRecorderEvent = ServerRequestEvent & {
+  accepted?: boolean | undefined;
 };
 
 type MattermostServerState = {
@@ -118,8 +125,13 @@ export function mattermostId(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 26);
 }
 
-async function appendEvent(state: MattermostServerState, event: ServerRequestEvent): Promise<void> {
-  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
+async function appendEvent(
+  state: MattermostServerState,
+  event: ServerRequestEvent,
+  committed = false,
+): Promise<void> {
+  const params = { event, onEvent: state.onEvent, recorderPath: state.recorderPath };
+  await (committed ? recordCommittedServerEvent(params) : recordServerEvent(params));
 }
 
 function authorized(request: IncomingMessage, token: string): boolean {
@@ -210,6 +222,34 @@ function sendEvent(
   return true;
 }
 
+function sendControlMessage(
+  state: MattermostServerState,
+  client: WebSocket,
+  value: Record<string, unknown>,
+): boolean {
+  if (client.readyState !== WebSocket.OPEN) {
+    state.websocketClients.delete(client);
+    return false;
+  }
+  const payload = JSON.stringify(value);
+  if (
+    client.bufferedAmount + Buffer.byteLength(payload, "utf8") >
+    state.maxWebSocketBufferedBytes
+  ) {
+    state.websocketClients.delete(client);
+    client.close(1013, "client too slow");
+    return false;
+  }
+  try {
+    client.send(payload);
+    return true;
+  } catch {
+    state.websocketClients.delete(client);
+    client.terminate();
+    return false;
+  }
+}
+
 function broadcast(
   state: MattermostServerState,
   event: MattermostWebSocketEvent,
@@ -292,16 +332,17 @@ function handleAdminInbound(params: {
   ) {
     return pendingQueueFullResponse(params.state);
   }
-  const senderName = readTrimmedString(params.body.senderName) ?? senderId;
-  const channelType = readTrimmedString(params.body.channelType) ?? "D";
   const previousUser = params.state.users.get(senderId);
   const previousChannel = params.state.channels.get(channelId);
+  const senderName =
+    readTrimmedString(params.body.senderName) ?? previousUser?.username ?? senderId;
+  const channelType = readTrimmedString(params.body.channelType) ?? previousChannel?.type ?? "D";
   const previousNextPost = params.state.nextPost;
   params.state.users.set(senderId, { id: senderId, update_at: Date.now(), username: senderName });
   params.state.channels.set(channelId, {
-    display_name: channelId,
+    display_name: previousChannel?.display_name ?? channelId,
     id: channelId,
-    name: channelId,
+    name: previousChannel?.name ?? channelId,
     type: channelType,
   });
   const post = createPost({
@@ -407,7 +448,7 @@ async function handleApi(params: {
       },
       false,
     );
-    return jsonResponse({});
+    return jsonResponse({ status: "OK" });
   }
   if (method === "POST" && apiPath === "/posts") {
     const channelId = readTrimmedString(body.channel_id);
@@ -481,7 +522,7 @@ async function handleApi(params: {
       ),
       false,
     );
-    return new Response(null, { status: 204 });
+    return jsonResponse({ status: "OK" });
   }
   return mattermostError("Not found", 404);
 }
@@ -517,15 +558,25 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
   }
   const body =
     method === "GET" || method === "DELETE" ? {} : await parseUnknownRequestBody(request);
-  await appendEvent(state, {
+  const event: MattermostRecorderEvent = {
     at: new Date().toISOString(),
     ...(typeof body === "object" && body !== null && Object.keys(body).length > 0 ? { body } : {}),
     method,
     path: url.pathname,
     query: queryRecord(url),
     type: "api",
+  };
+  const response = await handleApi({
+    body,
+    method,
+    path: url.pathname.slice("/api/v4".length),
+    state,
   });
-  return await handleApi({ body, method, path: url.pathname.slice("/api/v4".length), state });
+  if (method === "POST" && url.pathname === "/api/v4/posts") {
+    event.accepted = response.status === 201;
+  }
+  await appendEvent(state, event, response.ok && method !== "GET");
+  return response;
 }
 
 function attachWebSocketServer(params: {
@@ -595,13 +646,11 @@ function attachWebSocketServer(params: {
           message.action !== "authentication_challenge" ||
           message.data?.token !== params.state.botToken
         ) {
-          client.send(
-            JSON.stringify({
-              error: { id: "api.context.unauthorized", message: "Authentication failed" },
-              seq_reply: seq,
-              status: "FAIL",
-            }),
-          );
+          sendControlMessage(params.state, client, {
+            error: { id: "api.context.unauthorized", message: "Authentication failed" },
+            seq_reply: seq,
+            status: "FAIL",
+          });
           authenticationOpen = false;
           client.close(4001, "authentication failed");
           return;
@@ -610,7 +659,7 @@ function attachWebSocketServer(params: {
         authenticationOpen = false;
         unauthenticatedClients.delete(client);
         params.state.websocketClients.set(client, 0);
-        client.send(JSON.stringify({ seq_reply: seq, status: "OK" }));
+        sendControlMessage(params.state, client, { seq_reply: seq, status: "OK" });
         sendEvent(params.state, client, {
           broadcast: eventBroadcast({ userId: params.state.botUserId }),
           data: {
@@ -631,16 +680,14 @@ function attachWebSocketServer(params: {
       if (message.action === "user_typing") {
         const channelId = readTrimmedString(message.data?.channel_id);
         if (!channelId || !params.state.channels.has(channelId)) {
-          client.send(
-            JSON.stringify({
-              error: {
-                id: "api.channel.get.find.app_error",
-                message: "Channel not found",
-              },
-              seq_reply: seq,
-              status: "FAIL",
-            }),
-          );
+          sendControlMessage(params.state, client, {
+            error: {
+              id: "api.channel.get.find.app_error",
+              message: "Channel not found",
+            },
+            seq_reply: seq,
+            status: "FAIL",
+          });
           return;
         }
         broadcast(
@@ -659,20 +706,22 @@ function attachWebSocketServer(params: {
           },
           false,
         );
-        client.send(JSON.stringify({ seq_reply: seq, status: "OK" }));
+        sendControlMessage(params.state, client, { seq_reply: seq, status: "OK" });
         return;
       }
       if (message.action === "ping") {
-        client.send(JSON.stringify({ data: { text: "pong" }, seq_reply: seq, status: "OK" }));
+        sendControlMessage(params.state, client, {
+          data: { text: "pong" },
+          seq_reply: seq,
+          status: "OK",
+        });
         return;
       }
-      client.send(
-        JSON.stringify({
-          error: { id: "api.websocket.invalid_action", message: "Unsupported action" },
-          seq_reply: seq,
-          status: "FAIL",
-        }),
-      );
+      sendControlMessage(params.state, client, {
+        error: { id: "api.websocket.invalid_action", message: "Unsupported action" },
+        seq_reply: seq,
+        status: "FAIL",
+      });
     });
     client.once("close", () => {
       authenticationOpen = false;

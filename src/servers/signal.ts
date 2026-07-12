@@ -17,7 +17,11 @@ import {
   type ServerRequestEvent,
   writeResponse,
 } from "./http.js";
-import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import {
+  recordCommittedServerEvent,
+  recordServerEvent,
+  type ServerEventObserver,
+} from "./recorder.js";
 import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 
 type SignalServerState = {
@@ -52,8 +56,12 @@ const DEFAULT_MAX_SIGNAL_SSE_CLIENTS = 32;
 const MAX_SIGNAL_SSE_BUFFER_BYTES = 2 * 1024 * 1024;
 type SignalSseWriteResult = "accepted" | "queued" | "rejected";
 type SignalRpcResult = {
+  accepted: boolean;
   record: boolean;
   response: Response;
+};
+type SignalRecorderEvent = ServerRequestEvent & {
+  accepted?: boolean | undefined;
 };
 
 export type SignalServerManifest = {
@@ -88,8 +96,13 @@ export type StartSignalServerParams = {
   maxSseClients?: number | undefined;
 };
 
-async function appendEvent(state: SignalServerState, event: ServerRequestEvent): Promise<void> {
-  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
+async function appendEvent(
+  state: SignalServerState,
+  event: ServerRequestEvent,
+  committed = false,
+): Promise<void> {
+  const params = { event, onEvent: state.onEvent, recorderPath: state.recorderPath };
+  await (committed ? recordCommittedServerEvent(params) : recordServerEvent(params));
 }
 
 function rpcResponse(id: unknown, result: unknown): Response {
@@ -354,17 +367,22 @@ async function handleAdminInbound(params: {
   body: Record<string, unknown>;
   state: SignalServerState;
 }): Promise<Response> {
-  const text = readTrimmedString(params.body.text);
+  const text = typeof params.body.text === "string" ? params.body.text : undefined;
   const sourceNumber = readTrimmedString(params.body.sourceNumber ?? params.body.senderId);
-  if (!text || !sourceNumber) {
-    return jsonResponse({ error: "sourceNumber and text are required", ok: false }, 400);
+  const sourceUuid = readTrimmedString(params.body.sourceUuid);
+  if (!text || text.trim().length === 0 || (!sourceNumber && !sourceUuid)) {
+    return jsonResponse(
+      { error: "text and at least one source identity are required", ok: false },
+      400,
+    );
   }
   const timestamp = readInteger(params.body.timestamp) ?? params.state.nextTimestamp++;
   const groupId = readTrimmedString(params.body.groupId);
   const payload = {
     envelope: {
       sourceName: readTrimmedString(params.body.sourceName ?? params.body.senderName),
-      sourceNumber,
+      ...(sourceNumber ? { sourceNumber } : {}),
+      ...(sourceUuid ? { sourceUuid } : {}),
       timestamp,
       dataMessage: {
         message: text,
@@ -389,45 +407,78 @@ async function handleRpc(params: {
   body: Record<string, unknown>;
   state: SignalServerState;
 }): Promise<SignalRpcResult> {
-  const method = readTrimmedString(params.body.method);
-  if (!method) {
+  const hasId = Object.hasOwn(params.body, "id");
+  const id = params.body.id;
+  const validId =
+    !hasId ||
+    id === null ||
+    typeof id === "string" ||
+    (typeof id === "number" && Number.isFinite(id));
+  const method = params.body.method;
+  if (typeof method !== "string" || !validId) {
     return {
+      accepted: false,
       record: false,
-      response: rpcError(-32600, "Invalid Request", params.body.id),
+      response: rpcError(-32600, "Invalid Request", validId ? id : null),
     };
   }
   if (params.body.jsonrpc !== "2.0") {
     return {
+      accepted: false,
       record: false,
-      response: rpcError(-32600, "Invalid Request", params.body.id),
+      response: rpcError(-32600, "Invalid Request", id),
+    };
+  }
+  const notification = !hasId;
+  if (
+    params.body.params !== undefined &&
+    !Array.isArray(params.body.params) &&
+    !isJsonObject(params.body.params)
+  ) {
+    return {
+      accepted: false,
+      record: false,
+      response: rpcError(-32600, "Invalid Request", id),
     };
   }
   if (method === "version") {
     return {
+      accepted: false,
       record: true,
-      response: rpcResponse(params.body.id, { version: "crabline-signal-1" }),
+      response: notification
+        ? new Response(null, { status: 204 })
+        : rpcResponse(id, { version: "crabline-signal-1" }),
     };
   }
   if (["send", "sendReaction", "sendReceipt", "sendTyping"].includes(method)) {
     if (!validSignalRpcParams(method, params.body.params)) {
       return {
+        accepted: false,
         record: false,
-        response: rpcError(-32602, "Invalid params", params.body.id),
+        response: notification
+          ? new Response(null, { status: 204 })
+          : rpcError(-32602, "Invalid params", id),
       };
     }
     const timestamp = params.state.nextTimestamp++;
     return {
+      accepted: true,
       record: true,
-      response: rpcResponse(params.body.id, method === "sendTyping" ? {} : { timestamp }),
+      response: notification
+        ? new Response(null, { status: 204 })
+        : rpcResponse(id, method === "sendTyping" ? {} : { timestamp }),
     };
   }
   return {
+    accepted: false,
     record: false,
-    response: jsonResponse({
-      error: { code: -32601, message: `Method not found: ${method}` },
-      id: params.body.id ?? null,
-      jsonrpc: "2.0",
-    }),
+    response: notification
+      ? new Response(null, { status: 204 })
+      : jsonResponse({
+          error: { code: -32601, message: `Method not found: ${method}` },
+          id: id ?? null,
+          jsonrpc: "2.0",
+        }),
   };
 }
 
@@ -611,14 +662,16 @@ async function handleRequest(params: {
     }
     const rpc = await handleRpc({ body, state: params.state });
     if (rpc.record) {
-      await appendEvent(params.state, {
+      const event: SignalRecorderEvent = {
+        accepted: rpc.accepted,
         at: new Date().toISOString(),
         body,
         method: "POST",
         path: url.pathname,
         query: queryRecord(url),
         type: "api",
-      });
+      };
+      await appendEvent(params.state, event, rpc.accepted || rpc.response.status === 204);
     }
     fetchResponse = rpc.response;
   } else {
@@ -666,7 +719,13 @@ export async function startSignalServer(
         } else {
           errorResponse = jsonResponse({ error: "internal server error", ok: false }, 500);
         }
-        await writeResponse(response, errorResponse);
+        try {
+          await writeResponse(response, errorResponse);
+        } catch (writeError) {
+          response.destroy(
+            writeError instanceof Error ? writeError : new Error(String(writeError)),
+          );
+        }
       } else {
         response.destroy(error instanceof Error ? error : new Error(String(error)));
       }

@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import fs from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   startSlackServer,
   type StartedSlackServer,
@@ -17,6 +17,7 @@ const directories: string[] = [];
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(directories.splice(0).map(disposeTempDir));
+  vi.restoreAllMocks();
 });
 
 async function startTestSlackServer(
@@ -77,6 +78,26 @@ async function postSignedSlackEvent(
     },
     method: "POST",
   });
+}
+
+function runRetryTimersImmediately(): number[] {
+  const delays: number[] = [];
+  const originalSetTimeout = globalThis.setTimeout.bind(globalThis);
+  vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+    callback: (...args: unknown[]) => void,
+    delay?: number,
+    ...args: unknown[]
+  ) => {
+    const requestedDelay = delay ?? 0;
+    if ([0, 60_000, 5 * 60_000].includes(requestedDelay)) {
+      if (requestedDelay > 0) {
+        delays.push(requestedDelay);
+      }
+      return originalSetTimeout(callback, 0, ...args);
+    }
+    return originalSetTimeout(callback, requestedDelay, ...args);
+  }) as typeof setTimeout);
+  return delays;
 }
 
 describe("slack local provider server", () => {
@@ -155,6 +176,7 @@ describe("slack local provider server", () => {
         id: "G000000001",
         is_group: false,
         is_mpim: true,
+        is_private: true,
         members: ["UCRABBOT", ...users],
       },
       ok: true,
@@ -184,6 +206,7 @@ describe("slack local provider server", () => {
         is_group: false,
         is_im: false,
         is_mpim: true,
+        is_private: true,
         members: ["UCRABBOT", ...users],
         name: "crabline",
       },
@@ -399,6 +422,115 @@ describe("slack local provider server", () => {
         ok: false,
       });
     }
+  });
+
+  it("paginates history and replies with cursors", async () => {
+    const server = await startTestSlackServer();
+    const parent = await postMessage(server, {
+      channel: "C1234567890",
+      text: "parent",
+    });
+    for (const text of ["reply one", "reply two", "reply three"]) {
+      await postMessage(server, {
+        channel: "C1234567890",
+        text,
+        thread_ts: parent.ts,
+      });
+    }
+
+    const collect = async (method: string, body: Record<string, unknown>) => {
+      const texts: string[] = [];
+      let cursor = "";
+      do {
+        const response = await slackApi(server, method, { ...body, cursor, limit: 2 });
+        const payload = (await response.json()) as {
+          messages: Array<{ text: string }>;
+          response_metadata: { next_cursor: string };
+        };
+        texts.push(...payload.messages.map((message) => message.text));
+        cursor = payload.response_metadata.next_cursor;
+      } while (cursor);
+      return texts;
+    };
+
+    await postMessage(server, { channel: "C1234567890", text: "newer root" });
+    expect(await collect("conversations.history", { channel: "C1234567890" })).toEqual([
+      "newer root",
+      "parent",
+    ]);
+    expect(
+      await collect("conversations.replies", { channel: "C1234567890", ts: parent.ts }),
+    ).toEqual(["parent", "reply one", "reply two", "reply three"]);
+
+    const invalid = await slackApi(server, "conversations.history", {
+      channel: "C1234567890",
+      cursor: "not-a-cursor",
+    });
+    await expect(invalid.json()).resolves.toEqual({ error: "invalid_cursor", ok: false });
+    for (const cursor of ["MQ=", "M Q", "MQ!", "MDE", " MQ"]) {
+      const malformed = await slackApi(server, "conversations.history", {
+        channel: "C1234567890",
+        cursor,
+      });
+      await expect(malformed.json()).resolves.toEqual({ error: "invalid_cursor", ok: false });
+    }
+  });
+
+  it("keeps history pagination stable when newer messages arrive", async () => {
+    const server = await startTestSlackServer();
+    for (const text of ["oldest", "middle", "newest"]) {
+      await postMessage(server, { channel: "C1234567890", text });
+    }
+
+    const first = await slackApi(server, "conversations.history", {
+      channel: "C1234567890",
+      limit: 2,
+    });
+    const firstBody = (await first.json()) as {
+      messages: Array<{ text: string }>;
+      response_metadata: { next_cursor: string };
+    };
+    expect(firstBody.messages.map((message) => message.text)).toEqual(["newest", "middle"]);
+
+    await postMessage(server, { channel: "C1234567890", text: "inserted later" });
+    const second = await slackApi(server, "conversations.history", {
+      channel: "C1234567890",
+      cursor: firstBody.response_metadata.next_cursor,
+      limit: 2,
+    });
+    const secondBody = (await second.json()) as { messages: Array<{ text: string }> };
+    expect(secondBody.messages.map((message) => message.text)).toEqual(["oldest"]);
+  });
+
+  it("preserves committed Web API mutation success when recording callbacks fail", async () => {
+    const server = await startTestSlackServer({
+      onEvent() {
+        throw new Error("observer failed");
+      },
+    });
+
+    const opened = await slackApi(server, "conversations.open", {
+      users: "U1234567890",
+    });
+    const openedBody = (await opened.json()) as { channel: { id: string }; ok: boolean };
+    expect(openedBody.ok).toBe(true);
+
+    const posted = await slackApi(server, "chat.postMessage", {
+      channel: openedBody.channel.id,
+      text: "committed once",
+    });
+    await expect(posted.json()).resolves.toMatchObject({
+      message: { text: "committed once" },
+      ok: true,
+    });
+
+    const records = (await fs.readFile(server.manifest.recorderPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { accepted?: boolean; path: string });
+    expect(records).toContainEqual(
+      expect.objectContaining({ accepted: true, path: "/api/chat.postMessage" }),
+    );
   });
 
   it("preserves message whitespace and accepts blocks-only admin events", async () => {
@@ -645,8 +777,19 @@ describe("slack local provider server", () => {
     }
   });
 
-  it("retains inbound message state when Events API delivery is rejected", async () => {
-    const eventsReceiver = createServer((_request, response) => {
+  it("preserves committed inbound success when Events API delivery is rejected", async () => {
+    const deliveries: Array<{ reason: string | undefined; retry: string | undefined }> = [];
+    const eventsReceiver = createServer((request, response) => {
+      deliveries.push({
+        reason:
+          typeof request.headers["x-slack-retry-reason"] === "string"
+            ? request.headers["x-slack-retry-reason"]
+            : undefined,
+        retry:
+          typeof request.headers["x-slack-retry-num"] === "string"
+            ? request.headers["x-slack-retry-num"]
+            : undefined,
+      });
       response.statusCode = 503;
       response.end();
     });
@@ -659,6 +802,7 @@ describe("slack local provider server", () => {
       eventsRequestUrl: `http://127.0.0.1:${address.port}/slack/events`,
       signingSecret: "test-signing-secret",
     });
+    const retryDelays = runRetryTimersImmediately();
 
     try {
       const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
@@ -673,11 +817,19 @@ describe("slack local provider server", () => {
         },
         method: "POST",
       });
-      expect(inbound.status).toBe(502);
-      await expect(inbound.json()).resolves.toEqual({
-        error: "event_delivery_failed",
-        ok: false,
+      expect(inbound.status).toBe(200);
+      await expect(inbound.json()).resolves.toMatchObject({
+        message: { text: "retained after callback failure" },
+        ok: true,
       });
+      await vi.waitFor(() => expect(deliveries).toHaveLength(4));
+      expect(deliveries).toEqual([
+        { reason: undefined, retry: undefined },
+        { reason: "http_error", retry: "1" },
+        { reason: "http_error", retry: "2" },
+        { reason: "http_error", retry: "3" },
+      ]);
+      expect(retryDelays).toEqual([60_000, 5 * 60_000]);
 
       await expect(
         (
@@ -693,6 +845,311 @@ describe("slack local provider server", () => {
       await new Promise<void>((resolve, reject) =>
         eventsReceiver.close((error) => (error ? reject(error) : resolve())),
       );
+    }
+  });
+
+  it("returns committed inbound while Events API retries wait in the background", async () => {
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    let deliveryAttempts = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input) !== "https://events.invalid/slack/events") {
+        return await originalFetch(input, init);
+      }
+      deliveryAttempts += 1;
+      return new Response(null, { status: 503 });
+    });
+    const server = await startTestSlackServer({
+      eventsRequestUrl: "https://events.invalid/slack/events",
+    });
+
+    try {
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          channel: "C1234567890",
+          text: "background retries",
+          user: "U1234567890",
+        }),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+
+      expect(inbound.status).toBe(200);
+      await vi.waitFor(() => expect(deliveryAttempts).toBe(2));
+      await server.close();
+      servers.splice(servers.indexOf(server), 1);
+      expect(deliveryAttempts).toBe(2);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("retries a failed Events API delivery without duplicating message state", async () => {
+    const deliveries: Array<{
+      body: string;
+      reason: string | undefined;
+      retry: string | undefined;
+      signature: string | undefined;
+      timestamp: string | undefined;
+    }> = [];
+    const eventsReceiver = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      deliveries.push({
+        body: Buffer.concat(chunks).toString("utf8"),
+        reason:
+          typeof request.headers["x-slack-retry-reason"] === "string"
+            ? request.headers["x-slack-retry-reason"]
+            : undefined,
+        retry:
+          typeof request.headers["x-slack-retry-num"] === "string"
+            ? request.headers["x-slack-retry-num"]
+            : undefined,
+        signature:
+          typeof request.headers["x-slack-signature"] === "string"
+            ? request.headers["x-slack-signature"]
+            : undefined,
+        timestamp:
+          typeof request.headers["x-slack-request-timestamp"] === "string"
+            ? request.headers["x-slack-request-timestamp"]
+            : undefined,
+      });
+      response.statusCode = deliveries.length === 1 ? 503 : 200;
+      response.end();
+    });
+    await new Promise<void>((resolve) => eventsReceiver.listen(0, "127.0.0.1", resolve));
+    const address = eventsReceiver.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve Slack Events API receiver address.");
+    }
+    const server = await startTestSlackServer({
+      eventsRequestUrl: `http://127.0.0.1:${address.port}/slack/events`,
+    });
+    runRetryTimersImmediately();
+    let now = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => {
+      now += 301_000;
+      return now;
+    });
+
+    try {
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          channel: "C1234567890",
+          text: "retry once",
+          user: "U1234567890",
+        }),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+      expect(inbound.status).toBe(200);
+      await vi.waitFor(() => expect(deliveries).toHaveLength(2));
+      expect(deliveries).toHaveLength(2);
+      expect(deliveries[0]?.body).toBe(deliveries[1]?.body);
+      expect(deliveries.map((delivery) => delivery.retry)).toEqual([undefined, "1"]);
+      expect(deliveries.map((delivery) => delivery.reason)).toEqual([undefined, "http_error"]);
+      expect(new Set(deliveries.map((delivery) => delivery.timestamp)).size).toBe(2);
+      for (const delivery of deliveries) {
+        expect(delivery.signature).toBe(
+          `v0=${createHmac("sha256", server.manifest.signingSecret)
+            .update(`v0:${delivery.timestamp}:${delivery.body}`)
+            .digest("hex")}`,
+        );
+      }
+
+      const history = await slackApi(server, "conversations.history", {
+        channel: "C1234567890",
+      });
+      await expect(history.json()).resolves.toMatchObject({
+        messages: [{ text: "retry once" }],
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        eventsReceiver.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("honors the Events API no-retry response header", async () => {
+    let deliveries = 0;
+    const eventsReceiver = createServer((_request, response) => {
+      deliveries += 1;
+      response.writeHead(503, { "x-slack-no-retry": "1" });
+      response.end();
+    });
+    await new Promise<void>((resolve) => eventsReceiver.listen(0, "127.0.0.1", resolve));
+    const address = eventsReceiver.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve Slack Events API receiver address.");
+    }
+    const server = await startTestSlackServer({
+      eventsRequestUrl: `http://127.0.0.1:${address.port}/slack/events`,
+    });
+
+    try {
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          channel: "C1234567890",
+          text: "do not retry",
+          user: "U1234567890",
+        }),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+      expect(inbound.status).toBe(200);
+      await vi.waitFor(() => expect(deliveries).toBe(1));
+      expect(deliveries).toBe(1);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        eventsReceiver.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("follows at most two Events API redirects before retrying", async () => {
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    const deliveries: Array<{
+      path: string;
+      reason: string | null;
+      retry: string | null;
+    }> = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      if (url.hostname !== "events.invalid") {
+        return await originalFetch(input, init);
+      }
+      deliveries.push({
+        path: url.pathname,
+        reason: new Headers(init?.headers).get("x-slack-retry-reason"),
+        retry: new Headers(init?.headers).get("x-slack-retry-num"),
+      });
+      const step = Number(url.pathname.slice(1));
+      return new Response(null, {
+        headers: { location: `/${step + 1}` },
+        status: step % 2 === 0 ? 301 : 302,
+      });
+    });
+    const server = await startTestSlackServer({
+      eventsRequestUrl: "https://events.invalid/0",
+    });
+    runRetryTimersImmediately();
+
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        channel: "C1234567890",
+        text: "redirect limit",
+        user: "U1234567890",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+
+    expect(inbound.status).toBe(200);
+    await vi.waitFor(() => expect(deliveries).toHaveLength(12));
+    expect(deliveries.map((delivery) => delivery.path)).toEqual([
+      "/0",
+      "/1",
+      "/2",
+      "/0",
+      "/1",
+      "/2",
+      "/0",
+      "/1",
+      "/2",
+      "/0",
+      "/1",
+      "/2",
+    ]);
+    expect(deliveries.filter((delivery) => delivery.path === "/0")).toEqual([
+      { path: "/0", reason: null, retry: null },
+      { path: "/0", reason: "too_many_redirects", retry: "1" },
+      { path: "/0", reason: "too_many_redirects", retry: "2" },
+      { path: "/0", reason: "too_many_redirects", retry: "3" },
+    ]);
+    fetchSpy.mockRestore();
+  });
+
+  it("classifies Slack retry reasons from the preceding delivery failure", async () => {
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    runRetryTimersImmediately();
+    const failures: Array<{
+      expected: string;
+      failure: Error | Response;
+    }> = [
+      {
+        expected: "http_timeout",
+        failure: new DOMException("timed out", "TimeoutError"),
+      },
+      {
+        expected: "connection_failed",
+        failure: Object.assign(new TypeError("fetch failed"), {
+          cause: Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" }),
+        }),
+      },
+      {
+        expected: "ssl_error",
+        failure: Object.assign(new TypeError("fetch failed"), {
+          cause: Object.assign(new Error("certificate rejected"), {
+            code: "DEPTH_ZERO_SELF_SIGNED_CERT",
+          }),
+        }),
+      },
+      {
+        expected: "http_error",
+        failure: new Response(null, { status: 503 }),
+      },
+    ];
+
+    for (const { expected, failure } of failures) {
+      const retryReasons: string[] = [];
+      let deliveryAttempt = 0;
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        if (String(input) !== "https://events.invalid/slack/events") {
+          return await originalFetch(input, init);
+        }
+        deliveryAttempt += 1;
+        if (deliveryAttempt === 1) {
+          if (failure instanceof Response) {
+            return failure.clone();
+          }
+          throw failure;
+        }
+        retryReasons.push(new Headers(init?.headers).get("x-slack-retry-reason") ?? "");
+        return new Response(null, { status: 200 });
+      });
+      const server = await startTestSlackServer({
+        eventsRequestUrl: "https://events.invalid/slack/events",
+      });
+
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          channel: "C1234567890",
+          text: `retry because ${expected}`,
+          user: "U1234567890",
+        }),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+      expect(inbound.status).toBe(200);
+      await vi.waitFor(() => expect(retryReasons).toEqual([expected]));
+      expect(retryReasons).toEqual([expected]);
+      fetchSpy.mockRestore();
     }
   });
 

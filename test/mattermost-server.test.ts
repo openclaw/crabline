@@ -272,13 +272,78 @@ describe("Mattermost local provider server", () => {
       headers: { authorization: "Bearer fake" },
       method: "DELETE",
     });
-    expect(deleted.status).toBe(204);
+    expect(deleted.status).toBe(200);
+    await expect(deleted.json()).resolves.toEqual({ status: "OK" });
     await expect(deletedEvent).resolves.toMatchObject({ event: "post_deleted", seq: 4 });
     socket.close();
 
     const recorded = await fs.readFile(recorderPath, "utf8");
     expect(recorded).toContain('"path":"/crabline/mattermost/inbound"');
     expect(recorded).toContain('"path":"/api/v4/posts"');
+    expect(recorded).toContain('"accepted":true');
+  });
+
+  it("preserves committed REST mutation success when recording callbacks fail", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "mattermost-committed.jsonl");
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "fake",
+      onEvent(event) {
+        if (event.type === "api") {
+          throw new Error("observer failed");
+        }
+      },
+      recorderPath,
+    });
+    servers.push(server);
+    const registered = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        channelId: "seed-channel",
+        senderId: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+        text: "register user",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(registered.status).toBe(200);
+
+    const direct = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
+      body: JSON.stringify([server.manifest.botUserId, "bbbbbbbbbbbbbbbbbbbbbbbbbb"]),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(direct.status).toBe(201);
+    const channel = (await direct.json()) as { id: string };
+
+    const post = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+      body: JSON.stringify({ channel_id: channel.id, message: "committed once" }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(post.status).toBe(201);
+    await expect(post.json()).resolves.toMatchObject({
+      channel_id: channel.id,
+      message: "committed once",
+    });
+
+    const records = (await fs.readFile(recorderPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { accepted?: boolean; path: string });
+    expect(records).toContainEqual(
+      expect.objectContaining({ accepted: true, path: "/api/v4/posts" }),
+    );
   });
 
   it("expires silent and invalid WebSocket authentication", async () => {
@@ -559,6 +624,7 @@ describe("Mattermost local provider server", () => {
       method: "POST",
     });
     expect(restTyping.status).toBe(200);
+    await expect(restTyping.json()).resolves.toEqual({ status: "OK" });
     await noRestTypingEvent;
 
     const typingAck = nextMessage(socket);
@@ -601,6 +667,40 @@ describe("Mattermost local provider server", () => {
     await reauthenticated;
     await expectNoSocketMessage(reconnected);
     reconnected.close();
+  });
+
+  it("preserves known user and channel metadata when later ingress omits it", async () => {
+    const server = await startMattermostServer({ adminToken: "admin", botToken: "fake" });
+    servers.push(server);
+    for (const body of [
+      {
+        channelId: "channel-1",
+        channelType: "O",
+        senderId: "user-1",
+        senderName: "Alice",
+        text: "first",
+      },
+      { channelId: "channel-1", senderId: "user-1", text: "second" },
+    ]) {
+      const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify(body),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+    }
+
+    const user = await fetch(`${server.manifest.endpoints.apiRoot}/users/user-1`, {
+      headers: { authorization: "Bearer fake" },
+    });
+    await expect(user.json()).resolves.toMatchObject({ username: "Alice" });
+    const channel = await fetch(`${server.manifest.endpoints.apiRoot}/channels/channel-1`, {
+      headers: { authorization: "Bearer fake" },
+    });
+    await expect(channel.json()).resolves.toMatchObject({ type: "O" });
   });
 
   it("returns a native client error for malformed escaped path segments", async () => {

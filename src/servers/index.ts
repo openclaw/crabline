@@ -114,26 +114,25 @@ export function startCrablineServer(
 export async function startCrablineServer(
   params: StartCrablineServerParams,
 ): Promise<StartedCrablineServer> {
-  if (params.channel === "mattermost") {
-    return await startMattermostServer(params);
+  switch (params.channel) {
+    case "mattermost":
+      return await startMattermostServer(params);
+    case "matrix":
+      return await startMatrixServer(params);
+    case "signal":
+      return await startSignalServer(params);
+    case "slack":
+      return await startSlackServer(params);
+    case "telegram":
+      return await startTelegramServer(params);
+    case "whatsapp":
+      return await startWhatsAppServer(params);
+    case "zalo":
+      return await startZaloServer(params);
+    default: {
+      const unsupported: never = params;
+      void unsupported;
+      throw new CrablineError("Unsupported server channel.", { kind: "config" });
+    }
   }
-  if (params.channel === "matrix") {
-    return await startMatrixServer(params);
-  }
-  if (params.channel === "signal") {
-    return await startSignalServer(params);
-  }
-  if (params.channel === "slack") {
-    return await startSlackServer(params);
-  }
-  if (params.channel === "telegram") {
-    return await startTelegramServer(params);
-  }
-  if (params.channel === "whatsapp") {
-    return await startWhatsAppServer(params);
-  }
-  if (params.channel === "zalo") {
-    return await startZaloServer(params);
-  }
-  throw new CrablineError("Unsupported server channel.", { kind: "config" });
 }

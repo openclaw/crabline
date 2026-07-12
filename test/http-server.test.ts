@@ -107,6 +107,60 @@ describe("server HTTP body reader", () => {
     }
   });
 
+  it("preserves repeated Set-Cookie response headers", async () => {
+    const server = await startHttpJsonServer({
+      async handle() {
+        const headers = new Headers();
+        headers.append("set-cookie", "first=1; Path=/");
+        headers.append("set-cookie", "second=2; Path=/");
+        return new Response(null, { headers });
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const response = await fetch(server.baseUrl);
+      expect(response.headers.getSetCookie()).toEqual(["first=1; Path=/", "second=2; Path=/"]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("does not write a second response when a post-delivery callback fails", async () => {
+    let errorHandlerCalls = 0;
+    const server = await startHttpJsonServer({
+      async handle() {
+        return {
+          onWriteSuccess() {
+            throw new Error("post-commit failure");
+          },
+          response: Response.json({ ok: true }),
+        };
+      },
+      handleError() {
+        errorHandlerCalls++;
+        return Response.json({ ok: false }, { status: 500 });
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const first = await fetch(server.baseUrl);
+      expect(first.status).toBe(200);
+      await expect(first.json()).resolves.toEqual({ ok: true });
+      const second = await fetch(server.baseUrl);
+      expect(second.status).toBe(200);
+      await expect(second.json()).resolves.toEqual({ ok: true });
+      expect(errorHandlerCalls).toBe(0);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("reports response delivery failure to transactional handlers", async () => {
     let releaseHandler: (() => void) | undefined;
     let observeHandler: (() => void) | undefined;
