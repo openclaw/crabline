@@ -94,6 +94,32 @@ describe("Microsoft Teams webhook authentication", () => {
         body,
       ),
     ).resolves.toMatchObject({ status: 401 });
+
+    const caseMismatchedBody = JSON.stringify({
+      ...JSON.parse(body),
+      serviceUrl: "https://smba.trafficmanager.net/EMEA/",
+    });
+    await expect(
+      authenticate!(
+        new Request(url, {
+          headers: { authorization: `Bearer ${header}.${payload}.${signature}` },
+        }),
+        caseMismatchedBody,
+      ),
+    ).resolves.toMatchObject({ status: 401 });
+
+    const missingChannelBody = JSON.stringify({
+      ...JSON.parse(body),
+      channelId: undefined,
+    });
+    await expect(
+      authenticate!(
+        new Request(url, {
+          headers: { authorization: `Bearer ${header}.${payload}.${signature}` },
+        }),
+        missingChannelBody,
+      ),
+    ).resolves.toMatchObject({ status: 401 });
   });
 });
 

@@ -59,6 +59,17 @@ type WaitCursorState = {
   cursor?: RecordedInboundCursor | undefined;
 };
 
+function pruneInactiveWaitCursors(cursors: Map<string, WaitCursorState>): void {
+  for (const [key, state] of cursors) {
+    if (cursors.size <= MAX_WAIT_CURSORS) {
+      return;
+    }
+    if (state.active === 0) {
+      cursors.delete(key);
+    }
+  }
+}
+
 export type LocalMockTargetCodec = {
   normalize(target: ProviderContext["fixture"]["target"]): NormalizedTarget;
   resolveThreadId(target: ProviderContext["fixture"]["target"]): string;
@@ -242,12 +253,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     cursorState.active++;
     this.#waitCursors.delete(cursorKey);
     this.#waitCursors.set(cursorKey, cursorState);
-    while (this.#waitCursors.size > MAX_WAIT_CURSORS) {
-      const oldestKey = this.#waitCursors.keys().next().value;
-      if (oldestKey !== undefined) {
-        this.#waitCursors.delete(oldestKey);
-      }
-    }
+    pruneInactiveWaitCursors(this.#waitCursors);
 
     try {
       const event = await waitForRecordedInbound({

@@ -67,8 +67,8 @@ export function createMsTeamsWebhookAuthenticator(
       }
       const channelId = optionalString(payload, "channelId");
       const serviceUrl = optionalString(payload, "serviceUrl");
-      if (!serviceUrl) {
-        throw new Error("Bot Connector activity omitted serviceUrl.");
+      if (!channelId || !serviceUrl) {
+        throw new Error("Bot Connector activity omitted channelId or serviceUrl.");
       }
       const claims = await verifySignedJwt({
         audience: appId,
@@ -107,7 +107,6 @@ export function createMsTeamsWebhookAuthenticator(
             throw new Error("Bot Connector JWT signing key is unknown.");
           }
           if (
-            channelId &&
             key.endorsements &&
             key.endorsements.length > 0 &&
             !key.endorsements.includes(channelId)
@@ -118,10 +117,7 @@ export function createMsTeamsWebhookAuthenticator(
         },
         token,
       });
-      if (
-        typeof claims.serviceurl !== "string" ||
-        claims.serviceurl.localeCompare(serviceUrl, undefined, { sensitivity: "accent" }) !== 0
-      ) {
+      if (claims.serviceurl !== serviceUrl) {
         throw new Error("Bot Connector serviceurl claim does not match the activity.");
       }
       return undefined;
