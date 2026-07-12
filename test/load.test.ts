@@ -55,6 +55,15 @@ describe("config load", () => {
     expect(loaded.path).toBe(configPath);
   });
 
+  it("parses explicit JSON paths case-insensitively", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.JSON");
+    await writeText(configPath, "configVersion: 1\nproviders: {}\nfixtures: []\n");
+
+    await expect(loadManifest(configPath)).rejects.toThrow(/JSON parse error/u);
+  });
+
   it("loads the shipped OpenClaw bridge fixture with YAML anchors", async () => {
     const configPath = path.resolve("fixtures/examples/openclaw-bridge.yaml");
 

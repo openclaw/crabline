@@ -35,6 +35,7 @@ export type ReadyFileIdentity = {
 
 type ProgramDependencies = {
   acquireReadyFileLease?: (filePath: string) => Promise<() => Promise<void>>;
+  createRegistry?: typeof createRegistry;
   publishReadyFile?: (filePath: string, contents: string) => Promise<ReadyFileIdentity>;
   removeReadyFile?: (
     filePath: string,
@@ -143,6 +144,7 @@ export function createProgram(
 ): Command {
   const program = new Command();
   const acquireReadyLease = dependencies.acquireReadyFileLease ?? acquireReadyFileLease;
+  const registryFactory = dependencies.createRegistry ?? createRegistry;
   const publish = dependencies.publishReadyFile ?? publishReadyFileUnlocked;
   const removeReady = dependencies.removeReadyFile ?? removeReadyFileIfOwned;
   const startServer = dependencies.startServer ?? startCrablineServer;
@@ -161,7 +163,7 @@ export function createProgram(
     .action(async () => {
       const options = program.opts() as GlobalOptions;
       const { manifest, path } = await loadManifest(options.config);
-      const registry = createRegistry(manifest, path);
+      const registry = registryFactory(manifest, path);
       const payload = {
         configured: Object.entries(manifest.providers).map(([id, config]) => ({
           adapter: config.adapter,
@@ -203,7 +205,7 @@ export function createProgram(
       if (!fixture) {
         throw new CrablineError(`Unknown fixture: ${fixtureId}`, { kind: "config" });
       }
-      const registry = createRegistry(manifest, path);
+      const registry = registryFactory(manifest, path);
       const result = await runFixtureCommand({
         fixtureId: fixture.id,
         manifest,
@@ -222,7 +224,7 @@ export function createProgram(
       .action(async (fixtureId) => {
         const options = program.opts() as GlobalOptions;
         const { manifest, path } = await loadManifest(options.config);
-        const registry = createRegistry(manifest, path);
+        const registry = registryFactory(manifest, path);
         const result = await runFixtureCommand({
           fixtureId,
           manifest,
@@ -241,7 +243,7 @@ export function createProgram(
     .action(async (fixtureIds) => {
       const options = program.opts() as GlobalOptions;
       const { manifest, path } = await loadManifest(options.config);
-      const registry = createRegistry(manifest, path);
+      const registry = registryFactory(manifest, path);
       const result = await runSuite({
         fixtureIds,
         manifest,
@@ -264,13 +266,15 @@ export function createProgram(
           throw new CrablineError(`Unknown fixture: ${fixtureId}`, { kind: "config" });
         }
 
-        const provider = createRegistry(manifest, path).resolve(fixture.provider, fixture.id);
+        const provider = registryFactory(manifest, path).resolve(fixture.provider, fixture.id);
         if (!provider.watch) {
           throw new CrablineError(`Provider "${fixture.provider}" does not implement watch.`, {
             kind: "config",
           });
         }
 
+        let watchError: unknown;
+        let watchFailed = false;
         try {
           for await (const message of provider.watch({
             config: manifest.providers[fixture.provider]!,
@@ -285,8 +289,20 @@ export function createProgram(
                 : `${message.sentAt} ${message.author} ${message.text}`,
             );
           }
-        } finally {
+        } catch (error) {
+          watchFailed = true;
+          watchError = error;
+        }
+        try {
           await provider.cleanup?.();
+        } catch (cleanupError) {
+          throw combineLifecycleErrors(
+            watchFailed ? [watchError, cleanupError] : [cleanupError],
+            "Crabline watch lifecycle failed.",
+          );
+        }
+        if (watchFailed) {
+          throw watchError;
         }
       });
     });
@@ -418,7 +434,6 @@ export function createProgram(
       }
       finishStartup();
       finishPublication();
-      shutdown.dispose();
       const cleanupErrors: unknown[] = [];
       const readyToRemove = publishedReady;
       for (const cleanup of [
@@ -443,6 +458,7 @@ export function createProgram(
           }
         }
       }
+      shutdown.dispose();
       if (actionFailed || cleanupErrors.length > 0) {
         throw combineLifecycleErrors(
           actionFailed ? [actionError, ...cleanupErrors] : cleanupErrors,
@@ -470,7 +486,7 @@ export function createProgram(
 type ShutdownSignal = "SIGINT" | "SIGTERM";
 
 type SignalTarget = {
-  once(event: ShutdownSignal, listener: () => void): unknown;
+  on(event: ShutdownSignal, listener: () => void): unknown;
   removeListener(event: ShutdownSignal, listener: () => void): unknown;
 };
 
@@ -693,7 +709,7 @@ function installShutdownHandler(
   requested(): boolean;
   wait(): Promise<void>;
 } {
-  let shuttingDown = false;
+  let shutdownPromise: Promise<void> | undefined;
   let resolveWait: (() => void) | undefined;
   let rejectWait: ((error: unknown) => void) | undefined;
   const wait = new Promise<void>((resolve, reject) => {
@@ -706,18 +722,26 @@ function installShutdownHandler(
     signalTarget.removeListener("SIGTERM", shutdown);
   };
   const shutdown = () => {
-    if (shuttingDown) {
+    if (shutdownPromise) {
       return;
     }
-    shuttingDown = true;
-    removeListeners();
-    void Promise.resolve().then(close).then(resolveWait, rejectWait);
+    shutdownPromise = Promise.resolve().then(close);
+    void shutdownPromise.then(
+      () => {
+        removeListeners();
+        resolveWait?.();
+      },
+      (error: unknown) => {
+        removeListeners();
+        rejectWait?.(error);
+      },
+    );
   };
-  signalTarget.once("SIGINT", shutdown);
-  signalTarget.once("SIGTERM", shutdown);
+  signalTarget.on("SIGINT", shutdown);
+  signalTarget.on("SIGTERM", shutdown);
   return {
     dispose: removeListeners,
-    requested: () => shuttingDown,
+    requested: () => shutdownPromise !== undefined,
     wait: () => wait,
   };
 }

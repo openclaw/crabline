@@ -138,6 +138,16 @@ describe("manifest schema", () => {
     ).toThrow(/fixture missing-provider references unknown provider missing/u);
   });
 
+  it("rejects empty provider identifiers", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: { "": { adapter: "loopback" } },
+      }),
+    ).toThrow(/Too small/u);
+  });
+
   it("rejects fixture modes outside provider capabilities", () => {
     expect(() =>
       ManifestSchema.parse({

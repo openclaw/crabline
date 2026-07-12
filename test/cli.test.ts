@@ -758,6 +758,132 @@ describe("cli", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps signal handlers installed until server cleanup completes", async () => {
+    let finishClose: (() => void) | undefined;
+    const close = vi.fn(
+      async () =>
+        await new Promise<void>((resolve) => {
+          finishClose = resolve;
+        }),
+    );
+    const baseline = process.listenerCount("SIGTERM");
+    const program = createProgram(() => undefined, {
+      startServer: async () => ({
+        close,
+        manifest: {
+          adminToken: "fake",
+          baseUrl: "http://127.0.0.1:12345",
+          botToken: "sample",
+          endpoints: {
+            adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
+            apiRoot: "http://127.0.0.1:12345",
+          },
+          env: { TELEGRAM_BOT_TOKEN: "sample" },
+          provider: "telegram",
+          recorderPath: "telegram.jsonl",
+          version: 1,
+        },
+      }),
+    });
+    const running = program.parseAsync(["node", "crabline", "--json", "serve", "telegram"]);
+    await vi.waitFor(() => expect(process.listenerCount("SIGTERM")).toBeGreaterThan(baseline));
+
+    process.emit("SIGTERM", "SIGTERM");
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    expect(process.listenerCount("SIGTERM")).toBeGreaterThan(baseline);
+
+    finishClose?.();
+    await running;
+    expect(process.listenerCount("SIGTERM")).toBe(baseline);
+  });
+
+  it("preserves watch and cleanup failures", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  local:",
+        "    adapter: loopback",
+        "fixtures:",
+        "  - id: watched",
+        "    provider: local",
+        "    mode: agent",
+        "    target:",
+        "      id: echo-bot",
+      ].join("\n"),
+    );
+    const watchError = new Error("watch exploded");
+    const cleanupError = new Error("cleanup exploded");
+    const provider = {
+      async cleanup() {
+        throw cleanupError;
+      },
+      async *watch() {
+        yield await Promise.reject(watchError);
+      },
+    };
+    const program = createProgram(() => undefined, {
+      createRegistry: () =>
+        ({
+          resolve: () => provider,
+        }) as never,
+    });
+
+    const failure = await program
+      .parseAsync(["node", "crabline", "--config", configPath, "watch", "watched"])
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([watchError, cleanupError]);
+    expect((failure as AggregateError).cause).toBe(watchError);
+  });
+
+  it("preserves an undefined watch failure", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  local:",
+        "    adapter: loopback",
+        "fixtures:",
+        "  - id: watched",
+        "    provider: local",
+        "    mode: agent",
+        "    target:",
+        "      id: echo-bot",
+      ].join("\n"),
+    );
+    const provider = {
+      cleanup: vi.fn(async () => undefined),
+      async *watch() {
+        yield await Promise.reject(undefined);
+      },
+    };
+    const program = createProgram(() => undefined, {
+      createRegistry: () =>
+        ({
+          resolve: () => provider,
+        }) as never,
+    });
+
+    let caught: { rejected: boolean; value: unknown } = { rejected: false, value: "not-thrown" };
+    try {
+      await program.parseAsync(["node", "crabline", "--config", configPath, "watch", "watched"]);
+    } catch (error) {
+      caught = { rejected: true, value: error };
+    }
+    expect(caught).toEqual({ rejected: true, value: undefined });
+    expect(provider.cleanup).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves shutdown and ready-file cleanup failures", async () => {
     const directory = await createTempDir();
     directories.push(directory);

@@ -315,6 +315,41 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
+  it("rejects Zalo application errors returned with HTTP 200", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ description: "Unauthorized", error_code: 401, ok: false }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+    try {
+      await expect(probeOpenClawCrablineProvider(zaloManifest)).rejects.toThrow(
+        "Crabline Zalo getMe probe failed: Unauthorized.",
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it.each([{ ok: true }, { ok: true, result: null }, { ok: true, result: {} }])(
+    "rejects malformed Zalo success payloads: %j",
+    async (payload) => {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify(payload), {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        }),
+      );
+      try {
+        await expect(probeOpenClawCrablineProvider(zaloManifest)).rejects.toThrow(
+          "Crabline Zalo getMe probe failed: invalid response.",
+        );
+      } finally {
+        fetchMock.mockRestore();
+      }
+    },
+  );
+
   it.each([
     { label: "Mattermost users.me", manifest: mattermostManifest },
     { label: "Matrix whoami", manifest: matrixManifest },
@@ -686,6 +721,24 @@ describe("OpenClaw local provider bridge", () => {
     } finally {
       await adapter.close();
     }
+  });
+
+  it("closes a started server when adapter construction fails", async () => {
+    const startupError = new Error("adapter construction failed");
+    const close = vi.fn(async () => undefined);
+
+    await expect(
+      startOpenClawCrablineAdapter(
+        { channel: "telegram" },
+        {
+          createProviderAdapter() {
+            throw startupError;
+          },
+          startServer: async () => ({ close, manifest }),
+        },
+      ),
+    ).rejects.toBe(startupError);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it("maps QA targets, inbound messages, and recorder events", () => {
