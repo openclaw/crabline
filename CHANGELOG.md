@@ -7,6 +7,7 @@
 - Preserve Slack thread scope and validate Telegram command entities.
 - Authenticate WhatsApp webhook verification and deliveries and reject malformed batches atomically.
 - Cancel silent script watches and redact configured payload secrets from subprocess diagnostics.
+- Bound disconnected inbound queues, expire unauthenticated Mattermost sockets, block mapped private Zalo targets, and enforce absolute webhook deadlines.
 - Reject truncated WhatsApp GCM tags, invalid handshake wire types, and trailing binary-node data.
 - Randomize externally bound provider credentials, preserve Slack MPIM and Matrix sync errors, bound server shutdown, and enforce safe Zalo webhooks.
 - Order lazy cleanup after admitted dispatch, isolate loopback message state, and enforce effective modes and inbound deadlines.

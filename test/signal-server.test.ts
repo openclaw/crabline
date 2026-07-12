@@ -157,6 +157,31 @@ describe("signal local provider server", () => {
     expect(recorded).toContain('"path":"/crabline/signal/inbound"');
   });
 
+  it("rejects admin inbound when the disconnected event queue is full", async () => {
+    const server = await startSignalServer({
+      adminToken: "admin",
+      maxPendingInboundEvents: 1,
+    });
+    servers.push(server);
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ sourceNumber: "+15557654321", text }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+
+    expect((await sendInbound("first")).status).toBe(200);
+    const overloaded = await sendInbound("second");
+    expect(overloaded.status).toBe(503);
+    await expect(overloaded.json()).resolves.toEqual({
+      error: "Pending inbound queue is full (1 events)",
+      ok: false,
+    });
+  });
+
   it("drains unauthenticated admin request bodies", async () => {
     const server = await startSignalServer({ adminToken: "admin" });
     servers.push(server);

@@ -38,6 +38,20 @@ function nextMessages(socket: WebSocket, count: number): Promise<Record<string, 
   });
 }
 
+function waitForSocketOpen(socket: WebSocket): Promise<void> {
+  return new Promise((resolve, reject) => {
+    socket.once("open", resolve);
+    socket.once("error", reject);
+  });
+}
+
+function waitForSocketClose(socket: WebSocket): Promise<{ code: number; reason: string }> {
+  return new Promise((resolve, reject) => {
+    socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+    socket.once("error", reject);
+  });
+}
+
 describe("Mattermost local provider server", () => {
   it("returns Mattermost errors for non-object and oversized request bodies", async () => {
     const directory = await createTempDir();
@@ -113,10 +127,7 @@ describe("Mattermost local provider server", () => {
     });
 
     const socket = new WebSocket(server.manifest.endpoints.websocketUrl);
-    await new Promise<void>((resolve, reject) => {
-      socket.once("open", resolve);
-      socket.once("error", reject);
-    });
+    await waitForSocketOpen(socket);
     const authenticated = nextMessages(socket, 2);
     socket.send(
       JSON.stringify({
@@ -239,6 +250,64 @@ describe("Mattermost local provider server", () => {
     const recorded = await fs.readFile(recorderPath, "utf8");
     expect(recorded).toContain('"path":"/crabline/mattermost/inbound"');
     expect(recorded).toContain('"path":"/api/v4/posts"');
+  });
+
+  it("expires silent and invalid WebSocket authentication", async () => {
+    const server = await startMattermostServer({
+      botToken: "bot-secret",
+      websocketAuthenticationTimeoutMs: 25,
+    });
+    servers.push(server);
+
+    const silent = new WebSocket(server.manifest.endpoints.websocketUrl);
+    const silentClosed = waitForSocketClose(silent);
+    await waitForSocketOpen(silent);
+    await expect(silentClosed).resolves.toEqual({
+      code: 4001,
+      reason: "authentication timeout",
+    });
+
+    const invalid = new WebSocket(server.manifest.endpoints.websocketUrl);
+    const invalidClosed = waitForSocketClose(invalid);
+    await waitForSocketOpen(invalid);
+    const failure = nextMessage(invalid);
+    invalid.send(
+      JSON.stringify({
+        action: "authentication_challenge",
+        data: { token: "wrong-token" },
+        seq: 1,
+      }),
+    );
+    await expect(failure).resolves.toMatchObject({ seq_reply: 1, status: "FAIL" });
+    await expect(invalidClosed).resolves.toEqual({
+      code: 4001,
+      reason: "authentication failed",
+    });
+  });
+
+  it("rejects admin inbound when the disconnected event queue is full", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      maxPendingInboundEvents: 1,
+    });
+    servers.push(server);
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ channelId: "channel-1", senderId: "user-1", text }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+
+    expect((await sendInbound("first")).status).toBe(200);
+    const overloaded = await sendInbound("second");
+    expect(overloaded.status).toBe(503);
+    await expect(overloaded.json()).resolves.toMatchObject({
+      error: "Pending inbound queue is full (1 events)",
+      ok: false,
+    });
   });
 
   it("drains request bodies rejected by REST and admin authentication", async () => {
