@@ -26,6 +26,12 @@ function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
     if (numericId === 0n || (kind === "direct" ? numericId < 0n : numericId > 0n)) {
       throw new Error("Telegram numeric target sign does not match the declared target kind.");
     }
+    if (
+      numericId < BigInt(Number.MIN_SAFE_INTEGER) ||
+      numericId > BigInt(Number.MAX_SAFE_INTEGER)
+    ) {
+      throw new Error("Telegram numeric target must be a safe integer.");
+    }
     return value;
   }
   const hash = createHash("sha256").update(`${kind}:${value}`).digest().readBigUInt64BE();
@@ -66,7 +72,16 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (!response.ok) {
           throw new Error(`Crabline Telegram getMe probe failed with HTTP ${response.status}.`);
         }
-        return await response.json();
+        const payload = await response.json();
+        if (!isRecord(payload) || payload.ok !== true) {
+          const errorCode = readString(isRecord(payload) ? payload.error_code : undefined);
+          const description = readNonBlankString(
+            isRecord(payload) ? payload.description : undefined,
+          );
+          const detail = description ?? (errorCode ? `error ${errorCode}` : "invalid response");
+          throw new Error(`Crabline Telegram getMe probe failed: ${detail}.`);
+        }
+        return payload;
       },
       createBinding() {
         return {
