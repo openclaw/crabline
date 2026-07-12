@@ -40,6 +40,9 @@ describe("release workflow", () => {
     const steps = jobSteps(workflow, "verify");
     const resolveStep = steps.find((step) => step.name === "Resolve release tag")?.run;
     const checkoutStep = steps.find((step) => step.uses?.startsWith("actions/checkout@"));
+    const verifyCheckoutStep = steps.find(
+      (step) => step.name === "Verify checked out release tag",
+    )?.run;
 
     await expect(runResolveTag(resolveStep, "v1.2.3")).resolves.toEqual({
       tag: "v1.2.3",
@@ -64,6 +67,7 @@ describe("release workflow", () => {
       runResolveTag(resolveStep, "v1.2.3", { refName: "v1.2.2", refType: "tag" }),
     ).rejects.toThrow(/Command failed/u);
     expect(checkoutStep?.with?.ref).toBe("refs/tags/${{ steps.release.outputs.tag }}");
+    expect(verifyCheckoutStep).toContain("refs/tags/${RELEASE_TAG}^{commit}");
   });
 
   it("pins tooling and makes package and GitHub publication retry-safe", async () => {
