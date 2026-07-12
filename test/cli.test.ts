@@ -1,7 +1,9 @@
+import { EventEmitter } from "node:events";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { afterEach, describe, expect, it } from "vitest";
-import { runCli } from "../src/cli/program.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createProgram, runCli, waitForShutdown } from "../src/cli/program.js";
+import type { StartedCrablineServer } from "../src/servers/index.js";
 import { captureWrites, createTempDir, disposeTempDir, writeText } from "./test-helpers.js";
 
 const directories: string[] = [];
@@ -195,10 +197,96 @@ describe("cli", () => {
     expect(captured.stderr.join("")).toContain(`Unable to load config file "${configPath}"`);
   });
 
+  it("closes once and removes both shutdown listeners", async () => {
+    const signals = new EventEmitter();
+    const close = vi.fn(async () => undefined);
+    const shutdown = waitForShutdown(close, signals);
+
+    signals.emit("SIGINT");
+    signals.emit("SIGTERM");
+    await shutdown;
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(signals.listenerCount("SIGINT")).toBe(0);
+    expect(signals.listenerCount("SIGTERM")).toBe(0);
+  });
+
+  it("removes a stale ready file before starting the server", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, "server.json");
+    await writeText(readyFile, "stale\n");
+    const startError = new Error("start exploded");
+    const program = createProgram(() => undefined, {
+      startServer: async () => {
+        throw startError;
+      },
+    });
+
+    await expect(
+      program.parseAsync([
+        "node",
+        "crabline",
+        "--json",
+        "serve",
+        "telegram",
+        "--ready-file",
+        readyFile,
+      ]),
+    ).rejects.toBe(startError);
+    await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("closes the server once when ready-file publication fails after startup", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const close = vi.fn(async () => undefined);
+    const publishError = new Error("publish exploded");
+    const server = {
+      close,
+      manifest: {
+        adminToken: "admin",
+        baseUrl: "http://127.0.0.1:12345",
+        botToken: "424242:token",
+        endpoints: {
+          adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
+          apiRoot: "http://127.0.0.1:12345",
+        },
+        env: {
+          TELEGRAM_BOT_TOKEN: "424242:token",
+        },
+        provider: "telegram",
+        recorderPath: path.join(directory, "telegram.jsonl"),
+        version: 1,
+      },
+    } satisfies StartedCrablineServer;
+    const program = createProgram(() => undefined, {
+      publishReadyFile: async () => {
+        throw publishError;
+      },
+      startServer: async () => server,
+    });
+
+    await expect(
+      program.parseAsync([
+        "node",
+        "crabline",
+        "--json",
+        "serve",
+        "telegram",
+        "--ready-file",
+        path.join(directory, "server.json"),
+      ]),
+    ).rejects.toBe(publishError);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("prints a Telegram server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, ".crabline", "telegram-server.json");
+    await fs.mkdir(path.dirname(readyFile), { recursive: true });
+    await fs.writeFile(readyFile, "stale\n", { mode: 0o644 });
     const captured = captureWrites();
 
     try {
@@ -236,6 +324,8 @@ describe("cli", () => {
     );
     expect(manifest.botToken).toBe("424242:crabline-telegram-token");
     await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "telegram"');
+    expect((await fs.stat(readyFile)).mode & 0o777).toBe(0o600);
+    expect(await fs.readdir(path.dirname(readyFile))).toEqual([path.basename(readyFile)]);
   });
 
   it("prints a Zalo server runtime manifest", async () => {
@@ -553,6 +643,43 @@ describe("cli", () => {
     }
 
     expect(exitCode!).toBe(0);
+    expect(captured.stdout.join("")).toContain("doctor ok");
+  });
+
+  it("doctor accepts script providers with capability-scoped commands", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  probe-only:",
+        "    adapter: script",
+        "    platform: signal",
+        "    capabilities: [probe]",
+        "    script:",
+        "      commands:",
+        '        probe: "printf ok"',
+        "  send-only:",
+        "    adapter: script",
+        "    platform: irc",
+        "    capabilities: [send]",
+        "    script:",
+        "      commands:",
+        '        send: "printf ok"',
+        "fixtures: []",
+      ].join("\n"),
+    );
+    const captured = captureWrites();
+
+    try {
+      expect(await runCli(["node", "crabline", "--config", configPath, "doctor"])).toBe(0);
+    } finally {
+      captured.restore();
+    }
+
     expect(captured.stdout.join("")).toContain("doctor ok");
   });
 });

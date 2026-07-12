@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import nodePath from "node:path";
 import { loadManifest } from "../config/load.js";
@@ -12,6 +13,7 @@ import {
   type CrablineServerChannel,
   type CrablineServerManifest,
   type StartCrablineServerParams,
+  type StartedCrablineServer,
 } from "../servers/index.js";
 
 type GlobalOptions = {
@@ -20,6 +22,11 @@ type GlobalOptions = {
 };
 
 type SetExitCode = (code: number) => void;
+
+type ProgramDependencies = {
+  publishReadyFile?: (filePath: string, contents: string) => Promise<void>;
+  startServer?: (params: StartCrablineServerParams) => Promise<StartedCrablineServer>;
+};
 
 type ServeSharedOptions = {
   host: string;
@@ -112,8 +119,11 @@ export function createProgram(
   setExitCode: SetExitCode = (code) => {
     process.exitCode = code;
   },
+  dependencies: ProgramDependencies = {},
 ): Command {
   const program = new Command();
+  const publish = dependencies.publishReadyFile ?? publishReadyFile;
+  const startServer = dependencies.startServer ?? startCrablineServer;
 
   program
     .name("crabline")
@@ -298,7 +308,10 @@ export function createProgram(
           kind: "config",
         });
       }
-      const server = await startCrablineServer(
+      if (commandOptions.readyFile) {
+        await prepareReadyFile(commandOptions.readyFile);
+      }
+      const server = await startServer(
         factory(
           {
             host: commandOptions.host,
@@ -308,17 +321,19 @@ export function createProgram(
           commandOptions,
         ),
       );
-      const payload = formatJson(server.manifest);
-      if (commandOptions.readyFile) {
-        await fs.mkdir(nodePath.dirname(commandOptions.readyFile), { recursive: true });
-        await fs.writeFile(commandOptions.readyFile, `${payload}\n`, "utf8");
+      const close = onceAsync(() => server.close());
+      try {
+        const payload = formatJson(server.manifest);
+        if (commandOptions.readyFile) {
+          await publish(commandOptions.readyFile, `${payload}\n`);
+        }
+        print(options.json ? payload : renderServeText(server.manifest));
+        if (!commandOptions.once) {
+          await waitForShutdown(close);
+        }
+      } finally {
+        await close();
       }
-      print(options.json ? payload : renderServeText(server.manifest));
-      if (commandOptions.once) {
-        await server.close();
-        return;
-      }
-      await waitForShutdown(server.close);
     });
 
   program
@@ -337,13 +352,60 @@ export function createProgram(
   return program;
 }
 
-function waitForShutdown(close: () => Promise<void>): Promise<void> {
+type ShutdownSignal = "SIGINT" | "SIGTERM";
+
+type SignalTarget = {
+  once(event: ShutdownSignal, listener: () => void): unknown;
+  removeListener(event: ShutdownSignal, listener: () => void): unknown;
+};
+
+function onceAsync(action: () => Promise<void>): () => Promise<void> {
+  let result: Promise<void> | undefined;
+  return () => (result ??= Promise.resolve().then(action));
+}
+
+async function prepareReadyFile(filePath: string): Promise<void> {
+  await fs.mkdir(nodePath.dirname(filePath), { recursive: true });
+  await fs.rm(filePath, { force: true });
+}
+
+export async function publishReadyFile(filePath: string, contents: string): Promise<void> {
+  const temporaryPath = nodePath.join(
+    nodePath.dirname(filePath),
+    `.${nodePath.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    await fs.writeFile(temporaryPath, contents, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await fs.rename(temporaryPath, filePath);
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+export function waitForShutdown(
+  close: () => Promise<void>,
+  signalTarget: SignalTarget = process,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const shutdown = () => {
-      close().then(resolve, reject);
+    let shuttingDown = false;
+    const removeListeners = () => {
+      signalTarget.removeListener("SIGINT", shutdown);
+      signalTarget.removeListener("SIGTERM", shutdown);
     };
-    process.once("SIGINT", shutdown);
-    process.once("SIGTERM", shutdown);
+    const shutdown = () => {
+      if (shuttingDown) {
+        return;
+      }
+      shuttingDown = true;
+      removeListeners();
+      void Promise.resolve().then(close).then(resolve, reject);
+    };
+    signalTarget.once("SIGINT", shutdown);
+    signalTarget.once("SIGTERM", shutdown);
   });
 }
 
@@ -477,16 +539,26 @@ function diagnose(manifest: Awaited<ReturnType<typeof loadManifest>>["manifest"]
       }
     }
 
-    if (provider.adapter === "script") {
-      if (!provider.script?.commands.send) {
+    if (provider.adapter === "script" && provider.status === "active") {
+      const commands = provider.script?.commands;
+      if (provider.capabilities.includes("probe") && !commands?.probe) {
+        findings.push(`provider ${providerId} missing script.commands.probe`);
+      }
+      if (
+        provider.capabilities.some((capability) =>
+          ["agent", "roundtrip", "send"].includes(capability),
+        ) &&
+        !commands?.send
+      ) {
         findings.push(`provider ${providerId} missing script.commands.send`);
       }
-      if (!provider.script?.commands.waitForInbound) {
+      if (
+        provider.capabilities.some((capability) => ["agent", "roundtrip"].includes(capability)) &&
+        !commands?.waitForInbound
+      ) {
         findings.push(`provider ${providerId} missing script.commands.waitForInbound`);
       }
     }
-
-    void providerId;
   }
 
   return findings;

@@ -4,6 +4,7 @@
 
 - Harden release packaging and retries, and make cleanup scripts portable across supported platforms.
 - Export the OpenClaw conversation type from the package root.
+- Harden CLI lifecycle cleanup, ready-file publication, run diagnostics, and config validation.
 
 ## 0.1.9 - 2026-07-03
 
