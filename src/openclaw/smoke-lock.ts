@@ -412,7 +412,7 @@ async function observedOwnerChangedDuringConfirmation(
   if (!needsLiveOwnerConfirmation(observed, runtime)) {
     return false;
   }
-  await runtime.sleep(Math.max(1, Math.ceil(runtime.leaseMs / 3)));
+  await runtime.sleep(runtime.leaseMs);
   const revalidated = await readLockRecord(lockDirectory);
   return (
     revalidated.kind === "record" &&

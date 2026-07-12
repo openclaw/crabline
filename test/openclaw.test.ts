@@ -1860,6 +1860,36 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
+  it("preserves a frozen provider probe failure when adapter cleanup also fails", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-frozen-error-"));
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    const primaryFailure = Object.freeze(new Error("frozen probe failure"));
+    try {
+      await expect(
+        runSmokeWithDependencies(
+          { outputDir, selection },
+          {
+            startAdapter: async (params) => {
+              const adapter = await startOpenClawCrablineAdapter(params);
+              return {
+                ...adapter,
+                close: async () => {
+                  await adapter.close();
+                  throw new Error("adapter close failed");
+                },
+                probe: async () => {
+                  throw primaryFailure;
+                },
+              };
+            },
+          },
+        ),
+      ).rejects.toBe(primaryFailure);
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it.each(["setup", "probe", "cleanup"] as const)(
     "preserves the complete prior artifact generation on %s failure",
     async (failureStage) => {

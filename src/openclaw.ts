@@ -240,16 +240,20 @@ export async function runOpenClawCrablineChannelDriverSmoke(
       }
       if (probeFailure instanceof Error) {
         const existingCause = probeFailure.cause;
-        Object.defineProperty(probeFailure, "cause", {
-          configurable: true,
-          value:
-            existingCause === undefined
-              ? cleanupError
-              : new AggregateError(
-                  [existingCause, cleanupError],
-                  "OpenClaw Crabline provider probe cleanup also failed.",
-                ),
-        });
+        try {
+          Object.defineProperty(probeFailure, "cause", {
+            configurable: true,
+            value:
+              existingCause === undefined
+                ? cleanupError
+                : new AggregateError(
+                    [existingCause, cleanupError],
+                    "OpenClaw Crabline provider probe cleanup also failed.",
+                  ),
+          });
+        } catch {
+          // Some provider errors are frozen; preserving the primary failure is authoritative.
+        }
         throw probeFailure;
       }
       const combinedError = new Error("OpenClaw Crabline provider probe and cleanup both failed.", {
