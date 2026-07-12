@@ -467,4 +467,73 @@ describe("OpenClaw smoke lock cleanup", () => {
       await disposeTempDir(outputDir);
     }
   });
+
+  it("rejects a pointer commit when a pending final renewal fails during heartbeat stop", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const destinationPath = path.join(outputDir, "current.json");
+    let allowScheduledRenewal: (() => void) | undefined;
+    let startScheduledRenewal: (() => void) | undefined;
+    const scheduledRenewalGate = new Promise<void>((resolve) => {
+      allowScheduledRenewal = resolve;
+    });
+    try {
+      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        beforeCommitFileRename: async () => {
+          startScheduledRenewal?.();
+        },
+        startHeartbeat: (renew) => {
+          let failure: unknown;
+          let pending: Promise<void> | undefined;
+          let stopped = false;
+          startScheduledRenewal = () => {
+            pending = scheduledRenewalGate.then(renew).catch((error: unknown) => {
+              failure ??= error;
+            });
+          };
+          return {
+            assertHealthy() {
+              if (failure !== undefined) {
+                throw new Error("OpenClaw Crabline smoke lock heartbeat failed.", {
+                  cause: failure,
+                });
+              }
+            },
+            async stop() {
+              if (!stopped) {
+                stopped = true;
+                const commitClaim = (await fs.readdir(outputDir)).find((entry) =>
+                  entry.includes(".lock.commit."),
+                );
+                expect(commitClaim).toBeDefined();
+                const ownerPath = path.join(outputDir, commitClaim!, "owner.json");
+                const owner = JSON.parse(await fs.readFile(ownerPath, "utf8"));
+                await fs.writeFile(
+                  ownerPath,
+                  `${JSON.stringify({ ...owner, token: "replacement-owner" })}\n`,
+                );
+                allowScheduledRenewal?.();
+              }
+              await pending;
+            },
+          };
+        },
+      });
+
+      await expect(
+        lock.commitFileAtomically({
+          contents: "{}\n",
+          destinationPath,
+          stageFile: async (filePath, contents) => {
+            await fs.writeFile(filePath, contents);
+          },
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke lock heartbeat failed.");
+      await expect(fs.stat(destinationPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await lock.release();
+    } finally {
+      allowScheduledRenewal?.();
+      await disposeTempDir(outputDir);
+    }
+  });
 });

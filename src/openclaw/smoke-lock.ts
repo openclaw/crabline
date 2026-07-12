@@ -837,9 +837,10 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         heartbeat.assertHealthy();
         await renew();
         heartbeat.assertHealthy();
-        await fs.rename(path.join(commitClaim, stagedFileName), destinationPath);
         await heartbeat.stop();
         heartbeatStopped = true;
+        heartbeat.assertHealthy();
+        await fs.rename(path.join(commitClaim, stagedFileName), destinationPath);
       },
       async release() {
         if (released) {
