@@ -15,11 +15,118 @@ export type ValidatedWebhookTarget =
   | { addresses: WebhookAddress[] | undefined }
   | { error: WebhookTargetError };
 
+export const MAX_CONCURRENT_WEBHOOK_DNS_LOOKUPS = 8;
+
 const BLOCKED_IPV4_ADDRESSES = createBlockedIpv4Addresses();
 const BLOCKED_IPV6_ADDRESSES = createBlockedIpv6Addresses();
 const GLOBAL_IPV4_EXCEPTIONS = createGlobalIpv4Exceptions();
 const GLOBAL_IPV6_EXCEPTIONS = createGlobalIpv6Exceptions();
 const ALLOCATED_GLOBAL_IPV6_RANGES = createAllocatedGlobalIpv6Ranges();
+
+type WebhookDnsLookupResult = ReadonlyArray<{ address: string; family: number }>;
+type WebhookDnsLookup = (hostname: string) => Promise<WebhookDnsLookupResult>;
+
+type PendingWebhookDnsLookup = {
+  hostname: string;
+  onAbort: () => void;
+  reject(error: unknown): void;
+  resolve(addresses: WebhookDnsLookupResult): void;
+  settled: boolean;
+  signal: AbortSignal | undefined;
+  started: boolean;
+};
+
+export class WebhookDnsLookupPool {
+  readonly #pending: PendingWebhookDnsLookup[] = [];
+  #active = 0;
+
+  constructor(
+    private readonly maxConcurrent: number,
+    private readonly lookupHostname: WebhookDnsLookup = async (hostname) =>
+      await lookup(hostname, { all: true, verbatim: true }),
+  ) {
+    if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1) {
+      throw new Error("Webhook DNS lookup concurrency must be a positive safe integer.");
+    }
+  }
+
+  resolve(hostname: string, signal?: AbortSignal): Promise<WebhookDnsLookupResult> {
+    return new Promise<WebhookDnsLookupResult>((resolve, reject) => {
+      const pending: PendingWebhookDnsLookup = {
+        hostname,
+        onAbort: () => {
+          if (pending.settled) {
+            return;
+          }
+          pending.settled = true;
+          if (!pending.started) {
+            const index = this.#pending.indexOf(pending);
+            if (index >= 0) {
+              this.#pending.splice(index, 1);
+            }
+          }
+          signal?.removeEventListener("abort", pending.onAbort);
+          reject(abortSignalError(signal));
+          this.#pump();
+        },
+        reject,
+        resolve,
+        settled: false,
+        signal,
+        started: false,
+      };
+      if (signal?.aborted) {
+        pending.onAbort();
+        return;
+      }
+      signal?.addEventListener("abort", pending.onAbort, { once: true });
+      this.#pending.push(pending);
+      this.#pump();
+    });
+  }
+
+  #pump(): void {
+    while (this.#active < this.maxConcurrent) {
+      const pending = this.#pending.shift();
+      if (!pending) {
+        return;
+      }
+      if (pending.settled) {
+        continue;
+      }
+      pending.started = true;
+      this.#active += 1;
+      void this.lookupHostname(pending.hostname)
+        .then(
+          (addresses) => {
+            if (!pending.settled) {
+              pending.settled = true;
+              pending.resolve(addresses);
+            }
+          },
+          (error: unknown) => {
+            if (!pending.settled) {
+              pending.settled = true;
+              pending.reject(error);
+            }
+          },
+        )
+        .finally(() => {
+          pending.signal?.removeEventListener("abort", pending.onAbort);
+          this.#active -= 1;
+          this.#pump();
+        });
+    }
+  }
+}
+
+const webhookDnsLookupPool = new WebhookDnsLookupPool(MAX_CONCURRENT_WEBHOOK_DNS_LOOKUPS);
+
+function abortSignalError(signal: AbortSignal | undefined): Error {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Webhook DNS lookup aborted", "AbortError");
+}
 
 function createBlockedIpv4Addresses(): BlockList {
   const blockList = new BlockList();
@@ -202,13 +309,16 @@ function isBlockedWebhookAddress(address: string): boolean {
   return false;
 }
 
-async function resolveWebhookAddresses(hostname: string): Promise<WebhookAddress[]> {
+async function resolveWebhookAddresses(
+  hostname: string,
+  signal?: AbortSignal,
+): Promise<WebhookAddress[]> {
   const normalized = normalizeHostname(hostname);
   const family = isIP(normalized);
   if (family === 4 || family === 6) {
     return [{ address: normalized, family }];
   }
-  return (await lookup(normalized, { all: true, verbatim: true })).flatMap((entry) =>
+  return (await webhookDnsLookupPool.resolve(normalized, signal)).flatMap((entry) =>
     entry.family === 4 || entry.family === 6
       ? [{ address: entry.address, family: entry.family }]
       : [],
@@ -218,16 +328,18 @@ async function resolveWebhookAddresses(hostname: string): Promise<WebhookAddress
 export async function validateWebhookTarget(params: {
   allowLoopbackHttp: boolean;
   restrictPrivateAddresses: boolean;
+  signal?: AbortSignal | undefined;
   url: URL;
 }): Promise<ValidatedWebhookTarget> {
-  if (
+  const allowThisLoopbackHttp =
     params.url.protocol === "http:" &&
-    (!params.allowLoopbackHttp || !isLoopbackHost(params.url.hostname))
-  ) {
+    params.allowLoopbackHttp &&
+    isLoopbackHost(params.url.hostname);
+  if (params.url.protocol !== "https:" && !allowThisLoopbackHttp) {
     return { error: "https-required" };
   }
-  if (params.url.protocol !== "http:" && params.url.protocol !== "https:") {
-    return { error: "https-required" };
+  if (allowThisLoopbackHttp) {
+    return { addresses: undefined };
   }
   if (!params.restrictPrivateAddresses) {
     return { addresses: undefined };
@@ -235,8 +347,11 @@ export async function validateWebhookTarget(params: {
 
   let addresses: WebhookAddress[];
   try {
-    addresses = await resolveWebhookAddresses(params.url.hostname);
-  } catch {
+    addresses = await resolveWebhookAddresses(params.url.hostname, params.signal);
+  } catch (error) {
+    if (params.signal?.aborted) {
+      throw error;
+    }
     return { error: "unresolvable" };
   }
   if (addresses.length === 0) {
@@ -275,6 +390,7 @@ export async function postWebhookRequest(params: {
     const request = send(
       params.url,
       {
+        agent: false,
         ...(address ? { family: address.family } : {}),
         headers: {
           "content-length": String(Buffer.byteLength(params.body)),

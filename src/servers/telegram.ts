@@ -29,7 +29,16 @@ const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 const TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT = 5;
 const TELEGRAM_WEBHOOK_RETRY_BASE_MS = 100;
 const TELEGRAM_WEBHOOK_DELIVERY_TIMEOUT_MS = 3_000;
+const MAX_ACTIVE_TELEGRAM_WEBHOOK_VALIDATIONS = 8;
 const TELEGRAM_CHAT_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{3,31}$/u;
+const TELEGRAM_SEND_METHODS = new Set([
+  "sendanimation",
+  "sendaudio",
+  "senddocument",
+  "sendmessage",
+  "sendphoto",
+  "sendvideo",
+]);
 const TELEGRAM_MEDIA_FIELDS = [
   "animation",
   "audio",
@@ -70,6 +79,7 @@ const TELEGRAM_UNSUPPORTED_UPDATE_FIELDS = [
 ] as const;
 
 type TelegramServerEvent = {
+  accepted?: boolean | undefined;
   at: string;
   body?: unknown;
   method: string;
@@ -129,10 +139,13 @@ type TelegramMessage = {
     type: "group" | "private" | "supergroup";
   };
   animation?: {
+    duration: number;
     file_id: string;
     file_name?: string;
     file_unique_id: string;
+    height: number;
     mime_type?: string;
+    width: number;
   };
   caption?: string;
   date: number;
@@ -170,10 +183,13 @@ type TelegramMessage = {
   }>;
   text?: string;
   video?: {
+    duration: number;
     file_id: string;
     file_name?: string;
     file_unique_id: string;
+    height: number;
     mime_type?: string;
+    width: number;
   };
 };
 
@@ -389,6 +405,8 @@ function createOutboundMediaMessage(
   }
   const caption = toStringValue(body.caption);
   const duration = Math.max(0, toIntegerValue(body.duration) ?? 0);
+  const height = Math.max(1, toIntegerValue(body.height) ?? 1);
+  const width = Math.max(1, toIntegerValue(body.width) ?? 1);
   const media = {
     file_id: `crabline-${mediaKind}-${state.nextMessageId}`,
     file_name: fileName,
@@ -404,7 +422,11 @@ function createOutboundMediaMessage(
         ? [{ ...media, height: 1, width: 1 }]
         : {
             ...media,
-            ...(mediaKind === "audio" ? { duration } : {}),
+            ...(mediaKind === "audio"
+              ? { duration }
+              : mediaKind === "animation" || mediaKind === "video"
+                ? { duration, height, width }
+                : {}),
             mime_type: "application/octet-stream",
           },
     message_id: state.nextMessageId++,
@@ -462,16 +484,10 @@ function createInboundUpdate(
   ) {
     return undefined;
   }
-  const entities = Array.isArray(body.entities)
-    ? body.entities.filter(
-        (entry): entry is { length: number; offset: number; type: string } =>
-          typeof entry === "object" &&
-          entry !== null &&
-          typeof (entry as { length?: unknown }).length === "number" &&
-          typeof (entry as { offset?: unknown }).offset === "number" &&
-          typeof (entry as { type?: unknown }).type === "string",
-      )
-    : undefined;
+  const entities = parseTelegramEntities(body.entities, text);
+  if (body.entities !== undefined && !entities) {
+    return undefined;
+  }
   return {
     message: {
       chat: createChat(chatId),
@@ -489,6 +505,39 @@ function createInboundUpdate(
     },
     update_id: updateId ?? state.nextUpdateId,
   };
+}
+
+function parseTelegramEntities(
+  value: unknown,
+  text: string,
+): Array<{ length: number; offset: number; type: string }> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const entities: Array<{ length: number; offset: number; type: string }> = [];
+  for (const entry of value) {
+    if (!isJsonObject(entry)) {
+      return undefined;
+    }
+    const length = toIntegerValue(entry.length);
+    const offset = toIntegerValue(entry.offset);
+    const type = toStringValue(entry.type);
+    if (
+      length === undefined ||
+      length < 1 ||
+      offset === undefined ||
+      offset < 0 ||
+      offset + length > text.length ||
+      !type
+    ) {
+      return undefined;
+    }
+    entities.push({ length, offset, type });
+  }
+  return entities;
 }
 
 function hasTelegramMedia(value: Record<string, unknown>): boolean {
@@ -609,8 +658,8 @@ async function handleTelegramAdminInbound(params: {
     params.state.updates.push(update);
     params.state.updates.sort((left, right) => left.update_id - right.update_id);
     if (params.state.webhook) {
-      const deliveryError = await deliverTelegramWebhookUpdates(params.state);
-      return deliveryError ?? jsonResponse({ ok: true, update });
+      scheduleTelegramWebhookDelivery(params.state, 0);
+      return jsonResponse({ ok: true, update });
     }
     finishTelegramUpdatePoll(params.state, "update");
     return jsonResponse({ ok: true, update });
@@ -674,19 +723,28 @@ async function validateTelegramWebhookUrl(
   deadlineAt: number,
   signal: AbortSignal,
 ): Promise<Response | { addresses: WebhookAddress[] | undefined }> {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    return telegramError("Bad Request: webhook host could not be resolved");
+  }
+  const deadline = new AbortController();
+  const timer = setTimeout(
+    () => deadline.abort(new DOMException("Webhook delivery timed out", "TimeoutError")),
+    remainingMs,
+  );
+  timer.unref();
   let target;
   try {
-    target = await withTelegramWebhookDeadline(
-      validateWebhookTarget({
-        allowLoopbackHttp: state.allowLoopbackHttpWebhook,
-        restrictPrivateAddresses: state.restrictWebhookTargets,
-        url,
-      }),
-      deadlineAt,
-      signal,
-    );
+    target = await validateWebhookTarget({
+      allowLoopbackHttp: state.allowLoopbackHttpWebhook,
+      restrictPrivateAddresses: state.restrictWebhookTargets,
+      signal: AbortSignal.any([signal, deadline.signal]),
+      url,
+    });
   } catch {
     return telegramError("Bad Request: webhook host could not be resolved");
+  } finally {
+    clearTimeout(timer);
   }
   if (!("error" in target)) {
     return target;
@@ -951,6 +1009,9 @@ async function handleTelegramApi(params: {
       if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
         return telegramError("Bad Request: bad webhook URL");
       }
+      if (params.state.activeWebhookValidations.size >= MAX_ACTIVE_TELEGRAM_WEBHOOK_VALIDATIONS) {
+        return telegramError("Too Many Requests: too many webhook validations", 429);
+      }
       const validation = new AbortController();
       params.state.activeWebhookValidations.add(validation);
       const target = await validateTelegramWebhookUrl(
@@ -1211,15 +1272,33 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
   if (!isJsonObject(body)) {
     return telegramError("Bad Request: can't parse JSON object");
   }
-  await appendEvent(params.state, {
+  const event: TelegramServerEvent = {
     at: new Date().toISOString(),
     body: redactTelegramSecrets(body),
     method: requestMethod,
     path: `/bot<redacted>/${botPath.method}`,
     query: redactTelegramSecrets(queryRecord(url)),
     type: "api",
-  });
-  return handleTelegramApi({
+  };
+  if (TELEGRAM_SEND_METHODS.has(botPath.method.toLowerCase())) {
+    const response = await handleTelegramApi({
+      body,
+      method: botPath.method,
+      request: params.request,
+      state: params.state,
+    });
+    event.accepted = response.ok;
+    try {
+      await appendEvent(params.state, event);
+    } catch (error) {
+      if (!event.accepted) {
+        throw error;
+      }
+    }
+    return response;
+  }
+  await appendEvent(params.state, event);
+  return await handleTelegramApi({
     body,
     method: botPath.method,
     request: params.request,
@@ -1254,7 +1333,7 @@ export async function startTelegramServer(
     nextUpdateId: 1,
     onEvent: params.onEvent,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "telegram.jsonl"),
-    restrictWebhookTargets: !isLoopbackHost(host),
+    restrictWebhookTargets: true,
     closing: false,
     updates: [],
     webhook: undefined,

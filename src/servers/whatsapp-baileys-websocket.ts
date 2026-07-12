@@ -25,7 +25,7 @@ import { KEY_BUNDLE_TYPE, xmppPreKey, xmppSignedPreKey } from "./whatsapp-wire/s
 import { WebSocket, WebSocketServer, type ServerOptions } from "ws";
 import type { ServerRequestEvent } from "./http.js";
 import { closeWebSocketServer } from "./websocket.js";
-import { canonicalizeWhatsAppUserJid } from "./whatsapp-jid.js";
+import { canonicalizeWhatsAppUserCorrelationJid } from "./whatsapp-jid.js";
 
 // Keep the local server independent from Baileys at runtime. Tests use Baileys
 // as a black-box client to verify this narrow WhatsApp Web wire subset.
@@ -124,7 +124,7 @@ export class WhatsAppSignalBundleStore {
     const uniqueNewJids = new Set<string>();
     const canonicalJids: string[] = [];
     for (const jid of jids) {
-      const canonical = canonicalizeWhatsAppUserJid(jid);
+      const canonical = canonicalizeWhatsAppUserCorrelationJid(jid);
       if (!canonical) {
         throw new Error(`Invalid WhatsApp signal bundle JID: ${jid}.`);
       }
@@ -644,6 +644,18 @@ class WhatsAppBaileysWebSocketSession {
       };
     }
     if (node.attrs.xmlns === "w:g2") {
+      if (node.attrs.type !== "get" || child?.tag !== "query") {
+        return {
+          attrs: { ...attrs, type: "error" },
+          content: [
+            {
+              attrs: { code: "501", text: "unsupported group operation", type: "cancel" },
+              tag: "error",
+            },
+          ],
+          tag: "iq",
+        };
+      }
       return {
         attrs,
         content: [

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { Agent } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import path from "node:path";
 import {
@@ -13,7 +14,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { startWhatsAppServer, type StartedWhatsAppServer } from "../src/index.js";
 import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
-import { MAX_WHATSAPP_WEBSOCKET_FRAGMENTS } from "../src/servers/whatsapp-baileys-websocket.js";
+import {
+  MAX_WHATSAPP_WEBSOCKET_FRAGMENTS,
+  WhatsAppSignalBundleStore,
+} from "../src/servers/whatsapp-baileys-websocket.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedWhatsAppServer[] = [];
@@ -183,6 +187,12 @@ describe("whatsapp local provider server", () => {
     );
     await expect(startWhatsAppServer({ adminToken: " \n\t" })).rejects.toThrow(
       "adminToken must not be empty",
+    );
+    await expect(startWhatsAppServer({ accessToken: " padded" })).rejects.toThrow(
+      "accessToken must not be empty or whitespace-padded",
+    );
+    await expect(startWhatsAppServer({ adminToken: "padded " })).rejects.toThrow(
+      "adminToken must not be empty or whitespace-padded",
     );
     await expect(startWhatsAppServer({ selfJid: "not-a-whatsapp-jid" })).rejects.toThrow(
       "selfJid must be a WhatsApp user JID",
@@ -520,6 +530,14 @@ describe("whatsapp local provider server", () => {
     expect(directBody.message.key).not.toHaveProperty("participant");
   });
 
+  it("correlates bare and device user JIDs to one signal identity", () => {
+    const store = new WhatsAppSignalBundleStore(1);
+    const bare = store.resolveMany(["15551234567@s.whatsapp.net"])[0];
+    expect(store.resolveMany(["15551234567:2@s.whatsapp.net"])[0]).toBe(bare);
+    expect(store.resolveMany(["15551234567:0@c.us"])[0]).toBe(bare);
+    expect(store.size).toBe(1);
+  });
+
   it("authenticates Graph requests before reading or recording their bodies", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -593,6 +611,48 @@ describe("whatsapp local provider server", () => {
         type: "api",
       }),
     ]);
+  });
+
+  it("drains request bodies on early 404 routes", async () => {
+    const server = await startWhatsAppServer({
+      accessToken: "fake",
+      adminToken: "admin",
+    });
+    servers.push(server);
+    const body = JSON.stringify({ text: "discard this body" });
+    const routes = [
+      { method: "PUT", url: server.manifest.endpoints.adminInboundUrl },
+      { method: "GET", url: server.manifest.endpoints.messagesUrl },
+      { method: "POST", url: `${server.manifest.baseUrl}/v25.0/unknown` },
+    ];
+
+    for (const route of routes) {
+      const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+      try {
+        const rejected = await requestHttp({
+          agent,
+          body,
+          headers: {
+            authorization: "Bearer fake",
+            "content-length": String(Buffer.byteLength(body)),
+            "content-type": "application/json",
+            [ADMIN_TOKEN_HEADER]: "admin",
+          },
+          method: route.method,
+          url: route.url,
+        });
+        expect(rejected.status).toBe(404);
+        const accepted = await requestHttp({
+          agent,
+          headers: { authorization: "Bearer fake" },
+          method: "GET",
+          url: server.manifest.endpoints.phoneNumberUrl,
+        });
+        expect(accepted.status).toBe(200);
+      } finally {
+        agent.destroy();
+      }
+    }
   });
 
   it("commits accepted sends before publishing their evidence", async () => {
@@ -833,6 +893,17 @@ describe("whatsapp local provider server", () => {
           ),
         "Baileys connection open",
       );
+      await expect(
+        socket.query({
+          attrs: {
+            to: "120363001234567890@g.us",
+            type: "set",
+            xmlns: "w:g2",
+          },
+          content: [{ attrs: {}, content: Buffer.from("unsupported mutation"), tag: "subject" }],
+          tag: "iq",
+        }),
+      ).rejects.toThrow("unsupported group operation");
       const liveInbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
         body: JSON.stringify({
           chatJid: "120363001234567890@g.us",
