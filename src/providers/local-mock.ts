@@ -3,6 +3,7 @@ import { CrablineError, ensureErrorMessage } from "../core/errors.js";
 import type { ProviderConfig, ProviderPlatform } from "../config/schema.js";
 import {
   appendRecordedInbound,
+  cloneRecordedInboundCursor,
   createRecordedInboundCursor,
   waitForRecordedInbound,
   watchRecordedInbound,
@@ -35,6 +36,7 @@ export type LocalMockAdapterOptions = {
     request: Request,
     rawBody: string,
   ) => Promise<Response | undefined> | Response | undefined;
+  createWebhookSuccessResponse?: (payload: unknown, id: string) => Promise<Response> | Response;
   defaultWebhook: Required<Pick<LocalMockWebhookConfig, "host" | "path" | "port">>;
   endpointLabel: string;
   matchesThread?: (
@@ -51,6 +53,11 @@ export type LocalMockAdapterOptions = {
 };
 
 const MAX_WAIT_CURSORS = 64;
+
+type WaitCursorState = {
+  active: number;
+  cursor?: RecordedInboundCursor | undefined;
+};
 
 export type LocalMockTargetCodec = {
   normalize(target: ProviderContext["fixture"]["target"]): NormalizedTarget;
@@ -134,9 +141,10 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   readonly #options: LocalMockAdapterOptions;
   readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
-  readonly #waitCursors = new Map<string, RecordedInboundCursor>();
+  readonly #waitCursors = new Map<string, WaitCursorState>();
+  #cleanupBegun = false;
+  #cleanupPromise: Promise<void> | null = null;
   #server: StartedWebhookServer | null = null;
-  #serverClosing: Promise<void> | null = null;
   #serverStarting: Promise<StartedWebhookServer> | null = null;
 
   constructor(params: {
@@ -226,13 +234,14 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     const target = this.normalizeTarget(context.fixture.target);
     const expectedAuthor = context.fixture.inboundMatch.author;
     const channelId = context.threadId ?? target.threadId ?? target.channelId;
-    const cursorKey = JSON.stringify([context.nonce, context.since, channelId]);
-    const existingCursor = this.#waitCursors.get(cursorKey);
-    if (existingCursor) {
-      this.#waitCursors.delete(cursorKey);
-    }
-    const cursor = existingCursor ?? createRecordedInboundCursor();
-    this.#waitCursors.set(cursorKey, cursor);
+    const cursorKey = JSON.stringify([context.nonce, context.since, channelId, expectedAuthor]);
+    const cursorState = this.#waitCursors.get(cursorKey) ?? { active: 0 };
+    const cursor = cursorState.cursor
+      ? cloneRecordedInboundCursor(cursorState.cursor)
+      : createRecordedInboundCursor();
+    cursorState.active++;
+    this.#waitCursors.delete(cursorKey);
+    this.#waitCursors.set(cursorKey, cursorState);
     while (this.#waitCursors.size > MAX_WAIT_CURSORS) {
       const oldestKey = this.#waitCursors.keys().next().value;
       if (oldestKey !== undefined) {
@@ -257,13 +266,19 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         signal: context.signal,
         timeoutMs: context.timeoutMs,
       });
-      if (!event) {
-        this.#waitCursors.delete(cursorKey);
+      if (event && this.#waitCursors.get(cursorKey) === cursorState) {
+        cursorState.cursor = cursor;
       }
       return event;
-    } catch (error) {
-      this.#waitCursors.delete(cursorKey);
-      throw error;
+    } finally {
+      cursorState.active--;
+      if (
+        cursorState.active === 0 &&
+        !cursorState.cursor &&
+        this.#waitCursors.get(cursorKey) === cursorState
+      ) {
+        this.#waitCursors.delete(cursorKey);
+      }
     }
   }
 
@@ -288,21 +303,12 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async cleanup(): Promise<void> {
-    this.#waitCursors.clear();
-    if (this.#serverClosing) {
-      await this.#serverClosing;
-      return;
+    if (!this.#cleanupBegun) {
+      this.#cleanupBegun = true;
+      this.#waitCursors.clear();
     }
-
-    const closing = this.#closeWebhookServer();
-    this.#serverClosing = closing;
-    try {
-      await closing;
-    } finally {
-      if (this.#serverClosing === closing) {
-        this.#serverClosing = null;
-      }
-    }
+    this.#cleanupPromise ??= this.#closeWebhookServer();
+    await this.#cleanupPromise;
   }
 
   async #handleWebhook(request: Request): Promise<Response> {
@@ -310,28 +316,36 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     if (mediaType !== "application/json") {
       return new Response("expected application/json", { status: 415 });
     }
+    const rawBody = await request.text();
+    const authenticationFailure = await this.#options.authenticateWebhookRequest?.(
+      request,
+      rawBody,
+    );
+    if (authenticationFailure) {
+      return authenticationFailure;
+    }
+    let rawPayload: unknown;
+    try {
+      rawPayload = JSON.parse(rawBody) as unknown;
+    } catch {
+      return new Response("invalid JSON", { status: 400 });
+    }
+    const directResponse = await this.#options.handleWebhookPayload?.(rawPayload);
+    if (directResponse) {
+      return directResponse;
+    }
     let payload: MockWebhookPayload;
     try {
-      const rawBody = await request.text();
-      const authenticationFailure = await this.#options.authenticateWebhookRequest?.(
-        request,
-        rawBody,
-      );
-      if (authenticationFailure) {
-        return authenticationFailure;
-      }
-      const rawPayload = JSON.parse(rawBody) as unknown;
-      const directResponse = await this.#options.handleWebhookPayload?.(rawPayload);
-      if (directResponse) {
-        return directResponse;
-      }
       payload = normalizeWebhookPayload(
         this.#options.normalizeWebhookPayload
           ? this.#options.normalizeWebhookPayload(rawPayload)
           : rawPayload,
       );
     } catch (error) {
-      return new Response(ensureErrorMessage(error), { status: 400 });
+      if (error instanceof CrablineError && error.kind === "inbound") {
+        return new Response(ensureErrorMessage(error), { status: 400 });
+      }
+      throw error;
     }
 
     const id = payload.message?.id ?? payload.id ?? createMessageId(this.platform);
@@ -350,15 +364,18 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       text,
       threadId,
     });
-    return new Response(JSON.stringify({ ok: true, id }), {
-      headers: { "content-type": "application/json" },
-      status: 200,
-    });
+    return (
+      (await this.#options.createWebhookSuccessResponse?.(rawPayload, id)) ??
+      new Response(JSON.stringify({ ok: true, id }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      })
+    );
   }
 
   async #ensureWebhookServer(): Promise<StartedWebhookServer> {
-    if (this.#serverClosing) {
-      await this.#serverClosing;
+    if (this.#cleanupBegun) {
+      throw this.#cleanedUpError();
     }
     if (this.#server) {
       return this.#server;
@@ -390,6 +407,9 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
 
     try {
       const server = await starting;
+      if (this.#cleanupBegun) {
+        throw this.#cleanedUpError();
+      }
       this.#server = server;
       return server;
     } finally {
@@ -416,5 +436,9 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       this.#server = null;
     }
     await server.close();
+  }
+
+  #cleanedUpError(): CrablineError {
+    return new CrablineError(`Provider "${this.id}" has been cleaned up.`, { kind: "config" });
   }
 }

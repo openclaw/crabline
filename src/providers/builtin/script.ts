@@ -125,7 +125,13 @@ function redactSensitiveEnvironmentValues(detail: string): string {
     .sort((left, right) => right.length - left.length);
 
   for (const value of new Set(values)) {
-    redacted = redacted.split(value).join("[redacted environment value]");
+    for (const representation of [
+      value,
+      JSON.stringify(value),
+      JSON.stringify(value).slice(1, -1),
+    ]) {
+      redacted = redacted.split(representation).join("[redacted environment value]");
+    }
   }
   return redacted;
 }
@@ -248,6 +254,9 @@ function runScript<T>(params: {
   timeoutGraceMs?: number | undefined;
   timeoutMs: number;
 }): Promise<T> {
+  if (params.signal?.aborted) {
+    return Promise.reject(params.signal.reason ?? new Error("Script command aborted."));
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(params.command, {
       cwd: params.cwd ? path.resolve(params.cwd) : process.cwd(),
@@ -412,6 +421,12 @@ function watchScript(params: {
   shell?: string | undefined;
 }): AsyncGenerator<InboundEnvelope> {
   return (async function* () {
+    if (params.cancelSignal.aborted) {
+      return;
+    }
+    if (params.context.signal?.aborted) {
+      throw params.context.signal.reason ?? new Error("Script watch command aborted.");
+    }
     const payload = {
       ...createPayload(params.context),
       watch: {

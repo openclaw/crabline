@@ -43,6 +43,7 @@ export type RecordedInboundCursor = {
 };
 
 const CONTINUITY_BYTES = 4096;
+const MAX_PENDING_RECORD_BYTES = 1024 * 1024;
 
 function createIncrementalReadState(): IncrementalReadState {
   return {
@@ -58,6 +59,19 @@ export function createRecordedInboundCursor(): RecordedInboundCursor {
     buffered: [],
     readState: createIncrementalReadState(),
     seen: new Set(),
+  };
+}
+
+export function cloneRecordedInboundCursor(cursor: RecordedInboundCursor): RecordedInboundCursor {
+  return {
+    buffered: [...cursor.buffered],
+    readState: {
+      continuity: Buffer.from(cursor.readState.continuity),
+      identity: cursor.readState.identity ? { ...cursor.readState.identity } : undefined,
+      offset: cursor.readState.offset,
+      pending: Buffer.from(cursor.readState.pending),
+    },
+    seen: new Set(cursor.seen),
   };
 }
 
@@ -167,14 +181,27 @@ async function readRecordedInboundAppend(
     state.offset = position;
     state.continuity = Buffer.concat([state.continuity, ...chunks]).subarray(-CONTINUITY_BYTES);
 
+    if (chunks.length === 0) {
+      return [];
+    }
     const raw = Buffer.concat([state.pending, ...chunks]);
     const lastNewline = raw.lastIndexOf(0x0a);
     if (lastNewline < 0) {
+      if (raw.length > MAX_PENDING_RECORD_BYTES) {
+        throw new Error(
+          `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
+        );
+      }
       state.pending = raw;
       return [];
     }
 
     state.pending = raw.subarray(lastNewline + 1);
+    if (state.pending.length > MAX_PENDING_RECORD_BYTES) {
+      throw new Error(
+        `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
+      );
+    }
     const lines = raw
       .subarray(0, lastNewline)
       .toString("utf8")
@@ -218,18 +245,21 @@ export async function readRecordedInbound(filePath: string): Promise<RecordedInb
     throw error;
   }
 
-  const lines = raw.split("\n").filter((line) => line.trim().length > 0);
+  const lastNewline = raw.lastIndexOf("\n");
+  const completed = lastNewline >= 0 ? raw.slice(0, lastNewline) : "";
+  const tail = raw.slice(lastNewline + 1);
   const events: RecordedInboundEnvelope[] = [];
-  const hasUnterminatedTail = !raw.endsWith("\n");
 
-  for (const [index, line] of lines.entries()) {
-    try {
+  for (const line of completed.split("\n")) {
+    if (line.trim()) {
       events.push(JSON.parse(line) as RecordedInboundEnvelope);
-    } catch (error) {
-      if (hasUnterminatedTail && index === lines.length - 1) {
-        continue;
-      }
-      throw error;
+    }
+  }
+  if (tail.trim()) {
+    try {
+      events.push(JSON.parse(tail) as RecordedInboundEnvelope);
+    } catch {
+      // Ignore a partial final append; completed lines remain strict.
     }
   }
 

@@ -136,4 +136,22 @@ describe("webhook server", () => {
     expect(response.status).toBe(413);
     expect(handlerInvoked).toBe(false);
   });
+
+  it("rejects a wrong route before reading an oversized body", async () => {
+    const server = await startWebhookServer({
+      handle: async () => new Response("ok"),
+      host: "127.0.0.1",
+      maxBodyBytes: 4,
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+
+    const response = await fetch(server.endpointUrl.replace("/slack/events", "/wrong"), {
+      body: "12345",
+      method: "POST",
+    });
+
+    expect(response.status).toBe(404);
+  });
 });

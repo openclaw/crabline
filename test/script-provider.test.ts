@@ -228,6 +228,31 @@ describe("script provider", () => {
     await expect(waitForProcessExit(pid, 2000)).resolves.toBe(true);
   });
 
+  it("does not spawn commands for already-aborted signals", async () => {
+    const context = await createContext();
+    const markerPath = path.join(path.dirname(context.manifestPath), "aborted-spawned");
+    const command = `node -e ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(markerPath)},"spawned")`)}`;
+    context.config.script!.commands.waitForInbound = command;
+    context.config.script!.commands.watch = command;
+    const provider = new ScriptProviderAdapter(context);
+    const controller = new AbortController();
+    controller.abort(new Error("already aborted"));
+
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        nonce: "nonce",
+        signal: controller.signal,
+        since: new Date().toISOString(),
+        timeoutMs: 100,
+      }),
+    ).rejects.toThrow("already aborted");
+    await expect(provider.watch({ ...context, signal: controller.signal }).next()).rejects.toThrow(
+      "already aborted",
+    );
+    await expect(readFile(markerPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it.skipIf(process.platform === "win32")(
     "stops descendants that hold watch pipes after the leader exits",
     async () => {
@@ -582,7 +607,7 @@ describe("script provider", () => {
       const failingScript = path.join(path.dirname(context.manifestPath), "send-env-secret.mjs");
       await writeText(
         failingScript,
-        'process.stderr.write(`failed: ${process.env[["GITHUB","PAT"].join("")]} ${process.env[["SIGNING","KEY"].join("_")]} ${process.env[["ACCESS","TOKEN"].join("")]} ${process.env[["DB","PWD"].join("_")]}`);process.exitCode=7;',
+        'process.stderr.write(`failed: ${JSON.stringify(process.env[["GITHUB","PAT"].join("")])} ${process.env[["SIGNING","KEY"].join("_")]} ${process.env[["ACCESS","TOKEN"].join("")]} ${process.env[["DB","PWD"].join("_")]}`);process.exitCode=7;',
       );
       context.config.script!.commands.send = `node ${JSON.stringify(failingScript)}`;
       const provider = new ScriptProviderAdapter(context);
