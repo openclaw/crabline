@@ -441,6 +441,21 @@ describe("slack local provider server", () => {
       expect(response.status).toBe(200);
     }
 
+    const invalidText = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        channel: "C1234567890",
+        text: 123,
+        user: "U1234567890",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+    expect(invalidText.status).toBe(400);
+    await expect(invalidText.json()).resolves.toEqual({ error: "invalid_text", ok: false });
+
     const history = await slackApi(server, "conversations.history", {
       channel: "C1234567890",
     });
