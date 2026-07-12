@@ -274,9 +274,11 @@ describe("slack provider", () => {
       threadId: threadTs,
     });
     await provider.probe(context);
-    const iterator = provider
-      .watch({ ...context, since: new Date(Date.now() - 1_000).toISOString() })
-      [Symbol.asyncIterator]();
+    const watch = provider.watch({
+      ...context,
+      since: new Date(Date.now() - 1_000).toISOString(),
+    });
+    const iterator = watch[Symbol.asyncIterator]();
     const next = iterator.next();
     const recorderPath = config.slack!.recorder.path!;
 
