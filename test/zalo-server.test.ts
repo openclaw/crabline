@@ -212,6 +212,95 @@ describe("Zalo local provider server", () => {
     }
   });
 
+  it("keeps queued updates when webhook delivery is enabled", async () => {
+    const webhook = createServer((_request, response) => {
+      response.statusCode = 200;
+      response.end("ok");
+    });
+    await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+    const address = webhook.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve webhook test server address.");
+    }
+    const server = await startZaloServer({ botToken: "sample" });
+    servers.push(server);
+    try {
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "queued" }),
+        headers: adminHeaders(server),
+        method: "POST",
+      });
+      expect(inbound.status).toBe(200);
+
+      const configured = await fetch(`${server.manifest.baseUrl}/botsample/setWebhook`, {
+        body: JSON.stringify({
+          secret_token: "secret-token",
+          url: `http://127.0.0.1:${address.port}/zalo`,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(configured.status).toBe(200);
+      expect(
+        (
+          await fetch(`${server.manifest.baseUrl}/botsample/deleteWebhook`, {
+            method: "POST",
+          })
+        ).status,
+      ).toBe(200);
+
+      const updates = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`, {
+        method: "POST",
+      });
+      await expect(updates.json()).resolves.toMatchObject({
+        ok: true,
+        result: { message: { text: "queued" } },
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        webhook.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("does not deliver updates to disconnected long polls", async () => {
+    let observePoll: (() => void) | undefined;
+    const pollObserved = new Promise<void>((resolve) => {
+      observePoll = resolve;
+    });
+    const server = await startZaloServer({
+      botToken: "sample",
+      onEvent: async (event) => {
+        if (event.path === "/bot<redacted>/getUpdates") {
+          observePoll?.();
+        }
+      },
+    });
+    servers.push(server);
+    const controller = new AbortController();
+    const pending = fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=30`, {
+      signal: controller.signal,
+    });
+    await pollObserved;
+    controller.abort();
+    await expect(pending).rejects.toThrow(/aborted/u);
+
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "after disconnect" }),
+      headers: adminHeaders(server),
+      method: "POST",
+    });
+    expect(inbound.status).toBe(200);
+
+    const updates = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`, {
+      method: "POST",
+    });
+    await expect(updates.json()).resolves.toMatchObject({
+      ok: true,
+      result: { message: { text: "after disconnect" } },
+    });
+  });
+
   it("enforces an absolute webhook delivery deadline while responses trickle", async () => {
     const webhook = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/plain" });

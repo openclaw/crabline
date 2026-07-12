@@ -123,8 +123,8 @@ export async function parseUnknownRequestBody(
   }
   const contentType = request.headers["content-type"] ?? "";
   const includesJson = Array.isArray(contentType)
-    ? contentType.some((entry) => entry.includes("json"))
-    : contentType.includes("json");
+    ? contentType.some((entry) => entry.toLowerCase().includes("json"))
+    : contentType.toLowerCase().includes("json");
   if (includesJson) {
     try {
       return JSON.parse(body.toString("utf8")) as unknown;

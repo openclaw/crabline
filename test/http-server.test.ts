@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
   drainRequestBody,
+  parseUnknownRequestBody,
   readBody,
   readInteger,
   RequestBodyTooLargeError,
@@ -50,6 +51,13 @@ describe("server HTTP body reader", () => {
     expect(readInteger(String(Number.MIN_SAFE_INTEGER))).toBe(Number.MIN_SAFE_INTEGER);
     expect(readInteger(String(Number.MAX_SAFE_INTEGER + 1))).toBeUndefined();
     expect(readInteger("-9007199254740992")).toBeUndefined();
+  });
+
+  it("recognizes JSON media types case-insensitively", async () => {
+    const request = createRequest({ "content-type": "Application/JSON; Charset=UTF-8" });
+    const parsed = parseUnknownRequestBody(request);
+    request.end('{"ok":true}');
+    await expect(parsed).resolves.toEqual({ ok: true });
   });
 
   it("does not expose unexpected exception details", async () => {

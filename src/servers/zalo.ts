@@ -43,8 +43,11 @@ type ZaloUpdate = {
 };
 
 type PendingUpdateRequest = {
+  active: boolean;
+  onDisconnect(): void;
+  request: IncomingMessage;
   resolve(response: Response): void;
-  timeout: NodeJS.Timeout;
+  timeout: NodeJS.Timeout | undefined;
 };
 
 type WebhookAddress = {
@@ -311,7 +314,32 @@ function nextUpdate(state: ZaloServerState): Response | undefined {
   return update ? zaloOk(update) : undefined;
 }
 
-function waitForUpdate(state: ZaloServerState, timeoutSeconds: number): Promise<Response> {
+function settlePendingUpdate(
+  state: ZaloServerState,
+  pending: PendingUpdateRequest,
+  response: Response,
+): boolean {
+  if (!pending.active) {
+    return false;
+  }
+  pending.active = false;
+  const index = state.pendingRequests.indexOf(pending);
+  if (index >= 0) {
+    state.pendingRequests.splice(index, 1);
+  }
+  if (pending.timeout) {
+    clearTimeout(pending.timeout);
+  }
+  pending.request.socket.off("close", pending.onDisconnect);
+  pending.resolve(response);
+  return true;
+}
+
+function waitForUpdate(
+  request: IncomingMessage,
+  state: ZaloServerState,
+  timeoutSeconds: number,
+): Promise<Response> {
   const queued = nextUpdate(state);
   if (queued) {
     return Promise.resolve(queued);
@@ -321,30 +349,37 @@ function waitForUpdate(state: ZaloServerState, timeoutSeconds: number): Promise<
   }
   return new Promise((resolve) => {
     const pending: PendingUpdateRequest = {
+      active: true,
+      onDisconnect: () => {
+        settlePendingUpdate(state, pending, zaloError("Client closed request", 499));
+      },
+      request,
       resolve,
-      timeout: setTimeout(() => {
-        const index = state.pendingRequests.indexOf(pending);
-        if (index >= 0) {
-          state.pendingRequests.splice(index, 1);
-        }
-        resolve(zaloError("Request timeout", 408));
-      }, timeoutSeconds * 1000),
+      timeout: undefined,
     };
     state.pendingRequests.push(pending);
+    request.socket.once("close", pending.onDisconnect);
+    pending.timeout = setTimeout(() => {
+      settlePendingUpdate(state, pending, zaloError("Request timeout", 408));
+    }, timeoutSeconds * 1000);
+    pending.timeout.unref();
+    if (request.socket.destroyed) {
+      pending.onDisconnect();
+    }
   });
 }
 
 function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boolean {
-  const pending = state.pendingRequests.shift();
-  if (!pending) {
-    if (state.updates.length >= state.maxPendingInboundEvents) {
-      return false;
+  while (state.pendingRequests.length > 0) {
+    const pending = state.pendingRequests[0]!;
+    if (settlePendingUpdate(state, pending, zaloOk(update))) {
+      return true;
     }
-    state.updates.push(update);
-    return true;
   }
-  clearTimeout(pending.timeout);
-  pending.resolve(zaloOk(update));
+  if (state.updates.length >= state.maxPendingInboundEvents) {
+    return false;
+  }
+  state.updates.push(update);
   return true;
 }
 
@@ -483,7 +518,7 @@ async function handleZaloMethod(
     }
     const parsedTimeout = Number(readTrimmedString(body.timeout) ?? "30");
     const timeout = Number.isFinite(parsedTimeout) ? Math.max(0, Math.min(parsedTimeout, 50)) : 30;
-    return await waitForUpdate(state, timeout);
+    return await waitForUpdate(request, state, timeout);
   }
   if (method === "sendMessage" || method === "sendPhoto") {
     const chatId = requireParam(body, "chat_id");
@@ -526,7 +561,6 @@ async function handleZaloMethod(
     if (target instanceof Response) {
       return target;
     }
-    state.updates.length = 0;
     const webhook = { secretToken, updatedAt: Date.now(), url: parsedUrl.href };
     state.webhook = webhook;
     return zaloOk({ updated_at: webhook.updatedAt, url: webhook.url });
@@ -615,8 +649,7 @@ export async function startZaloServer(
   return {
     async close() {
       for (const pending of state.pendingRequests.splice(0)) {
-        clearTimeout(pending.timeout);
-        pending.resolve(zaloError("Server shutting down", 503));
+        settlePendingUpdate(state, pending, zaloError("Server shutting down", 503));
       }
       await httpServer.close();
     },
