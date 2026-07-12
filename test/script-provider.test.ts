@@ -123,6 +123,38 @@ describe("script provider", () => {
     expect(watched?.value?.id).toBe("watch-1");
   });
 
+  it("preserves UTF-8 code points split across watch stdout chunks", async () => {
+    const context = await createContext();
+    const watchScript = path.join(path.dirname(context.manifestPath), "watch-split-utf8.mjs");
+    await writeText(
+      watchScript,
+      'const line=Buffer.from(JSON.stringify({author:"assistant",id:"watch-split",sentAt:new Date().toISOString(),text:"split \\u{1f98a} output",threadId:"thread-1"})+"\\n");const split=line.indexOf(0xf0)+2;process.stdout.write(line.subarray(0,split));setTimeout(()=>process.stdout.write(line.subarray(split)),25);',
+    );
+    context.config.script!.commands.watch = `node ${watchScript}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(provider.watch(context).next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        id: "watch-split",
+        text: "split \u{1f98a} output",
+      },
+    });
+  });
+
+  it("preserves UTF-8 code points split across watch stderr chunks", async () => {
+    const context = await createContext();
+    const watchScript = path.join(path.dirname(context.manifestPath), "watch-split-stderr.mjs");
+    await writeText(
+      watchScript,
+      'process.stderr.write(Buffer.from([0xf0,0x9f]));setTimeout(()=>{process.stderr.write(Buffer.from([0xa6,0x8a]));process.exitCode=7;},25);',
+    );
+    context.config.script!.commands.watch = `node ${watchScript}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(provider.watch(context).next()).rejects.toThrow(/\u{1f98a}/u);
+  });
+
   it("stops the watch subprocess when iteration ends early", async () => {
     const context = await createContext();
     const watchScript = path.join(path.dirname(context.manifestPath), "watch-leaking.mjs");
