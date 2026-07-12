@@ -123,7 +123,9 @@ export function resolveOpenClawCrablineChannel(input?: string | null): CrablineS
 
 export function resolveOpenClawCrablineChannelDriverSelection(params: {
   channel?: string | null;
-}): OpenClawCrablineChannelDriverSelection {
+}): OpenClawCrablineChannelDriverSelection & {
+  providerReadinessArtifactPath: typeof OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH;
+} {
   return {
     channel: resolveOpenClawCrablineChannel(params.channel),
     channelDriver: "crabline",
@@ -413,7 +415,7 @@ export function createOpenClawCrablineChannelReportNotes(
     `Channel driver: ${selection.channelDriver} local provider for ${selection.channel}.`,
     `Channel artifact pointer: ${OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH}.`,
     `Generation capability filename: ${selection.capabilityMatrixPath}.`,
-    `Generation provider-readiness filename: ${selection.providerReadinessArtifactPath}.`,
+    `Generation provider-readiness filename: ${selection.providerReadinessArtifactPath ?? selection.smokeArtifactPath}.`,
     "Crabline verifies the local provider API is ready; OpenClaw channel behavior is proven separately by QA scenarios that run the real channel adapter.",
   ];
 }

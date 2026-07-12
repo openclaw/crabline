@@ -24,23 +24,13 @@ const OPENCLAW_CRABLINE_PROVIDER_PROBE_LABELS = {
   zalo: "Zalo getMe",
 } satisfies Record<CrablineServerManifest["provider"], string>;
 
-type OpenClawCrablineChannelDriverSelectionBase = {
+export type OpenClawCrablineChannelDriverSelection = {
   channel: CrablineServerChannel;
   channelDriver: "crabline";
   capabilityMatrixPath: typeof OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH;
+  providerReadinessArtifactPath?: typeof OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH;
+  smokeArtifactPath: typeof OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH;
 };
-
-export type OpenClawCrablineChannelDriverSelection = OpenClawCrablineChannelDriverSelectionBase &
-  (
-    | {
-        providerReadinessArtifactPath: typeof OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH;
-        smokeArtifactPath?: typeof OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH;
-      }
-    | {
-        providerReadinessArtifactPath?: typeof OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH;
-        smokeArtifactPath: typeof OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH;
-      }
-  );
 
 export type OpenClawCrablineProviderReadinessResult = {
   artifactPointerPath: string;
