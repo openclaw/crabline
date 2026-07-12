@@ -163,7 +163,7 @@ function redactUrlCredentials(value: string): string {
   try {
     url = new URL(value);
   } catch {
-    return value.replace(/^((?:[a-z][a-z0-9+.-]*:)?\/\/)[^/?#]*@/iu, "$1<redacted>@");
+    return value.replace(/^(\s*)((?:[a-z][a-z0-9+.-]*:)?\/\/)[^/?#]*@/iu, "$1$2<redacted>@");
   }
   if (!url.username && !url.password) {
     return value;

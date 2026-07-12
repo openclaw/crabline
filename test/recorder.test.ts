@@ -131,6 +131,28 @@ describe("recorder", () => {
     ]);
   });
 
+  it("rejects a batch record larger than the incremental reader limit", async () => {
+    const filePath = await createRecorderPath();
+    const event = {
+      author: "user" as const,
+      id: "oversized-batch",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "x".repeat(4 * 1024 * 1024),
+      threadId: "15551234567",
+    };
+
+    await expect(appendRecordedInboundBatch(filePath, [event])).rejects.toThrow(
+      "Recorder record exceeded",
+    );
+    await expect(
+      appendRecordedInboundBatch(filePath, [{ ...event, id: "after-oversized", text: "small" }]),
+    ).resolves.toEqual([expect.objectContaining({ id: "after-oversized" })]);
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: "after-oversized" }),
+    ]);
+  });
+
   it("hides partial batch appends before retrying", async () => {
     const filePath = await createRecorderPath();
     const sentAt = new Date().toISOString();
@@ -322,6 +344,65 @@ describe("recorder", () => {
     ]);
     await expect(readRecordedInbound(firstTarget)).resolves.toEqual([
       expect.objectContaining({ id: "symlink-batch" }),
+    ]);
+  });
+
+  it("serializes the first batch through a dangling recorder symlink", async () => {
+    const filePath = await createRecorderPath();
+    const targetPath = path.join(path.dirname(filePath), "dangling-target.jsonl");
+    await symlink(targetPath, filePath, "file");
+    const event = {
+      author: "user" as const,
+      id: "dangling-symlink-batch",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "deduplicate the first concurrent append",
+      threadId: "15551234567",
+    };
+
+    const probeHandle = await open(path.dirname(filePath), "r");
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+      writeFile(data: string, encoding: BufferEncoding): Promise<void>;
+    };
+    await probeHandle.close();
+    const originalWriteFile = fileHandlePrototype.writeFile;
+    let releaseFirstWrite!: () => void;
+    let reportFirstWrite!: () => void;
+    const firstWriteReported = new Promise<void>((resolve) => {
+      reportFirstWrite = resolve;
+    });
+    const firstWriteReleased = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    let pauseFirstBatch = true;
+    fileHandlePrototype.writeFile = async function (
+      this: FileHandle,
+      data: string,
+      encoding: BufferEncoding,
+    ) {
+      if (pauseFirstBatch && data.includes('"recorderBatchVersion"')) {
+        pauseFirstBatch = false;
+        reportFirstWrite();
+        await firstWriteReleased;
+      }
+      await originalWriteFile.call(this, data, encoding);
+    };
+
+    const first = appendRecordedInboundBatch(filePath, [event]);
+    try {
+      await firstWriteReported;
+      const second = appendRecordedInboundBatch(filePath, [event]);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      releaseFirstWrite();
+      const results = await Promise.all([first, second]);
+      expect(results.map((result) => result.length).toSorted()).toEqual([0, 1]);
+    } finally {
+      releaseFirstWrite();
+      fileHandlePrototype.writeFile = originalWriteFile;
+    }
+
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: event.id }),
     ]);
   });
 

@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, readFile, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readlink, realpath } from "node:fs/promises";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import type { InboundEnvelope } from "./types.js";
@@ -250,8 +250,20 @@ async function resolveRecorderPublicationPath(filePath: string): Promise<string>
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
     }
-    return path.join(await realpath(path.dirname(filePath)), path.basename(filePath));
   }
+
+  try {
+    const stats = await lstat(filePath);
+    if (stats.isSymbolicLink()) {
+      const target = await readlink(filePath);
+      return await resolveRecorderPublicationPath(path.resolve(path.dirname(filePath), target));
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  return path.join(await realpath(path.dirname(filePath)), path.basename(filePath));
 }
 
 async function prepareRecorderTailForAppend(
@@ -537,13 +549,13 @@ export async function appendRecordedInboundBatch(
             recordType: "crabline.recorder.batch",
             recorderBatchVersion: RECORDER_BATCH_VERSION,
           } satisfies RecordedInboundBatchLine;
-          await appendCommittedLine(
-            publicationPath,
-            logicalPath,
-            `${JSON.stringify(batch)}\n`,
-            true,
-            generation,
-          );
+          const line = `${JSON.stringify(batch)}\n`;
+          if (Buffer.byteLength(line) > MAX_PENDING_RECORD_BYTES) {
+            throw new Error(
+              `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
+            );
+          }
+          await appendCommittedLine(publicationPath, logicalPath, line, true, generation);
           await syncRecordIdentityIndex(publicationPath);
         } else if (
           !sameRecorderFileIdentity(
