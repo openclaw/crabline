@@ -255,6 +255,19 @@ function hasThreadParent(
   );
 }
 
+function resolveThreadTs(
+  state: SlackServerState,
+  params: {
+    channel: string;
+    ts: string;
+  },
+): string | undefined {
+  const message = messagesForChannel(state, params.channel).find(
+    (candidate) => candidate.ts === params.ts,
+  );
+  return message?.thread_ts ?? message?.ts;
+}
+
 function nextSlackTs(state: SlackServerState): string {
   const index = state.nextTsIndex++;
   return `${1_700_000_000 + Math.floor(index / 1_000_000)}.${String(index % 1_000_000).padStart(6, "0")}`;
@@ -608,16 +621,17 @@ async function handleSlackApi(params: {
       if (!ts) {
         return slackError("message_not_found");
       }
+      const threadTs = resolveThreadTs(params.state, { channel, ts });
+      if (!threadTs) {
+        return slackError("thread_not_found");
+      }
       const limit = requireSlackLimit(params.body.limit);
       if (limit instanceof Response) {
         return limit;
       }
       const messages = messagesForChannel(params.state, channel).filter(
-        (message) => message.ts === ts || message.thread_ts === ts,
+        (message) => message.ts === threadTs || message.thread_ts === threadTs,
       );
-      if (messages.length === 0) {
-        return slackError("thread_not_found");
-      }
       return slackOk({ has_more: messages.length > limit, messages: messages.slice(0, limit) });
     }
     default:
