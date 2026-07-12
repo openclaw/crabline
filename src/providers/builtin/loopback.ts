@@ -143,6 +143,14 @@ export class LoopbackChatAdapter {
     options?: { cursor?: string; limit?: number },
   ): Promise<{ messages: LoopbackMessage[]; nextCursor?: string }> {
     const messages = [...(this.#messages.get(threadId) ?? [])];
+    if (
+      options?.limit !== undefined &&
+      (!Number.isSafeInteger(options.limit) || options.limit <= 0)
+    ) {
+      throw new CrablineError("Loopback message limit must be a positive safe integer.", {
+        kind: "config",
+      });
+    }
     const limit = options?.limit ?? messages.length;
     if (!options?.cursor) {
       const result: { messages: LoopbackMessage[]; nextCursor?: string } = {

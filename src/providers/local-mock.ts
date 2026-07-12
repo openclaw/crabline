@@ -42,6 +42,7 @@ export type LocalMockAdapterOptions = {
     expectedThreadId: string | undefined,
     target: NormalizedTarget,
   ) => boolean;
+  handleWebhookPayload?: (payload: unknown) => Promise<Response | undefined> | Response | undefined;
   normalizeWebhookPayload?: (payload: unknown) => unknown;
   platform: ProviderPlatform;
   publicUrl?: string | undefined;
@@ -111,6 +112,15 @@ function normalizeWebhookPayload(payload: unknown): MockWebhookPayload {
 
 function mockReplyText(params: { platform: ProviderPlatform; text: string }) {
   return `[${params.platform} mock] ${params.text}`;
+}
+
+function isOutboundRecord(event: InboundEnvelope): boolean {
+  return (
+    event.raw !== null &&
+    typeof event.raw === "object" &&
+    "direction" in event.raw &&
+    event.raw.direction === "outbound"
+  );
 }
 
 export class LocalMockProviderAdapter implements ProviderAdapter {
@@ -236,6 +246,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         filePath: this.#recorderPath,
         matches: (candidate) =>
           candidate.provider === this.id &&
+          !isOutboundRecord(candidate) &&
           (expectedAuthor === "any" || candidate.author === expectedAuthor) &&
           (this.#options.matchesThread ?? isAddressInChannel)(
             candidate.threadId,
@@ -263,6 +274,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       filePath: this.#recorderPath,
       matches: (entry) =>
         entry.provider === this.id &&
+        !isOutboundRecord(entry) &&
         (this.#options.matchesThread ?? isAddressInChannel)(
           entry.threadId,
           target.threadId ?? target.channelId,
@@ -294,7 +306,8 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async #handleWebhook(request: Request): Promise<Response> {
-    if (!request.headers.get("content-type")?.includes("application/json")) {
+    const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+    if (mediaType !== "application/json") {
       return new Response("expected application/json", { status: 415 });
     }
     let payload: MockWebhookPayload;
@@ -308,6 +321,10 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         return authenticationFailure;
       }
       const rawPayload = JSON.parse(rawBody) as unknown;
+      const directResponse = await this.#options.handleWebhookPayload?.(rawPayload);
+      if (directResponse) {
+        return directResponse;
+      }
       payload = normalizeWebhookPayload(
         this.#options.normalizeWebhookPayload
           ? this.#options.normalizeWebhookPayload(rawPayload)

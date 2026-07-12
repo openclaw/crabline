@@ -293,6 +293,7 @@ describe("WhatsApp provider lifecycle", () => {
               changes: [
                 {
                   value: {
+                    metadata: { phone_number_id: "local-mock-phone" },
                     messages: [
                       {
                         from: "15551234567",

@@ -1,3 +1,4 @@
+import { createPublicKey, verify, type KeyObject } from "node:crypto";
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
@@ -17,7 +18,7 @@ type DiscordEnvironment = Partial<
   Pick<NodeJS.ProcessEnv, "DISCORD_APPLICATION_ID" | "DISCORD_BOT_TOKEN" | "DISCORD_PUBLIC_KEY">
 >;
 
-export async function resolveDiscordAdapterConfig(
+function resolveDiscordAdapterConfigValue(
   config: ProviderConfig,
   userName: string,
   env: DiscordEnvironment = process.env,
@@ -37,6 +38,41 @@ export async function resolveDiscordAdapterConfig(
       : {}),
     userName,
   };
+}
+
+export async function resolveDiscordAdapterConfig(
+  config: ProviderConfig,
+  userName: string,
+  env: DiscordEnvironment = process.env,
+) {
+  return resolveDiscordAdapterConfigValue(config, userName, env);
+}
+
+function discordPublicKey(value: string): KeyObject {
+  if (!/^[0-9a-f]{64}$/iu.test(value)) {
+    throw new CrablineError("Discord publicKey must be a 32-byte hexadecimal Ed25519 key.", {
+      kind: "config",
+    });
+  }
+  return createPublicKey({
+    format: "der",
+    key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(value, "hex")]),
+    type: "spki",
+  });
+}
+
+function authenticateDiscordWebhook(publicKey: KeyObject, request: Request, rawBody: string) {
+  const signature = request.headers.get("x-signature-ed25519");
+  const timestamp = request.headers.get("x-signature-timestamp");
+  if (
+    !signature ||
+    !timestamp ||
+    !/^[0-9a-f]{128}$/iu.test(signature) ||
+    !verify(null, Buffer.from(timestamp + rawBody), publicKey, Buffer.from(signature, "hex"))
+  ) {
+    return new Response("invalid request signature", { status: 401 });
+  }
+  return undefined;
 }
 
 function toRecorderPath(providerId: string, config: ProviderConfig): string {
@@ -89,18 +125,32 @@ function normalizeDiscordWebhookPayload(payload: unknown) {
 }
 
 export class DiscordProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
-  constructor(id: string, config: ProviderConfig, _userName: string) {
+  constructor(id: string, config: ProviderConfig, userName: string) {
+    const resolvedConfig = resolveDiscordAdapterConfigValue(config, userName);
+    const publicKey = resolvedConfig.publicKey
+      ? discordPublicKey(resolvedConfig.publicKey)
+      : undefined;
     super({
       codec: getBuiltinTargetCodec("discord"),
       config,
       id,
       options: {
+        ...(publicKey
+          ? {
+              authenticateWebhookRequest: (request: Request, rawBody: string) =>
+                authenticateDiscordWebhook(publicKey, request, rawBody),
+            }
+          : {}),
         defaultWebhook: {
           host: "127.0.0.1",
           path: "/discord/interactions",
           port: 8788,
         },
         endpointLabel: "interactions endpoint",
+        handleWebhookPayload: (payload) =>
+          isRecord(payload) && payload.type === 1
+            ? Response.json({ type: 1 }, { status: 200 })
+            : undefined,
         normalizeWebhookPayload: normalizeDiscordWebhookPayload,
         platform: "discord",
         publicUrl: config.discord?.webhook.publicUrl,
