@@ -65,7 +65,8 @@ function normalizeDiscordWebhookPayload(payload: unknown) {
     throw new CrablineError("Discord webhook payload must be an object", { kind: "inbound" });
   }
 
-  if (optionalRecord(payload, "message")) {
+  const message = optionalRecord(payload, "message");
+  if (message && ("text" in message || "threadId" in message)) {
     return genericMockPayloadWithNativeThread({
       channelRule: DISCORD_SNOWFLAKE_RULE,
       payload,
@@ -78,7 +79,12 @@ function normalizeDiscordWebhookPayload(payload: unknown) {
   const channelId = optionalString(payload, "channel_id");
   const text =
     optionalString(payload, "content") ??
-    (data ? (optionalString(data, "content") ?? optionalString(data, "name")) : undefined);
+    (data
+      ? (optionalString(data, "content") ??
+        optionalString(data, "name") ??
+        optionalString(data, "custom_id"))
+      : undefined) ??
+    (message ? optionalString(message, "content") : undefined);
   if (!channelId || !text) {
     throw new CrablineError("Discord event payload requires channel_id and content", {
       kind: "inbound",
