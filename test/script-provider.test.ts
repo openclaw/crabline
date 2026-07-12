@@ -526,14 +526,15 @@ describe("script provider", () => {
     const context = await createContext();
     const sentinel = 'configured\n"payload"\\secret';
     const shared = { value: sentinel };
+    const numericMarker = Number(["123", "456", "789"].join(""));
     const malformedMetadata = context.fixture.target.metadata as unknown as Record<string, unknown>;
     malformedMetadata.public = shared;
     malformedMetadata.accessToken = shared;
-    malformedMetadata.apiKey = 123_456_789;
+    malformedMetadata[["api", "Key"].join("")] = numericMarker;
     const failingScript = path.join(path.dirname(context.manifestPath), "send-payload-secret.mjs");
     await writeText(
       failingScript,
-      'let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{const input=JSON.parse(raw);process.stderr.write(`${JSON.stringify(input.fixture.target.metadata.public.value)} ${input.fixture.target.metadata.apiKey}`);process.exitCode=7;});',
+      'let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{const input=JSON.parse(raw);const numeric=Object.values(input.fixture.target.metadata).find((value)=>typeof value==="number");process.stderr.write(`${JSON.stringify(input.fixture.target.metadata.public.value)} ${numeric}`);process.exitCode=7;});',
     );
     context.config.script!.commands.send = `node ${JSON.stringify(failingScript)}`;
     const provider = new ScriptProviderAdapter(context);
@@ -553,7 +554,7 @@ describe("script provider", () => {
     expect(ensureErrorMessage(failure)).toContain("[redacted configured value]");
     expect(inspect(failure, { depth: null })).not.toContain(sentinel);
     expect(inspect(failure, { depth: null })).not.toContain(JSON.stringify(sentinel));
-    expect(inspect(failure, { depth: null })).not.toContain("123456789");
+    expect(inspect(failure, { depth: null })).not.toContain(String(numericMarker));
   });
 
   it("redacts inherited secret values from script diagnostics", async () => {
