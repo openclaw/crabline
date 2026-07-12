@@ -6,6 +6,7 @@
 - Bound recorder tail memory, harden shared provider cleanup and inbound matching, and reject non-global webhook targets.
 - Recover backpressured Signal events without recording rejected RPC calls.
 - Preserve bounded Matrix transaction replay and limited-sync state, and honor environment identity.
+- Enforce safe Telegram identities while acknowledging valid unsupported updates.
 - Align Slack callback, thread-history, and message-text behavior with its native protocol.
 - Harden release, CI, config, CLI, package, and OpenClaw artifact and process-identity boundaries.
 - Restore provider-native callbacks and authentication, preserve conversation targets and recorder progress, and harden local mock lifecycle and parsing.
