@@ -199,7 +199,7 @@ describe("recorder", () => {
     ]);
   });
 
-  it("does not overwrite a recorder rotated during a batch append", async () => {
+  it("retries a batch against a recorder rotated during append", async () => {
     const filePath = await createRecorderPath();
     const rotatedPath = `${filePath}.rotated`;
     const event = {
@@ -246,20 +246,22 @@ describe("recorder", () => {
       await rename(filePath, rotatedPath);
       await writeFile(filePath, "", "utf8");
       releaseWrite();
-      await expect(append).rejects.toThrow("Recorder rotated");
+      await expect(append).resolves.toEqual([expect.objectContaining({ id: "rotated-batch" })]);
     } finally {
       releaseWrite();
       fileHandlePrototype.writeFile = originalWriteFile;
     }
 
-    await expect(readRecordedInbound(filePath)).resolves.toEqual([]);
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: "rotated-batch" }),
+    ]);
     await expect(readRecordedInbound(rotatedPath)).resolves.toEqual([
       expect.objectContaining({ id: "existing" }),
       expect.objectContaining({ id: "rotated-batch" }),
     ]);
   });
 
-  it("detects a symlinked recorder retargeted during a batch append", async () => {
+  it("retries against a symlinked recorder retargeted during append", async () => {
     const filePath = await createRecorderPath();
     const firstTarget = path.join(path.dirname(filePath), "first-target.jsonl");
     const secondTarget = path.join(path.dirname(filePath), "second-target.jsonl");
@@ -309,13 +311,15 @@ describe("recorder", () => {
       await rm(filePath);
       await symlink(secondTarget, filePath, "file");
       releaseWrite();
-      await expect(append).rejects.toThrow("Recorder rotated");
+      await expect(append).resolves.toEqual([expect.objectContaining({ id: "symlink-batch" })]);
     } finally {
       releaseWrite();
       fileHandlePrototype.writeFile = originalWriteFile;
     }
 
-    await expect(readRecordedInbound(filePath)).resolves.toEqual([]);
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: "symlink-batch" }),
+    ]);
     await expect(readRecordedInbound(firstTarget)).resolves.toEqual([
       expect.objectContaining({ id: "symlink-batch" }),
     ]);
@@ -408,6 +412,60 @@ describe("recorder", () => {
     await writeFile(filePath, "", "utf8");
 
     await expect(appendRecordedInboundBatch(filePath, [event])).resolves.toEqual([
+      expect.objectContaining({ id: event.id }),
+    ]);
+  });
+
+  it("retries duplicate suppression when the recorder rotates during indexing", async () => {
+    const filePath = await createRecorderPath();
+    const rotatedPath = `${filePath}.old`;
+    const event = {
+      author: "user" as const,
+      id: "duplicate-during-rotation",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "preserve the acknowledged event",
+      threadId: "15551234567",
+    };
+    await appendRecordedInboundBatch(filePath, [event]);
+
+    const probeHandle = await open(filePath, "r");
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+      stat(...args: unknown[]): Promise<unknown>;
+    };
+    await probeHandle.close();
+    const originalStat = fileHandlePrototype.stat;
+    let statCalls = 0;
+    let releaseIndexStat!: () => void;
+    let reportIndexStat!: () => void;
+    const indexStatReported = new Promise<void>((resolve) => {
+      reportIndexStat = resolve;
+    });
+    const indexStatReleased = new Promise<void>((resolve) => {
+      releaseIndexStat = resolve;
+    });
+    fileHandlePrototype.stat = async function (...args: unknown[]) {
+      const stats = await Reflect.apply(originalStat, this, args);
+      if (++statCalls === 3) {
+        reportIndexStat();
+        await indexStatReleased;
+      }
+      return stats;
+    };
+
+    const append = appendRecordedInboundBatch(filePath, [event]);
+    try {
+      await indexStatReported;
+      await rename(filePath, rotatedPath);
+      await writeFile(filePath, "", "utf8");
+      releaseIndexStat();
+      await expect(append).resolves.toEqual([expect.objectContaining({ id: event.id })]);
+    } finally {
+      releaseIndexStat();
+      fileHandlePrototype.stat = originalStat;
+    }
+
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
       expect.objectContaining({ id: event.id }),
     ]);
   });

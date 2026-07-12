@@ -33,6 +33,9 @@ const MAX_RECENT_RECORD_KEYS = 4096;
 const RECORDER_BATCH_VERSION = 1;
 const RECORDER_LOCK_STALE_MS = 30_000;
 const RECORDER_LOCK_UPDATE_MS = 10_000;
+const RECORDER_ROTATION_ATTEMPTS = 3;
+
+class RecorderRotatedError extends Error {}
 
 type IncrementalReadState = {
   caughtUp: boolean;
@@ -292,9 +295,10 @@ async function prepareRecorderPathForAppend(
   publicationPath: string,
   logicalPath: string,
   durable: boolean,
-): Promise<void> {
+): Promise<RecorderFileIdentity> {
   const handle = await open(publicationPath, "a+");
   const identity = await handle.stat({ bigint: true });
+  const recorderIdentity = { dev: identity.dev, ino: identity.ino };
   try {
     const changed = await prepareRecorderTailForAppend(handle);
     if (changed && durable) {
@@ -306,12 +310,13 @@ async function prepareRecorderPathForAppend(
 
   if (
     !sameRecorderFileIdentity(
-      { dev: identity.dev, ino: identity.ino },
+      recorderIdentity,
       await readRecorderFileIdentity(await resolveRecorderPublicationPath(logicalPath)),
     )
   ) {
-    throw new Error("Recorder rotated while preparing a committed line.");
+    throw new RecorderRotatedError("Recorder rotated while preparing a committed line.");
   }
+  return recorderIdentity;
 }
 
 async function appendCommittedLine(
@@ -319,10 +324,18 @@ async function appendCommittedLine(
   logicalPath: string,
   line: string,
   durable: boolean,
+  expectedIdentity?: RecorderFileIdentity,
 ): Promise<void> {
   const handle = await open(publicationPath, "a+");
   const identity = await handle.stat({ bigint: true });
+  const recorderIdentity = { dev: identity.dev, ino: identity.ino };
   try {
+    if (
+      expectedIdentity !== undefined &&
+      !sameRecorderFileIdentity(expectedIdentity, recorderIdentity)
+    ) {
+      throw new RecorderRotatedError("Recorder rotated before appending a committed line.");
+    }
     await prepareRecorderTailForAppend(handle);
     await handle.writeFile(line, "utf8");
     if (durable) {
@@ -334,11 +347,11 @@ async function appendCommittedLine(
 
   if (
     !sameRecorderFileIdentity(
-      { dev: identity.dev, ino: identity.ino },
+      recorderIdentity,
       await readRecorderFileIdentity(await resolveRecorderPublicationPath(logicalPath)),
     )
   ) {
-    throw new Error("Recorder rotated while appending a committed line.");
+    throw new RecorderRotatedError("Recorder rotated while appending a committed line.");
   }
 }
 
@@ -500,33 +513,54 @@ export async function appendRecordedInboundBatch(
     return [];
   }
   await mkdir(path.dirname(filePath), { recursive: true });
-  return await serializeAppend(filePath, async (publicationPath, logicalPath) => {
-    await prepareRecorderPathForAppend(publicationPath, logicalPath, true);
-    const seen = await syncRecordIdentityIndex(publicationPath);
-    const pendingIdentities = new Set<string>();
-    const recorded: RecordedInboundEnvelope[] = [];
-    for (const event of events) {
-      const identity = recordIdentity(event);
-      if (seen.has(identity) || pendingIdentities.has(identity)) {
-        continue;
-      }
-      pendingIdentities.add(identity);
-      recorded.push({
-        ...event,
-        recordedAt: new Date().toISOString(),
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await serializeAppend(filePath, async (publicationPath, logicalPath) => {
+        const generation = await prepareRecorderPathForAppend(publicationPath, logicalPath, true);
+        const seen = await syncRecordIdentityIndex(publicationPath);
+        const pendingIdentities = new Set<string>();
+        const recorded: RecordedInboundEnvelope[] = [];
+        for (const event of events) {
+          const identity = recordIdentity(event);
+          if (seen.has(identity) || pendingIdentities.has(identity)) {
+            continue;
+          }
+          pendingIdentities.add(identity);
+          recorded.push({
+            ...event,
+            recordedAt: new Date().toISOString(),
+          });
+        }
+        if (recorded.length > 0) {
+          const batch = {
+            events: recorded,
+            recordType: "crabline.recorder.batch",
+            recorderBatchVersion: RECORDER_BATCH_VERSION,
+          } satisfies RecordedInboundBatchLine;
+          await appendCommittedLine(
+            publicationPath,
+            logicalPath,
+            `${JSON.stringify(batch)}\n`,
+            true,
+            generation,
+          );
+          await syncRecordIdentityIndex(publicationPath);
+        } else if (
+          !sameRecorderFileIdentity(
+            generation,
+            await readRecorderFileIdentity(await resolveRecorderPublicationPath(logicalPath)),
+          )
+        ) {
+          throw new RecorderRotatedError("Recorder rotated before confirming a duplicate batch.");
+        }
+        return recorded;
       });
+    } catch (error) {
+      if (!(error instanceof RecorderRotatedError) || attempt + 1 >= RECORDER_ROTATION_ATTEMPTS) {
+        throw error;
+      }
     }
-    if (recorded.length > 0) {
-      const batch = {
-        events: recorded,
-        recordType: "crabline.recorder.batch",
-        recorderBatchVersion: RECORDER_BATCH_VERSION,
-      } satisfies RecordedInboundBatchLine;
-      await appendCommittedLine(publicationPath, logicalPath, `${JSON.stringify(batch)}\n`, true);
-      await syncRecordIdentityIndex(publicationPath);
-    }
-    return recorded;
-  });
+  }
 }
 
 function recordIdentity(event: Pick<InboundEnvelope, "id" | "provider" | "threadId">): string {

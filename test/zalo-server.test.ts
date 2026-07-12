@@ -375,10 +375,20 @@ describe("Zalo local provider server", () => {
     };
     const originalEnd = responsePrototype.end;
     let failedResponses = 0;
+    let reportLaterFailure!: () => void;
+    const laterFailureReported = new Promise<void>((resolve) => {
+      reportLaterFailure = resolve;
+    });
     responsePrototype.end = function (this: ServerResponse, ...args: unknown[]) {
       if (this.req?.url?.includes("/getUpdates") && failedResponses < 2) {
-        const delayMs = failedResponses++ === 0 ? 20 : 10;
-        setTimeout(() => this.destroy(new Error("simulated response failure")), delayMs);
+        const responseIndex = failedResponses++;
+        const delayMs = responseIndex === 0 ? 100 : 10;
+        setTimeout(() => {
+          if (responseIndex === 1) {
+            reportLaterFailure();
+          }
+          this.destroy(new Error("simulated response failure"));
+        }, delayMs);
         return this;
       }
       return Reflect.apply(originalEnd, this, args) as ServerResponse;
@@ -399,6 +409,13 @@ describe("Zalo local provider server", () => {
         method: "GET",
         url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=1`,
       });
+      await laterFailureReported;
+      const thirdInbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "third" }),
+        headers: adminHeaders(server),
+        method: "POST",
+      });
+      expect(thirdInbound.status).toBe(200);
       const waitingResponse = await waitingPoll;
       expect(JSON.parse(waitingResponse.body)).toMatchObject({
         ok: true,
@@ -409,11 +426,13 @@ describe("Zalo local provider server", () => {
       responsePrototype.end = originalEnd;
     }
 
-    const update = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`);
-    await expect(update.json()).resolves.toMatchObject({
-      ok: true,
-      result: { message: { text: "second" } },
-    });
+    for (const text of ["second", "third"]) {
+      const update = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`);
+      await expect(update.json()).resolves.toMatchObject({
+        ok: true,
+        result: { message: { text } },
+      });
+    }
   });
 
   it("rejects webhook activation while a poll delivery is reserved", async () => {
