@@ -7,7 +7,6 @@ import {
   createRecordedInboundCursor,
   waitForRecordedInbound,
   watchRecordedInbound,
-  type RecordedInboundEnvelope,
   type RecordedInboundCursor,
 } from "./recorder.js";
 import type {
@@ -46,7 +45,11 @@ export type LocalMockAdapterOptions = {
     target: NormalizedTarget,
     raw?: unknown,
   ) => boolean;
-  handleWebhookPayload?: (payload: unknown) => Promise<Response | undefined> | Response | undefined;
+  handleWebhookPayload?: (
+    payload: unknown,
+    request: Request,
+    rawBody: string,
+  ) => Promise<Response | undefined> | Response | undefined;
   normalizeWebhookPayload?: (payload: unknown) => unknown;
   platform: ProviderPlatform;
   publicUrl?: string | undefined;
@@ -60,6 +63,22 @@ type WaitCursorState = {
   active: number;
   cursor?: RecordedInboundCursor | undefined;
 };
+
+function cursorHasAdvanced(
+  candidate: RecordedInboundCursor,
+  current: RecordedInboundCursor | undefined,
+): boolean {
+  if (!current) {
+    return true;
+  }
+  if (candidate.readState.generation !== current.readState.generation) {
+    return candidate.readState.generation > current.readState.generation;
+  }
+  if (candidate.readState.offset !== current.readState.offset) {
+    return candidate.readState.offset > current.readState.offset;
+  }
+  return candidate.buffered.length < current.buffered.length;
+}
 
 function pruneInactiveWaitCursors(cursors: Map<string, WaitCursorState>): void {
   for (const [key, state] of cursors) {
@@ -174,18 +193,6 @@ function normalizeWebhookPayload(payload: unknown): MockWebhookPayload {
 
 function mockReplyText(params: { platform: ProviderPlatform; text: string }) {
   return `[${params.platform} mock] ${params.text}`;
-}
-
-function isOutboundRecord(event: RecordedInboundEnvelope): boolean {
-  if (event.recordedDirection !== undefined) {
-    return event.recordedDirection === "outbound";
-  }
-  return (
-    event.raw !== null &&
-    typeof event.raw === "object" &&
-    "direction" in event.raw &&
-    event.raw.direction === "outbound"
-  );
 }
 
 export class LocalMockProviderAdapter implements ProviderAdapter {
@@ -331,7 +338,6 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         filePath: this.#recorderPath,
         matches: (candidate) =>
           candidate.provider === this.id &&
-          !isOutboundRecord(candidate) &&
           (expectedAuthor === "any" || candidate.author === expectedAuthor) &&
           (this.#options.matchesThread ?? isAddressInChannel)(
             candidate.threadId,
@@ -339,11 +345,15 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
             target,
             candidate.raw,
           ),
+        recordedDirection: "inbound",
         since: context.since,
         signal,
         timeoutMs: context.timeoutMs,
       });
-      if (event && this.#waitCursors.get(cursorKey) === cursorState) {
+      if (
+        this.#waitCursors.get(cursorKey) === cursorState &&
+        cursorHasAdvanced(cursor, cursorState.cursor)
+      ) {
         cursorState.cursor = cursor;
       }
       return event;
@@ -368,13 +378,13 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       filePath: this.#recorderPath,
       matches: (entry) =>
         entry.provider === this.id &&
-        !isOutboundRecord(entry) &&
         (this.#options.matchesThread ?? isAddressInChannel)(
           entry.threadId,
           target.threadId ?? target.channelId,
           target,
           entry.raw,
         ),
+      recordedDirection: "inbound",
       signal,
       since: context.since,
     })) {
@@ -407,10 +417,6 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     if (this.#cleanupBegun) {
       return new Response("provider is shutting down", { status: 503 });
     }
-    const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-    if (mediaType !== "application/json") {
-      return new Response("expected application/json", { status: 415 });
-    }
     const rawBody = await request.text();
     const authenticationFailure = await this.#options.authenticateWebhookRequest?.(
       request,
@@ -419,15 +425,23 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     if (authenticationFailure) {
       return authenticationFailure;
     }
+    const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
     let rawPayload: unknown;
-    try {
-      rawPayload = JSON.parse(rawBody) as unknown;
-    } catch {
-      return new Response("invalid JSON", { status: 400 });
+    if (mediaType === "application/json") {
+      try {
+        rawPayload = JSON.parse(rawBody) as unknown;
+      } catch {
+        return new Response("invalid JSON", { status: 400 });
+      }
+    } else {
+      rawPayload = rawBody;
     }
-    const directResponse = await this.#options.handleWebhookPayload?.(rawPayload);
+    const directResponse = await this.#options.handleWebhookPayload?.(rawPayload, request, rawBody);
     if (directResponse) {
       return directResponse;
+    }
+    if (mediaType !== "application/json") {
+      return new Response("expected application/json", { status: 415 });
     }
     let payload: MockWebhookPayload;
     try {

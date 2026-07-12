@@ -62,6 +62,131 @@ describe("recorder", () => {
     expect(events[0]?.text).toBe("hello");
   });
 
+  it("round-trips empty message text", async () => {
+    const filePath = await createRecorderPath();
+    const recorded = await appendRecordedInbound(filePath, {
+      author: "assistant",
+      id: "empty-text",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "",
+      threadId: "slack:C123",
+    });
+
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([recorded]);
+  });
+
+  it("rejects an oversized single append before it reaches the recorder", async () => {
+    const filePath = await createRecorderPath();
+    const event = {
+      author: "assistant" as const,
+      id: "oversized-single",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "x".repeat(4 * 1024 * 1024),
+      threadId: "slack:C123",
+    };
+
+    await expect(appendRecordedInbound(filePath, event)).rejects.toThrow(
+      "Recorder record exceeded",
+    );
+    await expect(
+      appendRecordedInbound(filePath, { ...event, id: "after-oversized", text: "small" }),
+    ).resolves.toMatchObject({ id: "after-oversized" });
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: "after-oversized" }),
+    ]);
+  });
+
+  it("deduplicates inbound and outbound directions independently", async () => {
+    const filePath = await createRecorderPath();
+    const cursor = createRecordedInboundCursor();
+    const sentAt = new Date().toISOString();
+    const base = {
+      id: "same-id",
+      provider: "slack",
+      sentAt,
+      threadId: "slack:C123",
+    };
+    const outbound = await appendRecordedInbound(filePath, {
+      ...base,
+      author: "user",
+      recordedDirection: "outbound",
+      text: "outbound",
+    });
+    const inbound = await appendRecordedInbound(filePath, {
+      ...base,
+      author: "assistant",
+      recordedDirection: "inbound",
+      text: "inbound",
+    });
+
+    await expect(
+      waitForRecordedInbound({ cursor, filePath, matches: () => true, timeoutMs: 30 }),
+    ).resolves.toEqual(outbound);
+    await expect(
+      waitForRecordedInbound({ cursor, filePath, matches: () => true, timeoutMs: 30 }),
+    ).resolves.toEqual(inbound);
+    await expect(
+      waitForRecordedInbound({
+        filePath,
+        matches: () => true,
+        recordedDirection: "inbound",
+        timeoutMs: 30,
+      }),
+    ).resolves.toEqual(inbound);
+  });
+
+  it("clears cursor deduplication when the recorder generation changes", async () => {
+    const filePath = await createRecorderPath();
+    const cursor = createRecordedInboundCursor();
+    const event = {
+      author: "assistant" as const,
+      id: "reused-after-rotation",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "first generation",
+      threadId: "slack:C123",
+    };
+    await appendRecordedInbound(filePath, event);
+    await expect(
+      waitForRecordedInbound({ cursor, filePath, matches: () => true, timeoutMs: 30 }),
+    ).resolves.toMatchObject({ text: "first generation" });
+
+    await rename(filePath, `${filePath}.old`);
+    await appendRecordedInbound(filePath, { ...event, text: "second generation" });
+
+    await expect(
+      waitForRecordedInbound({ cursor, filePath, matches: () => true, timeoutMs: 30 }),
+    ).resolves.toMatchObject({ text: "second generation" });
+  });
+
+  it("runtime-validates parsed recorder envelopes", async () => {
+    const filePath = await createRecorderPath();
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        author: "assistant",
+        id: "invalid-envelope",
+        provider: "slack",
+        recordedAt: new Date().toISOString(),
+        sentAt: new Date().toISOString(),
+        text: 42,
+        threadId: "slack:C123",
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(readRecordedInbound(filePath)).rejects.toThrow(/envelope text must be a string/u);
+    await expect(
+      waitForRecordedInbound({
+        filePath,
+        matches: () => true,
+        timeoutMs: 30,
+      }),
+    ).rejects.toThrow(/envelope text must be a string/u);
+  });
+
   it("appends retry-idempotent batches without partial duplicates", async () => {
     const filePath = await createRecorderPath();
     const sentAt = new Date().toISOString();

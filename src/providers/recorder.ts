@@ -112,7 +112,12 @@ export function cloneRecordedInboundCursor(cursor: RecordedInboundCursor): Recor
 }
 
 function rememberRecentRecord(seen: Set<string>, event: InboundEnvelope): boolean {
-  const key = JSON.stringify([event.provider, event.threadId, event.id]);
+  const key = JSON.stringify([
+    event.provider,
+    event.threadId,
+    event.id,
+    recordedDirectionOf(event),
+  ]);
   if (seen.has(key)) {
     return false;
   }
@@ -121,6 +126,64 @@ function rememberRecentRecord(seen: Set<string>, event: InboundEnvelope): boolea
     seen.delete(seen.values().next().value!);
   }
   return true;
+}
+
+function recordedDirectionOf(
+  event: Pick<RecordableInboundEnvelope, "raw" | "recordedDirection">,
+): "inbound" | "outbound" {
+  if (event.recordedDirection) {
+    return event.recordedDirection;
+  }
+  return event.raw !== null &&
+    typeof event.raw === "object" &&
+    "direction" in event.raw &&
+    event.raw.direction === "outbound"
+    ? "outbound"
+    : "inbound";
+}
+
+function requireNonEmptyString(value: unknown, field: keyof RecordedInboundEnvelope): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`Recorded inbound envelope ${field} must be a non-empty string.`);
+  }
+  return value;
+}
+
+function requireString(value: unknown, field: keyof RecordedInboundEnvelope): string {
+  if (typeof value !== "string") {
+    throw new Error(`Recorded inbound envelope ${field} must be a string.`);
+  }
+  return value;
+}
+
+function parseRecordedEnvelope(value: unknown): RecordedInboundEnvelope {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Recorded inbound envelope must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.author !== "assistant" && record.author !== "system" && record.author !== "user") {
+    throw new Error("Recorded inbound envelope author must be assistant, system, or user.");
+  }
+  if (
+    record.recordedDirection !== undefined &&
+    record.recordedDirection !== "inbound" &&
+    record.recordedDirection !== "outbound"
+  ) {
+    throw new Error("Recorded inbound envelope recordedDirection must be inbound or outbound.");
+  }
+  return {
+    author: record.author,
+    id: requireNonEmptyString(record.id, "id"),
+    provider: requireNonEmptyString(record.provider, "provider"),
+    ...(record.raw !== undefined ? { raw: record.raw } : {}),
+    recordedAt: requireNonEmptyString(record.recordedAt, "recordedAt"),
+    ...(record.recordedDirection !== undefined
+      ? { recordedDirection: record.recordedDirection }
+      : {}),
+    sentAt: requireNonEmptyString(record.sentAt, "sentAt"),
+    text: requireString(record.text, "text"),
+    threadId: requireNonEmptyString(record.threadId, "threadId"),
+  };
 }
 
 function parseRecordedLine(line: string): RecordedInboundEnvelope[] {
@@ -136,9 +199,9 @@ function parseRecordedLine(line: string): RecordedInboundEnvelope[] {
     "events" in parsed &&
     Array.isArray(parsed.events)
   ) {
-    return parsed.events as RecordedInboundEnvelope[];
+    return parsed.events.map(parseRecordedEnvelope);
   }
-  return [parsed as RecordedInboundEnvelope];
+  return [parseRecordedEnvelope(parsed)];
 }
 
 function resetIncrementalReadState(state: IncrementalReadState): void {
@@ -212,7 +275,7 @@ function consumeRecordedChunk(
 
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
   await serializeAppend(filePath, async (publicationPath, logicalPath) => {
-    await appendCommittedLine(publicationPath, logicalPath, line, false);
+    await appendCommittedLine(publicationPath, logicalPath, line, true);
   });
 }
 
@@ -461,6 +524,7 @@ async function readRecordedInboundAppend(
     const stats = await handle.stat();
     const identity = { dev: stats.dev, ino: stats.ino };
     const sameFile = state.identity?.dev === identity.dev && state.identity.ino === identity.ino;
+    const rotated = state.identity !== undefined && !sameFile;
     let hasContinuity = stats.size >= state.offset;
 
     if (hasContinuity && state.offset > 0 && state.continuity.length === 0) {
@@ -476,6 +540,8 @@ async function readRecordedInboundAppend(
 
     if (!hasContinuity) {
       resetIncrementalReadState(state);
+    } else if (rotated) {
+      state.generation += 1;
     }
     state.identity = identity;
 
@@ -513,7 +579,13 @@ export async function appendRecordedInbound(
     recordedAt: new Date().toISOString(),
   } satisfies RecordedInboundEnvelope;
 
-  await appendJsonLine(filePath, `${JSON.stringify(recorded)}\n`);
+  const line = `${JSON.stringify(recorded)}\n`;
+  if (Buffer.byteLength(line) > MAX_PENDING_RECORD_BYTES) {
+    throw new Error(
+      `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
+    );
+  }
+  await appendJsonLine(filePath, line);
   return recorded;
 }
 
@@ -575,8 +647,8 @@ export async function appendRecordedInboundBatch(
   }
 }
 
-function recordIdentity(event: Pick<InboundEnvelope, "id" | "provider" | "threadId">): string {
-  return JSON.stringify([event.provider, event.threadId, event.id]);
+function recordIdentity(event: RecordableInboundEnvelope): string {
+  return JSON.stringify([event.provider, event.threadId, event.id, recordedDirectionOf(event)]);
 }
 
 async function syncRecordIdentityIndex(filePath: string): Promise<Set<string>> {
@@ -633,8 +705,11 @@ export async function readRecordedInbound(filePath: string): Promise<RecordedInb
   if (tail.trim()) {
     try {
       events.push(...parseRecordedLine(tail));
-    } catch {
-      // Ignore a partial final append; completed lines remain strict.
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) {
+        throw error;
+      }
+      // Ignore a syntactically partial final append; completed lines remain strict.
     }
   }
 
@@ -646,6 +721,7 @@ export async function waitForRecordedInbound(params: {
   filePath: string;
   matches: (event: RecordedInboundEnvelope) => boolean;
   pollMs?: number;
+  recordedDirection?: "inbound" | "outbound" | undefined;
   signal?: AbortSignal | undefined;
   since?: string | undefined;
   timeoutMs: number;
@@ -654,11 +730,18 @@ export async function waitForRecordedInbound(params: {
   const cursor = params.cursor ?? createRecordedInboundCursor();
 
   while (!params.signal?.aborted && Date.now() <= deadline) {
+    const generation = cursor.readState.generation;
     const events =
       cursor.buffered.length > 0
         ? cursor.buffered.splice(0)
         : await readRecordedInboundAppend(params.filePath, cursor.readState);
+    if (cursor.readState.generation !== generation) {
+      cursor.seen.clear();
+    }
     for (const [index, event] of events.entries()) {
+      if (params.recordedDirection && recordedDirectionOf(event) !== params.recordedDirection) {
+        continue;
+      }
       // Incremental read state owns progress; this bounded window only filters appended retries.
       if (!rememberRecentRecord(cursor.seen, event)) {
         continue;
@@ -693,6 +776,7 @@ export async function* watchRecordedInbound(params: {
   filePath: string;
   matches: (event: RecordedInboundEnvelope) => boolean;
   pollMs?: number;
+  recordedDirection?: "inbound" | "outbound" | undefined;
   signal?: AbortSignal | undefined;
   since?: string | undefined;
 }): AsyncIterable<RecordedInboundEnvelope> {
@@ -700,7 +784,11 @@ export async function* watchRecordedInbound(params: {
   const seen = new Set<string>();
 
   while (!params.signal?.aborted) {
+    const generation = state.generation;
     const events = await readRecordedInboundAppend(params.filePath, state);
+    if (state.generation !== generation) {
+      seen.clear();
+    }
     if (params.signal?.aborted) {
       return;
     }
@@ -709,6 +797,9 @@ export async function* watchRecordedInbound(params: {
         return;
       }
       if (!rememberRecentRecord(seen, event)) {
+        continue;
+      }
+      if (params.recordedDirection && recordedDirectionOf(event) !== params.recordedDirection) {
         continue;
       }
       if (params.since && new Date(event.sentAt).getTime() < new Date(params.since).getTime()) {

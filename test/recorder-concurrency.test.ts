@@ -6,6 +6,7 @@ import { recordServerEvent } from "../src/servers/recorder.js";
 
 const fsMocks = vi.hoisted(() => ({
   appendFile: vi.fn<(filePath: string, data: string, encoding: string) => Promise<void>>(),
+  providerSync: vi.fn<(filePath: string) => Promise<void>>(),
   providerWrite: vi.fn<(filePath: string, data: string) => Promise<void>>(),
 }));
 
@@ -17,6 +18,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     open: async (...args: Parameters<typeof actual.open>) => {
       const handle = await actual.open(...args);
       if (args[1] === "a+" && String(args[0]).includes("crabline-provider-recorder")) {
+        handle.sync = async () => {
+          await fsMocks.providerSync(String(args[0]));
+        };
         handle.writeFile = async (data) => {
           await fsMocks.providerWrite(String(args[0]), String(data));
         };
@@ -36,6 +40,8 @@ let pendingWrites: PendingWrite[] = [];
 beforeEach(() => {
   pendingWrites = [];
   fsMocks.appendFile.mockReset();
+  fsMocks.providerSync.mockReset();
+  fsMocks.providerSync.mockResolvedValue(undefined);
   fsMocks.providerWrite.mockReset();
   fsMocks.appendFile.mockImplementation(
     async (_filePath, data) =>
@@ -130,6 +136,7 @@ describe("recorder append serialization", () => {
         expect.objectContaining({ id: "first" }),
         expect.objectContaining({ id: "second" }),
       ]);
+      expect(fsMocks.providerSync).toHaveBeenCalledTimes(2);
     } finally {
       await rm(recorderPath, { force: true });
     }

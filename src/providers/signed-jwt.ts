@@ -51,12 +51,16 @@ export function resolveHttpCacheExpiry(response: Response, now: number): number 
   if (/(?:^|,)\s*(?:no-cache|no-store)(?:\s*(?:=|,|$))/iu.test(cacheControl ?? "")) {
     return now;
   }
+  const ageHeader = response.headers.get("age");
+  const ageSeconds = ageHeader && /^\d+$/u.test(ageHeader) ? Number.parseInt(ageHeader, 10) : 0;
   const maxAge = /(?:^|,)\s*max-age=(\d+)/iu.exec(cacheControl ?? "");
   if (maxAge) {
-    return now + Number(maxAge[1]) * 1_000;
+    return now + Math.max(0, Number(maxAge[1]) - ageSeconds) * 1_000;
   }
   const expires = Date.parse(response.headers.get("expires") ?? "");
-  return Number.isFinite(expires) && expires > now ? expires : now + 60 * 60 * 1_000;
+  return Number.isFinite(expires) && expires > now
+    ? expires
+    : now + Math.max(0, 60 * 60 - ageSeconds) * 1_000;
 }
 
 export function createCachedJwtKeyResolver<T>(params: {
@@ -74,6 +78,8 @@ export function createCachedJwtKeyResolver<T>(params: {
   let fetchInFlight: Promise<RemoteJwtKeySet<T>> | undefined;
   let refreshInFlight: Promise<RemoteJwtKeySet<T>> | undefined;
   let refreshCooldownUntil = 0;
+  let fetchFailureCooldownUntil = 0;
+  let fetchFailureError: unknown;
   const negativeKeyIds = new Map<string, number>();
 
   const rejectUnknownKey = (kid: string, expiresAt: number): never => {
@@ -96,6 +102,9 @@ export function createCachedJwtKeyResolver<T>(params: {
     if (fetchInFlight) {
       return await fetchInFlight;
     }
+    if (fetchFailureCooldownUntil > now()) {
+      throw fetchFailureError;
+    }
     const controller = new AbortController();
     let timeout: NodeJS.Timeout | undefined;
     const timedOut = new Promise<never>((_, reject) => {
@@ -107,7 +116,20 @@ export function createCachedJwtKeyResolver<T>(params: {
     fetchInFlight = Promise.race([params.fetchKeys(controller.signal), timedOut])
       .then((keySet) => {
         cached = keySet.expiresAt > now() ? keySet : undefined;
+        fetchFailureCooldownUntil = 0;
+        fetchFailureError = undefined;
+        for (const value of keySet.values) {
+          const keyId = params.keyId(value);
+          if (keyId) {
+            negativeKeyIds.delete(keyId);
+          }
+        }
         return keySet;
+      })
+      .catch((error: unknown) => {
+        fetchFailureCooldownUntil = now() + refreshCooldownMs;
+        fetchFailureError = error;
+        throw error;
       })
       .finally(() => {
         if (timeout) {
