@@ -411,24 +411,28 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       query: queryRecord(url),
       type: "admin",
     };
+    const preparedDelivery = result.message
+      ? params.state.prepareInboundMessage(result.message)
+      : undefined;
+    if (result.message && !preparedDelivery) {
+      return graphError({
+        code: 4,
+        details: "The pending WhatsApp inbound queue is full.",
+        message: "(#4) Application request limit reached.",
+        status: 503,
+        type: "OAuthException",
+      });
+    }
     if (result.message) {
-      const preparedDelivery = params.state.prepareInboundMessage(result.message);
-      if (!preparedDelivery) {
-        return graphError({
-          code: 4,
-          details: "The pending WhatsApp inbound queue is full.",
-          message: "(#4) Application request limit reached.",
-          status: 503,
-          type: "OAuthException",
-        });
-      }
       event.message = result.message;
-      try {
-        await appendEvent(params.state, event);
-      } catch (error) {
-        preparedDelivery.cancel();
-        throw error;
-      }
+    }
+    try {
+      await appendEvent(params.state, event);
+    } catch (error) {
+      preparedDelivery?.cancel();
+      throw error;
+    }
+    if (result.message && preparedDelivery) {
       const delivery = preparedDelivery.commit();
       return whatsappOk({ delivery, message: result.message, webhook: result.webhook });
     }
