@@ -9,6 +9,7 @@ describe("manifest schema", () => {
       "^((a|aa))+$",
       "^((a+))+$",
       "^a*a*$",
+      "^(a|aa){100}$",
       String.raw`^(a)\1$`,
     ]) {
       expect(() =>
@@ -27,6 +28,24 @@ describe("manifest schema", () => {
         }),
       ).toThrow(/inboundMatch\.pattern/u);
     }
+  });
+
+  it("accepts regexes without repetition operators", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [
+          {
+            id: "safe-regex",
+            inboundMatch: { nonce: "ignore", pattern: "^(hello|goodbye)[.!]$", strategy: "regex" },
+            mode: "roundtrip",
+            provider: "local",
+            target: { id: "echo-bot" },
+          },
+        ],
+        providers: { local: { adapter: "loopback", platform: "loopback" } },
+      }),
+    ).not.toThrow();
   });
 
   it("accepts the documented thread target shape", () => {

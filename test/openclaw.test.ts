@@ -848,7 +848,7 @@ describe("OpenClaw local provider bridge", () => {
     expect(normalizedTopicInbound).toMatchObject({
       providerBody: { messageThreadId: 42 },
       providerTargetKey: `${symbolicGroupDelivery.to}:topic:42`,
-      qaTarget: "thread:v1:alice/42",
+      qaTarget: "thread:/v1/alice/42",
       threadId: "42",
     });
 
@@ -1180,7 +1180,7 @@ describe("OpenClaw local provider bridge", () => {
       },
       providerTargetKey: "C1234567890:thread:1700000000.000100",
       providerUrl: "http://127.0.0.1:2468/crabline/slack/inbound",
-      qaTarget: "thread:v1:C1234567890/1700000000.000100",
+      qaTarget: "thread:/v1/C1234567890/1700000000.000100",
       stateConversation: {
         id: "C1234567890",
         kind: "group",
@@ -1618,7 +1618,7 @@ describe("OpenClaw local provider bridge", () => {
     });
     expect(threadedInbound).toMatchObject({
       providerTargetKey: `${roomId}:thread:$root:matrix.test`,
-      qaTarget: `thread:v1:${roomId}/$root:matrix.test`,
+      qaTarget: `thread:/v1/${roomId}/$root:matrix.test`,
       stateConversation: {
         id: roomId,
         kind: "group",
@@ -1636,7 +1636,7 @@ describe("OpenClaw local provider bridge", () => {
       },
     });
     expect(slashThreadInbound.qaTarget).toBe(
-      `thread:v1:${roomId}%2Farchive/$root%2Fchild:matrix.test`,
+      `thread:/v1/${roomId}%2Farchive/$root%2Fchild:matrix.test`,
     );
     expect(parseQaTarget(slashThreadInbound.qaTarget)).toEqual({
       id: `${roomId}/archive`,
@@ -1655,6 +1655,12 @@ describe("OpenClaw local provider bridge", () => {
       kind: "group",
       native: false,
       threadId: "foo%bar",
+    });
+    expect(parseQaTarget("thread:v1:room/42")).toEqual({
+      id: "v1:room",
+      kind: "group",
+      native: false,
+      threadId: "42",
     });
 
     const binding = createOpenClawCrablineProviderBinding(matrixManifest);
