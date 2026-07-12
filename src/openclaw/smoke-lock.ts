@@ -30,10 +30,13 @@ type SmokeLockRecord = {
 };
 
 export type OpenClawCrablineSmokeRunLock = {
+  assertOwned(): Promise<void>;
+  prepareForRelease(): Promise<void>;
   release(): Promise<void>;
 };
 
 type HeartbeatController = {
+  assertHealthy(): void;
   stop(): Promise<void>;
 };
 type RemoveLockDirectory = (lockDirectory: string) => Promise<void>;
@@ -64,6 +67,7 @@ const sleep: Sleep = async (delayMs) => {
 };
 
 const startHeartbeat: StartHeartbeat = (renew, intervalMs) => {
+  let failure: unknown;
   let pending: Promise<void> | undefined;
   let stopped = false;
   let timer: NodeJS.Timeout | undefined;
@@ -75,7 +79,9 @@ const startHeartbeat: StartHeartbeat = (renew, intervalMs) => {
     timer = setTimeout(() => {
       timer = undefined;
       pending = renew()
-        .catch(() => undefined)
+        .catch((error: unknown) => {
+          failure ??= error;
+        })
         .finally(() => {
           pending = undefined;
           schedule();
@@ -86,6 +92,11 @@ const startHeartbeat: StartHeartbeat = (renew, intervalMs) => {
 
   schedule();
   return {
+    assertHealthy() {
+      if (failure !== undefined) {
+        throw new Error("OpenClaw Crabline smoke lock heartbeat failed.", { cause: failure });
+      }
+    },
     async stop() {
       stopped = true;
       if (timer) {
@@ -101,8 +112,11 @@ async function pathExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -110,8 +124,15 @@ function isPositiveSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
-function parseLockOwner(contents: string): SmokeLockOwner | undefined {
-  const owner = JSON.parse(contents) as Partial<RenewableSmokeLockOwner>;
+function parseLockOwner(contents: string): SmokeLockOwner {
+  let owner: Partial<RenewableSmokeLockOwner>;
+  try {
+    owner = JSON.parse(contents) as Partial<RenewableSmokeLockOwner>;
+  } catch (error) {
+    throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.", {
+      cause: error,
+    });
+  }
   if (
     typeof owner.channel !== "string" ||
     !isCrablineServerChannel(owner.channel) ||
@@ -119,7 +140,7 @@ function parseLockOwner(contents: string): SmokeLockOwner | undefined {
     typeof owner.token !== "string" ||
     owner.token.length === 0
   ) {
-    return undefined;
+    throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.");
   }
 
   const hasCreatedAt = owner.createdAtMs !== undefined;
@@ -135,7 +156,7 @@ function parseLockOwner(contents: string): SmokeLockOwner | undefined {
     !isPositiveSafeInteger(owner.createdAtMs) ||
     !isPositiveSafeInteger(owner.processStartedAtMs)
   ) {
-    return undefined;
+    throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.");
   }
   if (owner.leaseVersion === undefined) {
     return {
@@ -147,7 +168,7 @@ function parseLockOwner(contents: string): SmokeLockOwner | undefined {
     };
   }
   if (owner.leaseVersion !== 1) {
-    return undefined;
+    throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.");
   }
   return {
     channel: owner.channel,
@@ -159,32 +180,33 @@ function parseLockOwner(contents: string): SmokeLockOwner | undefined {
   };
 }
 
-async function readLockRecordFromHandle(handle: FileHandle): Promise<SmokeLockRecord | undefined> {
-  try {
-    const owner = parseLockOwner(await handle.readFile("utf8"));
-    if (!owner) {
-      return undefined;
-    }
-    const stats = await handle.stat();
-    return {
-      owner,
-      renewedAtMs: Number.isFinite(stats.mtimeMs) && stats.mtimeMs > 0 ? stats.mtimeMs : 0,
-    };
-  } catch {
-    return undefined;
-  }
+async function readLockRecordFromHandle(handle: FileHandle): Promise<SmokeLockRecord> {
+  const owner = parseLockOwner(await handle.readFile("utf8"));
+  const stats = await handle.stat();
+  return {
+    owner,
+    renewedAtMs: Number.isFinite(stats.mtimeMs) && stats.mtimeMs > 0 ? stats.mtimeMs : 0,
+  };
 }
 
-async function readLockRecord(lockDirectory: string): Promise<SmokeLockRecord | undefined> {
+type LockRecordReadResult = { kind: "missing" } | { kind: "record"; record: SmokeLockRecord };
+
+function isMissingPathError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+async function readLockRecord(lockDirectory: string): Promise<LockRecordReadResult> {
   let handle: FileHandle | undefined;
   try {
     handle = await fs.open(path.join(lockDirectory, LOCK_OWNER_FILE), "r");
-    return await readLockRecordFromHandle(handle);
-  } catch {
-    // A missing or malformed owner is treated as stale.
-    return undefined;
+    return { kind: "record", record: await readLockRecordFromHandle(handle) };
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return { kind: "missing" };
+    }
+    throw error;
   } finally {
-    await handle?.close().catch(() => undefined);
+    await handle?.close();
   }
 }
 
@@ -246,8 +268,8 @@ async function removeOwnedLock(
   token: string,
   removeDirectory: RemoveLockDirectory = removeLockDirectory,
 ): Promise<boolean> {
-  const record = await readLockRecord(lockDirectory);
-  if (record?.owner.token !== token) {
+  const result = await readLockRecord(lockDirectory);
+  if (result.kind === "missing" || result.record.owner.token !== token) {
     return false;
   }
   await removeDirectory(lockDirectory);
@@ -263,17 +285,20 @@ async function renewOwnedLock(
   try {
     handle = await fs.open(path.join(lockDirectory, LOCK_OWNER_FILE), "r+");
     const record = await readLockRecordFromHandle(handle);
-    if (record?.owner.token !== token || !isRenewableOwner(record.owner)) {
+    if (record.owner.token !== token || !isRenewableOwner(record.owner)) {
       return false;
     }
     const renewedAt = new Date(renewedAtMs);
     await handle.utimes(renewedAt, renewedAt);
     await handle.sync();
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false;
+    }
+    throw error;
   } finally {
-    await handle?.close().catch(() => undefined);
+    await handle?.close();
   }
 }
 
@@ -283,10 +308,10 @@ async function resolveRecoveryDirectory(params: {
   requestedChannel: CrablineServerChannel;
   runtime: SmokeLockRuntime;
 }): Promise<void> {
-  const record = await readLockRecord(params.recoveryDirectory);
-  if (record && isLockOwnerActive(record, params.runtime)) {
+  const result = await readLockRecord(params.recoveryDirectory);
+  if (result.kind === "record" && isLockOwnerActive(result.record, params.runtime)) {
     throw activeRunError({
-      channel: record.owner.channel,
+      channel: result.record.owner.channel,
       outputDir: params.outputDir,
       requestedChannel: params.requestedChannel,
     });
@@ -307,11 +332,11 @@ async function resolveLockContention(params: {
     return;
   }
 
-  const observedRecord = await readLockRecord(params.lockDirectory);
-  if (observedRecord && isLockOwnerActive(observedRecord, params.runtime)) {
+  const observed = await readLockRecord(params.lockDirectory);
+  if (observed.kind === "record" && isLockOwnerActive(observed.record, params.runtime)) {
     throw activeRunError({
       cause: params.cause,
-      channel: observedRecord.owner.channel,
+      channel: observed.record.owner.channel,
       outputDir: params.outputDir,
       requestedChannel: params.requestedChannel,
     });
@@ -439,19 +464,24 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       await removeOwnedLock(lockDirectory, token);
       continue;
     }
-    if ((await readLockRecord(lockDirectory))?.owner.token !== token) {
+    const installed = await readLockRecord(lockDirectory);
+    if (installed.kind !== "record" || installed.record.owner.token !== token) {
       continue;
     }
 
     let heartbeat: HeartbeatController;
+    const renew = async () => {
+      const renewedAtMs = runtime.now();
+      if (
+        !(await renewOwnedLock(lockDirectory, token, renewedAtMs)) &&
+        !(await renewOwnedLock(recoveryDirectory, token, renewedAtMs))
+      ) {
+        throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
+      }
+    };
     try {
       heartbeat = (dependencies.startHeartbeat ?? startHeartbeat)(
-        async () => {
-          const renewedAtMs = runtime.now();
-          if (!(await renewOwnedLock(lockDirectory, token, renewedAtMs))) {
-            await renewOwnedLock(recoveryDirectory, token, renewedAtMs);
-          }
-        },
+        renew,
         Math.max(1, Math.floor(runtime.leaseMs / 3)),
       );
     } catch (error) {
@@ -461,6 +491,26 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     let heartbeatStopped = false;
     let released = false;
     return {
+      async assertOwned() {
+        if (released) {
+          throw new Error("OpenClaw Crabline smoke lock has already been released.");
+        }
+        heartbeat.assertHealthy();
+        await renew();
+        heartbeat.assertHealthy();
+      },
+      async prepareForRelease() {
+        if (released) {
+          throw new Error("OpenClaw Crabline smoke lock has already been released.");
+        }
+        if (!heartbeatStopped) {
+          await heartbeat.stop();
+          heartbeatStopped = true;
+        }
+        heartbeat.assertHealthy();
+        await renew();
+        heartbeat.assertHealthy();
+      },
       async release() {
         if (released) {
           return;
@@ -478,7 +528,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
 }
 
 export async function releaseOpenClawCrablineSmokeRunLock(
-  lock: OpenClawCrablineSmokeRunLock,
+  lock: Pick<OpenClawCrablineSmokeRunLock, "release">,
   dependencies: {
     sleep?: Sleep;
   } = {},
