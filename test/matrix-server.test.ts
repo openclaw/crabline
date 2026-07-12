@@ -206,7 +206,7 @@ describe("Matrix local provider server", () => {
         `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!filter:matrix.test")}/send/m.room.message/filter-${index}`,
         {
           body: JSON.stringify({ body: text, msgtype: "m.text" }),
-          headers: { ...auth("matrix-token"), "content-type": "application/json" },
+          headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
           method: "PUT",
         },
       );
@@ -214,7 +214,7 @@ describe("Matrix local provider server", () => {
     }
     const filteredSync = await fetch(
       `${server.manifest.endpoints.syncUrl}?filter=${createdBody.filter_id}`,
-      { headers: auth("matrix-token") },
+      { headers: auth("test-token-placeholder") },
     );
     const filteredSyncBody = (await filteredSync.json()) as {
       rooms: {
@@ -517,19 +517,19 @@ describe("Matrix local provider server", () => {
 
   it("publishes typing and receipt updates through room ephemeral sync", async () => {
     const server = await startMatrixServer({
-      accessToken: "matrix-token",
+      accessToken: "test-token-placeholder",
       roomId: "!ephemeral:matrix.test",
     });
     servers.push(server);
     const initial = (await (
-      await fetch(server.manifest.endpoints.syncUrl, { headers: auth("matrix-token") })
+      await fetch(server.manifest.endpoints.syncUrl, { headers: auth("test-token-placeholder") })
     ).json()) as { next_batch: string };
     const sent = (await (
       await fetch(
         `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/send/m.room.message/ephemeral-message`,
         {
           body: JSON.stringify({ body: "read me", msgtype: "m.text" }),
-          headers: { ...auth("matrix-token"), "content-type": "application/json" },
+          headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
           method: "PUT",
         },
       )
@@ -539,7 +539,7 @@ describe("Matrix local provider server", () => {
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/typing/${encodeURIComponent(server.manifest.botUserId)}`,
       {
         body: JSON.stringify({ timeout: 30_000, typing: true }),
-        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
         method: "PUT",
       },
     );
@@ -548,7 +548,7 @@ describe("Matrix local provider server", () => {
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/typing/${encodeURIComponent(server.manifest.botUserId)}`,
       {
         body: JSON.stringify({ timeout: "30000", typing: true }),
-        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
         method: "PUT",
       },
     );
@@ -557,7 +557,7 @@ describe("Matrix local provider server", () => {
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/receipt/m.read/${encodeURIComponent(sent.event_id)}`,
       {
         body: "{}",
-        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
         method: "POST",
       },
     );
@@ -565,7 +565,7 @@ describe("Matrix local provider server", () => {
 
     const sync = (await (
       await fetch(`${server.manifest.endpoints.syncUrl}?since=${initial.next_batch}`, {
-        headers: auth("matrix-token"),
+        headers: auth("test-token-placeholder"),
       })
     ).json()) as {
       rooms: { join: Record<string, { ephemeral: { events: unknown[] } }> };
@@ -585,20 +585,20 @@ describe("Matrix local provider server", () => {
     ]);
 
     const beforeExpiry = (await (
-      await fetch(server.manifest.endpoints.syncUrl, { headers: auth("matrix-token") })
+      await fetch(server.manifest.endpoints.syncUrl, { headers: auth("test-token-placeholder") })
     ).json()) as { next_batch: string };
     await fetch(
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/typing/${encodeURIComponent(server.manifest.botUserId)}`,
       {
         body: JSON.stringify({ timeout: 10, typing: true }),
-        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
         method: "PUT",
       },
     );
     await new Promise((resolve) => setTimeout(resolve, 25));
     const expired = (await (
       await fetch(`${server.manifest.endpoints.syncUrl}?since=${beforeExpiry.next_batch}`, {
-        headers: auth("matrix-token"),
+        headers: auth("test-token-placeholder"),
       })
     ).json()) as {
       rooms: { join: Record<string, { ephemeral: { events: unknown[] } }> };
@@ -611,8 +611,8 @@ describe("Matrix local provider server", () => {
 
   it("updates membership state when an inbound sender is renamed", async () => {
     const server = await startMatrixServer({
-      accessToken: "matrix-token",
-      adminToken: "admin-secret",
+      accessToken: "test-token-placeholder",
+      adminToken: "test-auth-token",
     });
     servers.push(server);
     const roomId = "!rename:matrix.test";
@@ -626,7 +626,7 @@ describe("Matrix local provider server", () => {
         }),
         headers: {
           "content-type": "application/json",
-          "x-crabline-admin-token": "admin-secret",
+          "x-crabline-admin-token": "test-auth-token",
         },
         method: "POST",
       });
@@ -635,7 +635,7 @@ describe("Matrix local provider server", () => {
 
     const membership = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent(roomId)}/state/m.room.member/${encodeURIComponent("@alice:matrix.test")}`,
-      { headers: auth("matrix-token") },
+      { headers: auth("test-token-placeholder") },
     );
     await expect(membership.json()).resolves.toEqual({
       displayname: "Alicia",
@@ -645,7 +645,7 @@ describe("Matrix local provider server", () => {
 
   it("bounds retained timelines and transaction responses", async () => {
     const server = await startMatrixServer({
-      accessToken: "matrix-token",
+      accessToken: "test-token-placeholder",
       roomId: "!bounded:matrix.test",
     });
     servers.push(server);
@@ -655,7 +655,7 @@ describe("Matrix local provider server", () => {
         `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-${index}`,
         {
           body: JSON.stringify({ body: `message ${index}`, msgtype: "m.text" }),
-          headers: { ...auth("matrix-token"), "content-type": "application/json" },
+          headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
           method: "PUT",
         },
       );
@@ -666,7 +666,7 @@ describe("Matrix local provider server", () => {
     }
 
     const sync = (await (
-      await fetch(server.manifest.endpoints.syncUrl, { headers: auth("matrix-token") })
+      await fetch(server.manifest.endpoints.syncUrl, { headers: auth("test-token-placeholder") })
     ).json()) as {
       rooms: { join: Record<string, { timeline: { events: unknown[]; limited: boolean } }> };
     };
@@ -679,7 +679,7 @@ describe("Matrix local provider server", () => {
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-0`,
       {
         body: JSON.stringify({ body: "transaction was evicted", msgtype: "m.text" }),
-        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
         method: "PUT",
       },
     );

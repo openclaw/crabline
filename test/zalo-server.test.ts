@@ -418,12 +418,12 @@ describe("Zalo local provider server", () => {
     if (!address || typeof address === "string") {
       throw new Error("Unable to resolve webhook test server address.");
     }
-    const server = await startZaloServer({ botToken: "zalo-token" });
+    const server = await startZaloServer({ botToken: "test-token-placeholder" });
     servers.push(server);
     try {
-      await fetch(`${server.manifest.baseUrl}/botzalo-token/setWebhook`, {
+      await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`, {
         body: JSON.stringify({
-          secret_token: "webhook-secret",
+          secret_token: "test-auth-token",
           url: `http://127.0.0.1:${address.port}/zalo`,
         }),
         headers: { "content-type": "application/json" },

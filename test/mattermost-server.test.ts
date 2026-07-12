@@ -66,7 +66,10 @@ describe("Mattermost local provider server", () => {
     for (const scalarBody of ["null", '"scalar"', "42", "true", "[]"]) {
       const invalid = await fetch(postsUrl, {
         body: scalarBody,
-        headers: { authorization: "Bearer fake", "content-type": "application/json" },
+        headers: {
+          authorization: "Bearer fake",
+          "content-type": "application/json",
+        },
         method: "POST",
       });
       expect(invalid.status).toBe(400);
@@ -78,7 +81,10 @@ describe("Mattermost local provider server", () => {
 
     const malformed = await fetch(postsUrl, {
       body: "{",
-      headers: { authorization: "Bearer fake", "content-type": "application/json" },
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
       method: "POST",
     });
     expect(malformed.status).toBe(400);
@@ -203,7 +209,10 @@ describe("Mattermost local provider server", () => {
         channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
         message: "assistant nonce-1",
       }),
-      headers: { authorization: "Bearer fake", "content-type": "application/json" },
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
       method: "POST",
     });
     expect(send.status).toBe(201);
@@ -221,7 +230,10 @@ describe("Mattermost local provider server", () => {
 
     const direct = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
       body: JSON.stringify([server.manifest.botUserId, "bbbbbbbbbbbbbbbbbbbbbbbbbb"]),
-      headers: { authorization: "bearer fake", "content-type": "application/json" },
+      headers: {
+        authorization: "bearer fake",
+        "content-type": "application/json",
+      },
       method: "POST",
     });
     expect(direct.status).toBe(201);
@@ -232,7 +244,10 @@ describe("Mattermost local provider server", () => {
     const editedEvent = nextMessage(socket);
     const edited = await fetch(`${server.manifest.endpoints.apiRoot}/posts/${postId}`, {
       body: JSON.stringify({ message: "assistant edited" }),
-      headers: { authorization: "Bearer fake", "content-type": "application/json" },
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
       method: "PUT",
     });
     expect(edited.status).toBe(200);
@@ -254,7 +269,7 @@ describe("Mattermost local provider server", () => {
 
   it("expires silent and invalid WebSocket authentication", async () => {
     const server = await startMattermostServer({
-      botToken: "test-token-placeholder",
+      botToken: "fake",
       websocketAuthenticationTimeoutMs: 25,
     });
     servers.push(server);
@@ -313,13 +328,16 @@ describe("Mattermost local provider server", () => {
   it("keeps REST mutations independent from disconnected WebSocket delivery", async () => {
     const server = await startMattermostServer({
       adminToken: "admin",
-      botToken: "bot-secret",
+      botToken: "fake",
       maxPendingInboundEvents: 1,
     });
     servers.push(server);
     const direct = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
       body: JSON.stringify([server.manifest.botUserId, "user-1"]),
-      headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
       method: "POST",
     });
     const channel = (await direct.json()) as { id: string };
@@ -327,7 +345,10 @@ describe("Mattermost local provider server", () => {
     for (const message of ["first REST post", "second REST post"]) {
       const response = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
         body: JSON.stringify({ channel_id: channel.id, message }),
-        headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+        headers: {
+          authorization: "Bearer fake",
+          "content-type": "application/json",
+        },
         method: "POST",
       });
       expect(response.status).toBe(201);
@@ -345,7 +366,7 @@ describe("Mattermost local provider server", () => {
   });
 
   it("rejects posts and typing for unknown channels", async () => {
-    const server = await startMattermostServer({ botToken: "bot-secret" });
+    const server = await startMattermostServer({ botToken: "fake" });
     servers.push(server);
     for (const [apiPath, body] of [
       ["/posts", { channel_id: "missing", message: "hello" }],
@@ -353,7 +374,10 @@ describe("Mattermost local provider server", () => {
     ] as const) {
       const response = await fetch(`${server.manifest.endpoints.apiRoot}${apiPath}`, {
         body: JSON.stringify(body),
-        headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+        headers: {
+          authorization: "Bearer fake",
+          "content-type": "application/json",
+        },
         method: "POST",
       });
       expect(response.status).toBe(404);
@@ -367,7 +391,7 @@ describe("Mattermost local provider server", () => {
   it("disconnects slow WebSocket clients and queues undelivered events", async () => {
     const server = await startMattermostServer({
       adminToken: "admin",
-      botToken: "test-token-placeholder",
+      botToken: "fake",
       maxPendingInboundEvents: 1,
       maxWebSocketBufferedBytes: 512,
     });
@@ -378,7 +402,7 @@ describe("Mattermost local provider server", () => {
     socket.send(
       JSON.stringify({
         action: "authentication_challenge",
-        data: { token: "test-token-placeholder" },
+        data: { token: "fake" },
         seq: 1,
       }),
     );
@@ -398,7 +422,7 @@ describe("Mattermost local provider server", () => {
     await expect(closed).resolves.toEqual({ code: 1013, reason: "client too slow" });
     for (const apiPath of ["/users/user-1", "/channels/channel-1"]) {
       const response = await fetch(`${server.manifest.endpoints.apiRoot}${apiPath}`, {
-        headers: { authorization: "Bearer test-token-placeholder" },
+        headers: { authorization: "Bearer fake" },
       });
       expect(response.status).toBe(404);
     }
@@ -408,7 +432,7 @@ describe("Mattermost local provider server", () => {
 
   it("bounds unauthenticated clients and inbound WebSocket messages", async () => {
     const server = await startMattermostServer({
-      botToken: "test-token-placeholder",
+      botToken: "fake",
       maxUnauthenticatedWebSocketClients: 1,
       maxWebSocketMessageBytes: 32,
     });
@@ -428,13 +452,13 @@ describe("Mattermost local provider server", () => {
     first.send(JSON.stringify({ action: "x".repeat(64) }));
     await expect(firstClosed).resolves.toMatchObject({ code: 1009 });
     const me = await fetch(`${server.manifest.endpoints.apiRoot}/users/me`, {
-      headers: { authorization: "Bearer test-token-placeholder" },
+      headers: { authorization: "Bearer fake" },
     });
     expect(me.status).toBe(200);
   });
 
   it("rejects non-object WebSocket messages without crashing", async () => {
-    const server = await startMattermostServer({ botToken: "bot-secret" });
+    const server = await startMattermostServer({ botToken: "fake" });
     servers.push(server);
     const socket = new WebSocket(server.manifest.endpoints.websocketUrl);
     const closed = waitForSocketClose(socket);
@@ -443,7 +467,7 @@ describe("Mattermost local provider server", () => {
     await expect(closed).resolves.toEqual({ code: 1003, reason: "invalid json" });
 
     const me = await fetch(`${server.manifest.endpoints.apiRoot}/users/me`, {
-      headers: { authorization: "Bearer bot-secret" },
+      headers: { authorization: "Bearer fake" },
     });
     expect(me.status).toBe(200);
   });
