@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 const execFileAsync = promisify(execFile);
+const CHANGELOG_HEADING_ERROR =
+  'CHANGELOG.md must contain exactly one "## 1.2.3 - YYYY-MM-DD" heading.';
 
 type WorkflowStep = {
   id?: string;
@@ -59,9 +61,15 @@ describe("release workflow", () => {
     const script = extractNodeHeredoc(verifyStep);
 
     await expect(runMetadataCheck(script, "## 1.2.3 - 2026-07-12\n")).resolves.toBeUndefined();
-    await expect(runMetadataCheck(script, "## 1.2.30 - 2026-07-12\n")).rejects.toThrow();
-    await expect(runMetadataCheck(script, "## 1x2x3 - 2026-07-12\n")).rejects.toThrow();
-    await expect(runMetadataCheck(script, "## 1.2.3-beta - 2026-07-12\n")).rejects.toThrow();
+    await expect(runMetadataCheck(script, "## 1.2.30 - 2026-07-12\n")).rejects.toThrow(
+      CHANGELOG_HEADING_ERROR,
+    );
+    await expect(runMetadataCheck(script, "## 1x2x3 - 2026-07-12\n")).rejects.toThrow(
+      CHANGELOG_HEADING_ERROR,
+    );
+    await expect(runMetadataCheck(script, "## 1.2.3-beta - 2026-07-12\n")).rejects.toThrow(
+      CHANGELOG_HEADING_ERROR,
+    );
   });
 
   it("skips matching packages, rejects drift, and recovers after publish races", async () => {
@@ -82,7 +90,9 @@ describe("release workflow", () => {
       runPublishStep(publishStep, {
         MOCK_VIEW_RESULT: "mismatch",
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(
+      "::error::Published @openclaw/crabline@1.2.3 has integrity sha512-different, expected sha512-expected.",
+    );
 
     const racedCalls = await runPublishStep(publishStep, {
       MOCK_PUBLISH_STATUS: "1",
@@ -119,7 +129,7 @@ async function runMetadataCheck(script: string, changelog: string): Promise<void
       fs.writeFile(path.join(tempDir, "CHANGELOG.md"), changelog),
       fs.writeFile(path.join(tempDir, "package.json"), JSON.stringify({ version: "1.2.3" })),
     ]);
-    await execFileAsync(process.execPath, ["--input-type=module", "--eval", script], {
+    await execFileWithOutput(process.execPath, ["--input-type=module", "--eval", script], {
       cwd: tempDir,
       env: {
         ...process.env,
@@ -174,7 +184,7 @@ esac
       writeExecutable(path.join(binDir, "sleep"), "#!/usr/bin/env bash\nexit 0\n"),
     ]);
 
-    await execFileAsync("bash", ["-c", script], {
+    await execFileWithOutput("bash", ["-c", script], {
       cwd: tempDir,
       env: {
         ...process.env,
@@ -196,4 +206,21 @@ esac
 
 async function writeExecutable(filePath: string, contents: string): Promise<void> {
   await fs.writeFile(filePath, contents, { mode: 0o755 });
+}
+
+async function execFileWithOutput(
+  file: string,
+  args: string[],
+  options: Parameters<typeof execFileAsync>[2],
+): Promise<void> {
+  try {
+    await execFileAsync(file, args, options);
+  } catch (error) {
+    const failure = error as Error & {
+      stderr?: string;
+      stdout?: string;
+    };
+    const output = [failure.stdout, failure.stderr].filter(Boolean).join("\n").trim();
+    throw new Error(output || failure.message, { cause: error });
+  }
 }
