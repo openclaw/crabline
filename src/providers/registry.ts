@@ -112,7 +112,7 @@ function createLazyProvider(params: {
   });
 }
 
-class LazyProviderAdapter implements ProviderAdapter {
+export class LazyProviderAdapter implements ProviderAdapter {
   readonly id;
   readonly platform;
   readonly status;
@@ -256,10 +256,17 @@ class LazyProviderAdapter implements ProviderAdapter {
       const providerCleanup = this.#cleanupProvider(
         operations.map((operation) => operation.dispatch),
       );
-      void providerCleanup.catch(() => undefined);
-      await Promise.allSettled(operations.map((operation) => operation.completion));
-      await Promise.allSettled(closingWatches);
-      await providerCleanup;
+      const [cleanupResult] = await Promise.all([
+        providerCleanup.then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ error, ok: false as const }),
+        ),
+        Promise.allSettled(operations.map((operation) => operation.completion)),
+        Promise.allSettled(closingWatches),
+      ]);
+      if (!cleanupResult.ok) {
+        throw cleanupResult.error;
+      }
     })();
     await this.#cleanupPromise;
   }
