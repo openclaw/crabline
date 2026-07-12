@@ -618,6 +618,11 @@ describe("telegram local provider server", () => {
       await expect.poll(() => attempts, { timeout: 5_000 }).toBe(6);
       await new Promise((resolve) => setTimeout(resolve, 500));
       expect(attempts).toBe(6);
+      expect((await injectUpdate(server, { chatId: 42, text: "do not retry head" })).status).toBe(
+        502,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(attempts).toBe(6);
       const info = await fetch(
         `${server.manifest.baseUrl}/bottest-token-placeholder/getWebhookInfo`,
       );
@@ -625,7 +630,7 @@ describe("telegram local provider server", () => {
         result: {
           last_error_date: expect.any(Number),
           last_error_message: "Wrong response from the webhook: 503",
-          pending_update_count: 1,
+          pending_update_count: 2,
         },
       });
     } finally {

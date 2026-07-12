@@ -403,7 +403,8 @@ async function handleAdminInbound(params: {
     });
   params.state.rooms.set(roomId, room);
   const senderName = readTrimmedString(params.body.senderName);
-  if (!room.users.has(sender)) {
+  const existingProfile = room.users.get(sender);
+  if (existingProfile === undefined) {
     room.users.set(sender, senderName ? { display_name: senderName } : {});
     const membership = createEvent({
       content: {
@@ -418,31 +419,28 @@ async function handleAdminInbound(params: {
     });
     room.state.push(membership);
     appendTimelineEvent(room, { event: membership, sequence: params.state.nextSequence++ });
-  } else if (senderName) {
-    const profile = room.users.get(sender);
-    if (profile?.display_name !== senderName) {
-      room.users.set(sender, { ...profile, display_name: senderName });
-      const membership = createEvent({
-        content: { membership: "join", displayname: senderName },
-        roomId,
-        sender,
-        state: params.state,
-        stateKey: sender,
-        type: "m.room.member",
-      });
-      const stateIndex = room.state.findIndex(
-        (event) => event.type === "m.room.member" && event.state_key === sender,
-      );
-      if (stateIndex >= 0) {
-        room.state[stateIndex] = membership;
-      } else {
-        room.state.push(membership);
-      }
-      appendTimelineEvent(room, {
-        event: membership,
-        sequence: params.state.nextSequence++,
-      });
+  } else if (senderName && existingProfile.display_name !== senderName) {
+    room.users.set(sender, { ...existingProfile, display_name: senderName });
+    const membership = createEvent({
+      content: { membership: "join", displayname: senderName },
+      roomId,
+      sender,
+      state: params.state,
+      stateKey: sender,
+      type: "m.room.member",
+    });
+    const stateIndex = room.state.findIndex(
+      (event) => event.type === "m.room.member" && event.state_key === sender,
+    );
+    if (stateIndex >= 0) {
+      room.state[stateIndex] = membership;
+    } else {
+      room.state.push(membership);
     }
+    appendTimelineEvent(room, {
+      event: membership,
+      sequence: params.state.nextSequence++,
+    });
   }
   const content: Record<string, unknown> = { body: text, msgtype: "m.text" };
   const threadId = readTrimmedString(params.body.threadId);
