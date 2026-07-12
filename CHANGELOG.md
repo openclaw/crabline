@@ -7,6 +7,7 @@
 - Preserve Slack thread scope and validate Telegram command entities.
 - Authenticate WhatsApp webhook verification and deliveries and reject malformed batches atomically.
 - Cancel silent script watches and redact configured payload secrets from subprocess diagnostics.
+- Bind release provenance to exact tag refs, pin the publish npm client, and align Node types with the Node 22 runtime floor.
 - Sanitize malformed YAML diagnostics without exposing source lines.
 - Bound disconnected inbound queues, expire unauthenticated Mattermost sockets, block mapped private Zalo targets, and enforce absolute webhook deadlines.
 - Reject truncated WhatsApp GCM tags, invalid handshake wire types, and trailing binary-node data.

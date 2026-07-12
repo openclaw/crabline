@@ -50,7 +50,7 @@
     "check": "pnpm verify"
   },
   "dependencies": {
-    "@types/node": "^26.1.0",
+    "@types/node": "^22.20.1",
     "commander": "^15.0.0",
     "curve25519-js": "^0.0.4",
     "picocolors": "^1.1.1",

@@ -47,6 +47,12 @@ describe("release workflow", () => {
     });
     await expect(runResolveTag(resolveStep, "v1.2.3-beta.1")).rejects.toThrow(/Command failed/u);
     await expect(runResolveTag(resolveStep, "v1.2.3.preview")).rejects.toThrow(/Command failed/u);
+    await expect(
+      runResolveTag(resolveStep, "v1.2.3", { refName: "main", refType: "branch" }),
+    ).rejects.toThrow(/Command failed/u);
+    await expect(
+      runResolveTag(resolveStep, "v1.2.3", { refName: "v1.2.2", refType: "tag" }),
+    ).rejects.toThrow(/Command failed/u);
     expect(checkoutStep?.with?.ref).toBe("refs/tags/${{ steps.release.outputs.tag }}");
   });
 
@@ -68,6 +74,12 @@ describe("release workflow", () => {
       group: "release-${{ inputs.tag_name || github.ref_name }}",
     });
     expect(commands).toContain("npm install -g npm@12.0.1");
+    for (const jobName of ["verify", "publish"]) {
+      const jobCommands = jobSteps(workflow, jobName)
+        .map((step) => step.run)
+        .filter((run): run is string => Boolean(run));
+      expect(jobCommands).toContain("npm install -g npm@12.0.1");
+    }
     expect(commands.some((command) => command.includes("npm@latest"))).toBe(false);
     expect(packageStep).toContain('npm pack --json --pack-destination "$RUNNER_TEMP"');
     expect(packageStep).toContain("Packed artifact is missing the crabline CLI");
@@ -111,7 +123,9 @@ describe("release workflow", () => {
     expect(verifyCommands).toContain("pnpm install --frozen-lockfile");
     expect(verifyCommands).toContain("pnpm verify");
     expect(
-      publishCommands.some((command) => /\b(?:pnpm|install|build|test|pack)\b/u.test(command)),
+      publishCommands
+        .filter((command) => command !== "npm install -g npm@12.0.1")
+        .some((command) => /\b(?:pnpm|install|build|test|pack)\b/u.test(command)),
     ).toBe(false);
   });
 
@@ -241,6 +255,7 @@ async function runMetadataCheck(script: string, changelog: string): Promise<void
 async function runResolveTag(
   script: string | undefined,
   tag: string,
+  ref: { refName: string; refType: string } = { refName: tag, refType: "tag" },
 ): Promise<Record<string, string>> {
   if (!script) {
     throw new Error("Release workflow is missing its tag resolution step.");
@@ -252,7 +267,8 @@ async function runResolveTag(
       env: {
         ...process.env,
         GITHUB_OUTPUT: outputPath,
-        GITHUB_REF_NAME: tag,
+        GITHUB_REF_NAME: ref.refName,
+        GITHUB_REF_TYPE: ref.refType,
         INPUT_TAG: tag,
       },
     });
