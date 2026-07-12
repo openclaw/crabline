@@ -6,6 +6,7 @@
 - Export the OpenClaw conversation type from the package root.
 - Harden CLI lifecycle cleanup, ready-file publication, run diagnostics, and config validation.
 - Harden script provider subprocess limits and result validation, recorder polling and JSONL parsing, and local webhook startup and IPv6 URLs.
+- Fix provider normalization for loopback pagination and thread codecs, Telegram edited channel posts, Feishu and Matrix thread roots, and complete WhatsApp webhook batches.
 
 ## 0.1.9 - 2026-07-03
 
