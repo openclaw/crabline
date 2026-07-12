@@ -80,6 +80,59 @@ describe("recorder", () => {
     ]);
   });
 
+  it("rolls back partial batch appends before retrying", async () => {
+    const filePath = await createRecorderPath();
+    const sentAt = new Date().toISOString();
+    const event = (id: string) => ({
+      author: "user" as const,
+      id,
+      provider: "whatsapp",
+      sentAt,
+      text: id,
+      threadId: "15551234567",
+    });
+    await appendRecordedInboundBatch(filePath, [event("existing")]);
+
+    const probeHandle = await open(filePath, "a+");
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+      writeFile(data: string, encoding: BufferEncoding): Promise<void>;
+    };
+    await probeHandle.close();
+    const originalWriteFile = fileHandlePrototype.writeFile;
+    let failNextWrite = true;
+    fileHandlePrototype.writeFile = async function (
+      this: FileHandle,
+      data: string,
+      encoding: BufferEncoding,
+    ) {
+      if (failNextWrite) {
+        failNextWrite = false;
+        await originalWriteFile.call(this, data.slice(0, Math.ceil(data.length / 2)), encoding);
+        throw Object.assign(new Error("simulated partial append"), { code: "ENOSPC" });
+      }
+      await originalWriteFile.call(this, data, encoding);
+    };
+
+    const batch = [event("retry-1"), event("retry-2")];
+    try {
+      await expect(appendRecordedInboundBatch(filePath, batch)).rejects.toThrow(
+        "simulated partial append",
+      );
+    } finally {
+      fileHandlePrototype.writeFile = originalWriteFile;
+    }
+
+    await expect(appendRecordedInboundBatch(filePath, batch)).resolves.toEqual([
+      expect.objectContaining({ id: "retry-1" }),
+      expect.objectContaining({ id: "retry-2" }),
+    ]);
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: "existing" }),
+      expect.objectContaining({ id: "retry-1" }),
+      expect.objectContaining({ id: "retry-2" }),
+    ]);
+  });
+
   it("indexes batch identities without rescanning completed recorder history", async () => {
     const filePath = await createRecorderPath();
     const sentAt = new Date().toISOString();

@@ -72,11 +72,13 @@ type ZaloServerState = {
   inboundAdmission: Promise<void>;
   maxPendingInboundEvents: number;
   nextMessage: number;
+  nextUpdateOrder: number;
   onEvent: ServerEventObserver | undefined;
   pendingRequest: PendingUpdateRequest | undefined;
   recorderPath: string;
   reservedUpdates: number;
   restrictWebhookTargets: boolean;
+  updateOrders: WeakMap<ZaloUpdate, number>;
   updates: ZaloUpdate[];
   webhook: { secretToken: string; updatedAt: number; url: string } | undefined;
   webhookDeliveryTimeoutMs: number;
@@ -298,6 +300,28 @@ function nextUpdate(
   return reservedUpdateResponse(state, update);
 }
 
+function pollingUpdateOrder(state: ZaloServerState, update: ZaloUpdate): number {
+  const existing = state.updateOrders.get(update);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const order = state.nextUpdateOrder++;
+  state.updateOrders.set(update, order);
+  return order;
+}
+
+function queuePollingUpdate(state: ZaloServerState, update: ZaloUpdate): void {
+  const order = pollingUpdateOrder(state, update);
+  const insertionIndex = state.updates.findIndex(
+    (queued) => pollingUpdateOrder(state, queued) > order,
+  );
+  if (insertionIndex < 0) {
+    state.updates.push(update);
+  } else {
+    state.updates.splice(insertionIndex, 0, update);
+  }
+}
+
 function reservedUpdateResponse(state: ZaloServerState, update: ZaloUpdate): HttpJsonHandlerResult {
   let settled = false;
   const release = () => {
@@ -314,7 +338,7 @@ function reservedUpdateResponse(state: ZaloServerState, update: ZaloUpdate): Htt
         return;
       }
       if (!deliverPollingUpdate(state, update)) {
-        state.updates.unshift(update);
+        queuePollingUpdate(state, update);
       }
     },
     onWriteSuccess() {
@@ -410,6 +434,7 @@ async function waitForUpdate(
 }
 
 function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boolean {
+  pollingUpdateOrder(state, update);
   const pending = state.pendingRequest;
   if (pending) {
     if (isPendingUpdateRequestLive(pending)) {
@@ -422,7 +447,7 @@ function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boole
   if (state.updates.length + state.reservedUpdates >= state.maxPendingInboundEvents) {
     return false;
   }
-  state.updates.push(update);
+  queuePollingUpdate(state, update);
   return true;
 }
 
@@ -668,11 +693,13 @@ export async function startZaloServer(
     inboundAdmission: Promise.resolve(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessage: 1,
+    nextUpdateOrder: 1,
     onEvent: params.onEvent,
     pendingRequest: undefined,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "zalo.jsonl"),
     reservedUpdates: 0,
     restrictWebhookTargets: !isLoopbackHost(host),
+    updateOrders: new WeakMap(),
     updates: [],
     webhook: undefined,
     webhookDeliveryTimeoutMs: webhookDeliveryTimeoutMs(params.webhookDeliveryTimeoutMs),

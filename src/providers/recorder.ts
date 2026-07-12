@@ -177,6 +177,33 @@ async function appendJsonLine(filePath: string, line: string): Promise<void> {
   await serializeAppend(filePath, () => appendFile(filePath, line, "utf8"));
 }
 
+function recorderBatchRollbackError(writeError: unknown, rollbackError: unknown): AggregateError {
+  return new AggregateError(
+    [writeError, rollbackError],
+    "Recorder batch append and rollback both failed.",
+    { cause: rollbackError },
+  );
+}
+
+async function appendJsonLinesTransactional(filePath: string, lines: string): Promise<void> {
+  const handle = await open(filePath, "a+");
+  const originalSize = (await handle.stat()).size;
+  try {
+    try {
+      await handle.writeFile(lines, "utf8");
+    } catch (writeError) {
+      try {
+        await handle.truncate(originalSize);
+      } catch (rollbackError) {
+        throw recorderBatchRollbackError(writeError, rollbackError);
+      }
+      throw writeError;
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
 async function serializeAppend<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
   const key = path.resolve(filePath);
   const previous = pendingAppends.get(key) ?? Promise.resolve();
@@ -283,23 +310,23 @@ export async function appendRecordedInboundBatch(
   await mkdir(path.dirname(filePath), { recursive: true });
   return await serializeAppend(filePath, async () => {
     const seen = await syncRecordIdentityIndex(filePath);
+    const pendingIdentities = new Set<string>();
     const recorded: RecordedInboundEnvelope[] = [];
     for (const event of events) {
       const identity = recordIdentity(event);
-      if (seen.has(identity)) {
+      if (seen.has(identity) || pendingIdentities.has(identity)) {
         continue;
       }
-      seen.add(identity);
+      pendingIdentities.add(identity);
       recorded.push({
         ...event,
         recordedAt: new Date().toISOString(),
       });
     }
     if (recorded.length > 0) {
-      await appendFile(
+      await appendJsonLinesTransactional(
         filePath,
         recorded.map((event) => `${JSON.stringify(event)}\n`).join(""),
-        "utf8",
       );
       await syncRecordIdentityIndex(filePath);
     }
