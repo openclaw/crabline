@@ -253,15 +253,15 @@ async function resolveRecorderPublicationPath(filePath: string): Promise<string>
 
 async function prepareRecorderTailForAppend(
   handle: Awaited<ReturnType<typeof open>>,
-): Promise<void> {
+): Promise<boolean> {
   const stats = await handle.stat();
   if (stats.size === 0) {
-    return;
+    return false;
   }
 
   const finalByte = await readBufferAt(handle, 1, stats.size - 1);
   if (finalByte[0] === 0x0a) {
-    return;
+    return false;
   }
 
   const windowSize = Math.min(stats.size, MAX_PENDING_RECORD_BYTES + 1);
@@ -278,11 +278,39 @@ async function prepareRecorderTailForAppend(
   try {
     JSON.parse(tail);
     await handle.writeFile("\n", "utf8");
+    return true;
   } catch (error) {
     if (!(error instanceof SyntaxError)) {
       throw error;
     }
     await handle.truncate(tailStart);
+    return true;
+  }
+}
+
+async function prepareRecorderPathForAppend(
+  publicationPath: string,
+  logicalPath: string,
+  durable: boolean,
+): Promise<void> {
+  const handle = await open(publicationPath, "a+");
+  const identity = await handle.stat({ bigint: true });
+  try {
+    const changed = await prepareRecorderTailForAppend(handle);
+    if (changed && durable) {
+      await handle.sync();
+    }
+  } finally {
+    await handle.close();
+  }
+
+  if (
+    !sameRecorderFileIdentity(
+      { dev: identity.dev, ino: identity.ino },
+      await readRecorderFileIdentity(await resolveRecorderPublicationPath(logicalPath)),
+    )
+  ) {
+    throw new Error("Recorder rotated while preparing a committed line.");
   }
 }
 
@@ -470,6 +498,7 @@ export async function appendRecordedInboundBatch(
 ): Promise<RecordedInboundEnvelope[]> {
   await mkdir(path.dirname(filePath), { recursive: true });
   return await serializeAppend(filePath, async (publicationPath, logicalPath) => {
+    await prepareRecorderPathForAppend(publicationPath, logicalPath, true);
     const seen = await syncRecordIdentityIndex(publicationPath);
     const pendingIdentities = new Set<string>();
     const recorded: RecordedInboundEnvelope[] = [];

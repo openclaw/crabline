@@ -358,7 +358,7 @@ describe("Zalo local provider server", () => {
     });
   });
 
-  it("restores concurrently failed poll responses in FIFO order", async () => {
+  it("restores reverse-order poll failures ahead of a waiting poll", async () => {
     const server = await startZaloServer({ botToken: "sample" });
     servers.push(server);
     for (const text of ["first", "second"]) {
@@ -377,7 +377,7 @@ describe("Zalo local provider server", () => {
     let failedResponses = 0;
     responsePrototype.end = function (this: ServerResponse, ...args: unknown[]) {
       if (this.req?.url?.includes("/getUpdates") && failedResponses < 2) {
-        const delayMs = 10 + failedResponses++ * 10;
+        const delayMs = failedResponses++ === 0 ? 20 : 10;
         setTimeout(() => this.destroy(new Error("simulated response failure")), delayMs);
         return this;
       }
@@ -385,7 +385,7 @@ describe("Zalo local provider server", () => {
     };
 
     try {
-      await Promise.allSettled([
+      const failedPolls = Promise.allSettled([
         requestHttp({
           method: "GET",
           url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`,
@@ -395,17 +395,25 @@ describe("Zalo local provider server", () => {
           url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`,
         }),
       ]);
+      const waitingPoll = requestHttp({
+        method: "GET",
+        url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=1`,
+      });
+      const waitingResponse = await waitingPoll;
+      expect(JSON.parse(waitingResponse.body)).toMatchObject({
+        ok: true,
+        result: { message: { text: "first" } },
+      });
+      await failedPolls;
     } finally {
       responsePrototype.end = originalEnd;
     }
 
-    for (const text of ["first", "second"]) {
-      const update = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`);
-      await expect(update.json()).resolves.toMatchObject({
-        ok: true,
-        result: { message: { text } },
-      });
-    }
+    const update = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`);
+    await expect(update.json()).resolves.toMatchObject({
+      ok: true,
+      result: { message: { text: "second" } },
+    });
   });
 
   it("rejects webhook activation while a poll delivery is reserved", async () => {
