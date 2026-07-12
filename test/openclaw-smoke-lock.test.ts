@@ -5,7 +5,12 @@ import {
   acquireOpenClawCrablineSmokeRunLock,
   releaseOpenClawCrablineSmokeRunLock,
 } from "../src/openclaw/smoke-lock.js";
+import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "../src/openclaw/shared.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
+
+const disableHeartbeat = (_renew: () => Promise<void>, _intervalMs: number) => ({
+  async stop() {},
+});
 
 describe("OpenClaw smoke lock cleanup", () => {
   it("retries release with bounded backoff before unwinding", async () => {
@@ -102,6 +107,131 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("keeps an active legacy-format lock owned by its live PID", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    let legacyOwnerAlive = true;
+    try {
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(lockDirectory, "owner.json"),
+        `${JSON.stringify({
+          channel: "telegram",
+          pid: 4_242,
+          token: "legacy",
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(params, {
+          isProcessAlive: () => legacyOwnerAlive,
+          now: () => 2_000,
+          pid: 5_252,
+          processStartedAtMs: 200,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+
+      legacyOwnerAlive = false;
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => legacyOwnerAlive,
+        now: () => 2_000,
+        pid: 5_252,
+        processStartedAtMs: 200,
+      });
+      await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("keeps an active pre-heartbeat owner beyond its original lease age", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    try {
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(lockDirectory, "owner.json"),
+        `${JSON.stringify({
+          channel: "telegram",
+          createdAtMs: 1_000,
+          pid: 4_242,
+          processStartedAtMs: 100,
+          token: "prior",
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(params, {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => 10_000,
+          pid: 5_252,
+          processStartedAtMs: 200,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("renews a live lock before its lease expires", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    const recoveryDirectory = `${lockDirectory}.recovering`;
+    let now = 1_000;
+    let renew: (() => Promise<void>) | undefined;
+    const stop = vi.fn(async () => undefined);
+    try {
+      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => now,
+        pid: 4_242,
+        processStartedAtMs: 100,
+        startHeartbeat: (heartbeat, intervalMs) => {
+          expect(intervalMs).toBe(333);
+          renew = heartbeat;
+          return { stop };
+        },
+      });
+
+      now = 1_800;
+      await renew!();
+      await fs.rename(lockDirectory, recoveryDirectory);
+      now = 2_600;
+      await renew!();
+      now = 3_500;
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(params, {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 5_252,
+          processStartedAtMs: 200,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+
+      await lock.release();
+      expect(stop).toHaveBeenCalledTimes(1);
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("expires an old lock whose PID now belongs to another live process", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
@@ -112,6 +242,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         now: () => 1_000,
         pid: 4_242,
         processStartedAtMs: 100,
+        startHeartbeat: disableHeartbeat,
       });
 
       await expect(
@@ -130,7 +261,44 @@ describe("OpenClaw smoke lock cleanup", () => {
         now: () => 2_001,
         pid: 5_252,
         processStartedAtMs: 200,
+        startHeartbeat: disableHeartbeat,
       });
+      expect(replacementLock).toBeDefined();
+      await firstLock.release();
+      await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("expires a far-future heartbeat whose PID belongs to another live process", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    try {
+      const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 1_000,
+        pid: 4_242,
+        processStartedAtMs: 100,
+        startHeartbeat: disableHeartbeat,
+      });
+      const future = new Date(10_000);
+      await fs.utimes(path.join(lockDirectory, "owner.json"), future, future);
+
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 2_000,
+        pid: 5_252,
+        processStartedAtMs: 200,
+        startHeartbeat: disableHeartbeat,
+      });
+      expect(replacementLock).toBeDefined();
       await firstLock.release();
       await replacementLock.release();
     } finally {
