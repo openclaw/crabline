@@ -112,6 +112,20 @@ describe("production package", () => {
       await fs.rm(tempDir, { force: true, recursive: true });
     }
   });
+
+  it("extracts pack metadata around lifecycle output", () => {
+    const pack: NpmPackMetadata = {
+      files: [{ path: "dist/src/bin/crabline.js" }],
+    };
+    const outputs = [
+      `> @openclaw/crabline prepare\n${JSON.stringify([pack], null, 2)}\n> prepare complete`,
+      `npm notice run prepare\n${JSON.stringify({ "@openclaw/crabline": pack }, null, 2)}\nnpm notice complete`,
+    ];
+
+    for (const output of outputs) {
+      expect(parseNpmPackOutput(output)).toEqual(pack);
+    }
+  });
 });
 
 type NpmPackMetadata = {
@@ -123,12 +137,88 @@ async function npmPackDryRun(root: string): Promise<NpmPackMetadata> {
     cwd: root,
     maxBuffer: 10 * 1024 * 1024,
   });
-  const result = JSON.parse(stdout) as NpmPackMetadata[] | Record<string, NpmPackMetadata>;
-  const packs = Array.isArray(result) ? result : Object.values(result);
-  if (packs.length !== 1 || !packs[0]) {
+  return parseNpmPackOutput(stdout);
+}
+
+function parseNpmPackOutput(output: string): NpmPackMetadata {
+  let pack: NpmPackMetadata | undefined;
+  for (let start = 0; start < output.length; start += 1) {
+    if (!isJsonDocumentStart(output, start)) {
+      continue;
+    }
+    const end = findJsonDocumentEnd(output, start);
+    if (end === -1) {
+      continue;
+    }
+    try {
+      const metadata = JSON.parse(output.slice(start, end)) as unknown;
+      const packs = Array.isArray(metadata)
+        ? metadata
+        : metadata && typeof metadata === "object"
+          ? Object.values(metadata)
+          : [];
+      if (packs.length === 1 && isNpmPackMetadata(packs[0])) {
+        pack = packs[0];
+      }
+    } catch {
+      // Lifecycle output may contain JSON-like text before the metadata document.
+    }
+    start = end - 1;
+  }
+  if (!pack) {
     throw new Error("npm pack --dry-run returned no package metadata.");
   }
-  return packs[0];
+  return pack;
+}
+
+function isJsonDocumentStart(output: string, index: number): boolean {
+  if (output[index] !== "{" && output[index] !== "[") {
+    return false;
+  }
+  const lineStart = output.lastIndexOf("\n", index - 1) + 1;
+  return output.slice(lineStart, index).trim() === "";
+}
+
+function findJsonDocumentEnd(output: string, start: number): number {
+  const closingTokens: string[] = [];
+  let escaped = false;
+  let inString = false;
+  for (let index = start; index < output.length; index += 1) {
+    const token = output[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (token === "\\") {
+        escaped = true;
+      } else if (token === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (token === '"') {
+      inString = true;
+    } else if (token === "{") {
+      closingTokens.push("}");
+    } else if (token === "[") {
+      closingTokens.push("]");
+    } else if (token === "}" || token === "]") {
+      if (closingTokens.pop() !== token) {
+        return -1;
+      }
+      if (closingTokens.length === 0) {
+        return index + 1;
+      }
+    }
+  }
+  return -1;
+}
+
+function isNpmPackMetadata(value: unknown): value is NpmPackMetadata {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    Array.isArray((value as NpmPackMetadata).files)
+  );
 }
 
 function escapeRegex(value: string): string {

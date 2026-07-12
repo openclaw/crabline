@@ -87,13 +87,9 @@ jobs:
           import fs from "node:fs";
           import path from "node:path";
 
-          const metadata = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/npm-pack.json`, "utf8"));
-          const packs = Array.isArray(metadata) ? metadata : Object.values(metadata);
-          if (packs.length !== 1 || !packs[0]) {
-            throw new Error(`Expected one packed artifact, received ${packs.length}.`);
-          }
-
-          const pack = packs[0];
+          const pack = extractPackMetadata(
+            fs.readFileSync(`${process.env.RUNNER_TEMP}/npm-pack.json`, "utf8"),
+          );
           const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
           const cliPath = packageJson.bin?.crabline?.replace(/^\.\//u, "");
           if (!cliPath || !pack.files?.some((file) => file.path === cliPath)) {
@@ -122,6 +118,75 @@ jobs:
               .map(([key, value]) => `${key}=${value}\n`)
               .join(""),
           );
+
+          function extractPackMetadata(output) {
+            let pack;
+            for (let start = 0; start < output.length; start += 1) {
+              if (!isJsonDocumentStart(output, start)) {
+                continue;
+              }
+              const end = findJsonDocumentEnd(output, start);
+              if (end === -1) {
+                continue;
+              }
+              try {
+                const metadata = JSON.parse(output.slice(start, end));
+                const packs = Array.isArray(metadata) ? metadata : Object.values(metadata);
+                if (packs.length === 1 && Array.isArray(packs[0]?.files)) {
+                  pack = packs[0];
+                }
+              } catch {
+                // Lifecycle output may contain JSON-like text before the metadata document.
+              }
+              start = end - 1;
+            }
+            if (!pack) {
+              throw new Error("npm pack did not return package metadata.");
+            }
+            return pack;
+          }
+
+          function isJsonDocumentStart(output, index) {
+            if (output[index] !== "{" && output[index] !== "[") {
+              return false;
+            }
+            const lineStart = output.lastIndexOf("\n", index - 1) + 1;
+            return output.slice(lineStart, index).trim() === "";
+          }
+
+          function findJsonDocumentEnd(output, start) {
+            const closingTokens = [];
+            let escaped = false;
+            let inString = false;
+            for (let index = start; index < output.length; index += 1) {
+              const token = output[index];
+              if (inString) {
+                if (escaped) {
+                  escaped = false;
+                } else if (token === "\\") {
+                  escaped = true;
+                } else if (token === '"') {
+                  inString = false;
+                }
+                continue;
+              }
+              if (token === '"') {
+                inString = true;
+              } else if (token === "{") {
+                closingTokens.push("}");
+              } else if (token === "[") {
+                closingTokens.push("]");
+              } else if (token === "}" || token === "]") {
+                if (closingTokens.pop() !== token) {
+                  return -1;
+                }
+                if (closingTokens.length === 0) {
+                  return index + 1;
+                }
+              }
+            }
+            return -1;
+          }
           NODE
       - name: Publish package with npm provenance
         env:

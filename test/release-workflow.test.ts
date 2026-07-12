@@ -72,6 +72,31 @@ describe("release workflow", () => {
     );
   });
 
+  it("extracts pack metadata around lifecycle output", async () => {
+    const workflow = await readWorkflow();
+    const packageStep = workflow.jobs?.release?.steps?.find((step) => step.id === "package")?.run;
+    const script = extractNodeHeredoc(packageStep);
+    const pack = {
+      filename: "openclaw-crabline-1.2.3.tgz",
+      files: [{ path: "dist/src/bin/crabline.js" }],
+      integrity: "sha512-expected",
+      version: "1.2.3",
+    };
+
+    for (const metadata of [[pack], { "@openclaw/crabline": pack }]) {
+      await expect(
+        runPackageMetadataCheck(
+          script,
+          `> @openclaw/crabline prepare\n${JSON.stringify(metadata, null, 2)}\n> prepare complete`,
+        ),
+      ).resolves.toEqual({
+        integrity: "sha512-expected",
+        name: "@openclaw/crabline",
+        tarball: expect.stringMatching(/openclaw-crabline-1\.2\.3\.tgz$/u),
+      });
+    }
+  });
+
   it("skips matching packages, rejects drift, and recovers after publish races", async () => {
     const workflow = await readWorkflow();
     const publishStep = workflow.jobs?.release?.steps?.find(
@@ -117,7 +142,7 @@ async function readWorkflow(): Promise<ReleaseWorkflow> {
 function extractNodeHeredoc(run: string | undefined): string {
   const match = /node --input-type=module <<'NODE'\n(?<script>[\s\S]*?)\nNODE/u.exec(run ?? "");
   if (!match?.groups?.script) {
-    throw new Error("Release metadata step is missing its Node validation script.");
+    throw new Error("Workflow step is missing its Node validation script.");
   }
   return match.groups.script;
 }
@@ -136,6 +161,48 @@ async function runMetadataCheck(script: string, changelog: string): Promise<void
         RELEASE_VERSION: "1.2.3",
       },
     });
+  } finally {
+    await fs.rm(tempDir, { force: true, recursive: true });
+  }
+}
+
+async function runPackageMetadataCheck(
+  script: string,
+  packOutput: string,
+): Promise<Record<string, string>> {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-release-package-"));
+  const outputPath = path.join(tempDir, "outputs");
+  try {
+    await fs.mkdir(path.join(tempDir, "dist/src/bin"), { recursive: true });
+    await Promise.all([
+      fs.writeFile(path.join(tempDir, "npm-pack.json"), packOutput),
+      fs.writeFile(
+        path.join(tempDir, "package.json"),
+        JSON.stringify({
+          bin: { crabline: "dist/src/bin/crabline.js" },
+          name: "@openclaw/crabline",
+        }),
+      ),
+      fs.writeFile(
+        path.join(tempDir, "dist/src/bin/crabline.js"),
+        "#!/usr/bin/env node\nconsole.log('crabline');\n",
+      ),
+    ]);
+    await execFileWithOutput(process.execPath, ["--input-type=module", "--eval", script], {
+      cwd: tempDir,
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputPath,
+        RELEASE_VERSION: "1.2.3",
+        RUNNER_TEMP: tempDir,
+      },
+    });
+    return Object.fromEntries(
+      (await fs.readFile(outputPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => line.split("=", 2)),
+    );
   } finally {
     await fs.rm(tempDir, { force: true, recursive: true });
   }
