@@ -2058,8 +2058,15 @@ describe("OpenClaw local provider bridge", () => {
         providerReadiness: {
           manifestPath: result.manifestPath,
           result: {
+            ok: true,
             proof: "provider-api-probe",
             provider: "telegram",
+            ready: true,
+          },
+        },
+        smoke: {
+          result: {
+            ok: true,
             ready: true,
           },
         },
@@ -2122,6 +2129,7 @@ describe("OpenClaw local provider bridge", () => {
         providerReadiness: {
           manifestPath: result.manifestPath,
           result: {
+            ok: true,
             proof: "provider-api-probe",
             provider: "telegram",
             ready: true,
@@ -2133,6 +2141,12 @@ describe("OpenClaw local provider bridge", () => {
                 username: "crabline_bot",
               },
             },
+          },
+        },
+        smoke: {
+          result: {
+            ok: true,
+            ready: true,
           },
         },
       });

@@ -32,23 +32,22 @@ export type OpenClawCrablineChannelDriverSelection = {
   smokeArtifactPath: typeof OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH;
 };
 
-export type OpenClawCrablineProviderReadinessResult = {
+/** @deprecated Use OpenClawCrablineProviderReadinessResult. */
+export type OpenClawCrablineChannelDriverSmokeResult = {
   artifactPointerPath: string;
   capabilityReport: unknown;
   capabilityMatrixPath: string;
   generation: string;
   manifestPath: string;
-  providerReadiness: unknown;
-  providerReadinessArtifactPath: string;
-  /** @deprecated Use providerReadiness. */
   smoke: unknown;
-  /** @deprecated Use providerReadinessArtifactPath. */
   smokeArtifactPath: string;
   warnings?: string[];
 };
 
-/** @deprecated Use OpenClawCrablineProviderReadinessResult. */
-export type OpenClawCrablineChannelDriverSmokeResult = OpenClawCrablineProviderReadinessResult;
+export type OpenClawCrablineProviderReadinessResult = OpenClawCrablineChannelDriverSmokeResult & {
+  providerReadiness: unknown;
+  providerReadinessArtifactPath: string;
+};
 export type OpenClawCrablineConversation = {
   id: string;
   kind: "direct" | "group";
