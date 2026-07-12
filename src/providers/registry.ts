@@ -364,37 +364,13 @@ class LazyProviderAdapter implements ProviderAdapter {
         throw error;
       }
     })();
-    const completion = signal
-      ? new Promise<T>((resolve, reject) => {
-          const finish = () => signal.removeEventListener("abort", abort);
-          const abort = () => {
-            finish();
-            reject(signal.reason ?? new Error("Provider operation aborted."));
-          };
-          if (signal.aborted) {
-            abort();
-          } else {
-            signal.addEventListener("abort", abort, { once: true });
-          }
-          void underlying.then(
-            (value) => {
-              finish();
-              resolve(value);
-            },
-            (error: unknown) => {
-              finish();
-              reject(error);
-            },
-          );
-        })
-      : underlying;
     const operation = { completion: underlying, dispatch };
     this.#inFlightOperations.add(operation);
     void underlying.then(
       () => this.#inFlightOperations.delete(operation),
       () => this.#inFlightOperations.delete(operation),
     );
-    return completion;
+    return underlying;
   }
 
   #cleanedUpError(): CrablineError {

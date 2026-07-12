@@ -426,15 +426,20 @@ describe("lazy provider lifecycle", () => {
 
       controller.abort(abortReason);
 
-      await expect(waiting).rejects.toBe(abortReason);
+      let waitingSettled = false;
+      void waiting.finally(() => {
+        waitingSettled = true;
+      });
       let cleanupResolved = false;
       const cleanup = provider.cleanup?.().then(() => {
         cleanupResolved = true;
       });
       await Promise.resolve();
+      expect(waitingSettled).toBe(false);
       expect(cleanupResolved).toBe(false);
 
       releaseWait?.();
+      await expect(waiting).resolves.toBeNull();
       await expect(cleanup).resolves.toBeUndefined();
     } finally {
       releaseWait?.();

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runFixtureCommand } from "../src/core/run.js";
 import type { ManifestDefinition } from "../src/config/schema.js";
 import { OPENCLAW_SUPPORT_CATALOG } from "../src/providers/catalog.js";
@@ -153,5 +153,61 @@ describe("runFixtureCommand retries", () => {
     expect(result.ok).toBe(true);
     expect(sendCalls).toBe(2);
     expect(maxActiveWaits).toBe(1);
+  });
+
+  it("stops retrying and defers cleanup when an aborted wait does not settle", async () => {
+    let cleanupCalls = 0;
+    let releaseWait: (() => void) | undefined;
+    let sendCalls = 0;
+    let waitCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        sendCalls += 1;
+        return { accepted: true, messageId: "sent-1", threadId: "thread-1" };
+      },
+      async waitForInbound() {
+        waitCalls += 1;
+        return await new Promise<null>((resolve) => {
+          releaseWait = () => resolve(null);
+        });
+      },
+      async cleanup() {
+        cleanupCalls += 1;
+      },
+    };
+    const registry: Registry = {
+      catalog: OPENCLAW_SUPPORT_CATALOG,
+      resolve() {
+        return provider;
+      },
+    };
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry,
+    });
+
+    expect(result).toMatchObject({ failureKind: "inbound", ok: false });
+    expect(result.diagnostics).toContain(
+      "Provider inbound wait did not settle within 250ms after abort.",
+    );
+    expect(sendCalls).toBe(1);
+    expect(waitCalls).toBe(1);
+    expect(cleanupCalls).toBe(0);
+
+    releaseWait?.();
+    await vi.waitFor(() => expect(cleanupCalls).toBe(1));
   });
 });
