@@ -1,4 +1,4 @@
-import { appendFile, open, type FileHandle } from "node:fs/promises";
+import { appendFile, open, rename, writeFile, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -256,6 +256,99 @@ describe("recorder", () => {
     } finally {
       fileHandlePrototype.read = originalRead;
     }
+  });
+
+  it("resets incremental reads when the recorder is atomically replaced", async () => {
+    const filePath = await createRecorderPath();
+    const now = new Date().toISOString();
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        author: "user",
+        id: "before-replacement",
+        provider: "slack",
+        recordedAt: now,
+        sentAt: now,
+        text: "old recorder",
+        threadId: "slack:C999",
+      })}\n`,
+      "utf8",
+    );
+
+    const waitPromise = waitForRecordedInbound({
+      filePath,
+      matches: (event) => event.id === "after-replacement",
+      pollMs: 10,
+      timeoutMs: 500,
+    });
+
+    setTimeout(() => {
+      const replacementPath = `${filePath}.replacement`;
+      void writeFile(
+        replacementPath,
+        `${JSON.stringify({
+          author: "assistant",
+          id: "after-replacement",
+          provider: "slack",
+          recordedAt: now,
+          sentAt: now,
+          text: "new recorder".repeat(20),
+          threadId: "slack:C123",
+        })}\n`,
+        "utf8",
+      ).then(() => rename(replacementPath, filePath));
+    }, 25);
+
+    await expect(waitPromise).resolves.toMatchObject({
+      id: "after-replacement",
+      threadId: "slack:C123",
+    });
+  });
+
+  it("resets partial state when a recorder is truncated and regrown past the offset", async () => {
+    const filePath = await createRecorderPath();
+    const now = new Date().toISOString();
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        author: "user",
+        id: "before-truncate",
+        provider: "slack",
+        recordedAt: now,
+        sentAt: now,
+        text: "old recorder",
+        threadId: "slack:C999",
+      })}\n{"id":"stale-partial"`,
+      "utf8",
+    );
+
+    const waitPromise = waitForRecordedInbound({
+      filePath,
+      matches: (event) => event.id === "after-truncate",
+      pollMs: 10,
+      timeoutMs: 500,
+    });
+
+    setTimeout(() => {
+      void writeFile(
+        filePath,
+        `${JSON.stringify({
+          author: "assistant",
+          id: "after-truncate",
+          provider: "slack",
+          recordedAt: now,
+          sentAt: now,
+          text: "regrown recorder".repeat(20),
+          threadId: "slack:C123",
+        })}\n`,
+        "utf8",
+      );
+    }, 25);
+
+    await expect(waitPromise).resolves.toMatchObject({
+      id: "after-truncate",
+      threadId: "slack:C123",
+    });
   });
 
   it("streams new inbound events", async () => {

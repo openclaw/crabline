@@ -18,9 +18,43 @@ const MAX_WATCH_SEEN_KEYS = 4096;
 const pendingAppends = new Map<string, Promise<void>>();
 
 type IncrementalReadState = {
+  continuity: Buffer;
+  identity:
+    | {
+        dev: number;
+        ino: number;
+      }
+    | undefined;
   offset: number;
   pending: Buffer;
 };
+
+const CONTINUITY_BYTES = 4096;
+
+function resetIncrementalReadState(state: IncrementalReadState): void {
+  state.continuity = Buffer.alloc(0);
+  state.offset = 0;
+  state.pending = Buffer.alloc(0);
+}
+
+async function readBufferAt(
+  handle: Awaited<ReturnType<typeof open>>,
+  length: number,
+  position: number,
+): Promise<Buffer> {
+  const buffer = Buffer.alloc(length);
+  let bytesRead = 0;
+
+  while (bytesRead < length) {
+    const result = await handle.read(buffer, bytesRead, length - bytesRead, position + bytesRead);
+    if (result.bytesRead === 0) {
+      break;
+    }
+    bytesRead += result.bytesRead;
+  }
+
+  return buffer.subarray(0, bytesRead);
+}
 
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
   const key = path.resolve(filePath);
@@ -48,24 +82,37 @@ async function readRecordedInboundAppend(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
-      state.offset = 0;
-      state.pending = Buffer.alloc(0);
+      resetIncrementalReadState(state);
+      state.identity = undefined;
       return [];
     }
     throw error;
   }
 
   try {
-    const size = (await handle.stat()).size;
-    if (size < state.offset) {
-      state.offset = 0;
-      state.pending = Buffer.alloc(0);
+    const stats = await handle.stat();
+    const identity = { dev: stats.dev, ino: stats.ino };
+    const sameFile = state.identity?.dev === identity.dev && state.identity.ino === identity.ino;
+    let hasContinuity = sameFile && stats.size >= state.offset;
+
+    if (hasContinuity && state.continuity.length > 0) {
+      const actual = await readBufferAt(
+        handle,
+        state.continuity.length,
+        state.offset - state.continuity.length,
+      );
+      hasContinuity = actual.equals(state.continuity);
     }
+
+    if (!hasContinuity) {
+      resetIncrementalReadState(state);
+    }
+    state.identity = identity;
 
     const chunks: Buffer[] = [];
     let position = state.offset;
-    while (position < size) {
-      const chunk = Buffer.alloc(Math.min(64 * 1024, size - position));
+    while (position < stats.size) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, stats.size - position));
       const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
       if (bytesRead === 0) {
         break;
@@ -74,6 +121,7 @@ async function readRecordedInboundAppend(
       position += bytesRead;
     }
     state.offset = position;
+    state.continuity = Buffer.concat([state.continuity, ...chunks]).subarray(-CONTINUITY_BYTES);
 
     const raw = Buffer.concat([state.pending, ...chunks]);
     const lastNewline = raw.lastIndexOf(0x0a);
@@ -153,6 +201,8 @@ export async function waitForRecordedInbound(params: {
 }): Promise<RecordedInboundEnvelope | null> {
   const deadline = Date.now() + params.timeoutMs;
   const state: IncrementalReadState = {
+    continuity: Buffer.alloc(0),
+    identity: undefined,
     offset: 0,
     pending: Buffer.alloc(0),
   };
@@ -193,6 +243,8 @@ export async function* watchRecordedInbound(params: {
   since?: string | undefined;
 }): AsyncIterable<RecordedInboundEnvelope> {
   const state: IncrementalReadState = {
+    continuity: Buffer.alloc(0),
+    identity: undefined,
     offset: 0,
     pending: Buffer.alloc(0),
   };
