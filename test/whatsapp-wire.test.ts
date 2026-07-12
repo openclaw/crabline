@@ -8,6 +8,48 @@ import {
   type BinaryNode,
 } from "../src/servers/whatsapp-wire/binary-node.js";
 import { decodeHandshakeMessage } from "../src/servers/whatsapp-wire/handshake.js";
+import { createSerializedMessageHandler } from "../src/servers/whatsapp-baileys-websocket.js";
+
+describe("WhatsApp WebSocket message processing", () => {
+  it("serializes concurrent frames within one session", async () => {
+    const events: string[] = [];
+    let activeHandlers = 0;
+    let releaseFirstFrame: () => void = () => undefined;
+    let markFirstFrameStarted: () => void = () => undefined;
+    const firstFrameBlocked = new Promise<void>((resolve) => {
+      releaseFirstFrame = resolve;
+    });
+    const firstFrameStarted = new Promise<void>((resolve) => {
+      markFirstFrameStarted = resolve;
+    });
+    const handleMessage = createSerializedMessageHandler<Buffer>(
+      async (frame) => {
+        activeHandlers += 1;
+        events.push(`start:${frame[0]}`);
+        expect(activeHandlers).toBe(1);
+        if (frame[0] === 1) {
+          markFirstFrameStarted();
+          await firstFrameBlocked;
+        }
+        events.push(`end:${frame[0]}`);
+        activeHandlers -= 1;
+      },
+      (error) => {
+        throw error;
+      },
+    );
+
+    const first = handleMessage(Buffer.from([1]));
+    const second = handleMessage(Buffer.from([2]));
+    await firstFrameStarted;
+
+    expect(events).toEqual(["start:1"]);
+    releaseFirstFrame();
+    await Promise.all([first, second]);
+
+    expect(events).toEqual(["start:1", "end:1", "start:2", "end:2"]);
+  });
+});
 
 describe("WhatsApp handshake protobufs", () => {
   it("skips unknown ten-byte uint64 varints", () => {

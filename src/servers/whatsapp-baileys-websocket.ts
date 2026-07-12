@@ -71,6 +71,28 @@ type MockSignalBundle = {
   signedPreKey: SignedKeyPair;
 };
 
+export function createSerializedMessageHandler<T>(
+  processMessage: (message: T) => Promise<void>,
+  onError: (error: unknown) => void,
+): (message: T) => Promise<void> {
+  let failed = false;
+  let pending = Promise.resolve();
+  return (message) => {
+    const next = pending.then(async () => {
+      if (!failed) {
+        await processMessage(message);
+      }
+    });
+    pending = next.catch((error: unknown) => {
+      if (!failed) {
+        failed = true;
+        onError(error);
+      }
+    });
+    return pending;
+  };
+}
+
 class TransportState {
   #readCounter = 0;
   #writeCounter = 0;
@@ -254,6 +276,7 @@ class BaileysNoiseServer {
 
 class WhatsAppBaileysWebSocketSession {
   #handshakeState: "client-finish" | "client-hello" | "open" = "client-hello";
+  readonly #handleSerializedMessage: (data: RawData) => Promise<void>;
   readonly #noise = new BaileysNoiseServer();
 
   constructor(
@@ -265,16 +288,21 @@ class WhatsAppBaileysWebSocketSession {
       selfJid: string;
       signalBundles: Map<string, MockSignalBundle>;
     },
-  ) {}
+  ) {
+    this.#handleSerializedMessage = createSerializedMessageHandler(
+      (data) => this.#handleMessage(data),
+      (error) => {
+        this.socket.close(1011, error instanceof Error ? error.message : String(error));
+      },
+    );
+  }
 
   get isOpen(): boolean {
     return this.#handshakeState === "open" && this.socket.readyState === WebSocket.OPEN;
   }
 
   handleMessage(data: RawData): void {
-    void this.#handleMessage(data).catch((error: unknown) => {
-      this.socket.close(1011, error instanceof Error ? error.message : String(error));
-    });
+    void this.#handleSerializedMessage(data);
   }
 
   deliverInboundMessage(message: WhatsAppBaileysInboundMessage): boolean {
