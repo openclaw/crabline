@@ -31,6 +31,8 @@ import { closeWebSocketServer } from "./websocket.js";
 const EMPTY_BUFFER = Buffer.alloc(0);
 const IV_LENGTH = 12;
 const MAX_PENDING_INBOUND_MESSAGES = 1_000;
+export const MAX_WHATSAPP_SIGNAL_BUNDLES = 1_024;
+const SIGNAL_BUNDLE_JID_RE = /^\d{7,15}(?::\d+)?@(?:s\.whatsapp\.net|lid)$/iu;
 type NodeBuffer = Buffer<ArrayBufferLike>;
 const WHATSAPP_NOISE_CERT_CHAIN = Buffer.from(
   "CncKMwjjAhADGiCRKg7Kg1iu4CSulwLBaxX51Tefw6VXGgZqcr5OEbXIRiDQ04bOBijQjZ/TBhJA34Bj82jAHhLpCWBNVBlGnFDieamd8+138S57uMt9ke9mrn5r4+VepwBPKEgHjob6bR70rlCmWDkxZv+CfVjIAxJ2CjIIAxAAGiAcUamsMDmUxsjQuS6hh4pTNHZZnMWZ++o1mX2aqQzOYiCAka6+Bij/3rfcBhJAJw8pRkhTn+1IcOJQVN1OlZg6uikYnCumyO7acFVVX3U3QPXsGSq2TCbCbWrebSC593Su43EgprIDlfU8ZgWFBw==",
@@ -72,13 +74,68 @@ export type WhatsAppBaileysInboundMessage = {
   pushName?: string | undefined;
 };
 
-type MockSignalBundle = {
+export function resolveMaxPendingWhatsAppInboundMessages(value: number | undefined): number {
+  const resolved = value ?? MAX_PENDING_INBOUND_MESSAGES;
+  if (!Number.isSafeInteger(resolved) || resolved < 1) {
+    throw new Error("WhatsApp maxPendingInboundMessages must be a positive safe integer.");
+  }
+  return resolved;
+}
+
+export type MockSignalBundle = {
   identityKey: KeyPair;
   preKey: KeyPair;
   preKeyId: number;
   registrationId: number;
   signedPreKey: SignedKeyPair;
 };
+
+export class WhatsAppSignalBundleStore {
+  readonly #bundles = new Map<string, MockSignalBundle>();
+
+  constructor(private readonly maxBundles = MAX_WHATSAPP_SIGNAL_BUNDLES) {
+    if (!Number.isSafeInteger(maxBundles) || maxBundles < 1) {
+      throw new Error("WhatsApp maxSignalBundles must be a positive safe integer.");
+    }
+  }
+
+  get size(): number {
+    return this.#bundles.size;
+  }
+
+  resolveMany(jids: string[]): MockSignalBundle[] {
+    const uniqueNewJids = new Set<string>();
+    for (const jid of jids) {
+      if (!SIGNAL_BUNDLE_JID_RE.test(jid)) {
+        throw new Error(`Invalid WhatsApp signal bundle JID: ${jid}.`);
+      }
+      if (!this.#bundles.has(jid)) {
+        uniqueNewJids.add(jid);
+      }
+    }
+    if (this.#bundles.size + uniqueNewJids.size > this.maxBundles) {
+      throw new Error(`WhatsApp signal bundle limit exceeded (${this.maxBundles}).`);
+    }
+    return jids.map((jid) => this.#resolve(jid));
+  }
+
+  #resolve(jid: string): MockSignalBundle {
+    const existing = this.#bundles.get(jid);
+    if (existing) {
+      return existing;
+    }
+    const identityKey = Curve.generateKeyPair();
+    const bundle = {
+      identityKey,
+      preKey: Curve.generateKeyPair(),
+      preKeyId: 1,
+      registrationId: 1,
+      signedPreKey: signedKeyPair(identityKey, 1),
+    };
+    this.#bundles.set(jid, bundle);
+    return bundle;
+  }
+}
 
 export function createSerializedMessageHandler<T>(
   processMessage: (message: T) => Promise<void>,
@@ -295,7 +352,7 @@ class WhatsAppBaileysWebSocketSession {
       path: string;
       onOpen(session: WhatsAppBaileysWebSocketSession): void;
       selfJid: string;
-      signalBundles: Map<string, MockSignalBundle>;
+      signalBundles: WhatsAppSignalBundleStore;
     },
   ) {
     this.#handleSerializedMessage = createSerializedMessageHandler(
@@ -389,7 +446,24 @@ class WhatsAppBaileysWebSocketSession {
       return { attrs, content: [{ attrs: {}, tag: "digest" }], tag: "iq" };
     }
     if (node.attrs.xmlns === "encrypt" && child?.tag === "key") {
-      return { attrs, content: [this.#createKeyList(child)], tag: "iq" };
+      try {
+        return { attrs, content: [this.#createKeyList(child)], tag: "iq" };
+      } catch (error) {
+        return {
+          attrs: { ...attrs, type: "error" },
+          content: [
+            {
+              attrs: {
+                code: "400",
+                text: error instanceof Error ? error.message : String(error),
+                type: "modify",
+              },
+              tag: "error",
+            },
+          ],
+          tag: "iq",
+        };
+      }
     }
     if (node.attrs.xmlns === "usync" && child?.tag === "usync") {
       return { attrs, content: [this.#createUSyncResult(child)], tag: "iq" };
@@ -473,15 +547,16 @@ class WhatsAppBaileysWebSocketSession {
 
   #createKeyList(keyNode: BinaryNode): BinaryNode {
     const users = children(keyNode).filter((child) => child.tag === "user");
+    const jids = users.map((userNode) => requireAttr(userNode, "jid"));
+    const bundles = this.params.signalBundles.resolveMany(jids);
     return {
       attrs: {},
-      content: users.map((userNode) => this.#createKeyUser(requireAttr(userNode, "jid"))),
+      content: jids.map((jid, index) => this.#createKeyUser(jid, bundles[index]!)),
       tag: "list",
     };
   }
 
-  #createKeyUser(jid: string): BinaryNode {
-    const bundle = resolveSignalBundle(this.params.signalBundles, jid);
+  #createKeyUser(jid: string, bundle: MockSignalBundle): BinaryNode {
     return {
       attrs: { jid },
       content: [
@@ -557,14 +632,12 @@ class WhatsAppBaileysWebSocketSession {
 export function attachWhatsAppBaileysWebSocketServer(
   params: WhatsAppBaileysWebSocketServerParams,
 ): WhatsAppBaileysWebSocketServer {
-  const signalBundles = new Map<string, MockSignalBundle>();
+  const signalBundles = new WhatsAppSignalBundleStore();
   const sessions = new Set<WhatsAppBaileysWebSocketSession>();
   const pendingMessages: WhatsAppBaileysInboundMessage[] = [];
-  const maxPendingInboundMessages =
-    params.maxPendingInboundMessages ?? MAX_PENDING_INBOUND_MESSAGES;
-  if (!Number.isSafeInteger(maxPendingInboundMessages) || maxPendingInboundMessages < 1) {
-    throw new Error("WhatsApp maxPendingInboundMessages must be a positive safe integer.");
-  }
+  const maxPendingInboundMessages = resolveMaxPendingWhatsAppInboundMessages(
+    params.maxPendingInboundMessages,
+  );
   let pendingReservations = 0;
   const wss = new WebSocketServer({ noServer: true });
   const flushPendingMessages = (session: WhatsAppBaileysWebSocketSession) => {
@@ -596,7 +669,7 @@ export function attachWhatsAppBaileysWebSocketServer(
     const session = new WhatsAppBaileysWebSocketSession(socket, {
       appendEvent: params.appendEvent,
       onOpen: (openSession) => {
-        setImmediate(() => flushPendingMessages(openSession));
+        flushPendingMessages(openSession);
       },
       path: params.path,
       selfJid: params.selfJid,
@@ -642,6 +715,17 @@ export function attachWhatsAppBaileysWebSocketServer(
           }
           settled = true;
           try {
+            if (pendingMessages.length > 0) {
+              releaseReservation();
+              if (pendingMessages.length >= maxPendingInboundMessages) {
+                throw new Error("WhatsApp inbound delivery reservation exceeded queue capacity.");
+              }
+              pendingMessages.push(message);
+              for (const session of sessions) {
+                flushPendingMessages(session);
+              }
+              return pendingMessages.includes(message) ? "queued" : "delivered";
+            }
             let delivered = false;
             for (const session of sessions) {
               if (session.deliverInboundMessage(message)) {
@@ -650,6 +734,10 @@ export function attachWhatsAppBaileysWebSocketServer(
             }
             if (delivered) {
               return "delivered";
+            }
+            releaseReservation();
+            if (pendingMessages.length >= maxPendingInboundMessages) {
+              throw new Error("WhatsApp inbound delivery reservation exceeded queue capacity.");
             }
             pendingMessages.push(message);
             return "queued";
@@ -740,26 +828,6 @@ function requireAttr(node: BinaryNode, name: string): string {
 function lidForJid(jid: string): string {
   const user = jid.split("@", 1)[0]?.split(":", 1)[0] ?? "15550000000";
   return `${user}@lid`;
-}
-
-function resolveSignalBundle(
-  signalBundles: Map<string, MockSignalBundle>,
-  jid: string,
-): MockSignalBundle {
-  const existing = signalBundles.get(jid);
-  if (existing) {
-    return existing;
-  }
-  const identityKey = Curve.generateKeyPair();
-  const bundle = {
-    identityKey,
-    preKey: Curve.generateKeyPair(),
-    preKeyId: 1,
-    registrationId: 1,
-    signedPreKey: signedKeyPair(identityKey, 1),
-  };
-  signalBundles.set(jid, bundle);
-  return bundle;
 }
 
 function sanitizeNodeForJson(value: unknown): unknown {

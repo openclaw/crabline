@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bound WhatsApp binary-node complexity and signal bundles, align encoder and decoder limits, preserve coherent X25519 fallback behavior, validate queue startup before listening, keep reconnect delivery FIFO, and accept bounded legacy group JIDs.
 - Preserve primary watch and adapter-start failures, retain shutdown handlers through cleanup, validate smoke-lock tokens, enforce Zalo probe envelopes, and reject ambiguous config names and formats.
 - Preserve provider-native WhatsApp message acknowledgements, legacy group JIDs, bounded inbound admission, WebSocket error isolation, and strict handshake varints.
 - Authenticate built-in Telegram, Slack, and Zalo webhooks, bound recorder wait state, accept Slack user send targets, preserve canonical Telegram topics, and complete WhatsApp cleanup after close failures.

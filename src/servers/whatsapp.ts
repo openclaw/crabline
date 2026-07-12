@@ -18,6 +18,7 @@ import {
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 import {
   attachWhatsAppBaileysWebSocketServer,
+  resolveMaxPendingWhatsAppInboundMessages,
   type PreparedWhatsAppBaileysInboundDelivery,
   type WhatsAppBaileysInboundMessage,
 } from "./whatsapp-baileys-websocket.js";
@@ -501,6 +502,9 @@ export async function startWhatsAppServer(
   if (!/^\d+$/u.test(phoneNumberId)) {
     throw new Error("WhatsApp phoneNumberId must contain only digits.");
   }
+  const maxPendingInboundMessages = resolveMaxPendingWhatsAppInboundMessages(
+    params.maxPendingInboundMessages,
+  );
   const state: WhatsAppServerState = {
     accessToken:
       params.accessToken ??
@@ -552,7 +556,7 @@ export async function startWhatsAppServer(
     accessToken: state.accessToken,
     appendEvent: (event) => appendEvent(state, event),
     httpServer: httpServer.server,
-    maxPendingInboundMessages: params.maxPendingInboundMessages,
+    maxPendingInboundMessages,
     path: "/ws/chat",
     selfJid: state.selfJid,
   });
