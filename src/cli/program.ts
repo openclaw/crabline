@@ -33,6 +33,7 @@ export type ReadyFileIdentity = {
 };
 
 type ProgramDependencies = {
+  acquireReadyFileLease?: (filePath: string) => Promise<() => Promise<void>>;
   publishReadyFile?: (filePath: string, contents: string) => Promise<ReadyFileIdentity>;
   removeReadyFile?: (
     filePath: string,
@@ -137,8 +138,9 @@ export function createProgram(
   dependencies: ProgramDependencies = {},
 ): Command {
   const program = new Command();
-  const publish = dependencies.publishReadyFile ?? publishReadyFile;
-  const removeReady = dependencies.removeReadyFile ?? removeReadyFile;
+  const acquireReadyLease = dependencies.acquireReadyFileLease ?? acquireReadyFileLease;
+  const publish = dependencies.publishReadyFile ?? publishReadyFileUnlocked;
+  const removeReady = dependencies.removeReadyFile ?? removeReadyFileIfOwned;
   const startServer = dependencies.startServer ?? startCrablineServer;
 
   program
@@ -324,50 +326,103 @@ export function createProgram(
           kind: "config",
         });
       }
-      if (commandOptions.readyFile) {
-        await prepareReadyFile(commandOptions.readyFile);
-      }
-      const server = await startServer(
-        factory(
-          {
-            host: commandOptions.host,
-            port,
-            recorderPath: commandOptions.recorder,
-          },
-          commandOptions,
-        ),
-      );
-      const close = onceAsync(() => server.close());
+      let server: StartedCrablineServer | undefined;
+      let startupSettled = false;
+      let settleStartup: (() => void) | undefined;
+      const startup = new Promise<void>((resolve) => {
+        settleStartup = resolve;
+      });
+      const finishStartup = () => {
+        if (!startupSettled) {
+          startupSettled = true;
+          settleStartup?.();
+        }
+      };
+      const close = onceAsync(async () => {
+        await startup;
+        await server?.close();
+      });
+      const shutdown = installShutdownHandler(close);
+      let releaseReadyLease: (() => Promise<void>) | undefined;
       let publishedReady: { contents: string; identity: ReadyFileIdentity } | undefined;
+      let actionFailed = false;
+      let actionError: unknown;
       try {
-        const payload = formatJson(server.manifest);
         if (commandOptions.readyFile) {
-          const readyContents = `${payload}\n`;
-          publishedReady = {
-            contents: readyContents,
-            identity: await publish(commandOptions.readyFile, readyContents),
-          };
+          releaseReadyLease = await acquireReadyLease(commandOptions.readyFile);
         }
-        print(
-          options.json
-            ? payload
-            : renderServeText(server.manifest, commandOptions.showSecrets === true),
-        );
-        if (!commandOptions.once) {
-          await waitForShutdown(close);
-        }
-      } finally {
-        try {
-          await close();
-        } finally {
-          if (commandOptions.readyFile && publishedReady) {
-            await removeReady(
-              commandOptions.readyFile,
-              publishedReady.contents,
-              publishedReady.identity,
+        if (shutdown.requested()) {
+          finishStartup();
+          await shutdown.wait();
+        } else {
+          try {
+            server = await startServer(
+              factory(
+                {
+                  host: commandOptions.host,
+                  port,
+                  recorderPath: commandOptions.recorder,
+                },
+                commandOptions,
+              ),
             );
+          } finally {
+            finishStartup();
+          }
+          if (shutdown.requested()) {
+            await shutdown.wait();
+          } else {
+            const payload = formatJson(server.manifest);
+            if (commandOptions.readyFile) {
+              const readyContents = `${payload}\n`;
+              publishedReady = {
+                contents: readyContents,
+                identity: await publish(commandOptions.readyFile, readyContents),
+              };
+            }
+            print(
+              options.json
+                ? payload
+                : renderServeText(server.manifest, commandOptions.showSecrets === true),
+            );
+            if (!commandOptions.once) {
+              await shutdown.wait();
+            }
           }
         }
+      } catch (error) {
+        actionFailed = true;
+        actionError = error;
+      }
+      finishStartup();
+      shutdown.dispose();
+      const cleanupErrors: unknown[] = [];
+      const readyToRemove = publishedReady;
+      for (const cleanup of [
+        close,
+        ...(commandOptions.readyFile && readyToRemove
+          ? [
+              () =>
+                removeReady(
+                  commandOptions.readyFile!,
+                  readyToRemove.contents,
+                  readyToRemove.identity,
+                ),
+            ]
+          : []),
+        ...(releaseReadyLease ? [releaseReadyLease] : []),
+      ]) {
+        try {
+          await cleanup();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (actionFailed || cleanupErrors.length > 0) {
+        throw combineLifecycleErrors(
+          actionFailed ? [actionError, ...cleanupErrors] : cleanupErrors,
+          "Crabline server lifecycle failed.",
+        );
       }
     });
 
@@ -399,12 +454,6 @@ function onceAsync(action: () => Promise<void>): () => Promise<void> {
   return () => (result ??= Promise.resolve().then(action));
 }
 
-async function prepareReadyFile(filePath: string): Promise<void> {
-  await withReadyFileLock(filePath, async () => {
-    await fs.rm(filePath, { force: true });
-  });
-}
-
 async function readReadyFileIdentity(filePath: string): Promise<ReadyFileIdentity> {
   const stats = await fs.stat(filePath, { bigint: true });
   return {
@@ -427,18 +476,7 @@ function sameReadyFileIdentity(left: ReadyFileIdentity, right: ReadyFileIdentity
 }
 
 async function withReadyFileLock<T>(filePath: string, action: () => Promise<T>): Promise<T> {
-  await fs.mkdir(nodePath.dirname(filePath), { recursive: true });
-  const release = await lock(filePath, {
-    realpath: false,
-    retries: {
-      factor: 1,
-      maxTimeout: 10,
-      minTimeout: 10,
-      retries: 100,
-    },
-    stale: 10_000,
-    update: 2_500,
-  });
+  const release = await acquireReadyFileLease(filePath);
   let actionFailed = false;
   let actionError: unknown;
   let result: T | undefined;
@@ -452,12 +490,10 @@ async function withReadyFileLock<T>(filePath: string, action: () => Promise<T>):
     await release();
   } catch (releaseError) {
     if (actionFailed) {
-      const aggregateError = new AggregateError(
+      throw combineLifecycleErrors(
         [actionError, releaseError],
         `Ready-file action and lock release both failed for "${filePath}".`,
       );
-      aggregateError.cause = actionError;
-      throw aggregateError;
     }
     throw releaseError;
   }
@@ -467,6 +503,21 @@ async function withReadyFileLock<T>(filePath: string, action: () => Promise<T>):
   return result as T;
 }
 
+async function acquireReadyFileLease(filePath: string): Promise<() => Promise<void>> {
+  await fs.mkdir(nodePath.dirname(filePath), { recursive: true });
+  return await lock(filePath, {
+    realpath: false,
+    retries: {
+      factor: 1,
+      maxTimeout: 10,
+      minTimeout: 10,
+      retries: 100,
+    },
+    stale: 10_000,
+    update: 2_500,
+  });
+}
+
 export async function publishReadyFile(
   filePath: string,
   contents: string,
@@ -474,30 +525,8 @@ export async function publishReadyFile(
   let publishedIdentity: ReadyFileIdentity | undefined;
   try {
     return await withReadyFileLock(filePath, async () => {
-      const suffix = `${process.pid}.${randomUUID()}.tmp`;
-      const temporaryPath = nodePath.join(
-        nodePath.dirname(filePath),
-        `.${nodePath.basename(filePath)}.${suffix}`,
-      );
-      let manifestPublished = false;
-      try {
-        await fs.writeFile(temporaryPath, contents, {
-          encoding: "utf8",
-          flag: "wx",
-          mode: 0o600,
-        });
-        await fs.rename(temporaryPath, filePath);
-        manifestPublished = true;
-        publishedIdentity = await readReadyFileIdentity(filePath);
-        return publishedIdentity;
-      } catch (error) {
-        if (manifestPublished) {
-          await fs.rm(filePath, { force: true }).catch(() => undefined);
-        }
-        throw error;
-      } finally {
-        await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
-      }
+      publishedIdentity = await publishReadyFileUnlocked(filePath, contents);
+      return publishedIdentity;
     });
   } catch (error) {
     if (publishedIdentity) {
@@ -513,6 +542,35 @@ export async function publishReadyFile(
       }
     }
     throw error;
+  }
+}
+
+async function publishReadyFileUnlocked(
+  filePath: string,
+  contents: string,
+): Promise<ReadyFileIdentity> {
+  const suffix = `${process.pid}.${randomUUID()}.tmp`;
+  const temporaryPath = nodePath.join(
+    nodePath.dirname(filePath),
+    `.${nodePath.basename(filePath)}.${suffix}`,
+  );
+  let manifestPublished = false;
+  try {
+    await fs.writeFile(temporaryPath, contents, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await fs.rename(temporaryPath, filePath);
+    manifestPublished = true;
+    return await readReadyFileIdentity(filePath);
+  } catch (error) {
+    if (manifestPublished) {
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
   }
 }
 
@@ -550,23 +608,53 @@ export function waitForShutdown(
   close: () => Promise<void>,
   signalTarget: SignalTarget = process,
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let shuttingDown = false;
-    const removeListeners = () => {
-      signalTarget.removeListener("SIGINT", shutdown);
-      signalTarget.removeListener("SIGTERM", shutdown);
-    };
-    const shutdown = () => {
-      if (shuttingDown) {
-        return;
-      }
-      shuttingDown = true;
-      removeListeners();
-      void Promise.resolve().then(close).then(resolve, reject);
-    };
-    signalTarget.once("SIGINT", shutdown);
-    signalTarget.once("SIGTERM", shutdown);
+  return installShutdownHandler(close, signalTarget).wait();
+}
+
+function installShutdownHandler(
+  close: () => Promise<void>,
+  signalTarget: SignalTarget = process,
+): {
+  dispose(): void;
+  requested(): boolean;
+  wait(): Promise<void>;
+} {
+  let shuttingDown = false;
+  let resolveWait: (() => void) | undefined;
+  let rejectWait: ((error: unknown) => void) | undefined;
+  const wait = new Promise<void>((resolve, reject) => {
+    resolveWait = resolve;
+    rejectWait = reject;
   });
+  void wait.catch(() => undefined);
+  const removeListeners = () => {
+    signalTarget.removeListener("SIGINT", shutdown);
+    signalTarget.removeListener("SIGTERM", shutdown);
+  };
+  const shutdown = () => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    removeListeners();
+    void Promise.resolve().then(close).then(resolveWait, rejectWait);
+  };
+  signalTarget.once("SIGINT", shutdown);
+  signalTarget.once("SIGTERM", shutdown);
+  return {
+    dispose: removeListeners,
+    requested: () => shuttingDown,
+    wait: () => wait,
+  };
+}
+
+function combineLifecycleErrors(errors: unknown[], message: string): unknown {
+  if (errors.length === 1) {
+    return errors[0];
+  }
+  const aggregateError = new AggregateError(errors, message);
+  aggregateError.cause = errors[0];
+  return aggregateError;
 }
 
 function renderServeText(manifest: CrablineServerManifest, showSecrets: boolean) {
