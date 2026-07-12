@@ -1,7 +1,11 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ManifestDefinition, ProviderConfig } from "../src/config/schema.js";
 import { TelegramProviderAdapter } from "../src/providers/builtin/telegram.js";
 import { createRegistry } from "../src/providers/registry.js";
+import type { ProviderContext, SendContext, WaitContext } from "../src/providers/types.js";
+import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const manifest: ManifestDefinition = {
   configVersion: 1,
@@ -127,6 +131,76 @@ describe("registry", () => {
     expect(() => provider.normalizeTarget(whatsappManifest.fixtures[0]!.target)).toThrow(
       /WhatsApp wa_id/u,
     );
+  });
+
+  it("keeps cleanup terminal before lazy provider materialization", async () => {
+    const directory = await createTempDir();
+    const recorderPath = path.join(directory, "whatsapp.jsonl");
+    try {
+      const config: ProviderConfig = {
+        adapter: "whatsapp",
+        capabilities: ["probe", "send", "roundtrip", "agent"],
+        env: [],
+        platform: "whatsapp",
+        status: "active",
+        whatsapp: {
+          recorder: { path: recorderPath },
+          webhook: {
+            host: "127.0.0.1",
+            path: "/whatsapp/webhook",
+            port: 0,
+          },
+        },
+      };
+      const fixture = {
+        ...manifest.fixtures[0]!,
+        id: "whatsapp-cleanup",
+        mode: "send" as const,
+        provider: "whatsapp",
+        target: { id: "15551234567", metadata: {} },
+      };
+      const lazyManifest: ManifestDefinition = {
+        ...manifest,
+        fixtures: [fixture],
+        providers: { whatsapp: config },
+      };
+      const provider = createRegistry(lazyManifest, "/tmp/crabline.yaml").resolve(
+        "whatsapp",
+        fixture.id,
+      );
+      const context: ProviderContext = {
+        config,
+        fixture,
+        manifestPath: "/tmp/crabline.yaml",
+        providerId: "whatsapp",
+        userName: "crabline",
+      };
+      const sendContext: SendContext = {
+        ...context,
+        mode: "send",
+        nonce: "lazy-cleanup",
+        text: "must not run",
+      };
+      const waitContext: WaitContext = {
+        ...context,
+        nonce: "lazy-cleanup",
+        since: new Date().toISOString(),
+        timeoutMs: 100,
+      };
+
+      await provider.cleanup?.();
+
+      await expect(provider.send(sendContext)).rejects.toThrow(/has been cleaned up/u);
+      await expect(provider.probe(context)).rejects.toThrow(/has been cleaned up/u);
+      await expect(provider.waitForInbound(waitContext)).rejects.toThrow(/has been cleaned up/u);
+      await expect(provider.watch?.(context)[Symbol.asyncIterator]().next()).rejects.toThrow(
+        /has been cleaned up/u,
+      );
+      expect(() => provider.normalizeTarget(fixture.target)).toThrow(/has been cleaned up/u);
+      await expect(readFile(recorderPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await disposeTempDir(directory);
+    }
   });
 
   it("throws for unknown providers", () => {
