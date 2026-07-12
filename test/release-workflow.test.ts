@@ -51,13 +51,20 @@ describe("release workflow", () => {
     await expect(
       runResolveTag(resolveStep, "v1.2.3", {
         eventName: "workflow_dispatch",
-        refName: "main",
-        refType: "branch",
+        refName: "v1.2.3",
+        refType: "tag",
       }),
     ).resolves.toEqual({
       tag: "v1.2.3",
       version: "1.2.3",
     });
+    await expect(
+      runResolveTag(resolveStep, "v1.2.3", {
+        eventName: "workflow_dispatch",
+        refName: "main",
+        refType: "branch",
+      }),
+    ).rejects.toThrow(/Command failed/u);
     await expect(runResolveTag(resolveStep, "v1.2.3-beta.1")).rejects.toThrow(/Command failed/u);
     await expect(runResolveTag(resolveStep, "v1.2.3.preview")).rejects.toThrow(/Command failed/u);
     await expect(
@@ -68,6 +75,7 @@ describe("release workflow", () => {
     ).rejects.toThrow(/Command failed/u);
     expect(checkoutStep?.with?.ref).toBe("refs/tags/${{ steps.release.outputs.tag }}");
     expect(verifyCheckoutStep).toContain("refs/tags/${RELEASE_TAG}^{commit}");
+    expect(verifyCheckoutStep).toContain('"$release_commit" == "$GITHUB_EVENT_SHA"');
   });
 
   it("pins tooling and makes package and GitHub publication retry-safe", async () => {
@@ -85,8 +93,13 @@ describe("release workflow", () => {
 
     expect(workflow.concurrency).toEqual({
       "cancel-in-progress": false,
-      group: "release-${{ inputs.tag_name || github.ref_name }}",
+      group: "release",
     });
+    expect(
+      verifySteps.find((step) => step.uses?.startsWith("actions/setup-node@"))?.with?.[
+        "node-version"
+      ],
+    ).toBe(22);
     expect(commands).toContain("npm install -g npm@12.0.1");
     for (const jobName of ["verify", "publish"]) {
       const jobCommands = jobSteps(workflow, jobName)

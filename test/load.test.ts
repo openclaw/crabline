@@ -83,6 +83,18 @@ describe("config load", () => {
     expect(loaded.manifest).not.toHaveProperty("x-openclaw-bridge");
   });
 
+  it("loads the shipped built-in provider fixture", async () => {
+    const loaded = await loadManifest(path.resolve("fixtures/examples/crabline.example.yaml"));
+
+    expect(loaded.manifest.providers.whatsapp?.whatsapp).toMatchObject({
+      appSecret: "placeholder",
+      verifyToken: "placeholder",
+    });
+    expect(loaded.manifest.fixtures).toContainEqual(
+      expect.objectContaining({ id: "loopback-roundtrip", provider: "local" }),
+    );
+  });
+
   it("rejects invalid inbound regular expressions during config load", async () => {
     const directory = await createTempDir();
     directories.push(directory);

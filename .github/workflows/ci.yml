@@ -29,6 +29,9 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Validate workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
       - name: Verify
         run: pnpm verify
 

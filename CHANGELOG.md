@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Harden release, CI, config, CLI, package, and OpenClaw artifact and process-identity boundaries.
 - Preserve Zalo polling updates across disconnects and webhook changes, reject future Matrix sync tokens, normalize JSON media types, and bound Signal SSE clients and buffers.
 - Authenticate configured Discord interactions, answer native PING requests, exclude outbound mock records from inbound matching, filter WhatsApp webhooks by phone number, and validate loopback pagination limits.
 - Bound WhatsApp binary-node complexity and signal bundles, align encoder and decoder limits, preserve coherent X25519 fallback behavior, validate queue startup before listening, keep reconnect delivery FIFO, and accept bounded legacy group JIDs.

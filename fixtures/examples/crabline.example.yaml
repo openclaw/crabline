@@ -42,6 +42,8 @@ providers:
   whatsapp:
     adapter: whatsapp
     whatsapp:
+      appSecret: placeholder
+      verifyToken: placeholder
       recorder:
         path: ./.crabline/recorders/whatsapp.jsonl
       webhook:

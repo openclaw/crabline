@@ -27,6 +27,7 @@ describe("production package", () => {
       main?: string;
       optionalDependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
+      files?: string[];
       types?: string;
       version?: string;
     };
@@ -57,6 +58,11 @@ describe("production package", () => {
     expect(files).toContain(mainPath);
     expect(files).toContain(typesPath);
     expect(files).toContain("assets/crabline-banner.svg");
+    expect(files).toContain("README.md");
+    expect(files).toContain("docs/channel-setup.md");
+    expect(files).toContain("fixtures/examples/crabline.example.yaml");
+    expect(files).toContain("fixtures/examples/openclaw-bridge.yaml");
+    expect(files).toContain("LICENSE");
     expect(files.some((file) => file.startsWith("node_modules/"))).toBe(false);
     expect(files.some((file) => file.startsWith("test/"))).toBe(false);
     expect(files.some((file) => /(^|\/)baileys(\/|$)/u.test(file))).toBe(false);
@@ -91,7 +97,7 @@ describe("production package", () => {
       const tarballPath = path.join(packDirectory, packed.filename);
       await fs.writeFile(
         path.join(consumerDirectory, "package.json"),
-        JSON.stringify({ name: "crabline-production-consumer", private: true }),
+        JSON.stringify({ name: "crabline-production-consumer", private: true, type: "module" }),
       );
       await execFileAsync(
         "npm",
@@ -131,6 +137,33 @@ describe("production package", () => {
         { cwd: consumerDirectory },
       );
       expect(importOutput.trim()).toBe("function");
+
+      await fs.writeFile(
+        path.join(consumerDirectory, "consumer.ts"),
+        [
+          'import { startCrablineServer } from "@openclaw/crabline";',
+          "const start: typeof startCrablineServer = startCrablineServer;",
+          "void start;",
+          "",
+        ].join("\n"),
+      );
+      await execFileAsync(
+        path.join(root, "node_modules", ".bin", process.platform === "win32" ? "tsc6.cmd" : "tsc6"),
+        [
+          "--noEmit",
+          "--module",
+          "NodeNext",
+          "--moduleResolution",
+          "NodeNext",
+          "--target",
+          "ES2022",
+          "--types",
+          "node",
+          "--ignoreConfig",
+          "consumer.ts",
+        ],
+        { cwd: consumerDirectory },
+      );
 
       const cliShim = path.join(
         consumerDirectory,

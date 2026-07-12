@@ -118,6 +118,28 @@ providers:
 The complete multi-channel script fixture is available in
 `fixtures/examples/openclaw-bridge.yaml`.
 
+Each command receives one JSON document on stdin. Every payload contains the
+parsed `fixture` plus `provider.config`, `provider.id`, and
+`provider.manifestPath`. `send` adds `outbound` with `mode`, `nonce`, normalized
+`target`, and `text`; `waitForInbound` adds `wait` with `nonce`, `since`,
+normalized `target`, and `timeoutMs`; `watch` adds `watch` with optional `since`
+and normalized `target`.
+
+Non-watch commands must write exactly one JSON value to stdout:
+
+- `probe`: `{ "healthy": boolean, "details"?: string[] }`
+- `send`: `{ "accepted": boolean, "messageId": string, "threadId": string }`
+- `waitForInbound`: either `{ "timeout": true }` or
+  `{ "message": { "author": "assistant" | "system" | "user", "id": string,
+"sentAt": string, "text": string, "threadId": string, "raw"?: unknown } }`
+
+`watch` writes one message object per JSONL line using the same message schema.
+Blank lines are ignored. Non-watch stdout plus stderr is limited to 1 MiB.
+Watch stderr, each JSONL line, and any unterminated buffered line are each
+limited to 1 MiB. Commands inherit the process environment, use the configured
+`cwd` and `shell`. Non-watch commands are terminated at their operation timeout;
+watch commands are terminated when cancellation fires.
+
 ## Local Provider Servers
 
 Server-backed channels currently include Mattermost, Matrix, Signal, Slack,
