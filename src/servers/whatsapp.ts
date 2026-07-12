@@ -524,9 +524,10 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
     } else {
       const prepared = prepareSendMessage({ body, state: params.state });
       if (!(prepared instanceof Response)) {
+        response = prepared.commit();
         event.accepted = true;
         await appendEvent(params.state, event);
-        return prepared.commit();
+        return response;
       }
       response = prepared;
     }

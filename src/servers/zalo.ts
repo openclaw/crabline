@@ -474,6 +474,14 @@ async function waitForUpdate(
 
 function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boolean {
   pollingUpdateOrder(state, update);
+  if (state.updates.length > 0) {
+    if (state.updates.length + state.reservedUpdateOrders.size >= state.maxPendingInboundEvents) {
+      return false;
+    }
+    queuePollingUpdate(state, update);
+    flushPendingPollingUpdate(state);
+    return true;
+  }
   const pending = state.pendingRequest;
   if (pending) {
     if (isPendingUpdateRequestLive(pending)) {

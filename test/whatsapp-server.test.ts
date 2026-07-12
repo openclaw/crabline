@@ -595,7 +595,7 @@ describe("whatsapp local provider server", () => {
     ]);
   });
 
-  it("records accepted sends before consuming their message IDs", async () => {
+  it("commits accepted sends before publishing their evidence", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     let failAcceptedEvent = true;
@@ -632,7 +632,7 @@ describe("whatsapp local provider server", () => {
     const retried = await send();
     expect(retried.status).toBe(200);
     await expect(retried.json()).resolves.toMatchObject({
-      messages: [{ id: "wamid.FAKE00000001" }],
+      messages: [{ id: "wamid.FAKE00000002" }],
     });
   });
 
