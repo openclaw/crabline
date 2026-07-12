@@ -26,9 +26,13 @@ type ActiveWatch = {
   abort(): void;
   close(): Promise<void>;
 };
+type DispatchBarrier = {
+  promise: Promise<void>;
+  reached: boolean;
+};
 type AdmittedOperation = {
   completion: Promise<unknown>;
-  dispatched: Promise<void>;
+  dispatch: DispatchBarrier;
 };
 type LazyProviderFactory = (params: {
   config: ProviderConfig;
@@ -249,11 +253,8 @@ class LazyProviderAdapter implements ProviderAdapter {
     this.#cleanupPromise ??= (async () => {
       const operations = [...this.#inFlightOperations];
       const closingWatches = [...this.#activeWatches].map(async (watch) => await watch.close());
-      const providerCleanupBegun = this.#beginProviderCleanup();
-      void providerCleanupBegun.catch(() => undefined);
       const providerCleanup = this.#cleanupProvider(
-        operations.map((operation) => operation.dispatched),
-        providerCleanupBegun,
+        operations.map((operation) => operation.dispatch),
       );
       void providerCleanup.catch(() => undefined);
       await Promise.allSettled(operations.map((operation) => operation.completion));
@@ -315,12 +316,14 @@ class LazyProviderAdapter implements ProviderAdapter {
     });
   }
 
-  async #cleanupProvider(
-    dispatched: readonly Promise<void>[],
-    providerCleanupBegun: Promise<ProviderAdapter | null>,
-  ): Promise<void> {
-    await Promise.allSettled(dispatched);
-    const provider = await providerCleanupBegun;
+  async #cleanupProvider(dispatches: readonly DispatchBarrier[]): Promise<void> {
+    const pendingDispatches = dispatches
+      .filter((dispatch) => !dispatch.reached)
+      .map((dispatch) => dispatch.promise);
+    if (pendingDispatches.length > 0) {
+      await Promise.allSettled(pendingDispatches);
+    }
+    const provider = await this.#beginProviderCleanup();
     if (!provider) {
       return;
     }
@@ -335,18 +338,24 @@ class LazyProviderAdapter implements ProviderAdapter {
     const dispatched = new Promise<void>((resolve) => {
       markDispatched = resolve;
     });
+    const dispatch: DispatchBarrier = {
+      promise: dispatched,
+      reached: false,
+    };
     const completion = (async () => {
       try {
         const provider = await this.#provider();
         const result = run(provider);
+        dispatch.reached = true;
         markDispatched?.();
         return await result;
       } catch (error) {
+        dispatch.reached = true;
         markDispatched?.();
         throw error;
       }
     })();
-    const operation = { completion, dispatched };
+    const operation = { completion, dispatch };
     this.#inFlightOperations.add(operation);
     void completion.then(
       () => this.#inFlightOperations.delete(operation),
