@@ -57,7 +57,7 @@ function inferProviderPlatform(adapter: BuiltinAdapterName): ProviderPlatformNam
   return adapter;
 }
 
-const TargetSchema = z.object({
+const TargetSchema = z.strictObject({
   id: z.string().min(1),
   channelId: z.string().min(1).optional(),
   threadId: z.string().min(1).optional(),
@@ -65,42 +65,57 @@ const TargetSchema = z.object({
   metadata: z.record(z.string(), z.string()).default({}),
 });
 
-const InboundMatchSchema = z.object({
-  author: z.enum(INBOUND_AUTHORS).default("assistant"),
-  nonce: z.enum(INBOUND_NONCE_MODES).default("contains"),
-  pattern: z.string().min(1).optional(),
-  strategy: z.enum(INBOUND_STRATEGIES).default("contains"),
-});
+const InboundMatchSchema = z
+  .strictObject({
+    author: z.enum(INBOUND_AUTHORS).default("assistant"),
+    nonce: z.enum(INBOUND_NONCE_MODES).default("contains"),
+    pattern: z.string().min(1).optional(),
+    strategy: z.enum(INBOUND_STRATEGIES).default("contains"),
+  })
+  .superRefine((value, ctx) => {
+    if (value.strategy !== "regex" || !value.pattern) {
+      return;
+    }
+    try {
+      RegExp(value.pattern, "u");
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "inboundMatch.pattern must be a valid Unicode regular expression",
+        path: ["pattern"],
+      });
+    }
+  });
 
-const ScriptCommandsSchema = z.object({
+const ScriptCommandsSchema = z.strictObject({
   probe: z.string().min(1).optional(),
   send: z.string().min(1).optional(),
   waitForInbound: z.string().min(1).optional(),
   watch: z.string().min(1).optional(),
 });
 
-const LoopbackConfigSchema = z.object({
+const LoopbackConfigSchema = z.strictObject({
   delayMs: z.number().int().min(0).default(25),
 });
 
-const ScriptConfigSchema = z.object({
+const ScriptConfigSchema = z.strictObject({
   commands: ScriptCommandsSchema,
   cwd: z.string().min(1).optional(),
   shell: z.string().min(1).optional(),
 });
 
-const SlackRecorderSchema = z.object({
+const SlackRecorderSchema = z.strictObject({
   path: z.string().min(1).optional(),
 });
 
-const SlackWebhookSchema = z.object({
+const SlackWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/slack/events"),
   port: z.number().int().min(0).max(65_535).default(8787),
   publicUrl: z.string().url().optional(),
 });
 
-const SlackConfigSchema = z.object({
+const SlackConfigSchema = z.strictObject({
   recorder: SlackRecorderSchema.default({}),
   webhook: SlackWebhookSchema.default({
     host: "127.0.0.1",
@@ -109,18 +124,18 @@ const SlackConfigSchema = z.object({
   }),
 });
 
-const DiscordRecorderSchema = z.object({
+const DiscordRecorderSchema = z.strictObject({
   path: z.string().min(1).optional(),
 });
 
-const DiscordWebhookSchema = z.object({
+const DiscordWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/discord/interactions"),
   port: z.number().int().min(0).max(65_535).default(8788),
   publicUrl: z.string().url().optional(),
 });
 
-const DiscordConfigSchema = z.object({
+const DiscordConfigSchema = z.strictObject({
   applicationId: z.string().min(1).optional(),
   botToken: z.string().min(1).optional(),
   gatewayDurationMs: z.number().int().min(1000).default(180_000),
@@ -134,18 +149,18 @@ const DiscordConfigSchema = z.object({
   }),
 });
 
-const WhatsAppRecorderSchema = z.object({
+const WhatsAppRecorderSchema = z.strictObject({
   path: z.string().min(1).optional(),
 });
 
-const WhatsAppWebhookSchema = z.object({
+const WhatsAppWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/whatsapp/webhook"),
   port: z.number().int().min(0).max(65_535).default(8789),
   publicUrl: z.string().url().optional(),
 });
 
-const WhatsAppConfigSchema = z.object({
+const WhatsAppConfigSchema = z.strictObject({
   accessToken: z.string().min(1).optional(),
   apiUrl: z.string().url().optional(),
   apiVersion: z.string().min(1).optional(),
@@ -161,23 +176,23 @@ const WhatsAppConfigSchema = z.object({
   }),
 });
 
-const MsTeamsFederatedSchema = z.object({
+const MsTeamsFederatedSchema = z.strictObject({
   clientAudience: z.string().min(1).optional(),
   clientId: z.string().min(1),
 });
 
-const MsTeamsRecorderSchema = z.object({
+const MsTeamsRecorderSchema = z.strictObject({
   path: z.string().min(1).optional(),
 });
 
-const MsTeamsWebhookSchema = z.object({
+const MsTeamsWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/msteams/webhook"),
   port: z.number().int().min(0).max(65_535).default(8791),
   publicUrl: z.string().url().optional(),
 });
 
-const MsTeamsConfigSchema = z.object({
+const MsTeamsConfigSchema = z.strictObject({
   apiUrl: z.string().url().optional(),
   appId: z.string().min(1).optional(),
   appPassword: z.string().min(1).optional(),
@@ -202,18 +217,18 @@ const GoogleChatCredentialsSchema = z
   })
   .passthrough();
 
-const GoogleChatRecorderSchema = z.object({
+const GoogleChatRecorderSchema = z.strictObject({
   path: z.string().min(1).optional(),
 });
 
-const GoogleChatWebhookSchema = z.object({
+const GoogleChatWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/googlechat/webhook"),
   port: z.number().int().min(0).max(65_535).default(8792),
   publicUrl: z.string().url().optional(),
 });
 
-const GoogleChatConfigSchema = z.object({
+const GoogleChatConfigSchema = z.strictObject({
   apiUrl: z.string().url().optional(),
   credentials: GoogleChatCredentialsSchema.optional(),
   disableSignatureVerification: z.boolean().optional(),
@@ -232,7 +247,7 @@ const GoogleChatConfigSchema = z.object({
   }),
 });
 
-const TelegramLongPollingSchema = z.object({
+const TelegramLongPollingSchema = z.strictObject({
   allowedUpdates: z.array(z.string().min(1)).optional(),
   deleteWebhook: z.boolean().optional(),
   dropPendingUpdates: z.boolean().optional(),
@@ -241,18 +256,18 @@ const TelegramLongPollingSchema = z.object({
   timeout: z.number().int().min(0).optional(),
 });
 
-const TelegramRecorderSchema = z.object({
+const TelegramRecorderSchema = z.strictObject({
   path: z.string().min(1).optional(),
 });
 
-const TelegramWebhookSchema = z.object({
+const TelegramWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/telegram/webhook"),
   port: z.number().int().min(0).max(65_535).default(8790),
   publicUrl: z.string().url().optional(),
 });
 
-const TelegramConfigSchema = z.object({
+const TelegramConfigSchema = z.strictObject({
   apiUrl: z.string().url().optional(),
   botToken: z.string().min(1).optional(),
   longPolling: TelegramLongPollingSchema.optional(),
@@ -267,13 +282,13 @@ const TelegramConfigSchema = z.object({
   }),
 });
 
-const FeishuConfigSchema = z.object({
+const FeishuConfigSchema = z.strictObject({
   appId: z.string().min(1).optional(),
   appSecret: z.string().min(1).optional(),
-  recorder: z.object({ path: z.string().min(1).optional() }).default({}),
+  recorder: z.strictObject({ path: z.string().min(1).optional() }).default({}),
   userName: z.string().min(1).optional(),
   webhook: z
-    .object({
+    .strictObject({
       host: z.string().min(1).default("127.0.0.1"),
       path: z.string().min(1).default("/feishu/webhook"),
       port: z.number().int().min(0).max(65_535).default(8795),
@@ -286,24 +301,24 @@ const FeishuConfigSchema = z.object({
     }),
 });
 
-const MattermostRecorderSchema = z.object({
+const MattermostRecorderSchema = z.strictObject({
   path: z.string().min(1).optional(),
 });
 
-const MattermostWebhookSchema = z.object({
+const MattermostWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/mattermost/webhook"),
   port: z.number().int().min(0).max(65_535).default(8793),
   publicUrl: z.string().url().optional(),
 });
 
-const MattermostWebsocketSchema = z.object({
+const MattermostWebsocketSchema = z.strictObject({
   enabled: z.boolean().optional(),
   maxReconnectDelayMs: z.number().int().min(0).optional(),
   reconnectDelayMs: z.number().int().min(0).optional(),
 });
 
-const MattermostConfigSchema = z.object({
+const MattermostConfigSchema = z.strictObject({
   baseUrl: z.string().url().optional(),
   botToken: z.string().min(1).optional(),
   callbackUrl: z.string().url().optional(),
@@ -317,18 +332,18 @@ const MattermostConfigSchema = z.object({
   websocket: MattermostWebsocketSchema.optional(),
 });
 
-const ZaloRecorderSchema = z.object({
+const ZaloRecorderSchema = z.strictObject({
   path: z.string().min(1).optional(),
 });
 
-const ZaloWebhookSchema = z.object({
+const ZaloWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/zalo/webhook"),
   port: z.number().int().min(0).max(65_535).default(8794),
   publicUrl: z.string().url().optional(),
 });
 
-const ZaloConfigSchema = z.object({
+const ZaloConfigSchema = z.strictObject({
   botToken: z.string().min(1).optional(),
   recorder: ZaloRecorderSchema.default({}),
   userName: z.string().min(1).optional(),
@@ -340,28 +355,28 @@ const ZaloConfigSchema = z.object({
   webhookSecret: z.string().min(1).optional(),
 });
 
-const MatrixAccessTokenAuthSchema = z.object({
+const MatrixAccessTokenAuthSchema = z.strictObject({
   accessToken: z.string().min(1),
   type: z.literal("accessToken"),
   userID: z.string().min(1).optional(),
 });
 
-const MatrixPasswordAuthSchema = z.object({
+const MatrixPasswordAuthSchema = z.strictObject({
   password: z.string().min(1),
   type: z.literal("password"),
   userID: z.string().min(1).optional(),
   username: z.string().min(1),
 });
 
-const MatrixConfigSchema = z.object({
+const MatrixConfigSchema = z.strictObject({
   auth: z.union([MatrixAccessTokenAuthSchema, MatrixPasswordAuthSchema]).optional(),
   baseURL: z.string().url().optional(),
   commandPrefix: z.string().min(1).optional(),
-  recorder: z.object({ path: z.string().min(1).optional() }).default({}),
+  recorder: z.strictObject({ path: z.string().min(1).optional() }).default({}),
   recoveryKey: z.string().min(1).optional(),
   roomAllowlist: z.array(z.string().min(1)).optional(),
   webhook: z
-    .object({
+    .strictObject({
       host: z.string().min(1).default("127.0.0.1"),
       path: z.string().min(1).default("/matrix/webhook"),
       port: z.number().int().min(0).max(65_535).default(8797),
@@ -374,14 +389,14 @@ const MatrixConfigSchema = z.object({
     }),
 });
 
-const IMessageConfigSchema = z.object({
+const IMessageConfigSchema = z.strictObject({
   apiKey: z.string().min(1).optional(),
   gatewayDurationMs: z.number().int().min(1000).default(180_000),
   local: z.boolean().optional(),
-  recorder: z.object({ path: z.string().min(1).optional() }).default({}),
+  recorder: z.strictObject({ path: z.string().min(1).optional() }).default({}),
   serverUrl: z.string().url().optional(),
   webhook: z
-    .object({
+    .strictObject({
       host: z.string().min(1).default("127.0.0.1"),
       path: z.string().min(1).default("/imessage/webhook"),
       port: z.number().int().min(0).max(65_535).default(8796),
@@ -395,7 +410,7 @@ const IMessageConfigSchema = z.object({
 });
 
 export const ProviderConfigSchema = z
-  .object({
+  .strictObject({
     adapter: z.enum(BUILTIN_ADAPTERS),
     capabilities: z.array(z.enum(FIXTURE_MODES)).default(["probe", "send", "roundtrip", "agent"]),
     discord: DiscordConfigSchema.optional(),
@@ -561,7 +576,7 @@ export const ProviderConfigSchema = z
     platform: value.platform ?? inferProviderPlatform(value.adapter) ?? "loopback",
   }));
 
-export const FixtureSchema = z.object({
+export const FixtureSchema = z.strictObject({
   accountId: z.string().min(1).optional(),
   env: z.array(z.string().min(1)).default([]),
   id: z
@@ -582,7 +597,7 @@ export const FixtureSchema = z.object({
   timeoutMs: z.number().int().min(100).default(30_000),
 });
 
-export const ManifestSchema = z.object({
+export const ManifestSchema = z.strictObject({
   configVersion: z.literal(1).default(1),
   fixtures: z.array(FixtureSchema).default([]),
   providers: z.record(z.string(), ProviderConfigSchema).default({}),

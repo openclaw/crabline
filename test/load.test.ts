@@ -55,6 +55,33 @@ describe("config load", () => {
     expect(loaded.path).toBe(configPath);
   });
 
+  it("rejects invalid inbound regular expressions during config load", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  local:",
+        "    adapter: loopback",
+        "fixtures:",
+        "  - id: fixture",
+        "    provider: local",
+        "    mode: roundtrip",
+        "    inboundMatch:",
+        "      nonce: ignore",
+        '      pattern: "["',
+        "      strategy: regex",
+        "    target:",
+        "      id: echo-bot",
+      ].join("\n"),
+    );
+
+    await expect(loadManifest(configPath)).rejects.toThrow(/valid Unicode regular expression/u);
+  });
+
   it("resolves default config names from cwd", async () => {
     const directory = await createTempDir();
     directories.push(directory);
