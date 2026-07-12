@@ -4,6 +4,7 @@ import {
   DEFAULT_ACCOUNT_ID,
   isRecord,
   qaTargetForInbound,
+  readNonBlankString,
   readString,
 } from "../shared.js";
 
@@ -16,10 +17,6 @@ function requireWhatsAppJid(value: string, label: string): string {
     throw new Error(`${label} must be a native WhatsApp JID.`);
   }
   return trimmed;
-}
-
-function readMessageText(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
@@ -81,6 +78,9 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         };
       },
       createAgentDelivery(parsed) {
+        if (parsed.threadId !== undefined) {
+          throw new Error("WhatsApp does not support thread targets.");
+        }
         const to = requireWhatsAppJid(parsed.id, "WhatsApp target");
         return {
           channel: "whatsapp",
@@ -90,6 +90,9 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         };
       },
       createInbound(input) {
+        if (input.threadId !== undefined) {
+          throw new Error("WhatsApp does not support thread targets.");
+        }
         const chatJid = requireWhatsAppJid(input.conversation.id, "WhatsApp conversation");
         const senderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender");
         return {
@@ -115,9 +118,11 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (event.path !== messagesPath || !isRecord(event.body)) {
           return null;
         }
-        const to = readString(event.body.to);
+        const to = readString(event.body.to ?? event.body.jid);
         const textPayload = event.body.text;
-        const text = isRecord(textPayload) ? readMessageText(textPayload.body) : undefined;
+        const text = isRecord(textPayload)
+          ? readNonBlankString(textPayload.body)
+          : readNonBlankString(textPayload);
         if (!to || !text) {
           return null;
         }

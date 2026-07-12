@@ -4,6 +4,7 @@ import {
   DEFAULT_ACCOUNT_ID,
   isRecord,
   qaTargetForInbound,
+  readNonBlankString,
   readString,
 } from "../shared.js";
 import {
@@ -61,7 +62,12 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
         if (!response.ok) {
           throw new Error(`Crabline Slack auth.test probe failed with HTTP ${response.status}.`);
         }
-        return await response.json();
+        const result: unknown = await response.json();
+        if (!isRecord(result) || result.ok !== true) {
+          const error = isRecord(result) ? readString(result.error) : undefined;
+          throw new Error(`Crabline Slack auth.test probe failed: ${error ?? "unknown_error"}.`);
+        }
+        return result;
       },
       createBinding() {
         return {
@@ -147,10 +153,7 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
           return null;
         }
         const channel = readString(event.body.channel);
-        const text =
-          typeof event.body.text === "string" && event.body.text.trim()
-            ? event.body.text
-            : undefined;
+        const text = readNonBlankString(event.body.text);
         if (!channel || !text) {
           return null;
         }

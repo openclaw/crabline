@@ -131,15 +131,27 @@ export function createOpenClawCrablineProviderBridge<
   provider: TProvider;
 }): OpenClawCrablineProviderBridge<Extract<CrablineServerManifest, { provider: TProvider }>> {
   type ProviderManifest = Extract<CrablineServerManifest, { provider: TProvider }>;
+  const createAdapter = (manifest: ProviderManifest): OpenClawCrablineProviderAdapter => {
+    const adapter = params.createAdapter(manifest);
+    return {
+      ...adapter,
+      createInbound(input) {
+        if (!readNonBlankString(input.text)) {
+          throw new Error("OpenClaw Crabline inbound message text is required.");
+        }
+        return adapter.createInbound(input);
+      },
+    };
+  };
   const bridge: OpenClawCrablineProviderBridge<ProviderManifest> = {
-    createAdapter: params.createAdapter,
+    createAdapter,
     createAdapterFromManifest(manifest) {
       if (manifest.provider !== params.provider) {
         throw new Error(
           `Unsupported OpenClaw provider binding: expected ${params.provider}, got ${manifest.provider}.`,
         );
       }
-      return params.createAdapter(manifest as ProviderManifest);
+      return createAdapter(manifest as ProviderManifest);
     },
     provider: params.provider as ProviderManifest["provider"],
   };
@@ -154,6 +166,10 @@ export function readString(value: unknown): string | undefined {
     return String(value);
   }
   return undefined;
+}
+
+export function readNonBlankString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

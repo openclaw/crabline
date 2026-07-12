@@ -4,6 +4,7 @@ import {
   DEFAULT_ACCOUNT_ID,
   isRecord,
   qaTargetForInbound,
+  readNonBlankString,
   readString,
 } from "../shared.js";
 import { mattermostId } from "../../servers/mattermost.js";
@@ -112,7 +113,7 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
         }
         const channelId = readString(event.body.channel_id);
         const rootId = readString(event.body.root_id);
-        const text = readString(event.body.message);
+        const text = readNonBlankString(event.body.message);
         if (!channelId || !text) {
           return null;
         }

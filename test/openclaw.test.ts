@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CRABLINE_FAKE_PROVIDER_CHANNELS,
   CRABLINE_SERVER_CHANNELS,
@@ -179,6 +179,22 @@ describe("OpenClaw local provider bridge", () => {
     expect(probeOpenClawCrablineFakeProvider).toBe(probeOpenClawCrablineProvider);
     expect(legacyManifest.provider).toBe("telegram");
     expect(conversation).toEqual({ id: "alice", kind: "direct" });
+  });
+
+  it("rejects Slack application errors returned with HTTP 200", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "invalid_auth", ok: false }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+    try {
+      await expect(probeOpenClawCrablineProvider(slackManifest)).rejects.toThrow(
+        "Crabline Slack auth.test probe failed: invalid_auth.",
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   it("resolves channel-driver metadata through Crabline", () => {
@@ -481,7 +497,7 @@ describe("OpenClaw local provider bridge", () => {
       });
       expect(adapter.createAgentDelivery({ target: "dm:alice" })).toMatchObject({
         channel: "telegram",
-        to: "100001",
+        to: expect.stringMatching(/^\d+$/u),
       });
       if (adapter.manifest.provider !== "telegram") {
         throw new Error("Expected Telegram local provider manifest.");
@@ -496,12 +512,29 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("maps QA targets, inbound messages, and recorder events", () => {
-    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:alice" })).toEqual({
-      channel: "telegram",
-      to: "100001",
-      replyChannel: "telegram",
-      replyTo: "100001",
+    const symbolicDelivery = createOpenClawCrablineAgentDelivery({
+      manifest,
+      target: "dm:alice",
     });
+    expect(symbolicDelivery).toEqual({
+      channel: "telegram",
+      to: expect.stringMatching(/^\d+$/u),
+      replyChannel: "telegram",
+      replyTo: symbolicDelivery.to,
+    });
+    expect(BigInt(symbolicDelivery.to)).toBeLessThan(1n << 52n);
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:alice" }).to).toBe(
+      symbolicDelivery.to,
+    );
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:bob" }).to).not.toBe(
+      symbolicDelivery.to,
+    );
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "group:alice" }).to).toMatch(
+      /^-\d+$/u,
+    );
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:42424242" }).to).toBe(
+      "42424242",
+    );
 
     const inbound = createOpenClawCrablineInbound({
       manifest,
@@ -515,8 +548,8 @@ describe("OpenClaw local provider bridge", () => {
     });
     expect(inbound).toEqual({
       providerBody: {
-        chatId: "100001",
-        fromId: 100001,
+        chatId: symbolicDelivery.to,
+        fromId: Number(symbolicDelivery.to),
         fromName: "Alice",
         entities: [{ length: 5, offset: 0, type: "bot_command" }],
         text: "/stop",
@@ -525,14 +558,36 @@ describe("OpenClaw local provider bridge", () => {
         "content-type": "application/json",
         "x-crabline-admin-token": "crabline-admin-token",
       },
-      providerTargetKey: "100001",
+      providerTargetKey: symbolicDelivery.to,
       providerUrl: "http://127.0.0.1:1234/crabline/telegram/inbound",
       qaTarget: "dm:alice",
       stateConversation: {
-        id: "100001",
+        id: symbolicDelivery.to,
         kind: "direct",
       },
     });
+
+    const paddedText = "  hello from qa\n";
+    expect(
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          senderId: "alice",
+          text: paddedText,
+        },
+      }).providerBody,
+    ).toMatchObject({ text: paddedText });
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          senderId: "alice",
+          text: " \n\t",
+        },
+      }),
+    ).toThrow("OpenClaw Crabline inbound message text is required.");
 
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
@@ -590,6 +645,23 @@ describe("OpenClaw local provider bridge", () => {
       replyChannel: "whatsapp",
       replyTo: "15551234567@s.whatsapp.net",
     });
+    expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest: whatsappManifest,
+        target: "thread:120363001234567890@g.us/message-1",
+      }),
+    ).toThrow("WhatsApp does not support thread targets.");
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest: whatsappManifest,
+        input: {
+          conversation: { id: "120363001234567890@g.us", kind: "group" },
+          senderId: "15551234567@s.whatsapp.net",
+          text: "hello",
+          threadId: "message-1",
+        },
+      }),
+    ).toThrow("WhatsApp does not support thread targets.");
 
     const inbound = createOpenClawCrablineInbound({
       manifest: whatsappManifest,
@@ -721,6 +793,23 @@ describe("OpenClaw local provider bridge", () => {
       replyTo: "group:group-1",
       to: "group:group-1",
     });
+    expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest: signalManifest,
+        target: "thread:group-1/1700000000001",
+      }),
+    ).toThrow("Signal does not support thread targets.");
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest: signalManifest,
+        input: {
+          conversation: { id: "group-1", kind: "group" },
+          senderId: "+15551234567",
+          text: "hello",
+          threadId: "1700000000001",
+        },
+      }),
+    ).toThrow("Signal does not support thread targets.");
 
     const directDelivery = createOpenClawCrablineAgentDelivery({
       manifest: signalManifest,
@@ -796,6 +885,102 @@ describe("OpenClaw local provider bridge", () => {
       text: "hello from openclaw",
       to: "group:qa",
     });
+  });
+
+  it("preserves non-blank recorder message whitespace across bridges", () => {
+    const cases: Array<{
+      event: (text: string) => unknown;
+      manifest: CrablineServerManifest;
+      name: string;
+    }> = [
+      {
+        name: "Telegram",
+        manifest,
+        event: (text) => ({
+          body: { caption: text, chat_id: "100001", photo: "fixture.png" },
+          path: "/botTOKEN/sendPhoto",
+          type: "api",
+        }),
+      },
+      {
+        name: "WhatsApp",
+        manifest: whatsappManifest,
+        event: (text) => ({
+          body: { text: { body: text }, to: "15551234567@s.whatsapp.net" },
+          path: new URL(whatsappManifest.endpoints.messagesUrl).pathname,
+          type: "api",
+        }),
+      },
+      {
+        name: "Slack",
+        manifest: slackManifest,
+        event: (text) => ({
+          body: { channel: "C1234567890", text },
+          path: "/api/chat.postMessage",
+          type: "api",
+        }),
+      },
+      {
+        name: "Signal",
+        manifest: signalManifest,
+        event: (text) => ({
+          body: {
+            method: "send",
+            params: { message: text, recipient: ["+15551234567"] },
+          },
+          path: "/api/v1/rpc",
+          type: "api",
+        }),
+      },
+      {
+        name: "Mattermost",
+        manifest: mattermostManifest,
+        event: (text) => ({
+          body: { channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa", message: text },
+          method: "POST",
+          path: "/api/v4/posts",
+          type: "api",
+        }),
+      },
+      {
+        name: "Matrix",
+        manifest: matrixManifest,
+        event: (text) => ({
+          body: { body: text },
+          method: "PUT",
+          path: "/_matrix/client/v3/rooms/!room%3Amatrix.test/send/m.room.message/txn-1",
+          type: "api",
+        }),
+      },
+      {
+        name: "Zalo",
+        manifest: zaloManifest,
+        event: (text) => ({
+          body: { chat_id: "1459232241454765289", text },
+          method: "POST",
+          path: "/bot<redacted>/sendMessage",
+          type: "api",
+        }),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const text = `  ${testCase.name} reply\n`;
+      expect(
+        createOpenClawCrablineOutboundFromRecorderEvent({
+          event: testCase.event(text),
+          manifest: testCase.manifest,
+          targetByProviderTarget: new Map(),
+        }),
+      ).toMatchObject({ text });
+      expect(
+        createOpenClawCrablineOutboundFromRecorderEvent({
+          event: testCase.event(" \n\t"),
+          manifest: testCase.manifest,
+          targetByProviderTarget: new Map(),
+        }),
+      ).toBeNull();
+    }
   });
 
   it("maps Mattermost QA targets, inbound messages, and recorder events", () => {

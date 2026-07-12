@@ -4,6 +4,7 @@ import {
   DEFAULT_ACCOUNT_ID,
   isRecord,
   qaTargetForInbound,
+  readNonBlankString,
   readString,
 } from "../shared.js";
 
@@ -95,8 +96,8 @@ export const ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProv
         const chatId = readString(event.body.chat_id);
         const text =
           event.path === "/bot<redacted>/sendMessage"
-            ? readString(event.body.text)
-            : readString(event.body.caption);
+            ? readNonBlankString(event.body.text)
+            : readNonBlankString(event.body.caption);
         if (!chatId || !text) {
           return null;
         }
