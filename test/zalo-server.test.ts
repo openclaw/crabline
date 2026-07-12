@@ -1,4 +1,4 @@
-import { Agent, createServer, type ClientRequest } from "node:http";
+import { Agent, createServer, ServerResponse, type ClientRequest } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -338,6 +338,56 @@ describe("Zalo local provider server", () => {
       ok: true,
       result: { message: { text: "queued first" } },
     });
+  });
+
+  it("restores concurrently failed poll responses in FIFO order", async () => {
+    const server = await startZaloServer({ botToken: "sample" });
+    servers.push(server);
+    for (const text of ["first", "second"]) {
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text }),
+        headers: adminHeaders(server),
+        method: "POST",
+      });
+      expect(inbound.status).toBe(200);
+    }
+
+    const responsePrototype = ServerResponse.prototype as unknown as {
+      end: (...args: unknown[]) => ServerResponse;
+    };
+    const originalEnd = responsePrototype.end;
+    let failedResponses = 0;
+    responsePrototype.end = function (this: ServerResponse, ...args: unknown[]) {
+      if (this.req?.url?.includes("/getUpdates") && failedResponses < 2) {
+        const delayMs = 10 + failedResponses++ * 10;
+        setTimeout(() => this.destroy(new Error("simulated response failure")), delayMs);
+        return this;
+      }
+      return Reflect.apply(originalEnd, this, args) as ServerResponse;
+    };
+
+    try {
+      await Promise.allSettled([
+        requestHttp({
+          method: "GET",
+          url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`,
+        }),
+        requestHttp({
+          method: "GET",
+          url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`,
+        }),
+      ]);
+    } finally {
+      responsePrototype.end = originalEnd;
+    }
+
+    for (const text of ["first", "second"]) {
+      const update = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`);
+      await expect(update.json()).resolves.toMatchObject({
+        ok: true,
+        result: { message: { text } },
+      });
+    }
   });
 
   it("supersedes concurrent long polls and delivers to the current request", async () => {
