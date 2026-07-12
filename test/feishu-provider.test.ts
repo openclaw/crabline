@@ -122,6 +122,35 @@ describe("Feishu webhook normalizer", () => {
     ).resolves.toMatchObject({ status: 401 });
   });
 
+  it("accepts unsigned encrypted URL verification only", async () => {
+    const config = await createLocalMockConfig("feishu", "/feishu/webhook");
+    const encryptKey = "encrypt-key";
+    config.feishu!.encryptKey = encryptKey;
+    const authenticate = createFeishuWebhookAuthenticator(config, {});
+    const challenge = JSON.stringify({
+      challenge: "challenge-token",
+      type: "url_verification",
+    });
+
+    await expect(
+      authenticate!(
+        new Request("https://feishu.example.test/webhook"),
+        JSON.stringify({ encrypt: encryptFeishuPayload(JSON.parse(challenge), encryptKey) }),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      authenticate!(
+        new Request("https://feishu.example.test/webhook"),
+        JSON.stringify({
+          encrypt: encryptFeishuPayload(
+            { event: { message: { content: "{}", message_type: "text" } } },
+            encryptKey,
+          ),
+        }),
+      ),
+    ).resolves.toMatchObject({ status: 401 });
+  });
+
   it("rejects plaintext callbacks when only encrypted ingress is configured", async () => {
     const config = await createLocalMockConfig("feishu", "/feishu/webhook");
     config.feishu!.encryptKey = "encrypt-key";
@@ -139,6 +168,30 @@ describe("Feishu webhook normalizer", () => {
               message_type: "text",
             },
           },
+        }),
+      ),
+    ).resolves.toMatchObject({ status: 401 });
+  });
+
+  it("rejects token-authenticated plaintext when encryption is configured", async () => {
+    const config = await createLocalMockConfig("feishu", "/feishu/webhook");
+    config.feishu!.encryptKey = "encrypt-key";
+    config.feishu!.verificationToken = "sample";
+    const authenticate = createFeishuWebhookAuthenticator(config, {});
+
+    await expect(
+      authenticate!(
+        new Request("https://feishu.example.test/webhook"),
+        JSON.stringify({
+          event: {
+            message: {
+              chat_id: "oc_abc123",
+              content: JSON.stringify({ text: "plaintext" }),
+              message_id: "om_message123",
+              message_type: "text",
+            },
+          },
+          token: "sample",
         }),
       ),
     ).resolves.toMatchObject({ status: 401 });

@@ -82,7 +82,7 @@ export function createFeishuWebhookAuthenticator(
 
     const encrypted = typeof payload.encrypt === "string";
     if (encrypted) {
-      if (!resolved.encryptKey || !verifyFeishuSignature(request, rawBody, resolved.encryptKey)) {
+      if (!resolved.encryptKey) {
         return unauthorizedFeishuWebhook();
       }
       try {
@@ -90,7 +90,13 @@ export function createFeishuWebhookAuthenticator(
       } catch {
         return unauthorizedFeishuWebhook();
       }
-    } else if (resolved.encryptKey && !validateCallback) {
+      if (
+        !verifyFeishuSignature(request, rawBody, resolved.encryptKey) &&
+        !isFeishuUrlVerification(payload)
+      ) {
+        return unauthorizedFeishuWebhook();
+      }
+    } else if (resolved.encryptKey) {
       return unauthorizedFeishuWebhook();
     }
 
@@ -219,6 +225,15 @@ function readFeishuVerificationToken(payload: unknown): string | null {
   const header = optionalRecord(payload, "header");
   return (
     optionalString(payload, "token") ?? (header ? optionalString(header, "token") : null) ?? null
+  );
+}
+
+function isFeishuUrlVerification(payload: unknown): boolean {
+  return (
+    isRecord(payload) &&
+    payload.type === "url_verification" &&
+    typeof payload.challenge === "string" &&
+    payload.challenge.length > 0
   );
 }
 
