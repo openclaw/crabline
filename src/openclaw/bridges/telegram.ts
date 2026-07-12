@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   createAdminInboundRequest,
   createOpenClawCrablineProviderBridge,
@@ -5,21 +6,28 @@ import {
   isRecord,
   qaTargetForInbound,
   readInteger,
+  readNonBlankString,
   readString,
 } from "../shared.js";
 
-const TELEGRAM_DIRECT_CHAT_ID = "100001";
-const TELEGRAM_GROUP_CHAT_ID = "-1001234567890";
-const TELEGRAM_DEFAULT_SENDER_ID = 100001;
+const TELEGRAM_SYMBOLIC_CHAT_ID_BASE = 1n << 51n;
+const TELEGRAM_SYMBOLIC_CHAT_ID_MASK = TELEGRAM_SYMBOLIC_CHAT_ID_BASE - 1n;
 const TELEGRAM_OUTBOUND_METHOD_RE =
   /\/(sendAnimation|sendDocument|sendMessage|sendPhoto|sendVideo)$/u;
 
-function normalizeTelegramChatId(kind: "direct" | "group", id: string) {
-  return /^-?\d+$/u.test(id.trim())
-    ? id.trim()
-    : kind === "group"
-      ? TELEGRAM_GROUP_CHAT_ID
-      : TELEGRAM_DIRECT_CHAT_ID;
+function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
+  const value = id.trim();
+  if (!value) {
+    throw new Error("Telegram target is required.");
+  }
+  if (/^-?\d+$/u.test(value)) {
+    return value;
+  }
+  const hash =
+    createHash("sha256").update(`${kind}:${value}`).digest().readBigUInt64BE() &
+    TELEGRAM_SYMBOLIC_CHAT_ID_MASK;
+  const numericId = TELEGRAM_SYMBOLIC_CHAT_ID_BASE + hash;
+  return String(kind === "group" ? -numericId : numericId);
 }
 
 function telegramTargetKey(chatId: string, threadId?: number) {
@@ -107,7 +115,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           ...createAdminInboundRequest(telegram),
           providerBody: {
             chatId,
-            fromId: readInteger(input.senderId) ?? TELEGRAM_DEFAULT_SENDER_ID,
+            fromId: Number(normalizeTelegramChatId("direct", input.senderId)),
             fromName: input.senderName ?? input.senderId,
             ...(threadId !== undefined ? { messageThreadId: threadId } : {}),
             ...(input.nativeCommand
@@ -142,9 +150,9 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         }
         const chatId = readString(event.body.chat_id);
         const text =
-          method === "sendMessage" && typeof event.body.text === "string" && event.body.text.trim()
-            ? event.body.text
-            : readString(event.body.caption);
+          method === "sendMessage"
+            ? readNonBlankString(event.body.text)
+            : readNonBlankString(event.body.caption);
         if (!chatId || !text) {
           return null;
         }

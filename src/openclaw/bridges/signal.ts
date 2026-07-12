@@ -5,6 +5,7 @@ import {
   DEFAULT_ACCOUNT_ID,
   isRecord,
   qaTargetForInbound,
+  readNonBlankString,
   readString,
 } from "../shared.js";
 
@@ -67,10 +68,16 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         };
       },
       createAgentDelivery(parsed) {
+        if (parsed.threadId !== undefined) {
+          throw new Error("Signal does not support thread targets.");
+        }
         const to = signalTarget(parsed.kind, parsed.id);
         return { channel: "signal", replyChannel: "signal", replyTo: to, to };
       },
       createInbound(input) {
+        if (input.threadId !== undefined) {
+          throw new Error("Signal does not support thread targets.");
+        }
         const kind = input.conversation.kind === "direct" ? "direct" : "group";
         const conversationId = input.conversation.id.trim();
         const senderId = input.senderId.trim();
@@ -102,7 +109,7 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         ) {
           return null;
         }
-        const text = readString(event.body.params.message);
+        const text = readNonBlankString(event.body.params.message);
         const groupId = readString(event.body.params.groupId);
         const recipients = event.body.params.recipient;
         const recipient = Array.isArray(recipients) ? readString(recipients[0]) : undefined;

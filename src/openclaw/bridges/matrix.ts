@@ -4,6 +4,7 @@ import {
   DEFAULT_ACCOUNT_ID,
   isRecord,
   qaTargetForInbound,
+  readNonBlankString,
   readString,
 } from "../shared.js";
 
@@ -130,7 +131,7 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         if (eventType !== "m.room.message") {
           return null;
         }
-        const text = readString(event.body.body);
+        const text = readNonBlankString(event.body.body);
         if (!text) {
           return null;
         }
