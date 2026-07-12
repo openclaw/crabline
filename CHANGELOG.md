@@ -4,6 +4,7 @@
 
 - Randomize externally bound provider credentials, preserve Slack MPIM and Matrix sync errors, bound server shutdown, and enforce safe Zalo webhooks.
 - Order lazy cleanup after admitted dispatch, isolate loopback message state, and enforce effective modes and inbound deadlines.
+- Fence OpenClaw smoke artifact paths, clean abandoned generations safely, preserve primary probe failures and replacement files, and report post-commit lock cleanup failures.
 - Pin privileged release workflow actions to immutable revisions.
 - Redact inherited secret-named environment values from script diagnostics.
 - Verify production tarballs through their installed npm command shims.
