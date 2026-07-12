@@ -499,11 +499,12 @@ export function normalizeWhatsAppWebhookPayload(
     payload,
     threadRule: WHATSAPP_WA_ID_RULE,
   }) as Record<string, unknown>;
-  return [normalizeWhatsAppFallback(fallback)];
+  return [normalizeWhatsAppFallback(fallback, payload)];
 }
 
 function normalizeWhatsAppFallback(
   fallback: Record<string, unknown>,
+  source: Record<string, unknown>,
 ): NormalizedWhatsAppWebhookMessage {
   const normalized: NormalizedWhatsAppWebhookMessage = {
     raw: fallback.raw ?? fallback,
@@ -527,13 +528,14 @@ function normalizeWhatsAppFallback(
   if (threadId) {
     normalized.threadId = threadId;
   }
-  const sentAt = optionalString(fallback, "sentAt");
+  const sentAt = optionalString(source, "sentAt");
   if (sentAt) {
-    normalized.sentAt = sentAt;
+    normalized.sentAt = whatsAppFallbackTimestampToIso(sentAt, "sentAt");
   }
 
   const message = optionalRecord(fallback, "message");
   if (message) {
+    const sourceMessage = optionalRecord(source, "message");
     const normalizedMessage: NonNullable<NormalizedWhatsAppWebhookMessage["message"]> = {};
     const messageAuthor = normalizeAuthor(message.author);
     if (messageAuthor) {
@@ -549,9 +551,9 @@ function normalizeWhatsAppFallback(
     if (message.raw !== undefined) {
       normalizedMessage.raw = message.raw;
     }
-    const messageSentAt = optionalString(message, "sentAt");
+    const messageSentAt = sourceMessage ? optionalString(sourceMessage, "sentAt") : undefined;
     if (messageSentAt) {
-      normalizedMessage.sentAt = messageSentAt;
+      normalizedMessage.sentAt = whatsAppFallbackTimestampToIso(messageSentAt, "message.sentAt");
     }
     const messageText = optionalString(message, "text");
     if (messageText) {
@@ -609,6 +611,16 @@ function whatsAppTimestampToIso(timestamp: string): string {
   const date = new Date(milliseconds);
   if (Number.isNaN(date.getTime())) {
     throw new CrablineError("WhatsApp messages[].timestamp is invalid", { kind: "inbound" });
+  }
+  return date.toISOString();
+}
+
+function whatsAppFallbackTimestampToIso(timestamp: string, field: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    throw new CrablineError(`WhatsApp fallback ${field} must be a valid timestamp`, {
+      kind: "inbound",
+    });
   }
   return date.toISOString();
 }
