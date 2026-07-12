@@ -211,23 +211,35 @@ export async function startHttpJsonServer(params: {
   port: number;
   serverName: string;
 }): Promise<{ baseUrl: string; close(): Promise<void>; server: Server }> {
-  const server = createServer(async (request, response) => {
+  const handleRequest = async (request: IncomingMessage, response: ServerResponse) => {
     try {
       await writeResponse(response, await params.handle(request));
     } catch (error) {
-      const handled = params.handleError?.(error, request);
-      await writeResponse(
-        response,
-        handled ??
-          jsonResponse(
-            {
-              error: "internal server error",
-              ok: false,
-            },
-            500,
-          ),
-      );
+      let handled: Response | undefined;
+      try {
+        handled = params.handleError?.(error, request);
+      } catch {
+        handled = undefined;
+      }
+      try {
+        await writeResponse(
+          response,
+          handled ??
+            jsonResponse(
+              {
+                error: "internal server error",
+                ok: false,
+              },
+              500,
+            ),
+        );
+      } catch {
+        response.destroy();
+      }
     }
+  };
+  const server = createServer((request, response) => {
+    void handleRequest(request, response);
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

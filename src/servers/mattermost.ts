@@ -23,13 +23,15 @@ import { closeWebSocketServer } from "./websocket.js";
 
 const DEFAULT_WEBSOCKET_AUTHENTICATION_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_WEBSOCKET_BUFFERED_BYTES = 1024 * 1024;
+const DEFAULT_MAX_WEBSOCKET_MESSAGE_BYTES = 64 * 1024;
+const DEFAULT_MAX_UNAUTHENTICATED_WEBSOCKET_CLIENTS = 32;
 
-function resolveMaxWebSocketBufferedBytes(value: number | undefined): number {
+function resolvePositiveLimit(value: number | undefined, name: string, fallback: number): number {
   if (value === undefined) {
-    return DEFAULT_MAX_WEBSOCKET_BUFFERED_BYTES;
+    return fallback;
   }
   if (!Number.isSafeInteger(value) || value < 1) {
-    throw new Error("maxWebSocketBufferedBytes must be a positive safe integer.");
+    throw new Error(`${name} must be a positive safe integer.`);
   }
   return value;
 }
@@ -107,6 +109,8 @@ export type StartMattermostServerParams = {
   recorderPath?: string | undefined;
   maxPendingInboundEvents?: number | undefined;
   maxWebSocketBufferedBytes?: number | undefined;
+  maxWebSocketMessageBytes?: number | undefined;
+  maxUnauthenticatedWebSocketClients?: number | undefined;
   websocketAuthenticationTimeoutMs?: number | undefined;
 };
 
@@ -198,7 +202,11 @@ function sendEvent(
   return true;
 }
 
-function broadcast(state: MattermostServerState, event: MattermostWebSocketEvent): boolean {
+function broadcast(
+  state: MattermostServerState,
+  event: MattermostWebSocketEvent,
+  queueIfUndelivered = true,
+): boolean {
   if (
     Buffer.byteLength(JSON.stringify({ ...event, seq: 0 }), "utf8") >
     state.maxWebSocketBufferedBytes
@@ -215,6 +223,9 @@ function broadcast(state: MattermostServerState, event: MattermostWebSocketEvent
   }
   if (delivered) {
     return true;
+  }
+  if (!queueIfUndelivered) {
+    return false;
   }
   if (state.pendingEvents.length >= state.maxPendingInboundEvents) {
     return false;
@@ -272,6 +283,9 @@ async function handleAdminInbound(params: {
   }
   const senderName = readTrimmedString(params.body.senderName) ?? senderId;
   const channelType = readTrimmedString(params.body.channelType) ?? "D";
+  const previousUser = params.state.users.get(senderId);
+  const previousChannel = params.state.channels.get(channelId);
+  const previousNextPost = params.state.nextPost;
   params.state.users.set(senderId, { id: senderId, update_at: Date.now(), username: senderName });
   params.state.channels.set(channelId, {
     display_name: channelId,
@@ -288,6 +302,17 @@ async function handleAdminInbound(params: {
   });
   if (!broadcast(params.state, postEvent("posted", post, senderName, channelType))) {
     params.state.posts.delete(post.id);
+    params.state.nextPost = previousNextPost;
+    if (previousUser) {
+      params.state.users.set(senderId, previousUser);
+    } else {
+      params.state.users.delete(senderId);
+    }
+    if (previousChannel) {
+      params.state.channels.set(channelId, previousChannel);
+    } else {
+      params.state.channels.delete(channelId);
+    }
     return pendingQueueFullResponse(params.state);
   }
   return jsonResponse({ ok: true, post });
@@ -337,8 +362,12 @@ async function handleApi(params: {
     if (!channelId) {
       return mattermostError("channel_id is required", 400);
     }
-    if (
-      !broadcast(state, {
+    if (!state.channels.has(channelId)) {
+      return mattermostError("Channel not found", 404);
+    }
+    broadcast(
+      state,
+      {
         broadcast: eventBroadcast({
           channelId,
           omitUsers: { [state.botUserId]: true },
@@ -351,10 +380,9 @@ async function handleApi(params: {
           user_id: state.botUserId,
         },
         event: "typing",
-      })
-    ) {
-      return pendingQueueFullResponse(state);
-    }
+      },
+      false,
+    );
     return jsonResponse({});
   }
   if (method === "POST" && apiPath === "/posts") {
@@ -363,6 +391,10 @@ async function handleApi(params: {
     if (!channelId || !message) {
       return mattermostError("channel_id and message are required", 400);
     }
+    const channel = state.channels.get(channelId);
+    if (!channel) {
+      return mattermostError("Channel not found", 404);
+    }
     const post = createPost({
       channelId,
       message,
@@ -370,11 +402,7 @@ async function handleApi(params: {
       state,
       userId: state.botUserId,
     });
-    const channelType = state.channels.get(channelId)?.type ?? "O";
-    if (!broadcast(state, postEvent("posted", post, state.botUsername, channelType))) {
-      state.posts.delete(post.id);
-      return pendingQueueFullResponse(state);
-    }
+    broadcast(state, postEvent("posted", post, state.botUsername, channel.type), false);
     return jsonResponse(post, 201);
   }
   const postMatch = /^\/posts\/([^/]+)$/u.exec(apiPath);
@@ -385,20 +413,16 @@ async function handleApi(params: {
     }
     const updated = { ...post, message: readTrimmedString(body.message) ?? post.message };
     state.posts.set(updated.id, updated);
-    if (
-      !broadcast(
-        state,
-        postEvent(
-          "post_edited",
-          updated,
-          state.botUsername,
-          state.channels.get(updated.channel_id)?.type ?? "O",
-        ),
-      )
-    ) {
-      state.posts.set(post.id, post);
-      return pendingQueueFullResponse(state);
-    }
+    broadcast(
+      state,
+      postEvent(
+        "post_edited",
+        updated,
+        state.botUsername,
+        state.channels.get(updated.channel_id)?.type ?? "O",
+      ),
+      false,
+    );
     return jsonResponse(updated);
   }
   if (postMatch?.[1] && method === "DELETE") {
@@ -407,20 +431,16 @@ async function handleApi(params: {
       return mattermostError("Post not found", 404);
     }
     state.posts.delete(post.id);
-    if (
-      !broadcast(
-        state,
-        postEvent(
-          "post_deleted",
-          post,
-          state.botUsername,
-          state.channels.get(post.channel_id)?.type ?? "O",
-        ),
-      )
-    ) {
-      state.posts.set(post.id, post);
-      return pendingQueueFullResponse(state);
-    }
+    broadcast(
+      state,
+      postEvent(
+        "post_deleted",
+        post,
+        state.botUsername,
+        state.channels.get(post.channel_id)?.type ?? "O",
+      ),
+      false,
+    );
     return new Response(null, { status: 204 });
   }
   return mattermostError("Not found", 404);
@@ -470,10 +490,16 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
 
 function attachWebSocketServer(params: {
   authenticationTimeoutMs: number;
+  maxMessageBytes: number;
+  maxUnauthenticatedClients: number;
   state: MattermostServerState;
   server: import("node:http").Server;
 }) {
-  const websocketServer = new WebSocketServer({ noServer: true });
+  const websocketServer = new WebSocketServer({
+    maxPayload: params.maxMessageBytes,
+    noServer: true,
+  });
+  const unauthenticatedClients = new Set<WebSocket>();
   const onUpgrade = (
     request: IncomingMessage,
     socket: import("node:stream").Duplex,
@@ -489,6 +515,15 @@ function attachWebSocketServer(params: {
   };
   params.server.on("upgrade", onUpgrade);
   websocketServer.on("connection", (client) => {
+    client.on("error", () => {
+      unauthenticatedClients.delete(client);
+      params.state.websocketClients.delete(client);
+    });
+    if (unauthenticatedClients.size >= params.maxUnauthenticatedClients) {
+      client.close(1013, "too many unauthenticated clients");
+      return;
+    }
+    unauthenticatedClients.add(client);
     let authenticationOpen = true;
     const authenticationTimeout = setTimeout(() => {
       authenticationOpen = false;
@@ -504,6 +539,10 @@ function attachWebSocketServer(params: {
       try {
         message = JSON.parse(raw.toString()) as typeof message;
       } catch {
+        client.close(1003, "invalid json");
+        return;
+      }
+      if (!isJsonObject(message)) {
         client.close(1003, "invalid json");
         return;
       }
@@ -529,6 +568,7 @@ function attachWebSocketServer(params: {
         }
         clearTimeout(authenticationTimeout);
         authenticationOpen = false;
+        unauthenticatedClients.delete(client);
         params.state.websocketClients.set(client, 0);
         client.send(JSON.stringify({ seq_reply: seq, status: "OK" }));
         sendEvent(params.state, client, {
@@ -578,6 +618,7 @@ function attachWebSocketServer(params: {
     client.once("close", () => {
       authenticationOpen = false;
       clearTimeout(authenticationTimeout);
+      unauthenticatedClients.delete(client);
       params.state.websocketClients.delete(client);
     });
   });
@@ -593,6 +634,16 @@ export async function startMattermostServer(
   const host = params.host ?? "127.0.0.1";
   const botUserId = params.botUserId ?? mattermostId("crabline-mattermost-bot");
   const botUsername = params.botUsername ?? "crabline_bot";
+  const maxWebSocketMessageBytes = resolvePositiveLimit(
+    params.maxWebSocketMessageBytes,
+    "maxWebSocketMessageBytes",
+    DEFAULT_MAX_WEBSOCKET_MESSAGE_BYTES,
+  );
+  const maxUnauthenticatedWebSocketClients = resolvePositiveLimit(
+    params.maxUnauthenticatedWebSocketClients,
+    "maxUnauthenticatedWebSocketClients",
+    DEFAULT_MAX_UNAUTHENTICATED_WEBSOCKET_CLIENTS,
+  );
   const state: MattermostServerState = {
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     botToken:
@@ -602,7 +653,11 @@ export async function startMattermostServer(
     botUsername,
     channels: new Map(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
-    maxWebSocketBufferedBytes: resolveMaxWebSocketBufferedBytes(params.maxWebSocketBufferedBytes),
+    maxWebSocketBufferedBytes: resolvePositiveLimit(
+      params.maxWebSocketBufferedBytes,
+      "maxWebSocketBufferedBytes",
+      DEFAULT_MAX_WEBSOCKET_BUFFERED_BYTES,
+    ),
     nextPost: 1,
     onEvent: params.onEvent,
     pendingEvents: [],
@@ -629,6 +684,8 @@ export async function startMattermostServer(
   const closeMattermostWebSocketServer = attachWebSocketServer({
     authenticationTimeoutMs:
       params.websocketAuthenticationTimeoutMs ?? DEFAULT_WEBSOCKET_AUTHENTICATION_TIMEOUT_MS,
+    maxMessageBytes: maxWebSocketMessageBytes,
+    maxUnauthenticatedClients: maxUnauthenticatedWebSocketClients,
     server: httpServer.server,
     state,
   });
