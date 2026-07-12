@@ -303,7 +303,8 @@ function telegramChatId(value: unknown): number | string | undefined {
     return undefined;
   }
   if (/^-?\d+$/u.test(stringValue)) {
-    return toIntegerValue(stringValue);
+    const integerValue = toIntegerValue(stringValue);
+    return integerValue === 0 ? undefined : integerValue;
   }
   return TELEGRAM_CHAT_USERNAME_PATTERN.test(stringValue) ? stringValue : undefined;
 }

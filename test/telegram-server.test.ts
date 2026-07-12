@@ -1330,6 +1330,24 @@ describe("telegram local provider server", () => {
     );
   });
 
+  it.each([0, -0, "0", "-0"])("rejects zero-valued chat IDs: %s", async (chatId) => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    const outbound = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body: JSON.stringify({ chat_id: chatId, text: "invalid chat" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(outbound.status).toBe(400);
+
+    const inbound = await injectUpdate(server, { chatId, text: "invalid chat" });
+    expect(inbound.status).toBe(400);
+  });
+
   it("long-polls until an update arrives and returns empty on timeout", async () => {
     const directory = await createTempDir();
     directories.push(directory);
