@@ -1,10 +1,45 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { acquireOpenClawCrablineSmokeRunLock } from "../src/openclaw/smoke-lock.js";
+import {
+  acquireOpenClawCrablineSmokeRunLock,
+  releaseOpenClawCrablineSmokeRunLock,
+} from "../src/openclaw/smoke-lock.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 describe("OpenClaw smoke lock cleanup", () => {
+  it("retries release with bounded backoff before unwinding", async () => {
+    const releaseError = new Error("transient removal failure");
+    const release = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(releaseError)
+      .mockRejectedValueOnce(releaseError)
+      .mockResolvedValueOnce();
+    const sleep = vi.fn(async (_delayMs: number) => undefined);
+
+    await expect(
+      releaseOpenClawCrablineSmokeRunLock({ release }, { sleep }),
+    ).resolves.toBeUndefined();
+
+    expect(release).toHaveBeenCalledTimes(3);
+    expect(sleep.mock.calls).toEqual([[10], [20]]);
+  });
+
+  it("stops retrying after the bounded release attempts", async () => {
+    const releaseError = new Error("persistent removal failure");
+    const release = vi.fn(async () => {
+      throw releaseError;
+    });
+    const sleep = vi.fn(async (_delayMs: number) => undefined);
+
+    await expect(releaseOpenClawCrablineSmokeRunLock({ release }, { sleep })).rejects.toBe(
+      releaseError,
+    );
+
+    expect(release).toHaveBeenCalledTimes(3);
+    expect(sleep.mock.calls).toEqual([[10], [20]]);
+  });
+
   it("retries release after a transient removal failure", async () => {
     const outputDir = await createTempDir();
     try {

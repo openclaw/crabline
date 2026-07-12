@@ -34,7 +34,10 @@ import {
   type StartOpenClawCrablineAdapterParams,
 } from "./openclaw/shared.js";
 import { publishPrivateFileAtomically } from "./openclaw/private-file.js";
-import { acquireOpenClawCrablineSmokeRunLock } from "./openclaw/smoke-lock.js";
+import {
+  acquireOpenClawCrablineSmokeRunLock,
+  releaseOpenClawCrablineSmokeRunLock,
+} from "./openclaw/smoke-lock.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -229,7 +232,7 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
       await adapter.close();
     }
   } finally {
-    await smokeLock.release();
+    await releaseOpenClawCrablineSmokeRunLock(smokeLock);
   }
 }
 

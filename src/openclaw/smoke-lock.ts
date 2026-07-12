@@ -15,11 +15,18 @@ export type OpenClawCrablineSmokeRunLock = {
 };
 
 type RemoveLockDirectory = (lockDirectory: string) => Promise<void>;
+type Sleep = (delayMs: number) => Promise<void>;
 
 const LOCK_OWNER_FILE = "owner.json";
+const RELEASE_ATTEMPTS = 3;
+const RELEASE_RETRY_DELAY_MS = 10;
 
 const removeLockDirectory: RemoveLockDirectory = async (lockDirectory) => {
   await fs.rm(lockDirectory, { force: true, recursive: true });
+};
+
+const sleep: Sleep = async (delayMs) => {
+  await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
 };
 
 async function pathExists(filePath: string): Promise<boolean> {
@@ -233,5 +240,24 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         released = true;
       },
     };
+  }
+}
+
+export async function releaseOpenClawCrablineSmokeRunLock(
+  lock: OpenClawCrablineSmokeRunLock,
+  dependencies: {
+    sleep?: Sleep;
+  } = {},
+): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await lock.release();
+      return;
+    } catch (error) {
+      if (attempt === RELEASE_ATTEMPTS) {
+        throw error;
+      }
+      await (dependencies.sleep ?? sleep)(RELEASE_RETRY_DELAY_MS * 2 ** (attempt - 1));
+    }
   }
 }
