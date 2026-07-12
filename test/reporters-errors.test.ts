@@ -53,13 +53,14 @@ describe("errors and reporters", () => {
       ok: false,
       providerId: "local",
     });
+    const plainOutput = stripAnsi(output);
 
-    expect(output).not.toContain("\u001b");
-    expect(output).not.toContain("\u0007");
-    expect(output).not.toContain("\r");
-    expect(stripAnsi(output)).toContain(String.raw`fixture\x1b]0;owned\x07`);
-    expect(output).toContain(String.raw`first\x1b[2J\rsecond`);
-    expect(output).toContain("  - third\\u202e");
+    expect(plainOutput).not.toContain("\u001b");
+    expect(plainOutput).not.toContain("\u0007");
+    expect(plainOutput).not.toContain("\r");
+    expect(plainOutput).toContain(String.raw`fixture\x1b]0;owned\x07`);
+    expect(plainOutput).toContain(String.raw`first\x1b[2J\rsecond`);
+    expect(plainOutput).toContain("  - third\\u202e");
     expect(sanitizeTerminalText("line\nbreak", true)).toBe(String.raw`line\nbreak`);
     expect(sanitizeTerminalText("\u061c\u200e\u200f")).toBe(String.raw`\u061c\u200e\u200f`);
   });
