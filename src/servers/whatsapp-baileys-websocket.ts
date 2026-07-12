@@ -641,18 +641,21 @@ export function attachWhatsAppBaileysWebSocketServer(
             throw new Error("WhatsApp inbound delivery reservation is already settled.");
           }
           settled = true;
-          let delivered = false;
-          for (const session of sessions) {
-            if (session.deliverInboundMessage(message)) {
-              delivered = true;
+          try {
+            let delivered = false;
+            for (const session of sessions) {
+              if (session.deliverInboundMessage(message)) {
+                delivered = true;
+              }
             }
+            if (delivered) {
+              return "delivered";
+            }
+            pendingMessages.push(message);
+            return "queued";
+          } finally {
+            releaseReservation();
           }
-          releaseReservation();
-          if (delivered) {
-            return "delivered";
-          }
-          pendingMessages.push(message);
-          return "queued";
         },
       };
     },

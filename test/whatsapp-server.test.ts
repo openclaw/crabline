@@ -8,7 +8,7 @@ import {
   type SignalDataSet,
   type SignalDataTypeMap,
 } from "baileys";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { startWhatsAppServer, type StartedWhatsAppServer } from "../src/index.js";
 import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
@@ -152,6 +152,7 @@ async function expectWebSocketUpgradeRejected(url: string): Promise<void> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
@@ -715,6 +716,72 @@ describe("whatsapp local provider server", () => {
       for (const socket of sockets) {
         socket.end(undefined);
       }
+    }
+  });
+
+  it("releases inbound capacity when a live Baileys delivery throws", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startWhatsAppServer({
+      maxPendingInboundMessages: 1,
+      recorderPath: path.join(directory, "whatsapp-delivery-failure.jsonl"),
+      selfJid: "15550000001:0@s.whatsapp.net",
+    });
+    servers.push(server);
+    const socket = createBaileysTestSocket(server);
+    const connectionUpdates: unknown[] = [];
+    socket.ev.on("connection.update", (update) => {
+      connectionUpdates.push(update);
+    });
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          chatJid: "120363001234567890@g.us",
+          senderJid: "15551234567@s.whatsapp.net",
+          text,
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+
+    try {
+      await waitForCondition(
+        () =>
+          connectionUpdates.some(
+            (update) =>
+              !!update &&
+              typeof update === "object" &&
+              (update as { connection?: unknown }).connection === "open",
+          ),
+        "Baileys connection open",
+      );
+      const send = vi.spyOn(WebSocket.prototype, "send").mockImplementationOnce(() => {
+        throw new Error("injected WebSocket send failure");
+      });
+
+      const failed = await sendInbound("failed live delivery");
+      expect(failed.status).toBe(500);
+      send.mockRestore();
+      socket.end(undefined);
+      await waitForCondition(
+        () =>
+          connectionUpdates.some(
+            (update) =>
+              !!update &&
+              typeof update === "object" &&
+              (update as { connection?: unknown }).connection === "close",
+          ),
+        "Baileys connection close",
+      );
+
+      const accepted = await sendInbound("accepted after failure");
+      expect(accepted.status).toBe(200);
+      await expect(accepted.json()).resolves.toMatchObject({ delivery: "queued", ok: true });
+    } finally {
+      socket.end(undefined);
     }
   });
 });
