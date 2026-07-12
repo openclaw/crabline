@@ -243,14 +243,14 @@ function formatScriptError(
   if (commandContainsSensitiveValue(command)) {
     return `${summary}\n[script diagnostics redacted]`;
   }
-  let withoutCommands = detail;
-  for (const configuredCommand of diagnostics.configuredCommands) {
-    withoutCommands = withoutCommands.split(configuredCommand).join("[configured script command]");
-  }
-  const redacted = redactSensitivePayloadValues(
-    redactSensitiveEnvironmentValues(withoutCommands, diagnostics.sensitiveEnvironmentValues),
+  let redacted = redactSensitivePayloadValues(
+    redactSensitiveEnvironmentValues(detail, diagnostics.sensitiveEnvironmentValues),
     payload,
-  ).trim();
+  );
+  for (const configuredCommand of diagnostics.configuredCommands) {
+    redacted = redacted.split(configuredCommand).join("[configured script command]");
+  }
+  redacted = redacted.trim();
   return redacted ? `${summary}\n${redacted}` : summary;
 }
 

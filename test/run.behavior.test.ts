@@ -79,7 +79,7 @@ describe("run behavior", () => {
     ).rejects.toThrow(/Unknown fixture/);
   });
 
-  it("returns config failures for unsupported modes and missing env", async () => {
+  it("returns config failures for unsupported modes and missing env after cleanup", async () => {
     const provider: ProviderAdapter = {
       id: "mock",
       platform: "loopback",
@@ -91,6 +91,9 @@ describe("run behavior", () => {
       probe: async () => ({ details: [], healthy: true }),
       send: async () => ({ accepted: true, messageId: "1", threadId: "1" }),
       waitForInbound: async () => null,
+      cleanup: async () => {
+        throw new Error("preflight cleanup exploded");
+      },
     };
 
     const unsupported = await runFixtureCommand({
@@ -100,6 +103,7 @@ describe("run behavior", () => {
       registry: buildRegistry(provider),
     });
     expect(unsupported.failureKind).toBe("config");
+    expect(unsupported.diagnostics).toContain("cleanup failed: preflight cleanup exploded");
 
     const withEnv: ManifestDefinition = {
       ...manifest,
@@ -109,9 +113,14 @@ describe("run behavior", () => {
       fixtureId: "fixture",
       manifest: withEnv,
       manifestPath: "/tmp/crabline.yaml",
-      registry: buildRegistry(provider),
+      registry: buildRegistry({
+        ...provider,
+        supports: ["probe", "send", "roundtrip", "agent"],
+      }),
     });
     expect(missingEnv.failureKind).toBe("config");
+    expect(missingEnv.diagnostics).toContain("missing env: MISSING_ENV");
+    expect(missingEnv.diagnostics).toContain("cleanup failed: preflight cleanup exploded");
   });
 
   it("rejects an invalid inbound regex before sending", async () => {
