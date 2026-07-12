@@ -3,7 +3,11 @@ import {
   normalizeWhatsAppWebhookPayload,
   WhatsAppProviderAdapter,
 } from "../src/providers/builtin/whatsapp.js";
-import { runLocalMockProviderContract } from "./local-mock-provider-helpers.js";
+import {
+  createLocalMockConfig,
+  createProviderContext,
+  runLocalMockProviderContract,
+} from "./local-mock-provider-helpers.js";
 
 describe("WhatsApp webhook normalizer", () => {
   it("normalizes text messages with the provider message id", () => {
@@ -27,13 +31,15 @@ describe("WhatsApp webhook normalizer", () => {
       ],
     };
 
-    expect(normalizeWhatsAppWebhookPayload(payload)).toEqual({
-      author: "user",
-      id: "wamid.abc123",
-      raw: payload,
-      text: "hello",
-      threadId: "15551234567",
-    });
+    expect(normalizeWhatsAppWebhookPayload(payload)).toEqual([
+      {
+        author: "user",
+        id: "wamid.abc123",
+        raw: payload,
+        text: "hello",
+        threadId: "15551234567",
+      },
+    ]);
   });
 
   it.each([
@@ -67,13 +73,117 @@ describe("WhatsApp webhook normalizer", () => {
       threadId: "15551234567",
     };
 
-    expect(normalizeWhatsAppWebhookPayload(payload)).toEqual({
-      authorIsBot: false,
-      id: "fallback-message",
-      raw: payload,
-      text: "fallback text",
-      threadId: "15551234567",
+    expect(normalizeWhatsAppWebhookPayload(payload)).toEqual([
+      {
+        authorIsBot: false,
+        id: "fallback-message",
+        raw: payload,
+        text: "fallback text",
+        threadId: "15551234567",
+      },
+    ]);
+  });
+
+  it("preserves all valid messages after malformed and unsupported batch items", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
     });
+    context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
+    const nonce = "mp-whatsapp-batch-abc-1234abcd";
+
+    try {
+      const probe = await provider.probe(context);
+      const endpoint = probe.details
+        .find((detail) => detail.startsWith("webhook endpoint "))
+        ?.replace("webhook endpoint ", "");
+      expect(endpoint).toBeDefined();
+      const since = new Date(Date.now() - 1000).toISOString();
+
+      const response = await fetch(endpoint!, {
+        body: JSON.stringify({
+          entry: [
+            {
+              changes: [
+                {
+                  value: {
+                    messages: [
+                      { from: "invalid-id", text: { body: "malformed" }, type: "text" },
+                      { from: "15550000000", image: { id: "image-1" }, type: "image" },
+                      {
+                        from: "15551234567",
+                        id: "wamid.unrelated",
+                        text: { body: "unrelated valid" },
+                        type: "text",
+                      },
+                      {
+                        from: "15551234567",
+                        id: "wamid.first",
+                        text: { body: `first valid ${nonce}` },
+                        type: "text",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+            {
+              changes: [
+                {
+                  value: {
+                    messages: [
+                      { from: "15550000001", text: {}, type: "text" },
+                      {
+                        from: "15557654321",
+                        id: "wamid.second",
+                        text: { body: `second valid ${nonce}` },
+                        type: "text",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        ids: ["wamid.unrelated", "wamid.first", "wamid.second"],
+        ok: true,
+      });
+      await expect(
+        provider.waitForInbound({
+          ...context,
+          nonce,
+          since,
+          threadId: "15551234567",
+          timeoutMs: 500,
+        }),
+      ).resolves.toMatchObject({
+        id: "wamid.first",
+        text: `first valid ${nonce}`,
+      });
+      await expect(
+        provider.waitForInbound({
+          ...context,
+          nonce,
+          since,
+          threadId: "15557654321",
+          timeoutMs: 500,
+        }),
+      ).resolves.toMatchObject({
+        id: "wamid.second",
+        text: `second valid ${nonce}`,
+      });
+    } finally {
+      await provider.cleanup();
+    }
   });
 });
 
