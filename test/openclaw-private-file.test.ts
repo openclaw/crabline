@@ -47,6 +47,33 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
+  it("rejects a temporary path substitution before writing credentials", async () => {
+    const directory = await createTempDir();
+    try {
+      const filePath = path.join(directory, "manifest.json");
+      await fs.writeFile(filePath, "stale\n");
+      let originalTemporaryPath: string | undefined;
+
+      await expect(
+        publishPrivateFileAtomically(filePath, "private\n", {
+          platform: "win32",
+          secureWindowsFile: async (temporaryPath) => {
+            originalTemporaryPath = `${temporaryPath}.original`;
+            await fs.rename(temporaryPath, originalTemporaryPath);
+            await fs.writeFile(temporaryPath, "substitute\n");
+          },
+        }),
+      ).rejects.toThrow("Private file path identity changed during publication.");
+
+      expect(await fs.readFile(filePath, "utf8")).toBe("stale\n");
+      expect(originalTemporaryPath).toBeDefined();
+      expect(await fs.readFile(originalTemporaryPath!, "utf8")).toBe("");
+      expect((await fs.readdir(directory)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
   it("fails closed when the Windows ACL cannot be established", async () => {
     const directory = await createTempDir();
     try {
