@@ -12,19 +12,18 @@ import {
 
 describe("WhatsApp webhook normalizer", () => {
   it("normalizes text messages with the provider message id", () => {
+    const message = {
+      from: "15551234567",
+      id: "wamid.abc123",
+      text: { body: "hello" },
+    };
     const payload = {
       entry: [
         {
           changes: [
             {
               value: {
-                messages: [
-                  {
-                    from: "15551234567",
-                    id: "wamid.abc123",
-                    text: { body: "hello" },
-                  },
-                ],
+                messages: [message],
               },
             },
           ],
@@ -36,11 +35,34 @@ describe("WhatsApp webhook normalizer", () => {
       {
         author: "user",
         id: "wamid.abc123",
-        raw: payload,
+        raw: message,
         text: "hello",
         threadId: "15551234567",
       },
     ]);
+  });
+
+  it("keeps native raw data scoped to each message in a batch", () => {
+    const first = {
+      from: "15551234567",
+      id: "wamid.first",
+      text: { body: "first" },
+      type: "text",
+    };
+    const second = {
+      from: "15557654321",
+      id: "wamid.second",
+      text: { body: "second" },
+      type: "text",
+    };
+    const payload = {
+      entry: [{ changes: [{ value: { messages: [first, second] } }] }],
+    };
+
+    const normalized = normalizeWhatsAppWebhookPayload(payload);
+
+    expect(normalized.map((message) => message.raw)).toEqual([first, second]);
+    expect(normalized.every((message) => message.raw !== payload)).toBe(true);
   });
 
   it.each([
@@ -267,15 +289,73 @@ describe("WhatsApp webhook normalizer", () => {
       await provider.cleanup();
     }
   });
+
+  it("skips an earlier malformed nonce substring in contains mode", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
+    context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
+    const nonce = "mp-whatsapp-contains-abc-1234abcd";
+    const recorderPath = config.whatsapp!.recorder.path!;
+    const since = new Date(Date.now() - 1000).toISOString();
+
+    try {
+      await appendRecordedInbound(recorderPath, {
+        author: "user",
+        id: "malformed-substring",
+        provider: "whatsapp",
+        sentAt: new Date().toISOString(),
+        text: `reply ${nonce}0`,
+        threadId: "15551234567",
+      });
+      await appendRecordedInbound(recorderPath, {
+        author: "user",
+        id: "valid-contains",
+        provider: "whatsapp",
+        sentAt: new Date().toISOString(),
+        text: `reply ${nonce}`,
+        threadId: "15551234567",
+      });
+
+      await expect(
+        provider.waitForInbound({
+          ...context,
+          nonce,
+          since,
+          threadId: "15551234567",
+          timeoutMs: 500,
+        }),
+      ).resolves.toMatchObject({
+        id: "valid-contains",
+        text: `reply ${nonce}`,
+      });
+    } finally {
+      await provider.cleanup();
+    }
+  });
 });
+
+const contractNonces = {
+  reply: "mp-whatsapp-reply-abc-11111111",
+  user: "mp-whatsapp-user-abc-33333333",
+  webhook: "mp-whatsapp-webhook-abc-22222222",
+};
 
 runLocalMockProviderContract({
   Adapter: WhatsAppProviderAdapter,
   endpointPath: "/whatsapp/webhook",
   expectedChannelId: "15551234567",
+  nonces: contractNonces,
   platform: "whatsapp",
   target: { id: "15551234567", metadata: {} },
-  webhookExpected: { author: "user", id: "wamid.abc123", text: "reply nonce-2" },
+  webhookExpected: {
+    author: "user",
+    id: "wamid.abc123",
+    text: `reply ${contractNonces.webhook}`,
+  },
   webhookPayload: {
     entry: [
       {
@@ -295,7 +375,7 @@ runLocalMockProviderContract({
                 {
                   from: "15551234567",
                   id: "wamid.abc123",
-                  text: { body: "reply nonce-2" },
+                  text: { body: `reply ${contractNonces.webhook}` },
                 },
               ],
             },

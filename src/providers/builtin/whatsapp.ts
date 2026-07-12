@@ -136,7 +136,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
           event.threadId,
           context.threadId ?? target.threadId ?? target.channelId ?? target.id,
         ) &&
-        matchesWaitCandidate(event, context),
+        matchesInbound(event, context.fixture.inboundMatch, context.nonce),
       since: context.since,
       timeoutMs: context.timeoutMs,
     });
@@ -258,7 +258,7 @@ export function normalizeWhatsAppWebhookPayload(
             continue;
           }
           try {
-            const normalizedMessage = normalizeWhatsAppMessage(message, payload);
+            const normalizedMessage = normalizeWhatsAppMessage(message);
             if (normalizedMessage) {
               normalized.push(normalizedMessage);
             }
@@ -345,7 +345,6 @@ function normalizeWhatsAppFallback(
 
 function normalizeWhatsAppMessage(
   message: Record<string, unknown>,
-  payload: Record<string, unknown>,
 ): NormalizedWhatsAppWebhookMessage | null {
   const messageType = optionalString(message, "type");
   if (messageType && messageType !== "text") {
@@ -365,7 +364,7 @@ function normalizeWhatsAppMessage(
   return {
     author: authorFromBotFlag(false),
     ...(messageId ? { id: messageId } : {}),
-    raw: payload,
+    raw: message,
     text: body,
     threadId: requireNativeInboundId(from, WHATSAPP_WA_ID_RULE, "WhatsApp messages[].from"),
   };
@@ -388,27 +387,4 @@ function isAddressInChannel(threadId: string, channelId?: string): boolean {
     return true;
   }
   return threadId === channelId || threadId.startsWith(`${channelId}:`);
-}
-
-function matchesWaitCandidate(event: InboundEnvelope, context: WaitContext): boolean {
-  const config = context.fixture.inboundMatch;
-  if (config.nonce === "exact") {
-    return matchesInbound(event, config, context.nonce);
-  }
-  if (config.author !== "any" && event.author !== config.author) {
-    return false;
-  }
-  if (config.nonce !== "ignore" && !event.text.includes(context.nonce)) {
-    return false;
-  }
-  if (!config.pattern) {
-    return true;
-  }
-  if (config.strategy === "exact") {
-    return event.text === config.pattern;
-  }
-  if (config.strategy === "regex") {
-    return new RegExp(config.pattern, "u").test(event.text);
-  }
-  return event.text.includes(config.pattern);
 }

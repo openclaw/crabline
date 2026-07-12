@@ -19,6 +19,13 @@ type ContractOptions = {
   expectedChannelId: string;
   expectedThreadId?: string | undefined;
   invalidTargets?: ProviderContext["fixture"]["target"][] | undefined;
+  nonces?:
+    | {
+        reply?: string | undefined;
+        user?: string | undefined;
+        webhook?: string | undefined;
+      }
+    | undefined;
   target: ProviderContext["fixture"]["target"];
   threadTarget?: ProviderContext["fixture"]["target"] | undefined;
   webhookExpected: {
@@ -131,6 +138,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       const provider = new options.Adapter(options.platform, config, "crabline");
       providers.push(provider);
       const context = createProviderContext(options.platform, config, options.target);
+      const nonce = options.nonces?.reply ?? "nonce-1";
 
       const probe = await provider.probe(context);
       expect(probe.healthy).toBe(true);
@@ -141,8 +149,8 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       const result = await provider.send({
         ...context,
         mode: "agent",
-        nonce: "nonce-1",
-        text: "hello nonce-1",
+        nonce,
+        text: `hello ${nonce}`,
       });
       expect(result.accepted).toBe(true);
       expect(result.threadId).toBe(options.expectedChannelId);
@@ -150,14 +158,14 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       await expect(
         provider.waitForInbound({
           ...context,
-          nonce: "nonce-1",
+          nonce,
           since,
           threadId: result.threadId,
           timeoutMs: 500,
         }),
       ).resolves.toMatchObject({
         author: "assistant",
-        text: `[${options.platform} mock] hello nonce-1`,
+        text: `[${options.platform} mock] hello ${nonce}`,
         threadId: result.threadId,
       });
     });
@@ -171,6 +179,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       const provider = new options.Adapter(options.platform, config, "crabline");
       providers.push(provider);
       const context = createProviderContext(options.platform, config, options.target);
+      const nonce = options.nonces?.webhook ?? "nonce-2";
       context.fixture.inboundMatch = {
         author: options.webhookExpected.author ?? "any",
         nonce: "contains",
@@ -196,7 +205,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       await expect(
         provider.waitForInbound({
           ...context,
-          nonce: "nonce-2",
+          nonce,
           since,
           threadId: options.webhookThreadId,
           timeoutMs: 500,
@@ -215,6 +224,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       const provider = new options.Adapter(options.platform, config, "crabline");
       providers.push(provider);
       const context = createProviderContext(options.platform, config, options.target);
+      const nonce = options.nonces?.user ?? "nonce-3";
       context.fixture.inboundMatch = {
         author: "user",
         nonce: "contains",
@@ -228,7 +238,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
           message: {
             author: "user",
             id: `${options.platform}-user-inbound`,
-            text: "user nonce-3",
+            text: `user ${nonce}`,
             threadId: options.expectedChannelId,
           },
         }),
@@ -240,7 +250,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       await expect(
         provider.waitForInbound({
           ...context,
-          nonce: "nonce-3",
+          nonce,
           since,
           threadId: options.expectedChannelId,
           timeoutMs: 500,
@@ -248,7 +258,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       ).resolves.toMatchObject({
         author: "user",
         id: `${options.platform}-user-inbound`,
-        text: "user nonce-3",
+        text: `user ${nonce}`,
       });
     });
   });
