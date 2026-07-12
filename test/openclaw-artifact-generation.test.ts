@@ -96,9 +96,111 @@ describe("OpenClaw artifact generation publication", () => {
           )
         ).mode & 0o777,
       ).toBe(0o700);
-      expect(lock.assertOwned).toHaveBeenCalledTimes(2);
+      expect(lock.assertOwned).toHaveBeenCalledTimes(3);
       expect(lock.commitFileAtomically).toHaveBeenCalledTimes(1);
     } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("fences an expired owner before cleaning a successor's uncommitted generation", async () => {
+    const outputDir = await createTempDir();
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    const successorGeneration = "generation-22222222-2222-4222-8222-222222222222";
+    const successorGenerationPath = path.join(
+      outputDir,
+      OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
+      successorGeneration,
+    );
+    let now = 1_000;
+    let resumeSuccessor: (() => void) | undefined;
+    let successorInstalled: (() => void) | undefined;
+    const resumeSuccessorPromise = new Promise<void>((resolve) => {
+      resumeSuccessor = resolve;
+    });
+    const successorInstalledPromise = new Promise<void>((resolve) => {
+      successorInstalled = resolve;
+    });
+    const disableHeartbeat = () => ({
+      assertHealthy() {},
+      async stop() {},
+    });
+    let expiredLock: OpenClawCrablineSmokeRunLock | undefined;
+    let successorLock: OpenClawCrablineSmokeRunLock | undefined;
+    let successorPublication:
+      | ReturnType<typeof publishOpenClawCrablineArtifactGeneration>
+      | undefined;
+    try {
+      expiredLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 4_242,
+          processStartedAtMs: 100,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+
+      now = 2_001;
+      successorLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 5_252,
+          processStartedAtMs: 200,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+      successorPublication = publishOpenClawCrablineArtifactGeneration(
+        {
+          capabilityReport: { result: { generation: "successor" } },
+          lock: successorLock,
+          manifest,
+          outputDir,
+          selection,
+          smoke: { result: { generation: "successor" } },
+        },
+        {
+          beforePointerSwitch: async () => {
+            successorInstalled?.();
+            await resumeSuccessorPromise;
+          },
+          createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+        },
+      );
+
+      await successorInstalledPromise;
+      await expect(fs.stat(successorGenerationPath)).resolves.toBeDefined();
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(
+          {
+            capabilityReport: { result: { generation: "expired" } },
+            lock: expiredLock,
+            manifest,
+            outputDir,
+            selection,
+            smoke: { result: { generation: "expired" } },
+          },
+          { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
+        ),
+      ).rejects.toThrow("OpenClaw Crabline smoke lock ownership was lost.");
+      await expect(fs.stat(successorGenerationPath)).resolves.toBeDefined();
+
+      resumeSuccessor?.();
+      const successor = await successorPublication;
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toMatchObject({
+        generation: successor.generation,
+      });
+      await expect(fs.stat(path.join(outputDir, successor.manifestPath))).resolves.toBeDefined();
+    } finally {
+      resumeSuccessor?.();
+      await successorPublication?.catch(() => undefined);
+      await expiredLock?.release();
+      await successorLock?.release();
       await disposeTempDir(outputDir);
     }
   });
