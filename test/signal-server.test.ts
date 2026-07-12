@@ -170,6 +170,21 @@ describe("signal local provider server", () => {
         jsonrpc: "2.0",
       });
     }
+    const invalidVersion = await fetch(server.manifest.endpoints.rpcUrl, {
+      body: JSON.stringify({
+        id: "invalid-jsonrpc-send",
+        jsonrpc: "1.0",
+        method: "send",
+        params: { message: "must not be recorded", recipient: ["+15551234567"] },
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(invalidVersion.json()).resolves.toEqual({
+      error: { code: -32600, message: "Invalid Request" },
+      id: "invalid-jsonrpc-send",
+      jsonrpc: "2.0",
+    });
 
     const rejected = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({ sourceNumber: "+15557654321", text: "nope" }),
@@ -205,6 +220,8 @@ describe("signal local provider server", () => {
 
     const recorded = await fs.readFile(recorderPath, "utf8");
     expect(recorded).toContain('"method":"send"');
+    expect(recorded).not.toContain("invalid-jsonrpc-send");
+    expect(recorded).not.toContain("must not be recorded");
     expect(recorded).toContain('"path":"/crabline/signal/inbound"');
   });
 
@@ -443,6 +460,69 @@ describe("signal local provider server", () => {
     }
   });
 
+  it("replays the first backpressured event exactly once after disconnect", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const originalWrite = ServerResponse.prototype.write;
+    let backpressuredResponse: ServerResponse | undefined;
+    const write = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<typeof originalWrite>
+    ) {
+      const accepted = Reflect.apply(originalWrite, this, args) as boolean;
+      if (
+        backpressuredResponse === undefined &&
+        typeof args[0] === "string" &&
+        args[0].includes("first backpressured event")
+      ) {
+        backpressuredResponse = this;
+        return false;
+      }
+      return accepted;
+    });
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    try {
+      const firstEvents = await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: firstController.signal,
+      });
+      const sent = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          sourceNumber: "+15557654321",
+          text: "first backpressured event",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+      expect(sent.status).toBe(200);
+      await vi.waitFor(() => expect(backpressuredResponse).toBeDefined());
+      firstController.abort();
+      await firstEvents.body?.cancel().catch(() => undefined);
+
+      const secondEvents = await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: secondController.signal,
+      });
+      const reader = secondEvents.body!.getReader();
+      const decoder = new TextDecoder();
+      let received = "";
+      while (!received.includes("first backpressured event")) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          break;
+        }
+        received += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(received.match(/first backpressured event/gu)).toHaveLength(1);
+    } finally {
+      firstController.abort();
+      secondController.abort();
+      write.mockRestore();
+    }
+  });
+
   it("replays exclusively buffered events before newer broadcasts", async () => {
     const server = await startSignalServer({ adminToken: "admin" });
     servers.push(server);
@@ -512,7 +592,7 @@ describe("signal local provider server", () => {
   it("counts reconnectable client buffers against the pending event limit", async () => {
     const server = await startSignalServer({
       adminToken: "admin",
-      maxPendingInboundEvents: 1,
+      maxPendingInboundEvents: 2,
     });
     servers.push(server);
     const sendInbound = (text: string) =>
@@ -691,6 +771,19 @@ describe("signal local provider server", () => {
       expect(check.status).toBe(200);
     } finally {
       agent.destroy();
+    }
+  });
+
+  it("does not start the SSE keepalive when listen fails", async () => {
+    const occupied = await startSignalServer();
+    servers.push(occupied);
+    const port = Number(new URL(occupied.manifest.baseUrl).port);
+    const setInterval = vi.spyOn(globalThis, "setInterval");
+    try {
+      await expect(startSignalServer({ port })).rejects.toMatchObject({ code: "EADDRINUSE" });
+      expect(setInterval).not.toHaveBeenCalled();
+    } finally {
+      setInterval.mockRestore();
     }
   });
 });
