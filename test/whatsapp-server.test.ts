@@ -636,6 +636,43 @@ describe("whatsapp local provider server", () => {
     });
   });
 
+  it("does not mark successful status requests as accepted sends", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const observed: Array<{ accepted?: boolean; body?: unknown }> = [];
+    const server = await startWhatsAppServer({
+      accessToken: "fake",
+      onEvent: (event) => {
+        observed.push(event);
+      },
+      recorderPath: path.join(directory, "whatsapp-status-evidence.jsonl"),
+    });
+    servers.push(server);
+
+    const response = await fetch(server.manifest.endpoints.messagesUrl, {
+      body: JSON.stringify({
+        message_id: "wamid.status",
+        messaging_product: "whatsapp",
+        status: "read",
+        text: { body: "not a send" },
+        to: "15551234567",
+      }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    expect(observed).toContainEqual(
+      expect.objectContaining({
+        accepted: false,
+        body: expect.objectContaining({ message_id: "wamid.status", status: "read" }),
+      }),
+    );
+  });
+
   it("does not accept admin inbound messages when recorder append fails", async () => {
     const directory = await createTempDir();
     directories.push(directory);
