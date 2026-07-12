@@ -12,6 +12,10 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: release-${{ inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -40,8 +44,26 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          test "$(node -p 'require("./package.json").version')" = "$RELEASE_VERSION"
-          grep -q "^## $RELEASE_VERSION" CHANGELOG.md
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const version = process.env.RELEASE_VERSION;
+          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          if (packageJson.version !== version) {
+            throw new Error(
+              `package.json version ${packageJson.version} does not match release ${version}.`,
+            );
+          }
+
+          const headingPrefix = `## ${version} - `;
+          const headings = fs
+            .readFileSync("CHANGELOG.md", "utf8")
+            .split(/\r?\n/u)
+            .filter((line) => line.startsWith(headingPrefix));
+          if (headings.length !== 1 || !/^\d{4}-\d{2}-\d{2}$/u.test(headings[0].slice(headingPrefix.length))) {
+            throw new Error(`CHANGELOG.md must contain exactly one "${headingPrefix}YYYY-MM-DD" heading.`);
+          }
+          NODE
       - uses: pnpm/action-setup@v4
         with:
           version: 10.32.1
@@ -50,13 +72,118 @@ jobs:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@latest
+      - run: npm install -g npm@12.0.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
+      - name: Pack and verify release artifact
+        id: package
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          metadata_path="$RUNNER_TEMP/npm-pack.json"
+          npm pack --json --pack-destination "$RUNNER_TEMP" > "$metadata_path"
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+
+          const metadata = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/npm-pack.json`, "utf8"));
+          const packs = Array.isArray(metadata) ? metadata : Object.values(metadata);
+          if (packs.length !== 1 || !packs[0]) {
+            throw new Error(`Expected one packed artifact, received ${packs.length}.`);
+          }
+
+          const pack = packs[0];
+          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const cliPath = packageJson.bin?.crabline?.replace(/^\.\//u, "");
+          if (!cliPath || !pack.files?.some((file) => file.path === cliPath)) {
+            throw new Error(`Packed artifact is missing the crabline CLI at ${cliPath ?? "<unset>"}.`);
+          }
+          if (!fs.readFileSync(cliPath, "utf8").startsWith("#!/usr/bin/env node\n")) {
+            throw new Error(`Packed CLI ${cliPath} is missing its Node shebang.`);
+          }
+          if (pack.version !== process.env.RELEASE_VERSION) {
+            throw new Error(
+              `Packed version ${pack.version} does not match release ${process.env.RELEASE_VERSION}.`,
+            );
+          }
+          if (!pack.integrity || !pack.filename) {
+            throw new Error("npm pack did not report artifact integrity and filename.");
+          }
+
+          const outputs = {
+            integrity: pack.integrity,
+            name: packageJson.name,
+            tarball: path.join(process.env.RUNNER_TEMP, pack.filename),
+          };
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            Object.entries(outputs)
+              .map(([key, value]) => `${key}=${value}\n`)
+              .join(""),
+          );
+          NODE
       - name: Publish package with npm provenance
-        run: npm publish --access public --provenance
+        env:
+          PACKAGE_INTEGRITY: ${{ steps.package.outputs.integrity }}
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+          PACKAGE_TARBALL: ${{ steps.package.outputs.tarball }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          check_existing_package() {
+            local actual_integrity
+            if ! actual_integrity="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity 2>/dev/null)"; then
+              return 1
+            fi
+            if [[ "$actual_integrity" != "$PACKAGE_INTEGRITY" ]]; then
+              echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION has integrity $actual_integrity, expected $PACKAGE_INTEGRITY."
+              return 2
+            fi
+            return 0
+          }
+
+          if check_existing_package; then
+            echo "$PACKAGE_NAME@$RELEASE_VERSION is already published with the expected integrity."
+            exit 0
+          else
+            existing_status=$?
+            if [[ "$existing_status" -eq 2 ]]; then
+              exit 1
+            fi
+          fi
+
+          if npm publish "$PACKAGE_TARBALL" --access public --provenance; then
+            exit 0
+          else
+            publish_status=$?
+          fi
+
+          for delay in 2 4 8 16; do
+            sleep "$delay"
+            if check_existing_package; then
+              echo "$PACKAGE_NAME@$RELEASE_VERSION was published despite the prior client error."
+              exit 0
+            else
+              existing_status=$?
+              if [[ "$existing_status" -eq 2 ]]; then
+                exit 1
+              fi
+            fi
+          done
+          exit "$publish_status"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        run: gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --generate-notes
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub release $RELEASE_TAG already exists."
+            exit 0
+          fi
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --generate-notes \
+            --verify-tag

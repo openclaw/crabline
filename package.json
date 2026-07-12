@@ -30,9 +30,9 @@
     }
   },
   "scripts": {
-    "prebuild": "rm -rf dist",
+    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.build.json",
-    "clean": "rm -rf dist coverage",
+    "clean": "node -e \"const fs = require('node:fs'); for (const path of ['dist', 'coverage']) fs.rmSync(path, { recursive: true, force: true })\"",
     "dev": "tsx src/bin/crabline.ts",
     "doctor": "tsx src/bin/crabline.ts doctor",
     "fixtures": "tsx src/bin/crabline.ts fixtures",

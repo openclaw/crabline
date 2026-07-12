@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Harden release packaging and retries, and make cleanup scripts portable across supported platforms.
+
 ## 0.1.9 - 2026-07-03
 
 - Add in-process provider event observers while retaining JSONL recorder artifacts.
