@@ -76,6 +76,8 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   readonly #recorderPath: string;
   readonly #webhook: LocalMockWebhookConfig | undefined;
   #server: StartedWebhookServer | null = null;
+  #serverClosing: Promise<void> | null = null;
+  #serverStarting: Promise<StartedWebhookServer> | null = null;
 
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
@@ -157,9 +159,18 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   override async cleanup(): Promise<void> {
-    if (this.#server) {
-      await this.#server.close();
-      this.#server = null;
+    if (this.#serverClosing) {
+      await this.#serverClosing;
+    } else {
+      const closing = this.#closeWebhookServer();
+      this.#serverClosing = closing;
+      try {
+        await closing;
+      } finally {
+        if (this.#serverClosing === closing) {
+          this.#serverClosing = null;
+        }
+      }
     }
     await super.cleanup();
   }
@@ -207,27 +218,64 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   async #ensureWebhookServer(): Promise<StartedWebhookServer> {
+    if (this.#serverClosing) {
+      await this.#serverClosing;
+    }
     if (this.#server) {
       return this.#server;
+    }
+    if (this.#serverStarting) {
+      return await this.#serverStarting;
     }
 
     const host = this.#webhook?.host ?? DEFAULT_WHATSAPP_WEBHOOK.host;
     const port = this.#webhook?.port ?? DEFAULT_WHATSAPP_WEBHOOK.port;
     const webhookPath = this.#webhook?.path ?? DEFAULT_WHATSAPP_WEBHOOK.path;
+    const starting = (async () => {
+      try {
+        return await startWebhookServer({
+          handle: (request) => this.#handleWebhook(request),
+          host,
+          path: webhookPath,
+          port,
+        });
+      } catch (error) {
+        throw new CrablineError(
+          `whatsapp local mock webhook server failed: ${ensureErrorMessage(error)}`,
+          { cause: error, kind: "connectivity" },
+        );
+      }
+    })();
+    this.#serverStarting = starting;
+
     try {
-      this.#server = await startWebhookServer({
-        handle: (request) => this.#handleWebhook(request),
-        host,
-        path: webhookPath,
-        port,
-      });
-      return this.#server;
-    } catch (error) {
-      throw new CrablineError(
-        `whatsapp local mock webhook server failed: ${ensureErrorMessage(error)}`,
-        { cause: error, kind: "connectivity" },
-      );
+      const server = await starting;
+      this.#server = server;
+      return server;
+    } finally {
+      if (this.#serverStarting === starting) {
+        this.#serverStarting = null;
+      }
     }
+  }
+
+  async #closeWebhookServer(): Promise<void> {
+    let server = this.#server;
+    if (!server && this.#serverStarting) {
+      try {
+        server = await this.#serverStarting;
+      } catch {
+        return;
+      }
+    }
+    if (!server) {
+      return;
+    }
+
+    if (this.#server === server) {
+      this.#server = null;
+    }
+    await server.close();
   }
 }
 
