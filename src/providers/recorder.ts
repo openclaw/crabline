@@ -21,11 +21,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-function toRecordKey(event: InboundEnvelope): string {
-  return JSON.stringify([event.provider, event.threadId, event.id]);
-}
-
-const MAX_SEEN_KEYS = 4096;
 const pendingAppends = new Map<string, Promise<void>>();
 
 type IncrementalReadState = {
@@ -43,7 +38,6 @@ type IncrementalReadState = {
 export type RecordedInboundCursor = {
   buffered: RecordedInboundEnvelope[];
   readState: IncrementalReadState;
-  seen: Set<string>;
 };
 
 const CONTINUITY_BYTES = 4096;
@@ -61,19 +55,7 @@ export function createRecordedInboundCursor(): RecordedInboundCursor {
   return {
     buffered: [],
     readState: createIncrementalReadState(),
-    seen: new Set(),
   };
-}
-
-function rememberSeenKey(seen: Set<string>, key: string): void {
-  seen.add(key);
-  if (seen.size <= MAX_SEEN_KEYS) {
-    return;
-  }
-  const oldest = seen.values().next().value;
-  if (oldest !== undefined) {
-    seen.delete(oldest);
-  }
 }
 
 function resetIncrementalReadState(state: IncrementalReadState): void {
@@ -257,12 +239,6 @@ export async function waitForRecordedInbound(params: {
         ? cursor.buffered.splice(0)
         : await readRecordedInboundAppend(params.filePath, cursor.readState);
     for (const [index, event] of events.entries()) {
-      const key = toRecordKey(event);
-      if (cursor.seen.has(key)) {
-        continue;
-      }
-      rememberSeenKey(cursor.seen, key);
-
       if (params.since && new Date(event.sentAt).getTime() < new Date(params.since).getTime()) {
         continue;
       }
@@ -291,7 +267,6 @@ export async function* watchRecordedInbound(params: {
   since?: string | undefined;
 }): AsyncIterable<RecordedInboundEnvelope> {
   const state = createIncrementalReadState();
-  const seen = new Set<string>();
 
   while (!params.signal?.aborted) {
     const events = await readRecordedInboundAppend(params.filePath, state);
@@ -302,12 +277,6 @@ export async function* watchRecordedInbound(params: {
       if (params.signal?.aborted) {
         return;
       }
-      const key = toRecordKey(event);
-      if (seen.has(key)) {
-        continue;
-      }
-      rememberSeenKey(seen, key);
-
       if (params.since && new Date(event.sentAt).getTime() < new Date(params.since).getTime()) {
         continue;
       }
