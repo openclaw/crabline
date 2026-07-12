@@ -14,6 +14,7 @@ import {
   readTrimmedString,
   RequestBodyTooLargeError,
   startHttpJsonServer,
+  type HttpJsonHandlerResult,
   type ServerRequestEvent,
 } from "./http.js";
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
@@ -73,6 +74,7 @@ type ZaloServerState = {
   onEvent: ServerEventObserver | undefined;
   pendingRequest: PendingUpdateRequest | undefined;
   recorderPath: string;
+  reservedUpdates: number;
   restrictWebhookTargets: boolean;
   updates: ZaloUpdate[];
   webhook: { secretToken: string; updatedAt: number; url: string } | undefined;
@@ -157,7 +159,7 @@ function redactUrlCredentials(value: string): string {
   try {
     url = new URL(value);
   } catch {
-    return value;
+    return value.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#]*@/iu, "$1<redacted>@");
   }
   if (!url.username && !url.password) {
     return value;
@@ -283,12 +285,42 @@ function nextUpdate(
   request: IncomingMessage,
   response: ServerResponse,
   state: ZaloServerState,
-): Response | undefined {
+): HttpJsonHandlerResult | undefined {
   if (request.aborted || request.socket.destroyed || response.destroyed) {
     return undefined;
   }
   const update = state.updates.shift();
-  return update ? zaloOk(update) : undefined;
+  if (!update) {
+    return undefined;
+  }
+  state.reservedUpdates++;
+  return reservedUpdateResponse(state, update);
+}
+
+function reservedUpdateResponse(state: ZaloServerState, update: ZaloUpdate): HttpJsonHandlerResult {
+  let settled = false;
+  const release = () => {
+    if (settled) {
+      return false;
+    }
+    settled = true;
+    state.reservedUpdates--;
+    return true;
+  };
+  return {
+    onWriteFailure() {
+      if (!release()) {
+        return;
+      }
+      if (!deliverPollingUpdate(state, update)) {
+        state.updates.unshift(update);
+      }
+    },
+    onWriteSuccess() {
+      release();
+    },
+    response: zaloOk(update),
+  };
 }
 
 function settlePendingUpdate(
@@ -313,12 +345,18 @@ function settlePendingUpdate(
   return true;
 }
 
+function isPendingUpdateRequestLive(pending: PendingUpdateRequest): boolean {
+  return (
+    !pending.request.aborted && !pending.request.socket.destroyed && !pending.response.destroyed
+  );
+}
+
 async function waitForUpdate(
   request: IncomingMessage,
   response: ServerResponse,
   state: ZaloServerState,
   timeoutSeconds: number,
-): Promise<Response> {
+): Promise<HttpJsonHandlerResult> {
   const previous = state.pendingRequest;
   if (previous) {
     settlePendingUpdate(state, previous, { kind: "conflict" });
@@ -366,24 +404,21 @@ async function waitForUpdate(
     case "timeout":
       return zaloError("Request timeout", 408);
     case "update":
-      return zaloOk(result.update);
+      return reservedUpdateResponse(state, result.update);
   }
 }
 
 function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boolean {
   const pending = state.pendingRequest;
   if (pending) {
-    if (
-      !pending.request.aborted &&
-      !pending.request.socket.destroyed &&
-      !pending.response.destroyed
-    ) {
+    if (isPendingUpdateRequestLive(pending)) {
+      state.reservedUpdates++;
       settlePendingUpdate(state, pending, { kind: "update", update });
       return true;
     }
     settlePendingUpdate(state, pending, { kind: "disconnect" });
   }
-  if (state.updates.length >= state.maxPendingInboundEvents) {
+  if (state.updates.length + state.reservedUpdates >= state.maxPendingInboundEvents) {
     return false;
   }
   state.updates.push(update);
@@ -476,7 +511,11 @@ async function handleAdminInbound(
       text,
     },
   };
-  if (!state.webhook?.url && state.updates.length >= state.maxPendingInboundEvents) {
+  if (
+    !state.webhook?.url &&
+    !(state.pendingRequest && isPendingUpdateRequestLive(state.pendingRequest)) &&
+    state.updates.length + state.reservedUpdates >= state.maxPendingInboundEvents
+  ) {
     return zaloError(
       `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
       429,
@@ -512,7 +551,7 @@ async function handleZaloMethod(
   state: ZaloServerState,
   url: URL,
   method: string,
-): Promise<Response> {
+): Promise<HttpJsonHandlerResult> {
   const parsedBody = await parseUnknownRequestBody(request);
   if (!isJsonObject(parsedBody)) {
     return zaloError("Bad Request: can't parse JSON object", 400);
@@ -623,6 +662,7 @@ export async function startZaloServer(
     onEvent: params.onEvent,
     pendingRequest: undefined,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "zalo.jsonl"),
+    reservedUpdates: 0,
     restrictWebhookTargets: !isLoopbackHost(host),
     updates: [],
     webhook: undefined,

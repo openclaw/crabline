@@ -1,4 +1,4 @@
-import type { IncomingMessage } from "node:http";
+import { get, type IncomingMessage } from "node:http";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
@@ -102,6 +102,55 @@ describe("server HTTP body reader", () => {
         error: "internal server error",
         ok: false,
       });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("reports response delivery failure to transactional handlers", async () => {
+    let releaseHandler: (() => void) | undefined;
+    let observeHandler: (() => void) | undefined;
+    let observeAbort: (() => void) | undefined;
+    const handlerObserved = new Promise<void>((resolve) => {
+      observeHandler = resolve;
+    });
+    const handlerBlocked = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    const requestAborted = new Promise<void>((resolve) => {
+      observeAbort = resolve;
+    });
+    let failed = 0;
+    let succeeded = 0;
+    const server = await startHttpJsonServer({
+      async handle(request) {
+        request.once("aborted", () => observeAbort?.());
+        observeHandler?.();
+        await handlerBlocked;
+        return {
+          onWriteFailure() {
+            failed++;
+          },
+          onWriteSuccess() {
+            succeeded++;
+          },
+          response: Response.json({ ok: true }),
+        };
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const request = get(server.baseUrl);
+      request.on("error", () => {});
+      await handlerObserved;
+      request.destroy();
+      await requestAborted;
+      releaseHandler?.();
+      await expect.poll(() => failed).toBe(1);
+      expect(succeeded).toBe(0);
     } finally {
       await server.close();
     }
