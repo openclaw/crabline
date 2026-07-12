@@ -77,6 +77,27 @@ describe("recorder", () => {
     });
   });
 
+  it("rejects a malformed final record once it is newline terminated", async () => {
+    const filePath = await createRecorderPath();
+    await appendFile(filePath, '{"id":"malformed"} trailing\n', "utf8");
+
+    await expect(readRecordedInbound(filePath)).rejects.toThrow(SyntaxError);
+    await expect(
+      waitForRecordedInbound({
+        filePath,
+        matches: () => true,
+        timeoutMs: 30,
+      }),
+    ).rejects.toThrow(SyntaxError);
+
+    const iterator = watchRecordedInbound({
+      filePath,
+      matches: () => true,
+      pollMs: 10,
+    })[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toThrow(SyntaxError);
+  });
+
   it("waits for a matching inbound event", async () => {
     const filePath = await createRecorderPath();
     const waitPromise = waitForRecordedInbound({
@@ -122,6 +143,22 @@ describe("recorder", () => {
         timeoutMs: 30,
       }),
     ).resolves.toBeNull();
+  });
+
+  it("does not sleep past the polling timeout", async () => {
+    const filePath = await createRecorderPath();
+    const startedAt = Date.now();
+
+    await expect(
+      waitForRecordedInbound({
+        filePath,
+        matches: () => false,
+        pollMs: 1000,
+        timeoutMs: 40,
+      }),
+    ).resolves.toBeNull();
+
+    expect(Date.now() - startedAt).toBeLessThan(500);
   });
 
   it("streams new inbound events", async () => {
