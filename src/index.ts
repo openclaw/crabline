@@ -134,6 +134,7 @@ export type {
   OpenClawCrablineAgentDelivery,
   OpenClawCrablineChannelDriverSelection,
   OpenClawCrablineChannelDriverSmokeResult,
+  OpenClawCrablineConversation,
   OpenClawCrablineGatewayBinding,
   OpenClawCrablineInbound,
   OpenClawCrablineInboundInput,
