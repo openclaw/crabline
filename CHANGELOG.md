@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Restrict releases to stable version tags and resolve workflow-dispatch inputs through exact tag refs before publication.
+- Reject ambiguous fixture/config inputs and keep the published CLI, type dependencies, and README assets aligned with their public contract.
 - Harden release packaging and retries, and make cleanup scripts portable across supported platforms.
 - Export the OpenClaw conversation type from the package root.
 - Harden CLI lifecycle cleanup, ready-file publication, run diagnostics, and config validation.

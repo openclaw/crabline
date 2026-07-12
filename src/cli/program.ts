@@ -171,16 +171,14 @@ export function createProgram(
     });
 
   program
-    .command("probe <fixtureOrProvider>")
-    .description("Probe provider readiness using a fixture or provider id")
-    .action(async (fixtureOrProvider) => {
+    .command("probe <fixtureId>")
+    .description("Probe provider readiness using a fixture")
+    .action(async (fixtureId) => {
       const options = program.opts() as GlobalOptions;
       const { manifest, path } = await loadManifest(options.config);
-      const fixture =
-        manifest.fixtures.find((entry) => entry.id === fixtureOrProvider) ??
-        manifest.fixtures.find((entry) => entry.provider === fixtureOrProvider);
+      const fixture = manifest.fixtures.find((entry) => entry.id === fixtureId);
       if (!fixture) {
-        throw new CrablineError(`No fixture found for "${fixtureOrProvider}"`, { kind: "config" });
+        throw new CrablineError(`Unknown fixture: ${fixtureId}`, { kind: "config" });
       }
       const registry = createRegistry(manifest, path);
       const result = await runFixtureCommand({

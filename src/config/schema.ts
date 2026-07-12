@@ -609,12 +609,26 @@ function omitManifestExtensions(value: unknown): unknown {
   return manifestEntries.length === entries.length ? value : Object.fromEntries(manifestEntries);
 }
 
-const StrictManifestSchema = z.strictObject({
-  configVersion: z.literal(1).default(1),
-  fixtures: z.array(FixtureSchema).default([]),
-  providers: z.record(z.string(), ProviderConfigSchema).default({}),
-  userName: z.string().min(1).default("crabline"),
-});
+const StrictManifestSchema = z
+  .strictObject({
+    configVersion: z.literal(1).default(1),
+    fixtures: z.array(FixtureSchema).default([]),
+    providers: z.record(z.string(), ProviderConfigSchema).default({}),
+    userName: z.string().min(1).default("crabline"),
+  })
+  .superRefine((manifest, ctx) => {
+    const seenFixtureIds = new Set<string>();
+    for (const [index, fixture] of manifest.fixtures.entries()) {
+      if (seenFixtureIds.has(fixture.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate fixture id: ${fixture.id}`,
+          path: ["fixtures", index, "id"],
+        });
+      }
+      seenFixtureIds.add(fixture.id);
+    }
+  });
 
 export const ManifestSchema = z.preprocess(omitManifestExtensions, StrictManifestSchema);
 

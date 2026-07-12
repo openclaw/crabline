@@ -119,7 +119,14 @@ describe("cli", () => {
     }
 
     expect(exitCode!).toBe(10);
-    expect(captured.stderr.join("")).toContain("No fixture found");
+    expect(captured.stderr.join("")).toContain("Unknown fixture");
+  });
+
+  it("documents probe as a fixture-only command", () => {
+    const probe = createProgram().commands.find((command) => command.name() === "probe");
+
+    expect(probe?.usage()).toBe("[options] <fixtureId>");
+    expect(probe?.description()).toBe("Probe provider readiness using a fixture");
   });
 
   it("isolates exit codes across repeated invocations", async () => {

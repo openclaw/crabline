@@ -1,12 +1,12 @@
 import path from "node:path";
-import { realpath, access } from "node:fs/promises";
+import { mkdir, realpath, stat } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadManifest, resolveConfigPath } from "../src/config/load.js";
 import { createTempDir, disposeTempDir, writeJson, writeText } from "./test-helpers.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, access: vi.fn(actual.access) };
+  return { ...actual, stat: vi.fn(actual.stat) };
 });
 
 const directories: string[] = [];
@@ -116,6 +116,22 @@ describe("config load", () => {
     }
   });
 
+  it("skips config-name directories during discovery", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    await mkdir(path.join(directory, "crabline.yaml"));
+    const configPath = path.join(directory, "crabline.yml");
+    await writeText(configPath, "configVersion: 1\nproviders: {}\nfixtures: []\n");
+    const originalCwd = process.cwd();
+
+    process.chdir(directory);
+    try {
+      expect(await realpath(await resolveConfigPath())).toBe(await realpath(configPath));
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
   it("fails when no config file exists", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -131,7 +147,7 @@ describe("config load", () => {
 
   it("surfaces non-missing filesystem errors during discovery", async () => {
     const error = Object.assign(new Error("permission denied"), { code: "EACCES" });
-    vi.mocked(access).mockRejectedValueOnce(error);
+    vi.mocked(stat).mockRejectedValueOnce(error);
 
     await expect(resolveConfigPath()).rejects.toBe(error);
   });

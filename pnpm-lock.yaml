@@ -11,6 +11,9 @@ importers:
 
   .:
     dependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
       commander:
         specifier: ^15.0.0
         version: 15.0.0
@@ -30,9 +33,6 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
-      '@types/node':
-        specifier: ^26.1.0
-        version: 26.1.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
