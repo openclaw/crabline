@@ -1,21 +1,5 @@
 const MAX_INBOUND_REGEX_LENGTH = 512;
-
-type GroupState = {
-  hasAlternation: boolean;
-  hasQuantifier: boolean;
-};
-
-function quantifierEnd(pattern: string, index: number): number | undefined {
-  const character = pattern[index];
-  if (character === "*" || character === "+" || character === "?") {
-    return index + 1;
-  }
-  if (character !== "{") {
-    return undefined;
-  }
-  const match = /^\{\d+(?:,\d*)?\}/u.exec(pattern.slice(index));
-  return match ? index + match[0].length : undefined;
-}
+const MAX_BOUNDED_REPETITION = 100;
 
 export function inboundRegexSafetyError(pattern: string): string | undefined {
   if (pattern.length > MAX_INBOUND_REGEX_LENGTH) {
@@ -25,7 +9,6 @@ export function inboundRegexSafetyError(pattern: string): string | undefined {
     return "must not contain backreferences";
   }
 
-  const groups: GroupState[] = [{ hasAlternation: false, hasQuantifier: false }];
   let inCharacterClass = false;
   for (let index = 0; index < pattern.length; index += 1) {
     const character = pattern[index]!;
@@ -44,36 +27,24 @@ export function inboundRegexSafetyError(pattern: string): string | undefined {
     if (inCharacterClass) {
       continue;
     }
-    if (character === "(") {
-      groups.push({ hasAlternation: false, hasQuantifier: false });
+    if (character === "*" || character === "+") {
+      return "must not contain unbounded quantifiers";
+    }
+    if (character !== "{") {
       continue;
     }
-    if (character === "|") {
-      groups.at(-1)!.hasAlternation = true;
+    const match = /^\{(\d+)(?:,(\d*))?\}/u.exec(pattern.slice(index));
+    if (!match) {
       continue;
     }
-    if (character === ")") {
-      if (groups.length === 1) {
-        continue;
-      }
-      const group = groups.pop()!;
-      const end = quantifierEnd(pattern, index + 1);
-      if (end !== undefined && (group.hasAlternation || group.hasQuantifier)) {
-        return "must not quantify a group containing alternation or another quantifier";
-      }
-      if (end !== undefined) {
-        groups.at(-1)!.hasQuantifier = true;
-      }
-      continue;
+    if (match[2] === "") {
+      return "must not contain unbounded quantifiers";
     }
-    const end = quantifierEnd(pattern, index);
-    if (end !== undefined) {
-      if (character === "?" && pattern[index - 1] === "(") {
-        continue;
-      }
-      groups.at(-1)!.hasQuantifier = true;
-      index = end - 1;
+    const maximum = match[2] === undefined ? Number(match[1]) : Number(match[2]);
+    if (!Number.isSafeInteger(maximum) || maximum > MAX_BOUNDED_REPETITION) {
+      return `must use bounded repetitions no greater than ${MAX_BOUNDED_REPETITION}`;
     }
+    index += match[0].length - 1;
   }
   return undefined;
 }

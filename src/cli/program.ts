@@ -588,7 +588,7 @@ async function publishReadyFileUnlocked(
       mode: 0o600,
     });
     try {
-      await fs.rename(filePath, backupPath);
+      await fs.link(filePath, backupPath);
       destinationBackedUp = true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -605,7 +605,7 @@ async function publishReadyFileUnlocked(
     return identity;
   } catch (error) {
     const recoveryErrors: unknown[] = [];
-    if (manifestPublished) {
+    if (manifestPublished && !destinationBackedUp) {
       await fs.rm(filePath, { force: true }).catch((cleanupError: unknown) => {
         recoveryErrors.push(cleanupError);
       });

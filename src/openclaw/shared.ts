@@ -250,18 +250,21 @@ export function parseQaTarget(target: string): ParsedQaTarget {
     return invalidTarget();
   }
   if (trimmed.startsWith("thread:")) {
-    const rest = trimmed.slice("thread:".length);
+    const encoded = trimmed.startsWith("thread:v1:");
+    const rest = trimmed.slice(encoded ? "thread:v1:".length : "thread:".length);
     const slash = rest.indexOf("/");
     if (slash <= 0 || slash !== rest.lastIndexOf("/")) {
       return invalidTarget();
     }
-    let id: string;
-    let threadId: string;
-    try {
-      id = decodeURIComponent(rest.slice(0, slash)).trim();
-      threadId = decodeURIComponent(rest.slice(slash + 1)).trim();
-    } catch {
-      return invalidTarget();
+    let id = rest.slice(0, slash).trim();
+    let threadId = rest.slice(slash + 1).trim();
+    if (encoded) {
+      try {
+        id = decodeURIComponent(id).trim();
+        threadId = decodeURIComponent(threadId).trim();
+      } catch {
+        return invalidTarget();
+      }
     }
     if (!id || !threadId) {
       return invalidTarget();
@@ -304,7 +307,7 @@ export function qaTargetForInbound(input: OpenClawCrablineInboundInput) {
         ? "channel"
         : "group";
   return threadId
-    ? `thread:${encodeQaThreadComponent(conversationId)}/${encodeQaThreadComponent(threadId)}`
+    ? `thread:v1:${encodeQaThreadComponent(conversationId)}/${encodeQaThreadComponent(threadId)}`
     : `${prefix}:${conversationId}`;
 }
 
