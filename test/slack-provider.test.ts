@@ -2,6 +2,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProviderConfig } from "../src/config/schema.js";
 import { SlackProviderAdapter } from "../src/providers/builtin/slack.js";
+import { appendRecordedInbound } from "../src/providers/recorder.js";
 import type { ProviderContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
@@ -259,6 +260,48 @@ describe("slack provider", () => {
         threadId: index === 0 ? threadKey : "1700000000.000100",
       });
     }
+  });
+
+  it("keeps watched Slack threads scoped to their channel", async () => {
+    const config = await createSlackConfig(0);
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+    const threadTs = "1700000000.000100";
+    const context = createContext(config, {
+      channelId: "C1234567890",
+      id: "reply-target",
+      metadata: {},
+      threadId: threadTs,
+    });
+    await provider.probe(context);
+    const iterator = provider
+      .watch({ ...context, since: new Date(Date.now() - 1_000).toISOString() })
+      [Symbol.asyncIterator]();
+    const next = iterator.next();
+    const recorderPath = config.slack!.recorder.path!;
+
+    await appendRecordedInbound(recorderPath, {
+      author: "user",
+      id: "wrong-channel",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "wrong channel",
+      threadId: `C9999999999:thread:${threadTs}`,
+    });
+    await appendRecordedInbound(recorderPath, {
+      author: "user",
+      id: "right-channel",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "right channel",
+      threadId: `C1234567890:thread:${threadTs}`,
+    });
+
+    await expect(next).resolves.toMatchObject({
+      done: false,
+      value: { id: "right-channel" },
+    });
+    await iterator.return?.();
   });
 
   it("rejects mock webhook thread ids that are not Slack-shaped", async () => {

@@ -81,32 +81,40 @@ function normalizeSlackEventsPayload(payload: unknown) {
   };
 }
 
-function matchesSlackThread(candidateThreadId: string, expectedThreadId?: string): boolean {
+function matchesSlackThread(
+  candidateThreadId: string,
+  expectedThreadId: string | undefined,
+  target: { channelId?: string | undefined },
+): boolean {
   if (!expectedThreadId) {
     return true;
   }
+  const scopedExpectedThreadId =
+    target.channelId && SLACK_TS_RULE.pattern.test(expectedThreadId)
+      ? slackTargetKey(target.channelId, expectedThreadId)
+      : expectedThreadId;
   if (
-    candidateThreadId === expectedThreadId ||
-    candidateThreadId.startsWith(`${expectedThreadId}:`)
+    candidateThreadId === scopedExpectedThreadId ||
+    candidateThreadId.startsWith(`${scopedExpectedThreadId}:`)
   ) {
     return true;
   }
   const marker = ":thread:";
-  if (SLACK_TS_RULE.pattern.test(expectedThreadId)) {
+  if (SLACK_TS_RULE.pattern.test(scopedExpectedThreadId)) {
     const separator = candidateThreadId.indexOf(marker);
     if (separator <= 0) {
       return false;
     }
     const channelId = candidateThreadId.slice(0, separator);
     const threadTs = candidateThreadId.slice(separator + marker.length);
-    return SLACK_CHANNEL_ID_RULE.pattern.test(channelId) && threadTs === expectedThreadId;
+    return SLACK_CHANNEL_ID_RULE.pattern.test(channelId) && threadTs === scopedExpectedThreadId;
   }
-  const separator = expectedThreadId.indexOf(marker);
+  const separator = scopedExpectedThreadId.indexOf(marker);
   if (separator <= 0) {
     return false;
   }
-  const channelId = expectedThreadId.slice(0, separator);
-  const threadTs = expectedThreadId.slice(separator + marker.length);
+  const channelId = scopedExpectedThreadId.slice(0, separator);
+  const threadTs = scopedExpectedThreadId.slice(separator + marker.length);
   return (
     SLACK_CHANNEL_ID_RULE.pattern.test(channelId) &&
     SLACK_TS_RULE.pattern.test(threadTs) &&

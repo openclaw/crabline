@@ -33,7 +33,11 @@ export type LocalMockWebhookConfig = {
 export type LocalMockAdapterOptions = {
   defaultWebhook: Required<Pick<LocalMockWebhookConfig, "host" | "path" | "port">>;
   endpointLabel: string;
-  matchesThread?: (candidateThreadId: string, expectedThreadId?: string) => boolean;
+  matchesThread?: (
+    candidateThreadId: string,
+    expectedThreadId: string | undefined,
+    target: NormalizedTarget,
+  ) => boolean;
   normalizeWebhookPayload?: (payload: unknown) => unknown;
   platform: ProviderPlatform;
   publicUrl?: string | undefined;
@@ -217,7 +221,11 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         matches: (candidate) =>
           candidate.provider === this.id &&
           (expectedAuthor === "any" || candidate.author === expectedAuthor) &&
-          (this.#options.matchesThread ?? isAddressInChannel)(candidate.threadId, channelId),
+          (this.#options.matchesThread ?? isAddressInChannel)(
+            candidate.threadId,
+            channelId,
+            target,
+          ),
         since: context.since,
         signal: context.signal,
         timeoutMs: context.timeoutMs,
@@ -242,6 +250,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         (this.#options.matchesThread ?? isAddressInChannel)(
           entry.threadId,
           target.threadId ?? target.channelId,
+          target,
         ),
       signal: context.signal,
       since: context.since,
