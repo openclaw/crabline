@@ -43,7 +43,9 @@ type ZaloUpdate = {
   message: ZaloMessage;
 };
 
-type PendingUpdateResult = "conflict" | "disconnect" | "shutdown" | "timeout" | "update";
+type PendingUpdateResult =
+  | { kind: "conflict" | "disconnect" | "shutdown" | "timeout" }
+  | { kind: "update"; update: ZaloUpdate };
 
 type PendingUpdateRequest = {
   active: boolean;
@@ -319,7 +321,7 @@ async function waitForUpdate(
 ): Promise<Response> {
   const previous = state.pendingRequest;
   if (previous) {
-    settlePendingUpdate(state, previous, "conflict");
+    settlePendingUpdate(state, previous, { kind: "conflict" });
   }
   if (request.aborted || request.socket.destroyed || response.destroyed) {
     return zaloError("Client closed request", 499);
@@ -335,7 +337,7 @@ async function waitForUpdate(
     const pending: PendingUpdateRequest = {
       active: true,
       onDisconnect: () => {
-        settlePendingUpdate(state, pending, "disconnect");
+        settlePendingUpdate(state, pending, { kind: "disconnect" });
       },
       request,
       response,
@@ -347,43 +349,44 @@ async function waitForUpdate(
     request.socket.once("close", pending.onDisconnect);
     response.once("close", pending.onDisconnect);
     pending.timeout = setTimeout(() => {
-      settlePendingUpdate(state, pending, "timeout");
+      settlePendingUpdate(state, pending, { kind: "timeout" });
     }, timeoutSeconds * 1000);
     pending.timeout.unref();
     if (request.socket.destroyed || response.destroyed) {
       pending.onDisconnect();
     }
   });
-  if (result === "conflict") {
-    return zaloError("Conflict: terminated by other getUpdates request", 409);
+  switch (result.kind) {
+    case "conflict":
+      return zaloError("Conflict: terminated by other getUpdates request", 409);
+    case "disconnect":
+      return zaloError("Client closed request", 499);
+    case "shutdown":
+      return zaloError("Server shutting down", 503);
+    case "timeout":
+      return zaloError("Request timeout", 408);
+    case "update":
+      return zaloOk(result.update);
   }
-  if (result === "disconnect") {
-    return zaloError("Client closed request", 499);
-  }
-  if (result === "shutdown") {
-    return zaloError("Server shutting down", 503);
-  }
-  if (result === "timeout") {
-    return zaloError("Request timeout", 408);
-  }
-  return nextUpdate(request, response, state) ?? zaloError("Client closed request", 499);
 }
 
 function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boolean {
+  const pending = state.pendingRequest;
+  if (pending) {
+    if (
+      !pending.request.aborted &&
+      !pending.request.socket.destroyed &&
+      !pending.response.destroyed
+    ) {
+      settlePendingUpdate(state, pending, { kind: "update", update });
+      return true;
+    }
+    settlePendingUpdate(state, pending, { kind: "disconnect" });
+  }
   if (state.updates.length >= state.maxPendingInboundEvents) {
     return false;
   }
   state.updates.push(update);
-  const pending = state.pendingRequest;
-  if (pending) {
-    settlePendingUpdate(
-      state,
-      pending,
-      pending.request.aborted || pending.request.socket.destroyed || pending.response.destroyed
-        ? "disconnect"
-        : "update",
-    );
-  }
   return true;
 }
 
@@ -583,7 +586,7 @@ async function handleZaloMethod(
     }
     const webhook = { secretToken, updatedAt: Date.now(), url: parsedUrl.href };
     if (state.pendingRequest) {
-      settlePendingUpdate(state, state.pendingRequest, "conflict");
+      settlePendingUpdate(state, state.pendingRequest, { kind: "conflict" });
     }
     state.webhook = webhook;
     return zaloOk({ updated_at: webhook.updatedAt, url: webhook.url });
@@ -678,7 +681,7 @@ export async function startZaloServer(
         request.destroy(new Error("Zalo server is shutting down."));
       }
       if (state.pendingRequest) {
-        settlePendingUpdate(state, state.pendingRequest, "shutdown");
+        settlePendingUpdate(state, state.pendingRequest, { kind: "shutdown" });
       }
       await httpServer.close();
     },
