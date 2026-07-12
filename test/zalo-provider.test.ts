@@ -54,7 +54,7 @@ describe("Zalo webhook normalizer", () => {
 
   it("requires the configured webhook secret before parsing", async () => {
     const config = await createLocalMockConfig("zalo", "/zalo/webhook");
-    config.zalo!.webhookSecret = "zalo-webhook-secret";
+    config.zalo!.webhookSecret = "test-token-placeholder";
     const provider = new ZaloProviderAdapter("zalo", config, "crabline");
     try {
       const probe = await provider.probe(
@@ -79,7 +79,7 @@ describe("Zalo webhook normalizer", () => {
         }),
         headers: {
           "content-type": "application/json",
-          "x-bot-api-secret-token": "zalo-webhook-secret",
+          "x-bot-api-secret-token": "test-token-placeholder",
         },
         method: "POST",
       });

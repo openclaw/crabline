@@ -222,7 +222,7 @@ describe("slack provider", () => {
   });
 
   it("verifies Slack request signatures before parsing", async () => {
-    const signingSecret = "slack-signing-secret";
+    const signingSecret = "test-token-placeholder";
     const config = await createSlackConfig(0, signingSecret);
     const provider = new SlackProviderAdapter("slack", config, "crabline");
     providers.push(provider);

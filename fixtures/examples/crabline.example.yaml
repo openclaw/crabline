@@ -10,7 +10,7 @@ providers:
   telegram:
     adapter: telegram
     telegram:
-      # secretToken: replace-with-telegram-webhook-secret
+      # secretToken: test-token-placeholder
       recorder:
         path: ./.crabline/recorders/telegram.jsonl
       webhook:
@@ -31,7 +31,7 @@ providers:
   slack:
     adapter: slack
     slack:
-      # signingSecret: replace-with-slack-signing-secret
+      # signingSecret: test-token-placeholder
       recorder:
         path: ./.crabline/recorders/slack.jsonl
       webhook:
@@ -92,7 +92,7 @@ providers:
   zalo:
     adapter: zalo
     zalo:
-      # webhookSecret: replace-with-zalo-webhook-secret
+      # webhookSecret: test-token-placeholder
       recorder:
         path: ./.crabline/recorders/zalo.jsonl
       webhook:
