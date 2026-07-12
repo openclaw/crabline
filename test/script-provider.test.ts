@@ -469,6 +469,26 @@ describe("script provider", () => {
     expect(ensureErrorMessage(watchError)).not.toContain(sentinel);
   });
 
+  it("uses stdout diagnostics when stderr is only whitespace", async () => {
+    const context = await createContext();
+    const failingScript = path.join(path.dirname(context.manifestPath), "send-stdout-error.mjs");
+    await writeText(
+      failingScript,
+      'process.stderr.write("\\n");process.stdout.write("useful failure");process.exitCode=7;',
+    );
+    context.config.script!.commands.send = `node ${JSON.stringify(failingScript)}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(
+      provider.send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      }),
+    ).rejects.toThrow(/useful failure/u);
+  });
+
   it("fails when required commands are missing", async () => {
     const context = await createContext();
     const provider = new ScriptProviderAdapter({

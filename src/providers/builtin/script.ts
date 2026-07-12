@@ -203,7 +203,7 @@ function runScript<T>(params: {
             new CrablineError(
               formatScriptError(
                 `Script command failed${signal ? ` (${signal})` : ""}.`,
-                stderrText || stdoutText,
+                stderrText.trim() || stdoutText.trim(),
                 params.command,
               ),
               { kind: "connectivity" },
