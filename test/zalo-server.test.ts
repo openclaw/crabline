@@ -41,6 +41,18 @@ describe("Zalo local provider server", () => {
       },
     });
 
+    const invalidJson = await fetch(`${server.manifest.baseUrl}/botzalo-token/sendMessage`, {
+      body: "{",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(invalidJson.status).toBe(400);
+    await expect(invalidJson.json()).resolves.toEqual({
+      description: "Bad Request: can't parse JSON object",
+      error_code: 400,
+      ok: false,
+    });
+
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
         chatId: "group-1",

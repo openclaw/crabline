@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   adminAuthError,
   hasAdminToken,
+  InvalidJsonBodyError,
   jsonResponse,
   parseRequestBody,
   queryRecord,
@@ -576,6 +577,8 @@ export async function startSlackServer(
   const host = params.host ?? "127.0.0.1";
   const httpServer = await startHttpJsonServer({
     handle: (request) => handleRequest({ request, state }),
+    handleError: (error) =>
+      error instanceof InvalidJsonBodyError ? slackError("invalid_json", 400) : undefined,
     host,
     port: params.port ?? 0,
     serverName: "Slack",

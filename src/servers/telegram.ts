@@ -2,7 +2,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { CrablineError } from "../core/errors.js";
-import { adminAuthError, formatUrlHost, hasAdminToken } from "./http.js";
+import {
+  adminAuthError,
+  formatUrlHost,
+  hasAdminToken,
+  InvalidJsonBodyError,
+} from "./http.js";
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 
 type TelegramServerEvent = {
@@ -139,7 +144,11 @@ async function parseRequestBody(request: IncomingMessage): Promise<Record<string
   const contentType = request.headers["content-type"] ?? "";
   const contentTypes = Array.isArray(contentType) ? contentType : [contentType];
   if (contentTypes.some((entry) => entry.includes("json"))) {
-    return JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+    try {
+      return JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+    } catch (error) {
+      throw new InvalidJsonBodyError(error);
+    }
   }
   const multipartType = contentTypes.find((entry) => entry.includes("multipart/form-data"));
   if (multipartType) {
@@ -521,13 +530,15 @@ export async function startTelegramServer(
     } catch (error) {
       await writeResponse(
         response,
-        jsonResponse(
-          {
-            error: error instanceof Error ? error.message : String(error),
-            ok: false,
-          },
-          500,
-        ),
+        error instanceof InvalidJsonBodyError
+          ? telegramError("Bad Request: can't parse JSON object")
+          : jsonResponse(
+              {
+                error: error instanceof Error ? error.message : String(error),
+                ok: false,
+              },
+              500,
+            ),
       );
     }
   });

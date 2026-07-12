@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   adminAuthError,
   hasAdminToken,
+  InvalidJsonBodyError,
   jsonResponse,
   parseRequestBody,
   queryRecord,
@@ -354,6 +355,10 @@ export async function startZaloServer(
       }
       return await handleZaloMethod(request, state, url, match[2] ?? "");
     },
+    handleError: (error) =>
+      error instanceof InvalidJsonBodyError
+        ? zaloError("Bad Request: can't parse JSON object", 400)
+        : undefined,
     host,
     port: params.port ?? 0,
     serverName: "Zalo",
