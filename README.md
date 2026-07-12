@@ -92,9 +92,11 @@ delivery request is authenticated. `doctor` checks explicit `env` declarations,
 script command availability, and config shape without requiring live platform
 credentials.
 
-When configured, Discord `publicKey`, Slack `signingSecret`, Telegram
-`secretToken`, and Zalo `webhookSecret` enforce the provider-native webhook
-authentication headers.
+When configured, Discord `publicKey`, Feishu `verificationToken`/`encryptKey`,
+Google Chat endpoint or Pub/Sub identity settings, Microsoft Teams `appId`,
+Slack `signingSecret`, Telegram `secretToken`, and Zalo `webhookSecret` enforce
+provider-native webhook authentication. Microsoft Teams also requires `appId`
+for non-loopback or explicitly public webhook endpoints.
 
 ## Built-In Mock Channels
 

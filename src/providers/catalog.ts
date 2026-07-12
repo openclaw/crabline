@@ -37,13 +37,13 @@ export const OPENCLAW_SUPPORT_CATALOG = [
     supports: COMMON_BRIDGE_SUPPORT,
   },
   {
-    notes: "Built-in local Feishu/Lark mock.",
+    notes: "Built-in local Feishu/Lark mock with verified and encrypted webhook ingress.",
     platform: "feishu",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
   },
   {
-    notes: "Built-in local Google Chat mock.",
+    notes: "Built-in local Google Chat mock with direct and Pub/Sub webhook ingress.",
     platform: "googlechat",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,
@@ -69,7 +69,7 @@ export const OPENCLAW_SUPPORT_CATALOG = [
     supports: COMMON_BRIDGE_SUPPORT,
   },
   {
-    notes: "Built-in local Microsoft Teams mock.",
+    notes: "Built-in local Microsoft Teams mock with Bot Connector authentication.",
     platform: "msteams",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,

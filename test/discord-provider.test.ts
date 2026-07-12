@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createDiscordInteractionResponse,
   DiscordProviderAdapter,
+  handleDiscordWebhookPayload,
+  normalizeDiscordWebhookPayload,
 } from "../src/providers/builtin/discord.js";
 import type { ProviderConfig } from "../src/config/schema.js";
 import type { ProviderContext } from "../src/providers/types.js";
@@ -20,6 +22,36 @@ describe("Discord interaction responses", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ type: 6 });
+  });
+
+  it("handles autocomplete before recorder normalization", async () => {
+    const response = handleDiscordWebhookPayload({
+      channel_id: "123456789012345678",
+      data: { name: "search" },
+      type: 4,
+    });
+
+    expect(response?.status).toBe(200);
+    await expect(response?.json()).resolves.toEqual({
+      data: { choices: [] },
+      type: 8,
+    });
+  });
+
+  it("normalizes the documented top-level generic payload", () => {
+    expect(
+      normalizeDiscordWebhookPayload({
+        author: "user",
+        id: "444456789012345678",
+        text: "generic nonce-4",
+        threadId: "123456789012345678",
+      }),
+    ).toMatchObject({
+      author: "user",
+      id: "444456789012345678",
+      text: "generic nonce-4",
+      threadId: "123456789012345678",
+    });
   });
 });
 
@@ -348,6 +380,75 @@ describe("discord provider", () => {
       id: "444456789012345678",
       text: "approve:nonce-3",
       threadId: "123456789012345678",
+    });
+  });
+
+  it("answers autocomplete interactions without recording them", async () => {
+    const config = await createDiscordConfig(0);
+    const provider = new DiscordProviderAdapter("discord", config, "crabline");
+    providers.push(provider);
+    const endpoint = (await provider.probe(createContext(config))).details
+      .find((detail) => detail.startsWith("interactions endpoint "))
+      ?.replace("interactions endpoint ", "");
+    expect(endpoint).toBeDefined();
+
+    const response = await fetch(endpoint!, {
+      body: JSON.stringify({
+        channel_id: "123456789012345678",
+        data: { name: "search" },
+        id: "444456789012345678",
+        type: 4,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      data: { choices: [] },
+      type: 8,
+    });
+    await expect(readFile(config.discord!.recorder.path!, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("accepts the documented top-level generic webhook payload", async () => {
+    const config = await createDiscordConfig(0);
+    const provider = new DiscordProviderAdapter("discord", config, "crabline");
+    providers.push(provider);
+    const endpoint = (await provider.probe(createContext(config))).details
+      .find((detail) => detail.startsWith("interactions endpoint "))
+      ?.replace("interactions endpoint ", "");
+    expect(endpoint).toBeDefined();
+    const since = new Date(Date.now() - 1000).toISOString();
+
+    const response = await fetch(endpoint!, {
+      body: JSON.stringify({
+        author: "user",
+        id: "444456789012345678",
+        text: "generic nonce-4",
+        threadId: "123456789012345678",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    const context = createContext(config);
+    context.fixture.inboundMatch.author = "any";
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        nonce: "nonce-4",
+        since,
+        threadId: "123456789012345678",
+        timeoutMs: 500,
+      }),
+    ).resolves.toMatchObject({
+      author: "user",
+      id: "444456789012345678",
+      text: "generic nonce-4",
     });
   });
 

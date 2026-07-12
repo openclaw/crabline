@@ -266,6 +266,7 @@ const GoogleChatConfigSchema = z.strictObject({
   googleChatProjectNumber: z.string().min(1).optional(),
   impersonateUser: z.string().min(1).optional(),
   pubsubAudience: z.string().min(1).optional(),
+  pubsubServiceAccountEmail: z.string().min(1).optional(),
   pubsubTopic: z.string().min(1).optional(),
   recorder: GoogleChatRecorderSchema.default({}),
   useApplicationDefaultCredentials: z.boolean().optional(),
@@ -315,8 +316,10 @@ const TelegramConfigSchema = z.strictObject({
 const FeishuConfigSchema = z.strictObject({
   appId: z.string().min(1).optional(),
   appSecret: z.string().min(1).optional(),
+  encryptKey: z.string().min(1).optional(),
   recorder: z.strictObject({ path: z.string().min(1).optional() }).default({}),
   userName: z.string().min(1).optional(),
+  verificationToken: z.string().min(1).optional(),
   webhook: z
     .strictObject({
       host: z.string().min(1).default("127.0.0.1"),

@@ -607,12 +607,15 @@ describe("manifest schema", () => {
           adapter: "feishu",
           feishu: {
             appId: "feishu-app",
+            encryptKey: "feishu-encrypt-key",
+            verificationToken: "feishu-verification-token",
           },
         },
         googlechat: {
           adapter: "googlechat",
           googlechat: {
             disableSignatureVerification: true,
+            pubsubServiceAccountEmail: "push@example.iam.gserviceaccount.com",
           },
         },
         mattermost: {
@@ -649,7 +652,11 @@ describe("manifest schema", () => {
     });
 
     expect(manifest.providers["feishu"]?.feishu?.recorder).toEqual({});
+    expect(manifest.providers["feishu"]?.feishu?.encryptKey).toBe("feishu-encrypt-key");
     expect(manifest.providers["feishu"]?.platform).toBe("feishu");
+    expect(manifest.providers["googlechat"]?.googlechat?.pubsubServiceAccountEmail).toBe(
+      "push@example.iam.gserviceaccount.com",
+    );
     expect(manifest.providers["googlechat"]?.googlechat?.webhook.port).toBe(8792);
     expect(manifest.providers["googlechat"]?.platform).toBe("googlechat");
     expect(manifest.providers["mattermost"]?.mattermost?.webhook.path).toBe("/mattermost/webhook");

@@ -7,6 +7,15 @@ type JwtHeader = {
 
 export type JwtClaims = Record<string, unknown>;
 
+export type RemoteJwtKeySet<T> = {
+  expiresAt: number;
+  values: readonly T[];
+};
+
+const DEFAULT_KEY_FETCH_TIMEOUT_MS = 5_000;
+const DEFAULT_UNKNOWN_KEY_COOLDOWN_MS = 30_000;
+const MAX_NEGATIVE_KEY_IDS = 128;
+
 function decodeJsonPart(value: string): Record<string, unknown> {
   const decoded: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
   if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
@@ -39,12 +48,116 @@ export function readBearerToken(request: Request): string | undefined {
 
 export function resolveHttpCacheExpiry(response: Response, now: number): number {
   const cacheControl = response.headers.get("cache-control");
+  if (/(?:^|,)\s*(?:no-cache|no-store)(?:\s*(?:=|,|$))/iu.test(cacheControl ?? "")) {
+    return now;
+  }
   const maxAge = /(?:^|,)\s*max-age=(\d+)/iu.exec(cacheControl ?? "");
   if (maxAge) {
     return now + Number(maxAge[1]) * 1_000;
   }
   const expires = Date.parse(response.headers.get("expires") ?? "");
   return Number.isFinite(expires) && expires > now ? expires : now + 60 * 60 * 1_000;
+}
+
+export function createCachedJwtKeyResolver<T>(params: {
+  fetchKeys(signal: AbortSignal): Promise<RemoteJwtKeySet<T>>;
+  keyId(value: T): string | undefined;
+  now?: (() => number) | undefined;
+  refreshCooldownMs?: number | undefined;
+  timeoutMs?: number | undefined;
+  unknownKeyMessage: string;
+}) {
+  const now = params.now ?? Date.now;
+  const refreshCooldownMs = params.refreshCooldownMs ?? DEFAULT_UNKNOWN_KEY_COOLDOWN_MS;
+  const timeoutMs = params.timeoutMs ?? DEFAULT_KEY_FETCH_TIMEOUT_MS;
+  let cached: RemoteJwtKeySet<T> | undefined;
+  let fetchInFlight: Promise<RemoteJwtKeySet<T>> | undefined;
+  let refreshInFlight: Promise<RemoteJwtKeySet<T>> | undefined;
+  let refreshCooldownUntil = 0;
+  const negativeKeyIds = new Map<string, number>();
+
+  const rejectUnknownKey = (kid: string, expiresAt: number): never => {
+    for (const [candidate, candidateExpiry] of negativeKeyIds) {
+      if (candidateExpiry <= now()) {
+        negativeKeyIds.delete(candidate);
+      }
+    }
+    if (negativeKeyIds.size >= MAX_NEGATIVE_KEY_IDS) {
+      const oldest = negativeKeyIds.keys().next().value;
+      if (oldest) {
+        negativeKeyIds.delete(oldest);
+      }
+    }
+    negativeKeyIds.set(kid, expiresAt);
+    throw new Error(params.unknownKeyMessage);
+  };
+
+  const fetchKeys = async (): Promise<RemoteJwtKeySet<T>> => {
+    if (fetchInFlight) {
+      return await fetchInFlight;
+    }
+    const controller = new AbortController();
+    let timeout: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        reject(new Error("JWT signing key fetch timed out."));
+      }, timeoutMs);
+    });
+    fetchInFlight = Promise.race([params.fetchKeys(controller.signal), timedOut])
+      .then((keySet) => {
+        cached = keySet.expiresAt > now() ? keySet : undefined;
+        return keySet;
+      })
+      .finally(() => {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        fetchInFlight = undefined;
+      });
+    return await fetchInFlight;
+  };
+
+  return async (header: JwtHeader): Promise<T> => {
+    const currentTime = now();
+    const negativeExpiry = negativeKeyIds.get(header.kid);
+    if (negativeExpiry && negativeExpiry > currentTime) {
+      throw new Error(params.unknownKeyMessage);
+    }
+    negativeKeyIds.delete(header.kid);
+
+    const freshCache = cached && cached.expiresAt > currentTime ? cached : undefined;
+    const keySet = freshCache ?? (await fetchKeys());
+    const key = keySet.values.find((candidate) => params.keyId(candidate) === header.kid);
+    if (key) {
+      return key;
+    }
+
+    if (!freshCache) {
+      return rejectUnknownKey(header.kid, now() + refreshCooldownMs);
+    }
+
+    let refreshed: RemoteJwtKeySet<T>;
+    if (refreshInFlight) {
+      refreshed = await refreshInFlight;
+    } else {
+      const refreshTime = now();
+      if (refreshCooldownUntil > refreshTime) {
+        return rejectUnknownKey(header.kid, refreshCooldownUntil);
+      }
+      refreshCooldownUntil = refreshTime + refreshCooldownMs;
+      refreshInFlight = fetchKeys().finally(() => {
+        refreshInFlight = undefined;
+      });
+      refreshed = await refreshInFlight;
+    }
+
+    const rotatedKey = refreshed.values.find((candidate) => params.keyId(candidate) === header.kid);
+    if (!rotatedKey) {
+      return rejectUnknownKey(header.kid, refreshCooldownUntil);
+    }
+    return rotatedKey;
+  };
 }
 
 export async function verifySignedJwt(params: {
