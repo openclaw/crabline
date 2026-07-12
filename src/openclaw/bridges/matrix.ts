@@ -1,4 +1,5 @@
 import {
+  canonicalConversationIdForInbound,
   createAdminInboundRequest,
   createOpenClawCrablineProviderBridge,
   DEFAULT_ACCOUNT_ID,
@@ -90,7 +91,7 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         };
       },
       createInbound(input) {
-        const roomId = matrixRoomId(input.conversation.id);
+        const roomId = matrixRoomId(canonicalConversationIdForInbound(input));
         const threadId = input.threadId?.trim() || undefined;
         const direct = input.conversation.kind === "direct";
         return {
@@ -106,7 +107,7 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           providerTargetKey: targetKey(roomId, threadId),
           qaTarget: qaTargetForInbound(input),
           stateConversation: {
-            id: input.conversation.id,
+            id: roomId,
             kind: direct ? "direct" : "group",
           },
           ...(threadId ? { threadId } : {}),

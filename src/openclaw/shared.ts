@@ -30,6 +30,7 @@ export type OpenClawCrablineChannelDriverSelection = {
 export type OpenClawCrablineChannelDriverSmokeResult = {
   capabilityReport: unknown;
   manifestPath: string;
+  release(): Promise<void>;
   smoke: unknown;
 };
 
@@ -272,8 +273,12 @@ export function parseQaTarget(target: string): ParsedQaTarget {
   return { kind: "direct", id: trimmed };
 }
 
+export function canonicalConversationIdForInbound(input: OpenClawCrablineInboundInput) {
+  return input.conversation.id.trim();
+}
+
 export function qaTargetForInbound(input: OpenClawCrablineInboundInput) {
-  const conversationId = input.conversation.id.trim();
+  const conversationId = canonicalConversationIdForInbound(input);
   const threadId = input.threadId?.trim();
   const prefix =
     input.conversation.kind === "direct"
