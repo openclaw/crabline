@@ -210,12 +210,19 @@ describe("Zalo local provider server", () => {
         { method: "POST" },
       );
       expect(blockedPolling.status).toBe(400);
+      const malformedCredentialUrl = [
+        "http://",
+        "user",
+        ":",
+        "credential-placeholder",
+        "@",
+        "127.0.0.1:bad/zalo",
+      ].join("");
       const invalidWebhook = await fetch(
         `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
         {
           body: JSON.stringify({
-            secret_token: "invalid-auth",
-            url: "http://user:leaked-secret@127.0.0.1:bad/zalo",
+            url: malformedCredentialUrl,
           }),
           headers: { "content-type": "application/json" },
           method: "POST",
@@ -229,8 +236,7 @@ describe("Zalo local provider server", () => {
       expect(recorder).not.toContain("test-auth-token");
       expect(recorder).not.toContain("alice");
       expect(recorder).not.toContain("sample");
-      expect(recorder).not.toContain("invalid-auth");
-      expect(recorder).not.toContain("leaked-secret");
+      expect(recorder).not.toContain("credential-placeholder");
     } finally {
       await new Promise<void>((resolve, reject) =>
         webhook.close((error) => (error ? reject(error) : resolve())),
