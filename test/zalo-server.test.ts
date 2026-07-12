@@ -171,6 +171,54 @@ describe("Zalo local provider server", () => {
     }
   });
 
+  it("bounds webhook delivery time for admin ingress", async () => {
+    const webhook = createServer(() => undefined);
+    await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+    const address = webhook.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve webhook test server address.");
+    }
+
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startZaloServer({
+      botToken: "zalo-token",
+      recorderPath: path.join(directory, "zalo-webhook-timeout.jsonl"),
+      webhookDeliveryTimeoutMs: 25,
+    });
+    servers.push(server);
+    try {
+      const setWebhook = await fetch(`${server.manifest.baseUrl}/botzalo-token/setWebhook`, {
+        body: JSON.stringify({
+          secret_token: "webhook-secret",
+          url: `http://127.0.0.1:${address.port}/zalo`,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(setWebhook.ok).toBe(true);
+
+      const startedAt = Date.now();
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "hello" }),
+        headers: adminHeaders(server),
+        method: "POST",
+      });
+      expect(Date.now() - startedAt).toBeLessThan(500);
+      expect(inbound.status).toBe(502);
+      await expect(inbound.json()).resolves.toMatchObject({
+        description: "Webhook delivery timed out after 25ms",
+        error_code: 502,
+        ok: false,
+      });
+    } finally {
+      webhook.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        webhook.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("rejects invalid bot tokens and unauthenticated admin ingress", async () => {
     const server = await startZaloServer({ botToken: "zalo-token" });
     servers.push(server);

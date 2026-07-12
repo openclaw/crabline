@@ -16,6 +16,9 @@ import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 
 type ZaloChatType = "GROUP" | "PRIVATE";
 
+const DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_MS = 5_000;
+const MAX_WEBHOOK_DELIVERY_TIMEOUT_MS = 30_000;
+
 type ZaloMessage = {
   chat: { chat_type: ZaloChatType; id: string };
   date: number;
@@ -46,6 +49,7 @@ type ZaloServerState = {
   recorderPath: string;
   updates: ZaloUpdate[];
   webhook: { secretToken: string; updatedAt: number; url: string } | undefined;
+  webhookDeliveryTimeoutMs: number;
 };
 
 export type ZaloServerManifest = {
@@ -80,6 +84,7 @@ export type StartZaloServerParams = {
   onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
+  webhookDeliveryTimeoutMs?: number | undefined;
 };
 
 async function appendEvent(state: ZaloServerState, event: ServerRequestEvent): Promise<void> {
@@ -123,6 +128,13 @@ function firstError(...values: Array<string | Response>): Response | undefined {
   return values.find((value): value is Response => value instanceof Response);
 }
 
+function webhookDeliveryTimeoutMs(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_MS;
+  }
+  return Math.max(1, Math.min(Math.floor(value), MAX_WEBHOOK_DELIVERY_TIMEOUT_MS));
+}
+
 function nextUpdate(state: ZaloServerState): Response | undefined {
   const update = state.updates.shift();
   return update ? zaloOk(update) : undefined;
@@ -164,6 +176,7 @@ function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): void 
 async function deliverWebhookUpdate(
   webhook: NonNullable<ZaloServerState["webhook"]>,
   update: ZaloUpdate,
+  timeoutMs: number,
 ): Promise<Response | undefined> {
   try {
     const response = await fetch(webhook.url, {
@@ -173,11 +186,15 @@ async function deliverWebhookUpdate(
         "x-bot-api-secret-token": webhook.secretToken,
       },
       method: "POST",
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) {
       return zaloError(`Webhook delivery failed with HTTP ${response.status}`, 502);
     }
   } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      return zaloError(`Webhook delivery timed out after ${timeoutMs}ms`, 502);
+    }
     return zaloError(
       `Webhook delivery failed: ${error instanceof Error ? error.message : String(error)}`,
       502,
@@ -224,7 +241,7 @@ async function handleAdminInbound(
     type: "admin",
   });
   if (state.webhook?.url) {
-    const error = await deliverWebhookUpdate(state.webhook, update);
+    const error = await deliverWebhookUpdate(state.webhook, update, state.webhookDeliveryTimeoutMs);
     if (error) {
       return error;
     }
@@ -339,6 +356,7 @@ export async function startZaloServer(
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "zalo.jsonl"),
     updates: [],
     webhook: undefined,
+    webhookDeliveryTimeoutMs: webhookDeliveryTimeoutMs(params.webhookDeliveryTimeoutMs),
   };
   const httpServer = await startHttpJsonServer({
     handle: async (request) => {
