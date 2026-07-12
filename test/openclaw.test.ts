@@ -990,6 +990,29 @@ describe("OpenClaw local provider bridge", () => {
     });
   });
 
+  it("rejects blank or unknown inbound conversations before provider translation", () => {
+    expect(() =>
+      createOpenClawCrablineInbound({
+        input: {
+          conversation: { id: "   ", kind: "direct" },
+          senderId: "user-1",
+          text: "hello",
+        },
+        manifest,
+      }),
+    ).toThrow(/required/u);
+    expect(() =>
+      createOpenClawCrablineInbound({
+        input: {
+          conversation: { id: "alice", kind: "channel" } as never,
+          senderId: "user-1",
+          text: "hello",
+        },
+        manifest,
+      }),
+    ).toThrow("OpenClaw Crabline inbound conversation kind must be direct or group.");
+  });
+
   it("rejects blank and malformed reserved QA targets", () => {
     const invalidTargets = [
       "",
@@ -1552,7 +1575,7 @@ describe("OpenClaw local provider bridge", () => {
             text: "hello",
           },
         }),
-      ).toThrow("Mattermost conversation id is required.");
+      ).toThrow("OpenClaw Crabline inbound conversation id is required.");
     }
 
     expect(

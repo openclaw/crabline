@@ -43,6 +43,28 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")(
+    "rejects a symlinked POSIX directory before changing target permissions",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const targetPath = path.join(directory, "target");
+        const generationPath = path.join(directory, "generation");
+        await fs.mkdir(targetPath);
+        await fs.chmod(targetPath, 0o777);
+        await fs.symlink(targetPath, generationPath);
+
+        await expect(securePrivateDirectory(generationPath, { platform: "linux" })).rejects.toThrow(
+          "Private directory path identity changed during publication.",
+        );
+
+        expect((await fs.stat(targetPath)).mode & 0o777).toBe(0o777);
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
   it("secures an empty Windows generation directory before child creation", async () => {
     const directory = await createTempDir();
     try {
@@ -232,6 +254,28 @@ describe("OpenClaw private file publication", () => {
 
       await expect(fs.readFile(filePath, "utf8")).resolves.toBe("replacement\n");
       await expect(fs.readFile(displacedPath, "utf8")).resolves.toBe("private\n");
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("syncs the parent directory after atomic publication", async () => {
+    const directory = await createTempDir();
+    try {
+      const filePath = path.join(directory, "manifest.json");
+      const events: string[] = [];
+
+      await publishPrivateFileAtomically(filePath, "private\n", {
+        afterRename: async () => {
+          events.push("afterRename");
+        },
+        syncParent: async (publishedPath) => {
+          expect(publishedPath).toBe(filePath);
+          events.push("syncParent");
+        },
+      });
+
+      expect(events).toEqual(["syncParent", "afterRename"]);
     } finally {
       await disposeTempDir(directory);
     }

@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { isCrablineServerChannel, type CrablineServerChannel } from "../servers/index.js";
-import { securePrivateDirectory } from "./private-file.js";
+import { resolveWindowsPowerShellPath, securePrivateDirectory } from "./private-file.js";
 import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "./shared.js";
 
 type LegacySmokeLockOwner = {
@@ -92,6 +92,7 @@ const RELEASE_CLAIM_SUFFIX = ".release";
 const LOCK_LEASE_MS = 10 * 60 * 1000;
 const RELEASE_ATTEMPTS = 3;
 const RELEASE_RETRY_DELAY_MS = 10;
+const MAX_PROCESS_ID = 2_147_483_647;
 const CURRENT_PROCESS_STARTED_AT_MS = Math.trunc(Date.now() - process.uptime() * 1000);
 
 function parseCommitStagePath(contents: string, token: string): string {
@@ -252,6 +253,10 @@ function isPositiveSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
+function isValidProcessId(value: unknown): value is number {
+  return isPositiveSafeInteger(value) && Number(value) <= MAX_PROCESS_ID;
+}
+
 const LOCK_TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
 function parseLockOwner(contents: string): SmokeLockOwner {
@@ -266,7 +271,7 @@ function parseLockOwner(contents: string): SmokeLockOwner {
   if (
     typeof owner.channel !== "string" ||
     !isCrablineServerChannel(owner.channel) ||
-    !isPositiveSafeInteger(owner.pid) ||
+    !isValidProcessId(owner.pid) ||
     typeof owner.token !== "string" ||
     !LOCK_TOKEN_PATTERN.test(owner.token)
   ) {
@@ -375,15 +380,15 @@ function isRenewableOwner(owner: SmokeLockOwner): owner is RenewableSmokeLockOwn
   return "leaseVersion" in owner && owner.leaseVersion === 1;
 }
 
-const isProcessAlive: IsProcessAlive = (pid) => {
-  if (!Number.isSafeInteger(pid) || pid <= 0) {
+export const isProcessAlive: IsProcessAlive = (pid) => {
+  if (!isValidProcessId(pid)) {
     return false;
   }
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 };
 
@@ -451,8 +456,14 @@ const getProcessIdentity: GetProcessIdentity = (pid) => {
   if (process.platform !== "win32") {
     return null;
   }
+  let powershellPath: string;
+  try {
+    powershellPath = resolveWindowsPowerShellPath(process.env.SystemRoot);
+  } catch {
+    return null;
+  }
   const result = spawnSync(
-    "powershell.exe",
+    powershellPath,
     [
       "-NoProfile",
       "-NonInteractive",
@@ -475,21 +486,21 @@ function hasExactProcessIdentity(owner: SmokeLockOwner): owner is (
 }
 
 function hasProcessIdentityMismatch(owner: SmokeLockOwner, runtime: SmokeLockRuntime): boolean {
+  if (
+    hasProcessIdentity(owner) &&
+    owner.pid === runtime.currentPid &&
+    owner.processStartedAtMs !== runtime.currentProcessStartedAtMs
+  ) {
+    return true;
+  }
   if (!hasExactProcessIdentity(owner)) {
-    return (
-      hasProcessIdentity(owner) &&
-      owner.pid === runtime.currentPid &&
-      owner.processStartedAtMs !== runtime.currentProcessStartedAtMs
-    );
+    return false;
   }
   const actualProcessIdentity =
     owner.pid === runtime.currentPid
       ? runtime.currentProcessIdentity
       : runtime.getProcessIdentity(owner.pid);
-  return actualProcessIdentity === null
-    ? owner.pid === runtime.currentPid &&
-        owner.processStartedAtMs !== runtime.currentProcessStartedAtMs
-    : owner.processIdentity !== actualProcessIdentity;
+  return actualProcessIdentity !== null && owner.processIdentity !== actualProcessIdentity;
 }
 
 function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): boolean {
@@ -965,7 +976,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
   };
   const createdAtMs = runtime.now();
   if (
-    !isPositiveSafeInteger(runtime.currentPid) ||
+    !isValidProcessId(runtime.currentPid) ||
     (runtime.currentProcessIdentity !== null &&
       (runtime.currentProcessIdentity.length === 0 ||
         runtime.currentProcessIdentity.length > 256)) ||
