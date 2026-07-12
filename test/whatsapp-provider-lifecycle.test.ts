@@ -1,7 +1,10 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderConfig } from "../src/config/schema.js";
 import { WhatsAppProviderAdapter } from "../src/providers/builtin/whatsapp.js";
-import type { ProviderContext } from "../src/providers/types.js";
+import type { ProviderContext, SendContext } from "../src/providers/types.js";
+import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const webhookMocks = vi.hoisted(() => ({
   startWebhookServer: vi.fn(),
@@ -15,7 +18,7 @@ beforeEach(() => {
   webhookMocks.startWebhookServer.mockReset();
 });
 
-function createConfig(): ProviderConfig {
+function createConfig(recorderPath?: string): ProviderConfig {
   return {
     adapter: "whatsapp",
     capabilities: ["probe", "send", "roundtrip", "agent"],
@@ -23,7 +26,7 @@ function createConfig(): ProviderConfig {
     platform: "whatsapp",
     status: "active",
     whatsapp: {
-      recorder: {},
+      recorder: recorderPath ? { path: recorderPath } : {},
       webhook: {
         host: "127.0.0.1",
         path: "/whatsapp/webhook",
@@ -117,5 +120,29 @@ describe("WhatsApp provider lifecycle", () => {
     await cleanup;
     expect(close).toHaveBeenCalledTimes(1);
     expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects sends after cleanup without mutating the recorder", async () => {
+    const directory = await createTempDir();
+    const recorderPath = path.join(directory, "whatsapp.jsonl");
+    try {
+      const config = createConfig(recorderPath);
+      const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+      const context = createContext(config);
+      const sendContext: SendContext = {
+        ...context,
+        mode: "send",
+        nonce: "whatsapp-cleanup-send",
+        text: "must not be recorded",
+      };
+
+      await provider.cleanup();
+
+      await expect(provider.send(sendContext)).rejects.toThrow(/has been cleaned up/u);
+      await expect(readFile(recorderPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(webhookMocks.startWebhookServer).not.toHaveBeenCalled();
+    } finally {
+      await disposeTempDir(directory);
+    }
   });
 });

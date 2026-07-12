@@ -13,6 +13,8 @@ import type {
   ProbeResult,
   ProviderAdapter,
   ProviderContext,
+  SendContext,
+  SendResult,
   WaitContext,
   WatchContext,
 } from "../types.js";
@@ -116,6 +118,13 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       details.push(`dm reachable ${target.id}`);
     }
     return { details, healthy: true };
+  }
+
+  override async send(context: SendContext): Promise<SendResult> {
+    if (this.#cleanedUp) {
+      throw this.#cleanedUpError();
+    }
+    return await super.send(context);
   }
 
   override async waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
