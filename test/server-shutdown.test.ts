@@ -58,9 +58,14 @@ describe("provider server shutdown", () => {
     const mattermostSocket = await openRawWebSocket(mattermost.manifest.endpoints.websocketUrl);
     const whatsappSocket = await openRawWebSocket(whatsapp.manifest.endpoints.baileysWebSocketUrl);
     sockets.push(mattermostSocket, whatsappSocket);
+    const socketsClosed = Promise.all([
+      waitForSocketClose(mattermostSocket),
+      waitForSocketClose(whatsappSocket),
+    ]);
 
     const startedAt = Date.now();
     await Promise.all([mattermost.close(), whatsapp.close()]);
+    await socketsClosed;
     servers.length = 0;
 
     expect(Date.now() - startedAt).toBeLessThan(1_000);
@@ -107,4 +112,17 @@ async function openRawWebSocket(websocketUrl: string): Promise<Socket> {
     socket.once("error", onError);
   });
   return socket;
+}
+
+async function waitForSocketClose(socket: Socket): Promise<void> {
+  if (socket.destroyed) {
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Timed out waiting for socket close.")), 500);
+    socket.once("close", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
 }
