@@ -22,7 +22,7 @@ import {
 } from "./whatsapp-wire/binary-node.js";
 import { decodeHandshakeMessage, encodeHandshakeMessage } from "./whatsapp-wire/handshake.js";
 import { KEY_BUNDLE_TYPE, xmppPreKey, xmppSignedPreKey } from "./whatsapp-wire/signal.js";
-import { WebSocket, WebSocketServer, type RawData, type ServerOptions } from "ws";
+import { WebSocket, WebSocketServer, type ServerOptions } from "ws";
 import type { ServerRequestEvent } from "./http.js";
 import { closeWebSocketServer } from "./websocket.js";
 
@@ -43,6 +43,13 @@ export const MAX_WHATSAPP_WEBSOCKET_FRAGMENTS = 1_024;
 export const MAX_WHATSAPP_SIGNAL_BUNDLES = 1_024;
 const SIGNAL_BUNDLE_JID_RE = /^\d{7,15}(?::\d+)?@(?:s\.whatsapp\.net|lid)$/iu;
 type NodeBuffer = Buffer<ArrayBufferLike>;
+type WhatsAppWebSocketRawData = NodeBuffer | ArrayBuffer | NodeBuffer[];
+type WhatsAppWebSocketSendTarget = {
+  bufferedAmount: number;
+  readyState: number;
+  send(data: Uint8Array, callback: (error?: Error) => void): void;
+  terminate(): void;
+};
 const WHATSAPP_NOISE_CERT_CHAIN = Buffer.from(
   "CncKMwjjAhADGiCRKg7Kg1iu4CSulwLBaxX51Tefw6VXGgZqcr5OEbXIRiDQ04bOBijQjZ/TBhJA34Bj82jAHhLpCWBNVBlGnFDieamd8+138S57uMt9ke9mrn5r4+VepwBPKEgHjob6bR70rlCmWDkxZv+CfVjIAxJ2CjIIAxAAGiAcUamsMDmUxsjQuS6hh4pTNHZZnMWZ++o1mX2aqQzOYiCAka6+Bij/3rfcBhJAJw8pRkhTn+1IcOJQVN1OlZg6uikYnCumyO7acFVVX3U3QPXsGSq2TCbCbWrebSC593Su43EgprIDlfU8ZgWFBw==",
   "base64",
@@ -210,7 +217,7 @@ export class WhatsAppNoiseFrameDecoder {
     return this.#bufferedBytes;
   }
 
-  decodeFrames(data: RawData): NodeBuffer[] {
+  decodeFrames(data: WhatsAppWebSocketRawData): NodeBuffer[] {
     let chunk = rawDataToBuffer(data);
     if (this.#expectIntro) {
       chunk = removeNoiseIntroHeader(chunk);
@@ -342,7 +349,7 @@ class BaileysNoiseServer {
     this.#authenticate(NOISE_WA_HEADER);
   }
 
-  decodeFrames(data: RawData): NodeBuffer[] {
+  decodeFrames(data: WhatsAppWebSocketRawData): NodeBuffer[] {
     return this.#frames.decodeFrames(data);
   }
 
@@ -441,7 +448,7 @@ class BaileysNoiseServer {
 
 class WhatsAppBaileysWebSocketSession {
   #handshakeState: "client-finish" | "client-hello" | "open" = "client-hello";
-  readonly #handleSerializedMessage: (data: RawData) => Promise<void>;
+  readonly #handleSerializedMessage: (data: WhatsAppWebSocketRawData) => Promise<void>;
   readonly #noise = new BaileysNoiseServer();
 
   constructor(
@@ -469,7 +476,7 @@ class WhatsAppBaileysWebSocketSession {
     return this.#handshakeState === "open" && this.socket.readyState === WebSocket.OPEN;
   }
 
-  handleMessage(data: RawData): void {
+  handleMessage(data: WhatsAppWebSocketRawData): void {
     void this.#handleSerializedMessage(data);
   }
 
@@ -486,7 +493,7 @@ class WhatsAppBaileysWebSocketSession {
     }
   }
 
-  async #handleMessage(data: RawData): Promise<void> {
+  async #handleMessage(data: WhatsAppWebSocketRawData): Promise<void> {
     for (const frame of this.#noise.decodeFrames(data)) {
       if (this.#handshakeState === "client-hello") {
         await sendWhatsAppWebSocketPayload(this.socket, this.#noise.createServerHello(frame));
@@ -737,7 +744,7 @@ class WhatsAppBaileysWebSocketSession {
 }
 
 export async function sendWhatsAppWebSocketPayload(
-  socket: Pick<WebSocket, "bufferedAmount" | "readyState" | "send" | "terminate">,
+  socket: WhatsAppWebSocketSendTarget,
   payload: Uint8Array,
 ): Promise<void> {
   if (socket.readyState !== WebSocket.OPEN) {
@@ -917,14 +924,14 @@ export function parseWhatsAppWebSocketUpgradeUrl(
   }
 }
 
-function rawDataByteLength(data: RawData): number {
+function rawDataByteLength(data: WhatsAppWebSocketRawData): number {
   if (Array.isArray(data)) {
     return data.reduce((total, chunk) => total + chunk.byteLength, 0);
   }
   return data.byteLength;
 }
 
-function rawDataToBuffer(data: RawData): NodeBuffer {
+function rawDataToBuffer(data: WhatsAppWebSocketRawData): NodeBuffer {
   if (Buffer.isBuffer(data)) {
     return data;
   }
