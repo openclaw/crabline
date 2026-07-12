@@ -356,13 +356,13 @@ function runScript<T>(params: {
     let settled = false;
     let timeoutGrace: NodeJS.Timeout | undefined;
     const abort = () => {
-      finish(() => {
-        void terminateChild(child);
+      finish(async () => {
+        await terminateChild(child);
         reject(params.signal?.reason ?? new Error("Script command aborted."));
       });
     };
 
-    const finish = (callback: () => void) => {
+    const finish = (callback: () => Promise<void> | void) => {
       if (settled) {
         return;
       }
@@ -370,12 +370,12 @@ function runScript<T>(params: {
       clearTimeout(timeout);
       clearTimeout(timeoutGrace);
       params.signal?.removeEventListener("abort", abort);
-      callback();
+      void callback();
     };
 
     const failForOutputLimit = () => {
-      finish(() => {
-        void terminateChild(child);
+      finish(async () => {
+        await terminateChild(child);
         reject(
           new CrablineError(`Script command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of output.`, {
             kind: "connectivity",
@@ -467,8 +467,8 @@ function runScript<T>(params: {
     });
 
     const failForTimeout = () => {
-      finish(() => {
-        void terminateChild(child);
+      finish(async () => {
+        await terminateChild(child);
         reject(
           new CrablineError(`Script command timed out after ${params.timeoutMs}ms.`, {
             kind: "timeout",
