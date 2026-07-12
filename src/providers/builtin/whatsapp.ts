@@ -21,6 +21,7 @@ import {
   createNativeTargetCodec,
   genericMockPayloadWithNativeThread,
   isRecord,
+  normalizeAuthor,
   optionalRecord,
   optionalString,
   requireNativeInboundId,
@@ -283,13 +284,69 @@ export function normalizeWhatsAppWebhookPayload(
     return [];
   }
 
-  return [
-    genericMockPayloadWithNativeThread({
-      channelRule: WHATSAPP_WA_ID_RULE,
-      payload,
-      threadRule: WHATSAPP_WA_ID_RULE,
-    }),
-  ];
+  const fallback = genericMockPayloadWithNativeThread({
+    channelRule: WHATSAPP_WA_ID_RULE,
+    payload,
+    threadRule: WHATSAPP_WA_ID_RULE,
+  }) as Record<string, unknown>;
+  return [normalizeWhatsAppFallback(fallback)];
+}
+
+function normalizeWhatsAppFallback(
+  fallback: Record<string, unknown>,
+): NormalizedWhatsAppWebhookMessage {
+  const normalized: NormalizedWhatsAppWebhookMessage = {
+    raw: fallback.raw ?? fallback,
+  };
+  const author = normalizeAuthor(fallback.author);
+  if (author) {
+    normalized.author = author;
+  }
+  if (typeof fallback.authorIsBot === "boolean") {
+    normalized.authorIsBot = fallback.authorIsBot;
+  }
+  const id = optionalString(fallback, "id");
+  if (id) {
+    normalized.id = id;
+  }
+  const text = optionalString(fallback, "text");
+  if (text) {
+    normalized.text = text;
+  }
+  const threadId = optionalString(fallback, "threadId");
+  if (threadId) {
+    normalized.threadId = threadId;
+  }
+
+  const message = optionalRecord(fallback, "message");
+  if (message) {
+    const normalizedMessage: NonNullable<NormalizedWhatsAppWebhookMessage["message"]> = {};
+    const messageAuthor = normalizeAuthor(message.author);
+    if (messageAuthor) {
+      normalizedMessage.author = messageAuthor;
+    }
+    if (typeof message.authorIsBot === "boolean") {
+      normalizedMessage.authorIsBot = message.authorIsBot;
+    }
+    const messageId = optionalString(message, "id");
+    if (messageId) {
+      normalizedMessage.id = messageId;
+    }
+    if (message.raw !== undefined) {
+      normalizedMessage.raw = message.raw;
+    }
+    const messageText = optionalString(message, "text");
+    if (messageText) {
+      normalizedMessage.text = messageText;
+    }
+    const messageThreadId = optionalString(message, "threadId");
+    if (messageThreadId) {
+      normalizedMessage.threadId = messageThreadId;
+    }
+    normalized.message = normalizedMessage;
+  }
+
+  return normalized;
 }
 
 function normalizeWhatsAppMessage(
@@ -310,9 +367,10 @@ function normalizeWhatsAppMessage(
     });
   }
 
+  const messageId = optionalString(message, "id");
   return {
     author: authorFromBotFlag(false),
-    ...(optionalString(message, "id") ? { id: optionalString(message, "id") } : {}),
+    ...(messageId ? { id: messageId } : {}),
     raw: payload,
     text: body,
     threadId: requireNativeInboundId(from, WHATSAPP_WA_ID_RULE, "WhatsApp messages[].from"),
