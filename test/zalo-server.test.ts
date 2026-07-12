@@ -210,6 +210,18 @@ describe("Zalo local provider server", () => {
         { method: "POST" },
       );
       expect(blockedPolling.status).toBe(400);
+      const invalidWebhook = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
+        {
+          body: JSON.stringify({
+            secret_token: "invalid-auth",
+            url: "http://user:leaked-secret@127.0.0.1:bad/zalo",
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(invalidWebhook.status).toBe(400);
 
       const recorder = await fs.readFile(recorderPath, "utf8");
       expect(recorder).toContain('"secret_token":"<redacted>"');
@@ -217,6 +229,8 @@ describe("Zalo local provider server", () => {
       expect(recorder).not.toContain("test-auth-token");
       expect(recorder).not.toContain("alice");
       expect(recorder).not.toContain("sample");
+      expect(recorder).not.toContain("invalid-auth");
+      expect(recorder).not.toContain("leaked-secret");
     } finally {
       await new Promise<void>((resolve, reject) =>
         webhook.close((error) => (error ? reject(error) : resolve())),

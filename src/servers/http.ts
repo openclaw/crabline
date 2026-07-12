@@ -11,6 +11,14 @@ export type ServerRequestEvent = {
   type: "admin" | "api";
 };
 
+export type HttpJsonHandlerResult =
+  | Response
+  | {
+      onWriteFailure?(): Promise<void> | void;
+      onWriteSuccess?(): Promise<void> | void;
+      response: Response;
+    };
+
 export const ADMIN_TOKEN_HEADER = "x-crabline-admin-token";
 export const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 export const DEFAULT_SERVER_SHUTDOWN_GRACE_MS = 250;
@@ -177,7 +185,49 @@ export async function writeResponse(
   for (const [name, value] of fetchResponse.headers) {
     response.setHeader(name, value);
   }
-  response.end(Buffer.from(await fetchResponse.arrayBuffer()));
+  const body = Buffer.from(await fetchResponse.arrayBuffer());
+  await new Promise<void>((resolve, reject) => {
+    if (
+      response.destroyed ||
+      response.req?.aborted ||
+      response.req?.socket.destroyed ||
+      response.socket?.destroyed
+    ) {
+      reject(new Error("HTTP response closed before delivery completed."));
+      return;
+    }
+    const cleanup = () => {
+      response.off("close", onClose);
+      response.off("error", onError);
+      response.off("finish", onFinish);
+    };
+    const onClose = () => {
+      if (response.writableFinished) {
+        cleanup();
+        resolve();
+        return;
+      }
+      cleanup();
+      reject(new Error("HTTP response closed before delivery completed."));
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onFinish = () => {
+      cleanup();
+      resolve();
+    };
+    response.once("close", onClose);
+    response.once("error", onError);
+    response.once("finish", onFinish);
+    try {
+      response.end(body);
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
 }
 
 export function closeServer(
@@ -205,7 +255,7 @@ export function closeServer(
 }
 
 export async function startHttpJsonServer(params: {
-  handle: (request: IncomingMessage, response: ServerResponse) => Promise<Response>;
+  handle: (request: IncomingMessage, response: ServerResponse) => Promise<HttpJsonHandlerResult>;
   handleError?: (error: unknown, request: IncomingMessage) => Response | undefined;
   host: string;
   port: number;
@@ -213,7 +263,15 @@ export async function startHttpJsonServer(params: {
 }): Promise<{ baseUrl: string; close(): Promise<void>; server: Server }> {
   const handleRequest = async (request: IncomingMessage, response: ServerResponse) => {
     try {
-      await writeResponse(response, await params.handle(request, response));
+      const result = await params.handle(request, response);
+      const handled = result instanceof Response ? { response: result } : result;
+      try {
+        await writeResponse(response, handled.response);
+      } catch (error) {
+        await handled.onWriteFailure?.();
+        throw error;
+      }
+      await handled.onWriteSuccess?.();
     } catch (error) {
       let handled: Response | undefined;
       try {
