@@ -615,7 +615,9 @@ describe("telegram local provider server", () => {
         method: "POST",
       });
       expect((await injectUpdate(server, { chatId: 42, text: "retry me" })).status).toBe(502);
-      await expect.poll(() => attempts).toBeGreaterThan(1);
+      await expect.poll(() => attempts, { timeout: 5_000 }).toBe(6);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(attempts).toBe(6);
       const info = await fetch(
         `${server.manifest.baseUrl}/bottest-token-placeholder/getWebhookInfo`,
       );

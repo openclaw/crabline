@@ -91,10 +91,25 @@ function rpcError(code: number, message: string, id: unknown = null, status = 40
   );
 }
 
-function evictSignalClient(state: SignalServerState, client: ServerResponse): void {
+function removeSignalClient(
+  state: SignalServerState,
+  client: ServerResponse,
+  destroy: boolean,
+): void {
+  const buffer = state.clientBuffers.get(client);
   state.clients.delete(client);
   state.clientBuffers.delete(client);
-  client.destroy();
+  if (buffer && state.clients.size === 0 && buffer.events.length > 0) {
+    state.pendingEvents.unshift(...buffer.events);
+    state.pendingEventBytes += buffer.bytes;
+  }
+  if (destroy) {
+    client.destroy();
+  }
+}
+
+function evictSignalClient(state: SignalServerState, client: ServerResponse): void {
+  removeSignalClient(state, client, true);
 }
 
 function scheduleSignalDrain(state: SignalServerState, client: ServerResponse): void {
@@ -108,6 +123,10 @@ function scheduleSignalDrain(state: SignalServerState, client: ServerResponse): 
     if (current) {
       current.draining = false;
       flushSignalClientEvents(state, client);
+      const remaining = state.clientBuffers.get(client);
+      if (remaining && remaining.events.length === 0 && !client.writableNeedDrain) {
+        flushPendingSignalEvents(state, client);
+      }
     }
   });
 }
@@ -379,8 +398,7 @@ async function handleRequest(params: {
     });
     params.response.flushHeaders();
     params.response.once("close", () => {
-      params.state.clients.delete(params.response);
-      params.state.clientBuffers.delete(params.response);
+      removeSignalClient(params.state, params.response, false);
     });
     params.state.clients.add(params.response);
     params.state.clientBuffers.set(params.response, { bytes: 0, draining: false, events: [] });

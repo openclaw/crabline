@@ -21,6 +21,8 @@ import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 
 const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
+const TELEGRAM_WEBHOOK_MAX_RETRIES = 5;
+const TELEGRAM_WEBHOOK_RETRY_BASE_MS = 100;
 
 type TelegramServerEvent = {
   at: string;
@@ -55,6 +57,7 @@ type TelegramServerState = {
   updates: TelegramUpdate[];
   webhook: TelegramWebhook | undefined;
   webhookDelivery: Promise<Response | undefined> | undefined;
+  webhookRetryAttempts: number;
   webhookRetryTimer: NodeJS.Timeout | undefined;
 };
 
@@ -506,6 +509,7 @@ async function flushTelegramWebhookUpdates(
       if (state.webhook === webhook) {
         delete webhook.lastErrorDate;
         delete webhook.lastErrorMessage;
+        state.webhookRetryAttempts = 0;
       }
     } catch {
       if (state.webhook === webhook) {
@@ -520,10 +524,13 @@ async function flushTelegramWebhookUpdates(
   return undefined;
 }
 
-function clearTelegramWebhookRetry(state: TelegramServerState): void {
+function clearTelegramWebhookRetry(state: TelegramServerState, resetAttempts = false): void {
   if (state.webhookRetryTimer) {
     clearTimeout(state.webhookRetryTimer);
     state.webhookRetryTimer = undefined;
+  }
+  if (resetAttempts) {
+    state.webhookRetryAttempts = 0;
   }
 }
 
@@ -561,7 +568,16 @@ async function deliverTelegramWebhookUpdates(
       state.webhookDelivery = undefined;
     }
     if (state.webhook && state.updates.length > 0) {
-      scheduleTelegramWebhookDelivery(state, result ? 100 : 0);
+      if (result) {
+        if (state.webhookRetryAttempts < TELEGRAM_WEBHOOK_MAX_RETRIES) {
+          const delayMs = TELEGRAM_WEBHOOK_RETRY_BASE_MS * 2 ** state.webhookRetryAttempts;
+          state.webhookRetryAttempts += 1;
+          scheduleTelegramWebhookDelivery(state, delayMs);
+        }
+      } else {
+        state.webhookRetryAttempts = 0;
+        scheduleTelegramWebhookDelivery(state, 0);
+      }
     }
   }
 }
@@ -591,7 +607,7 @@ async function handleTelegramApi(params: {
         if (toBooleanValue(params.body.drop_pending_updates)) {
           params.state.updates.length = 0;
         }
-        clearTelegramWebhookRetry(params.state);
+        clearTelegramWebhookRetry(params.state, true);
         params.state.webhook = undefined;
         return telegramOk(true);
       }
@@ -620,7 +636,7 @@ async function handleTelegramApi(params: {
         url: parsedUrl.href,
       };
       finishTelegramUpdatePoll(params.state, "conflict");
-      clearTelegramWebhookRetry(params.state);
+      clearTelegramWebhookRetry(params.state, true);
       scheduleTelegramWebhookDelivery(params.state, 0);
       return telegramOk(true);
     }
@@ -628,7 +644,7 @@ async function handleTelegramApi(params: {
       if (toBooleanValue(params.body.drop_pending_updates)) {
         params.state.updates.length = 0;
       }
-      clearTelegramWebhookRetry(params.state);
+      clearTelegramWebhookRetry(params.state, true);
       params.state.webhook = undefined;
       return telegramOk(true);
     case "getwebhookinfo":
@@ -890,6 +906,7 @@ export async function startTelegramServer(
     updates: [],
     webhook: undefined,
     webhookDelivery: undefined,
+    webhookRetryAttempts: 0,
     webhookRetryTimer: undefined,
   };
   const port = params.port ?? 0;
