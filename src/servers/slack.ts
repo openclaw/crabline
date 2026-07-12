@@ -23,9 +23,16 @@ import {
   SLACK_TS_RULE,
   SLACK_USER_ID_RULE,
 } from "../providers/slack-ids.js";
-import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import {
+  recordCommittedServerEvent,
+  recordServerEvent,
+  type ServerEventObserver,
+} from "./recorder.js";
 
 const SLACK_SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
+const SLACK_EVENT_MAX_RETRIES = 3;
+const SLACK_EVENT_MAX_REDIRECTS = 2;
+const SLACK_EVENT_RETRY_DELAYS_MS = [0, 60_000, 5 * 60_000] as const;
 
 type SlackMessage = {
   attachments?: unknown;
@@ -44,6 +51,7 @@ type SlackMessage = {
 };
 
 type SlackServerState = {
+  activeEventDeliveries: Set<Promise<void>>;
   adminToken: string;
   botId: string;
   botToken: string;
@@ -54,6 +62,8 @@ type SlackServerState = {
         retryAfterSeconds: number;
       }
     | undefined;
+  closing: boolean;
+  deliveryAbortController: AbortController;
   eventsRequestUrl: string | undefined;
   nextDmIndex: number;
   nextMpimIndex: number;
@@ -65,6 +75,19 @@ type SlackServerState = {
   userMpimChannels: Map<string, { id: string; users: string[] }>;
   messagesByChannel: Map<string, SlackMessage[]>;
 };
+type SlackRecorderEvent = ServerRequestEvent & {
+  accepted?: boolean | undefined;
+};
+
+type SlackRetryReason =
+  | "connection_failed"
+  | "http_error"
+  | "http_timeout"
+  | "ssl_error"
+  | "too_many_redirects"
+  | "unknown_error";
+
+type SlackCursorKind = "history" | "replies";
 
 export type SlackServerManifest = {
   adminToken: string;
@@ -347,6 +370,33 @@ function requireSlackLimit(value: unknown): number | Response {
   return limit;
 }
 
+function decodeSlackCursor(value: unknown, kind: SlackCursorKind): string | Response | undefined {
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/u.test(value)) {
+    return slackError("invalid_cursor");
+  }
+  const cursor = value;
+  try {
+    const decoded = Buffer.from(cursor, "base64url").toString("utf8");
+    const prefix = `${kind}:`;
+    if (!decoded.startsWith(prefix)) {
+      return slackError("invalid_cursor");
+    }
+    const boundary = decoded.slice(prefix.length);
+    return SLACK_TS_RULE.pattern.test(boundary) && encodeSlackCursor(kind, boundary) === cursor
+      ? boundary
+      : slackError("invalid_cursor");
+  } catch {
+    return slackError("invalid_cursor");
+  }
+}
+
+function encodeSlackCursor(kind: SlackCursorKind, boundary: string): string {
+  return Buffer.from(`${kind}:${boundary}`, "utf8").toString("base64url");
+}
+
 function appendMessage(state: SlackServerState, message: SlackMessage): SlackMessage {
   const messages = state.messagesByChannel.get(message.channel) ?? [];
   messages.push(message);
@@ -354,8 +404,9 @@ function appendMessage(state: SlackServerState, message: SlackMessage): SlackMes
   return message;
 }
 
-async function appendEvent(state: SlackServerState, event: ServerRequestEvent) {
-  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
+async function appendEvent(state: SlackServerState, event: ServerRequestEvent, committed = false) {
+  const params = { event, onEvent: state.onEvent, recorderPath: state.recorderPath };
+  await (committed ? recordCommittedServerEvent(params) : recordServerEvent(params));
 }
 
 function redactSlackAuthFields(value: Record<string, unknown>): Record<string, unknown> {
@@ -457,34 +508,175 @@ function authenticateSlackEventsRequest(
   return undefined;
 }
 
+function errorChain(error: unknown): Array<Record<string, unknown>> {
+  const chain: Array<Record<string, unknown>> = [];
+  let current = error;
+  while (current && typeof current === "object" && chain.length < 4) {
+    const entry = current as Record<string, unknown>;
+    chain.push(entry);
+    current = entry.cause;
+  }
+  return chain;
+}
+
+function classifySlackRetryReason(error: unknown): SlackRetryReason {
+  const chain = errorChain(error);
+  const names = chain.map((entry) => String(entry.name ?? ""));
+  const codes = chain.map((entry) => String(entry.code ?? "").toUpperCase());
+  const messages = chain.map((entry) => String(entry.message ?? "").toLowerCase());
+  if (
+    codes.includes("UND_ERR_REDIRECT") ||
+    messages.some((message) => message.includes("redirect count exceeded"))
+  ) {
+    return "too_many_redirects";
+  }
+  if (
+    names.some((name) => name === "AbortError" || name === "TimeoutError") ||
+    codes.some((code) =>
+      ["ETIMEDOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT"].includes(code),
+    )
+  ) {
+    return "http_timeout";
+  }
+  if (
+    codes.some(
+      (code) =>
+        code.includes("CERT") ||
+        code.includes("SSL") ||
+        code.includes("TLS") ||
+        code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+    )
+  ) {
+    return "ssl_error";
+  }
+  if (
+    codes.some((code) =>
+      [
+        "EAI_AGAIN",
+        "ECONNREFUSED",
+        "ECONNRESET",
+        "EHOSTUNREACH",
+        "ENETUNREACH",
+        "ENOTFOUND",
+        "UND_ERR_CONNECT_TIMEOUT",
+        "UND_ERR_SOCKET",
+      ].includes(code),
+    )
+  ) {
+    return "connection_failed";
+  }
+  return "unknown_error";
+}
+
+async function waitForSlackRetry(delayMs: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) {
+    return false;
+  }
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (completed: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve(completed);
+    };
+    const onAbort = () => finish(false);
+    const timer = setTimeout(() => finish(true), delayMs);
+    timer.unref();
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+    }
+  });
+}
+
 async function deliverSlackEvent(
   state: SlackServerState,
   event: ReturnType<typeof asSlackEventCallback>,
-): Promise<Response | undefined> {
+  lifecycleSignal: AbortSignal,
+): Promise<void> {
   if (!state.eventsRequestUrl) {
     return undefined;
   }
   const body = JSON.stringify(event);
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  try {
-    const response = await fetch(state.eventsRequestUrl, {
-      body,
-      headers: {
+  let retryReason: SlackRetryReason | undefined;
+  for (let attempt = 0; attempt <= SLACK_EVENT_MAX_RETRIES; attempt += 1) {
+    if (lifecycleSignal.aborted) {
+      return;
+    }
+    try {
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const headers = {
         "content-type": "application/json",
+        ...(attempt > 0
+          ? {
+              "x-slack-retry-num": String(attempt),
+              "x-slack-retry-reason": retryReason ?? "unknown_error",
+            }
+          : {}),
         "x-slack-request-timestamp": timestamp,
         "x-slack-signature": slackRequestSignature(state.signingSecret, timestamp, body),
-      },
-      method: "POST",
-      signal: AbortSignal.timeout(3_000),
-    });
-    await response.body?.cancel();
-    if (!response.ok) {
-      return slackError("event_delivery_failed", 502);
+      };
+      const signal = AbortSignal.any([lifecycleSignal, AbortSignal.timeout(3_000)]);
+      let requestUrl = state.eventsRequestUrl;
+      let response: Response | undefined;
+      for (let redirectCount = 0; ; redirectCount += 1) {
+        response = await fetch(requestUrl, {
+          body,
+          headers,
+          method: "POST",
+          redirect: "manual",
+          signal,
+        });
+        const location = response.headers.get("location");
+        if (![301, 302].includes(response.status) || !location) {
+          break;
+        }
+        await response.body?.cancel();
+        if (redirectCount >= SLACK_EVENT_MAX_REDIRECTS) {
+          response = undefined;
+          retryReason = "too_many_redirects";
+          break;
+        }
+        requestUrl = new URL(location, requestUrl).toString();
+      }
+      if (response) {
+        const noRetry = response.headers.get("x-slack-no-retry") === "1";
+        await response.body?.cancel();
+        if (response.ok || noRetry) {
+          return;
+        }
+        retryReason = "http_error";
+      }
+    } catch (error) {
+      if (lifecycleSignal.aborted) {
+        return;
+      }
+      retryReason = classifySlackRetryReason(error);
     }
-  } catch {
-    return slackError("event_delivery_failed", 502);
+    const retryDelay = SLACK_EVENT_RETRY_DELAYS_MS[attempt];
+    if (retryDelay !== undefined && !(await waitForSlackRetry(retryDelay, lifecycleSignal))) {
+      return;
+    }
   }
-  return undefined;
+}
+
+function scheduleSlackEventDelivery(
+  state: SlackServerState,
+  event: ReturnType<typeof asSlackEventCallback>,
+): void {
+  if (!state.eventsRequestUrl || state.closing) {
+    return;
+  }
+  const delivery = deliverSlackEvent(state, event, state.deliveryAbortController.signal).finally(
+    () => {
+      state.activeEventDeliveries.delete(delivery);
+    },
+  );
+  state.activeEventDeliveries.add(delivery);
 }
 
 async function handleSlackApi(params: {
@@ -579,6 +771,7 @@ async function handleSlackApi(params: {
             id: channel.id,
             is_group: false,
             is_mpim: true,
+            is_private: true,
             members: [params.state.botUserId, ...channel.users],
           },
         });
@@ -606,7 +799,13 @@ async function handleSlackApi(params: {
           is_channel: channel.startsWith("C"),
           is_group: mpim ? false : channel.startsWith("G"),
           is_im: channel.startsWith("D"),
-          ...(mpim ? { is_mpim: true, members: [params.state.botUserId, ...mpim.users] } : {}),
+          ...(mpim
+            ? {
+                is_mpim: true,
+                is_private: true,
+                members: [params.state.botUserId, ...mpim.users],
+              }
+            : {}),
           name: "crabline",
         },
       });
@@ -628,6 +827,10 @@ async function handleSlackApi(params: {
       if (limit instanceof Response) {
         return limit;
       }
+      const boundary = decodeSlackCursor(params.body.cursor, "history");
+      if (boundary instanceof Response) {
+        return boundary;
+      }
       const messages = messagesForChannel(params.state, channel).filter((message) => {
         if (message.thread_ts !== undefined && message.reply_broadcast !== true) {
           return false;
@@ -640,9 +843,18 @@ async function handleSlackApi(params: {
         }
         return true;
       });
+      const ordered = [...messages]
+        .reverse()
+        .filter((message) => boundary === undefined || message.ts < boundary);
+      const page = ordered.slice(0, limit);
+      const hasMore = page.length < ordered.length;
+      const nextBoundary = page.at(-1)?.ts;
       return slackOk({
-        has_more: messages.length > limit,
-        messages: [...messages].reverse().slice(0, limit),
+        has_more: hasMore,
+        messages: page,
+        response_metadata: {
+          next_cursor: hasMore && nextBoundary ? encodeSlackCursor("history", nextBoundary) : "",
+        },
       });
     }
     case "conversations.replies": {
@@ -665,10 +877,25 @@ async function handleSlackApi(params: {
       if (limit instanceof Response) {
         return limit;
       }
+      const boundary = decodeSlackCursor(params.body.cursor, "replies");
+      if (boundary instanceof Response) {
+        return boundary;
+      }
       const messages = messagesForChannel(params.state, channel).filter(
-        (message) => message.ts === threadTs || message.thread_ts === threadTs,
+        (message) =>
+          (message.ts === threadTs || message.thread_ts === threadTs) &&
+          (boundary === undefined || message.ts > boundary),
       );
-      return slackOk({ has_more: messages.length > limit, messages: messages.slice(0, limit) });
+      const page = messages.slice(0, limit);
+      const hasMore = page.length < messages.length;
+      const nextBoundary = page.at(-1)?.ts;
+      return slackOk({
+        has_more: hasMore,
+        messages: page,
+        response_metadata: {
+          next_cursor: hasMore && nextBoundary ? encodeSlackCursor("replies", nextBoundary) : "",
+        },
+      });
     }
     default:
       return slackError("unknown_method", 404);
@@ -723,10 +950,7 @@ async function handleAdminInbound(params: {
     }),
   );
   const event = asSlackEventCallback(message);
-  const deliveryError = await deliverSlackEvent(params.state, event);
-  if (deliveryError) {
-    return deliveryError;
-  }
+  scheduleSlackEventDelivery(params.state, event);
   return slackOk({ event, message });
 }
 
@@ -822,19 +1046,32 @@ async function handleRequest(params: { request: IncomingMessage; state: SlackSer
   if (authError) {
     return authError;
   }
-  await appendEvent(params.state, {
+  const event: SlackRecorderEvent = {
     at: new Date().toISOString(),
     body: redactSlackAuthFields(body),
     method: params.request.method ?? "GET",
     path: url.pathname,
     query: redactSlackAuthQuery(query),
     type: "api",
-  });
-  return await handleSlackApi({
+  };
+  const response = await handleSlackApi({
     body,
     method: methodMatch[1],
     state: params.state,
   });
+  const mutation = ["chat.postMessage", "conversations.open"].includes(methodMatch[1]);
+  const payload = mutation
+    ? ((await response
+        .clone()
+        .json()
+        .catch(() => undefined)) as unknown)
+    : undefined;
+  const committed = isJsonObject(payload) && payload.ok === true;
+  if (methodMatch[1] === "chat.postMessage") {
+    event.accepted = committed;
+  }
+  await appendEvent(params.state, event, committed);
+  return response;
 }
 
 export async function startSlackServer(
@@ -843,11 +1080,14 @@ export async function startSlackServer(
   const host = params.host ?? "127.0.0.1";
   const externallyBound = !isLoopbackHost(host);
   const state: SlackServerState = {
+    activeEventDeliveries: new Set(),
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     botId: params.botId ?? "BCRABLINE",
     botToken: params.botToken ?? "xoxb-crabline-slack-token",
     botUserId: params.botUserId ?? "UCRABBOT",
     chatPostMessageRateLimit: resolveChatPostMessageRateLimit(params.chatPostMessageRateLimit),
+    closing: false,
+    deliveryAbortController: new AbortController(),
     eventsRequestUrl: params.eventsRequestUrl,
     nextDmIndex: 1,
     nextMpimIndex: 1,
@@ -886,6 +1126,9 @@ export async function startSlackServer(
   const apiRoot = `${baseUrl}/api/`;
   return {
     async close() {
+      state.closing = true;
+      state.deliveryAbortController.abort();
+      await Promise.allSettled(state.activeEventDeliveries);
       await httpServer.close();
     },
     manifest: {

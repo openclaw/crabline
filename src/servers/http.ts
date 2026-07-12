@@ -183,7 +183,14 @@ export async function writeResponse(
 ): Promise<void> {
   response.statusCode = fetchResponse.status;
   for (const [name, value] of fetchResponse.headers) {
+    if (name.toLowerCase() === "set-cookie") {
+      continue;
+    }
     response.setHeader(name, value);
+  }
+  const setCookies = fetchResponse.headers.getSetCookie();
+  if (setCookies.length > 0) {
+    response.setHeader("set-cookie", setCookies);
   }
   const body = Buffer.from(await fetchResponse.arrayBuffer());
   await new Promise<void>((resolve, reject) => {
@@ -271,7 +278,11 @@ export async function startHttpJsonServer(params: {
         await handled.onWriteFailure?.();
         throw error;
       }
-      await handled.onWriteSuccess?.();
+      try {
+        await handled.onWriteSuccess?.();
+      } catch {
+        // Delivery is already committed; lifecycle failures must not trigger another response.
+      }
     } catch (error) {
       let handled: Response | undefined;
       try {

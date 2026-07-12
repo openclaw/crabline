@@ -5,17 +5,24 @@ import { appendRecordedInbound } from "../src/providers/recorder.js";
 import { recordServerEvent } from "../src/servers/recorder.js";
 
 const fsMocks = vi.hoisted(() => ({
-  appendFile: vi.fn<(filePath: string, data: string, encoding: string) => Promise<void>>(),
   providerSync: vi.fn<(filePath: string) => Promise<void>>(),
   providerWrite: vi.fn<(filePath: string, data: string) => Promise<void>>(),
+  serverWrite: vi.fn<(filePath: string, data: string) => Promise<void>>(),
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
-    appendFile: fsMocks.appendFile,
     open: async (...args: Parameters<typeof actual.open>) => {
+      if (args[1] === "a" && String(args[0]).includes("crabline-server-recorder")) {
+        const filePath = String(args[0]);
+        return {
+          appendFile: async (data: string) => await fsMocks.serverWrite(filePath, data),
+          chmod: async () => {},
+          close: async () => {},
+        } as unknown as Awaited<ReturnType<typeof actual.open>>;
+      }
       const handle = await actual.open(...args);
       if (args[1] === "a+" && String(args[0]).includes("crabline-provider-recorder")) {
         handle.sync = async () => {
@@ -39,11 +46,11 @@ let pendingWrites: PendingWrite[] = [];
 
 beforeEach(() => {
   pendingWrites = [];
-  fsMocks.appendFile.mockReset();
   fsMocks.providerSync.mockReset();
   fsMocks.providerSync.mockResolvedValue(undefined);
   fsMocks.providerWrite.mockReset();
-  fsMocks.appendFile.mockImplementation(
+  fsMocks.serverWrite.mockReset();
+  fsMocks.serverWrite.mockImplementation(
     async (_filePath, data) =>
       await new Promise<void>((resolve) => {
         pendingWrites.push({ data, resolve });
@@ -93,14 +100,14 @@ describe("recorder append serialization", () => {
       onEvent: undefined,
       recorderPath,
     });
-    await vi.waitFor(() => expect(fsMocks.appendFile).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(fsMocks.serverWrite).toHaveBeenCalledTimes(1));
     const second = recordServerEvent({
       event: secondEvent,
       onEvent: undefined,
       recorderPath,
     });
 
-    await expectSerializedWrites(fsMocks.appendFile, first, second);
+    await expectSerializedWrites(fsMocks.serverWrite, first, second);
     expect(pendingWrites.map((write) => write.data)).toEqual([
       `${JSON.stringify(firstEvent)}\n`,
       `${JSON.stringify(secondEvent)}\n`,

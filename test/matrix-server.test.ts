@@ -3,6 +3,7 @@ import path from "node:path";
 import { ClientEvent, createClient, RoomEvent, SyncState, type MatrixEvent } from "matrix-js-sdk";
 import { afterEach, describe, expect, it } from "vitest";
 import { startMatrixServer, type StartedMatrixServer } from "../src/index.js";
+import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedMatrixServer[] = [];
@@ -89,6 +90,7 @@ describe("Matrix local provider server", () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(records).toContainEqual(
       expect.objectContaining({
+        accepted: true,
         body: { body: "hello Matrix", msgtype: "m.text" },
         method: "PUT",
         path: "/_matrix/client/v3/rooms/!qa%3Amatrix.test/send/m.room.message/txn-1",
@@ -240,6 +242,238 @@ describe("Matrix local provider server", () => {
     });
   });
 
+  it("bounds retained filters by count and aggregate bytes", async () => {
+    const server = await startMatrixServer({ accessToken: "test-token-placeholder" });
+    servers.push(server);
+    const filtersUrl = `${server.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent(server.manifest.botUserId)}/filter`;
+    const createFilter = (body: Record<string, unknown>) =>
+      fetch(filtersUrl, {
+        body: JSON.stringify(body),
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
+        method: "POST",
+      });
+
+    expect((await createFilter({ value: "x".repeat(700_000) })).status).toBe(200);
+    const oversizedAggregate = await createFilter({ value: "y".repeat(400_000) });
+    expect(oversizedAggregate.status).toBe(503);
+    await expect(oversizedAggregate.json()).resolves.toEqual({
+      admin_contact: "mailto:admin@localhost",
+      errcode: "M_RESOURCE_LIMIT_EXCEEDED",
+      error: "Too many stored filters",
+    });
+
+    const countServer = await startMatrixServer();
+    servers.push(countServer);
+    const countUrl = `${countServer.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent(countServer.manifest.botUserId)}/filter`;
+    for (let index = 0; index < 100; index += 1) {
+      const response = await fetch(countUrl, {
+        body: JSON.stringify({ index }),
+        headers: {
+          ...auth(countServer.manifest.accessToken),
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+    }
+    const overCount = await fetch(countUrl, {
+      body: "{}",
+      headers: {
+        ...auth(countServer.manifest.accessToken),
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(overCount.status).toBe(503);
+  });
+
+  it("rejects malformed native identifiers before mutating room state", async () => {
+    const server = await startMatrixServer();
+    servers.push(server);
+    for (const body of [
+      { roomId: "room", senderId: "@alice:matrix.test", text: "bad room" },
+      { roomId: "!short", senderId: "@alice:matrix.test", text: "bad room hash" },
+      { roomId: "!room:matrix.test", senderId: "alice", text: "bad sender" },
+      { roomId: "!room:bad/name", senderId: "@alice:matrix.test", text: "bad room host" },
+      { roomId: "!room:matrix.test", senderId: "@alice:bad?host", text: "bad sender host" },
+      { roomId: "!room:256.2.3.4", senderId: "@alice:matrix.test", text: "bad IPv4" },
+      {
+        roomId: "!room:matrix.test",
+        senderId: "@alice:matrix.test",
+        text: "bad thread",
+        threadId: "event",
+      },
+      {
+        roomId: "!room:matrix.test",
+        senderId: "@alice:matrix.test",
+        text: "bad event hash",
+        threadId: "$short",
+      },
+    ]) {
+      const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify(body),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: "Invalid Matrix identifier",
+        ok: false,
+      });
+    }
+    const rooms = await fetch(`${server.manifest.endpoints.clientApiRoot}/joined_rooms`, {
+      headers: auth(server.manifest.accessToken),
+    });
+    const body = (await rooms.json()) as { joined_rooms: string[] };
+    expect(body.joined_rooms).not.toContain("!room:matrix.test");
+  });
+
+  it("accepts version-specific domainless room and event identifiers", async () => {
+    const server = await startMatrixServer();
+    servers.push(server);
+    const roomId = `!${Buffer.alloc(32, 0xab).toString("base64url")}`;
+    const threadId = `$${Buffer.alloc(32, 0xff).toString("base64").replace(/=+$/u, "")}`;
+
+    const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        roomId,
+        senderId: "@alice:matrix.test",
+        text: "domainless identifiers",
+        threadId,
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      event: {
+        content: {
+          "m.relates_to": {
+            event_id: threadId,
+            "m.in_reply_to": { event_id: threadId },
+          },
+        },
+        room_id: roomId,
+      },
+      ok: true,
+    });
+  });
+
+  it("accepts whitespace in domain-scoped identifier localparts", async () => {
+    const server = await startMatrixServer();
+    servers.push(server);
+    const roomId = "!room name:matrix.test";
+    const threadId = "$event root:matrix.test";
+
+    const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        roomId,
+        senderId: "@Alice Smith:matrix.test",
+        text: "scoped identifiers",
+        threadId,
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      event: {
+        content: {
+          "m.relates_to": {
+            event_id: threadId,
+            "m.in_reply_to": { event_id: threadId },
+          },
+        },
+        room_id: roomId,
+        sender: "@Alice Smith:matrix.test",
+      },
+      ok: true,
+    });
+
+    const emptyLocalpart = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        roomId,
+        senderId: "@:matrix.test",
+        text: "historical empty localpart",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+    expect(emptyLocalpart.status).toBe(200);
+    await expect(emptyLocalpart.json()).resolves.toMatchObject({
+      event: { sender: "@:matrix.test" },
+      ok: true,
+    });
+  });
+
+  it("accepts numeric DNS-form Matrix server names", async () => {
+    const server = await startMatrixServer();
+    servers.push(server);
+
+    const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        roomId: "!room:123",
+        senderId: "@alice:123",
+        text: "numeric server name",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      event: {
+        room_id: "!room:123",
+        sender: "@alice:123",
+      },
+      ok: true,
+    });
+  });
+
+  it("accepts Matrix IPv4 server names with leading-zero octets", async () => {
+    const server = await startMatrixServer();
+    servers.push(server);
+
+    const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        roomId: "!room:01.2.003.4",
+        senderId: "@alice:01.2.003.4",
+        text: "Matrix IPv4 grammar",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      event: {
+        room_id: "!room:01.2.003.4",
+        sender: "@alice:01.2.003.4",
+      },
+      ok: true,
+    });
+  });
+
   it("returns M_UNKNOWN_POS for malformed sync tokens instead of initial sync", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -293,6 +527,44 @@ describe("Matrix local provider server", () => {
       errcode: "M_UNKNOWN",
       error: "Internal server error",
     });
+  });
+
+  it("preserves committed transaction success when recording callbacks fail", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "matrix-committed.jsonl");
+    const server = await startMatrixServer({
+      accessToken: "test-token-placeholder",
+      onEvent() {
+        throw new Error("observer failed");
+      },
+      recorderPath,
+      roomId: "!committed:matrix.test",
+    });
+    servers.push(server);
+    const transactionUrl = `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!committed:matrix.test")}/send/m.room.message/stable-transaction`;
+    const request = () =>
+      fetch(transactionUrl, {
+        body: JSON.stringify({ body: "committed once", msgtype: "m.text" }),
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
+        method: "PUT",
+      });
+
+    const first = await request();
+    const firstBody = (await first.json()) as { event_id: string };
+    expect(first.status).toBe(200);
+    const replay = await request();
+    expect(replay.status).toBe(200);
+    await expect(replay.json()).resolves.toEqual(firstBody);
+
+    const records = (await fs.readFile(recorderPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { accepted?: boolean; path: string });
+    expect(records.filter((record) => record.path === new URL(transactionUrl).pathname)).toEqual([
+      expect.objectContaining({ accepted: true }),
+      expect.objectContaining({ accepted: true }),
+    ]);
   });
 
   it("works with matrix-js-sdk sync and delivers admin inbound as a room event", async () => {
@@ -717,6 +989,20 @@ describe("Matrix local provider server", () => {
       displayname: "Alicia",
       membership: "join",
     });
+
+    const freshSync = (await (
+      await fetch(server.manifest.endpoints.syncUrl, {
+        headers: auth("test-token-placeholder"),
+      })
+    ).json()) as {
+      rooms: { join: Record<string, { state: { events: MatrixEvent[] } }> };
+    };
+    expect(freshSync.rooms.join[roomId]?.state.events).not.toContainEqual(
+      expect.objectContaining({
+        content: { displayname: "Alicia", membership: "join" },
+        state_key: "@alice:matrix.test",
+      }),
+    );
   });
 
   it("includes omitted state changes when an incremental timeline is limited", async () => {
@@ -840,9 +1126,10 @@ describe("Matrix local provider server", () => {
         method: "PUT",
       },
     );
-    expect(admitted.status).toBe(429);
+    expect(admitted.status).toBe(503);
     await expect(admitted.json()).resolves.toEqual({
-      errcode: "M_LIMIT_EXCEEDED",
+      admin_contact: "mailto:admin@localhost",
+      errcode: "M_RESOURCE_LIMIT_EXCEEDED",
       error: "Too many retained transaction responses",
     });
     for (const text of ["advance the bounded timeline", "overflow the bounded timeline"]) {

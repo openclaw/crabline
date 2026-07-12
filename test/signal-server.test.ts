@@ -154,7 +154,6 @@ describe("signal local provider server", () => {
       ["send", {}],
       ["sendReaction", { emoji: "👍", recipient: ["+15551234567"] }],
       ["sendReceipt", { recipient: "+15551234567", targetTimestamp: [] }],
-      ["sendTyping", null],
       ["sendTyping", { username: ["alice"] }],
       ["sendTyping", { noteToSelf: true }],
       ["sendTyping", { recipient: ["+15551234567"], stop: "yes" }],
@@ -220,9 +219,188 @@ describe("signal local provider server", () => {
 
     const recorded = await fs.readFile(recorderPath, "utf8");
     expect(recorded).toContain('"method":"send"');
+    expect(recorded).toContain('"accepted":true');
     expect(recorded).not.toContain("invalid-jsonrpc-send");
     expect(recorded).not.toContain("must not be recorded");
     expect(recorded).toContain('"path":"/crabline/signal/inbound"');
+  });
+
+  it("enforces JSON-RPC envelopes and does not respond to notifications", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "signal-notifications.jsonl");
+    const server = await startSignalServer({ recorderPath });
+    servers.push(server);
+
+    for (const body of [
+      { id: true, jsonrpc: "2.0", method: "version" },
+      { id: {}, jsonrpc: "2.0", method: "version" },
+      { id: 1, jsonrpc: "2.0", method: 42 },
+      { id: 1, method: "version" },
+      { id: 1, jsonrpc: "2.0", method: "sendTyping", params: null },
+      { id: 1, jsonrpc: "2.0", method: "version", params: 42 },
+    ]) {
+      const invalid = await fetch(server.manifest.endpoints.rpcUrl, {
+        body: JSON.stringify(body),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toMatchObject({
+        error: { code: -32600, message: "Invalid Request" },
+        jsonrpc: "2.0",
+      });
+    }
+
+    const malformedNotification = await fetch(server.manifest.endpoints.rpcUrl, {
+      body: JSON.stringify({ jsonrpc: "2.0", method: "version", params: 42 }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(malformedNotification.status).toBe(400);
+    await expect(malformedNotification.json()).resolves.toEqual({
+      error: { code: -32600, message: "Invalid Request" },
+      id: null,
+      jsonrpc: "2.0",
+    });
+
+    const padded = await fetch(server.manifest.endpoints.rpcUrl, {
+      body: JSON.stringify({ id: 1, jsonrpc: "2.0", method: " send ", params: {} }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(padded.json()).resolves.toEqual({
+      error: { code: -32601, message: "Method not found:  send " },
+      id: 1,
+      jsonrpc: "2.0",
+    });
+
+    for (const body of [
+      { jsonrpc: "2.0", method: "version" },
+      {
+        jsonrpc: "2.0",
+        method: "send",
+        params: { message: "notification", recipient: "+15551234567" },
+      },
+      { jsonrpc: "2.0", method: "missing" },
+    ]) {
+      const notification = await fetch(server.manifest.endpoints.rpcUrl, {
+        body: JSON.stringify(body),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(notification.status).toBe(204);
+      await expect(notification.text()).resolves.toBe("");
+    }
+
+    const recorded = await fs.readFile(recorderPath, "utf8");
+    expect(recorded).toContain('"message":"notification"');
+    expect(recorded).toContain('"accepted":true');
+  });
+
+  it("accepts UUID-only admin inbound and preserves dual source identities", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const sourceUuid = "11111111-2222-4333-8444-555555555555";
+
+    const uuidOnly = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        sourceName: "Alice",
+        sourceUuid,
+        text: "uuid-only inbound",
+        timestamp: 1_700_000_000_000,
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(uuidOnly.status).toBe(200);
+    await expect(uuidOnly.json()).resolves.toMatchObject({
+      event: {
+        envelope: {
+          dataMessage: { message: "uuid-only inbound" },
+          sourceName: "Alice",
+          sourceUuid,
+          timestamp: 1_700_000_000_000,
+        },
+      },
+      ok: true,
+    });
+
+    const dualIdentity = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        senderId: "+15557654321",
+        sourceUuid,
+        text: "dual identity inbound",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    await expect(dualIdentity.json()).resolves.toMatchObject({
+      event: {
+        envelope: {
+          sourceNumber: "+15557654321",
+          sourceUuid,
+        },
+      },
+      ok: true,
+    });
+
+    const missingIdentity = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ text: "missing identity" }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(missingIdentity.status).toBe(400);
+    await expect(missingIdentity.json()).resolves.toEqual({
+      error: "text and at least one source identity are required",
+      ok: false,
+    });
+  });
+
+  it("preserves padded admin text and rejects non-string text", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const controller = new AbortController();
+    const events = await fetch(server.manifest.endpoints.eventsUrl, {
+      signal: controller.signal,
+    });
+    try {
+      const padded = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ sourceNumber: "+15557654321", text: "  hello  " }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+      expect(padded.status).toBe(200);
+      const reader = events.body!.getReader();
+      const chunk = await reader.read();
+      expect(new TextDecoder().decode(chunk.value)).toContain('"message":"  hello  "');
+
+      for (const text of [42, {}, "   "]) {
+        const invalid = await fetch(server.manifest.endpoints.adminInboundUrl, {
+          body: JSON.stringify({ sourceNumber: "+15557654321", text }),
+          headers: {
+            "content-type": "application/json",
+            "x-crabline-admin-token": "admin",
+          },
+          method: "POST",
+        });
+        expect(invalid.status).toBe(400);
+      }
+    } finally {
+      controller.abort();
+    }
   });
 
   it("rejects admin inbound when the disconnected event queue is full", async () => {
@@ -743,6 +921,52 @@ describe("signal local provider server", () => {
       error: "internal server error",
       ok: false,
     });
+  });
+
+  it("preserves accepted RPC success when recording callbacks fail", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "signal-committed.jsonl");
+    const server = await startSignalServer({
+      onEvent() {
+        throw new Error("observer failed");
+      },
+      recorderPath,
+    });
+    servers.push(server);
+
+    for (const [method, params] of [
+      ["send", { message: "committed once", recipient: "+15551234567" }],
+      ["sendTyping", { recipient: "+15551234567" }],
+    ] as const) {
+      const response = await fetch(server.manifest.endpoints.rpcUrl, {
+        body: JSON.stringify({ id: method, jsonrpc: "2.0", method, params }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        id: method,
+        jsonrpc: "2.0",
+        result: expect.anything(),
+      });
+    }
+    const notification = await fetch(server.manifest.endpoints.rpcUrl, {
+      body: JSON.stringify({ jsonrpc: "2.0", method: "version" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(notification.status).toBe(204);
+
+    const records = (await fs.readFile(recorderPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { accepted?: boolean });
+    expect(records).toEqual([
+      expect.objectContaining({ accepted: true }),
+      expect.objectContaining({ accepted: true }),
+      expect.objectContaining({ accepted: false }),
+    ]);
   });
 
   it("drains unauthenticated admin request bodies", async () => {

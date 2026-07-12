@@ -6,6 +6,7 @@
 - Harden provider-core webhook hooks, recorder durability and cursor semantics, lazy adapter lifecycle and target parity, and signed-JWT key caching.
 - Harden autoreview launchers and release automation, document trusted script manifests, and canonicalize WhatsApp Cloud targets.
 - Reject unauthenticated public provider webhooks and tighten Discord, Feishu, Google Chat, Matrix, and Teams inbound protocol validation.
+- Enforce native Matrix, Mattermost, Signal, and Slack outcomes, pagination, retries, state, JSON-RPC, WebSocket, HTTP response, and recorder privacy contracts.
 - Bound signed-JWT key refreshes and authenticate, decode, or suppress Google Chat, Teams, Feishu, and Discord webhook ingress according to provider contracts.
 - Bound recorder tail memory, harden shared provider cleanup and inbound matching, and reject non-global webhook targets.
 - Recover backpressured Signal events without recording rejected RPC calls.

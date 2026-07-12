@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import { isIP } from "node:net";
 import path from "node:path";
 import {
   adminAuthError,
@@ -15,7 +16,11 @@ import {
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
-import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import {
+  recordCommittedServerEvent,
+  recordServerEvent,
+  type ServerEventObserver,
+} from "./recorder.js";
 
 type MatrixEvent = {
   content: Record<string, unknown>;
@@ -56,7 +61,8 @@ type MatrixServerState = {
   adminToken: string;
   botUserId: string;
   deviceId: string;
-  filters: Map<string, Record<string, unknown>>;
+  filterBytes: number;
+  filters: Map<string, { body: Record<string, unknown>; bytes: number }>;
   nextEvent: number;
   nextFilter: number;
   nextSequence: number;
@@ -68,6 +74,13 @@ type MatrixServerState = {
   transactions: Map<string, MatrixTransactionResponse>;
 };
 
+type MatrixRecorderEvent = ServerRequestEvent & {
+  accepted?: boolean | undefined;
+};
+
+const MAX_MATRIX_FILTER_BYTES = 1024 * 1024;
+const MAX_MATRIX_FILTERS = 100;
+const MAX_MATRIX_IDENTIFIER_BYTES = 255;
 const MAX_MATRIX_TIMELINE_EVENTS = 1_000;
 const MAX_MATRIX_TRANSACTION_RESPONSES = 1_000;
 const MATRIX_TRANSACTION_RETENTION_MS = 10 * 60_000;
@@ -124,8 +137,102 @@ function matrixId(prefix: "$" | "!", value: string, serverName: string): string 
   return `${prefix}${createHash("sha256").update(value).digest("hex").slice(0, 16)}:${serverName}`;
 }
 
-async function appendEvent(state: MatrixServerState, event: ServerRequestEvent): Promise<void> {
-  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
+function isMatrixIpv4Address(value: string): boolean {
+  const octets = value.split(".");
+  return (
+    octets.length === 4 && octets.every((octet) => /^\d{1,3}$/u.test(octet) && Number(octet) <= 255)
+  );
+}
+
+function isMatrixServerName(value: string): boolean {
+  const ipv6 = /^\[([^\]]+)\](?::(\d{1,5}))?$/u.exec(value);
+  if (ipv6) {
+    return isIP(ipv6[1]!) === 6;
+  }
+  const hostAndPort = /^([^:]+?)(?::(\d{1,5}))?$/u.exec(value);
+  if (!hostAndPort) {
+    return false;
+  }
+  const hostname = hostAndPort[1]!;
+  if (isMatrixIpv4Address(hostname)) {
+    return true;
+  }
+  if (/^\d+\.\d+\.\d+\.\d+$/u.test(hostname)) {
+    return false;
+  }
+  return hostname.length <= 255 && /^[A-Za-z0-9.-]+$/u.test(hostname);
+}
+
+function hasLoneSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) {
+        return true;
+      }
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isMatrixScopedIdentifier(value: string, sigil: "!" | "$" | "@"): boolean {
+  const separator = value.indexOf(":");
+  const localpart = value.slice(1, separator);
+  return (
+    value.startsWith(sigil) &&
+    Buffer.byteLength(value, "utf8") <= MAX_MATRIX_IDENTIFIER_BYTES &&
+    separator >= (sigil === "@" ? 1 : 2) &&
+    !localpart.includes("\0") &&
+    !hasLoneSurrogate(localpart) &&
+    isMatrixServerName(value.slice(separator + 1))
+  );
+}
+
+function isMatrixHashIdentifier(
+  value: string,
+  sigil: "!" | "$",
+  allowLegacyBase64: boolean,
+): boolean {
+  if (!value.startsWith(sigil) || Buffer.byteLength(value, "utf8") > MAX_MATRIX_IDENTIFIER_BYTES) {
+    return false;
+  }
+  const opaqueId = value.slice(1);
+  const encoding =
+    allowLegacyBase64 && /^[A-Za-z0-9+/]{43}$/u.test(opaqueId)
+      ? "base64"
+      : /^[A-Za-z0-9_-]{43}$/u.test(opaqueId)
+        ? "base64url"
+        : undefined;
+  if (!encoding) {
+    return false;
+  }
+  const decoded = Buffer.from(opaqueId, encoding);
+  return decoded.length === 32 && decoded.toString(encoding).replace(/=+$/u, "") === opaqueId;
+}
+
+function isMatrixRoomId(value: string): boolean {
+  return isMatrixScopedIdentifier(value, "!") || isMatrixHashIdentifier(value, "!", false);
+}
+
+function isMatrixEventId(value: string): boolean {
+  return isMatrixScopedIdentifier(value, "$") || isMatrixHashIdentifier(value, "$", true);
+}
+
+function isMatrixUserId(value: string): boolean {
+  return isMatrixScopedIdentifier(value, "@");
+}
+
+async function appendEvent(
+  state: MatrixServerState,
+  event: ServerRequestEvent,
+  committed = false,
+): Promise<void> {
+  const params = { event, onEvent: state.onEvent, recorderPath: state.recorderPath };
+  await (committed ? recordCommittedServerEvent(params) : recordServerEvent(params));
 }
 
 function authorized(request: IncomingMessage, token: string): boolean {
@@ -135,6 +242,17 @@ function authorized(request: IncomingMessage, token: string): boolean {
 
 function matrixError(errcode: string, error: string, status: number): Response {
   return jsonResponse({ errcode, error }, status);
+}
+
+function matrixResourceLimitError(error: string): Response {
+  return jsonResponse(
+    {
+      admin_contact: "mailto:admin@localhost",
+      errcode: "M_RESOURCE_LIMIT_EXCEEDED",
+      error,
+    },
+    503,
+  );
 }
 
 function decodeMatrixPathSegment(value: string): string {
@@ -340,7 +458,7 @@ function resolveSyncFilter(
   }
   const stored = state.filters.get(value);
   if (stored) {
-    return stored;
+    return stored.body;
   }
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -363,7 +481,7 @@ function syncRoom(room: MatrixRoom, since: number | undefined, timelineLimit: nu
   const limited = historyWasTrimmed || timeline.length < available.length;
   const omittedTimeline = available.slice(0, available.length - timeline.length);
   const omittedState = new Map<string, MatrixEvent>();
-  if (historyWasTrimmed) {
+  if (since === undefined || room.createdSequence > since || historyWasTrimmed) {
     for (const [key, event] of room.stateBeforeTimeline) {
       omittedState.set(key, event);
     }
@@ -381,12 +499,9 @@ function syncRoom(room: MatrixRoom, since: number | undefined, timelineLimit: nu
         .map((entry) => entry.event),
     },
     state: {
-      events:
-        since === undefined || room.createdSequence > since
-          ? room.state
-          : limited
-            ? [...omittedState.values()]
-            : [],
+      events: [...omittedState.values()].filter(
+        (event) => !timeline.some((entry) => entry.event.event_id === event.event_id),
+      ),
     },
     timeline: {
       events: timeline.map((entry) => entry.event),
@@ -456,6 +571,14 @@ async function handleAdminInbound(params: {
   if (!roomId || !sender || !text) {
     return jsonResponse({ error: "roomId, senderId, and text are required", ok: false }, 400);
   }
+  const threadId = readTrimmedString(params.body.threadId);
+  if (
+    !isMatrixRoomId(roomId) ||
+    !isMatrixUserId(sender) ||
+    (threadId !== undefined && !isMatrixEventId(threadId))
+  ) {
+    return jsonResponse({ error: "Invalid Matrix identifier", ok: false }, 400);
+  }
   const direct = params.body.direct === true;
   const room =
     params.state.rooms.get(roomId) ??
@@ -510,7 +633,6 @@ async function handleAdminInbound(params: {
     });
   }
   const content: Record<string, unknown> = { body: text, msgtype: "m.text" };
-  const threadId = readTrimmedString(params.body.threadId);
   if (threadId) {
     content["m.relates_to"] = {
       event_id: threadId,
@@ -535,6 +657,7 @@ async function handleMatrixApi(params: {
   body: Record<string, unknown>;
   method: string;
   path: string;
+  recorderEvent: MatrixRecorderEvent;
   state: MatrixServerState;
   url: URL;
 }): Promise<Response> {
@@ -579,8 +702,16 @@ async function handleMatrixApi(params: {
     if (userId !== params.state.botUserId) {
       return matrixError("M_FORBIDDEN", "Cannot create a filter for another user", 403);
     }
+    const bytes = Buffer.byteLength(JSON.stringify(params.body), "utf8");
+    if (
+      params.state.filters.size >= MAX_MATRIX_FILTERS ||
+      params.state.filterBytes + bytes > MAX_MATRIX_FILTER_BYTES
+    ) {
+      return matrixResourceLimitError("Too many stored filters");
+    }
     const filterId = String(params.state.nextFilter++);
-    params.state.filters.set(filterId, params.body);
+    params.state.filters.set(filterId, { body: params.body, bytes });
+    params.state.filterBytes += bytes;
     return jsonResponse({ filter_id: filterId });
   }
 
@@ -591,7 +722,7 @@ async function handleMatrixApi(params: {
       return matrixError("M_FORBIDDEN", "Cannot get filters for another user", 403);
     }
     const filter = params.state.filters.get(decodeMatrixPathSegment(match[2]!));
-    return filter ? jsonResponse(filter) : matrixError("M_NOT_FOUND", "Unknown filter", 404);
+    return filter ? jsonResponse(filter.body) : matrixError("M_NOT_FOUND", "Unknown filter", 404);
   }
 
   match = /^\/rooms\/([^/]+)\/joined_members$/u.exec(relativePath);
@@ -640,13 +771,17 @@ async function handleMatrixApi(params: {
     ]);
     const existingResponse = transactionResponse(params.state, transactionKey);
     if (existingResponse) {
+      params.recorderEvent.accepted =
+        existingResponse.status >= 200 && existingResponse.status < 300;
       return jsonResponse(existingResponse.body, existingResponse.status);
     }
     if (params.state.transactions.size >= MAX_MATRIX_TRANSACTION_RESPONSES) {
-      return matrixError("M_LIMIT_EXCEEDED", "Too many retained transaction responses", 429);
+      params.recorderEvent.accepted = false;
+      return matrixResourceLimitError("Too many retained transaction responses");
     }
     const room = params.state.rooms.get(roomId);
     if (!room) {
+      params.recorderEvent.accepted = false;
       const body = { errcode: "M_NOT_FOUND", error: "Unknown room" };
       rememberTransaction(params.state, transactionKey, {
         body,
@@ -671,6 +806,7 @@ async function handleMatrixApi(params: {
       status: 200,
     });
     notifySyncWaiters(params.state);
+    params.recorderEvent.accepted = true;
     return jsonResponse(body);
   }
 
@@ -766,6 +902,7 @@ export async function startMatrixServer(
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     botUserId: params.botUserId ?? `@openclaw:${serverName}`,
     deviceId: params.deviceId ?? "CRABLINE",
+    filterBytes: 0,
     filters: new Map(),
     nextEvent: 1,
     nextFilter: 1,
@@ -855,15 +992,24 @@ export async function startMatrixServer(
       if (!isJsonObject(parsedBody)) {
         return matrixError("M_BAD_JSON", "Request body must be a JSON object", 400);
       }
-      await appendEvent(state, {
+      const event: MatrixRecorderEvent = {
         at: new Date().toISOString(),
         ...(Object.keys(parsedBody).length > 0 ? { body: parsedBody } : {}),
         method,
         path: url.pathname,
         query: queryRecord(url),
         type,
+      };
+      const response = await handleMatrixApi({
+        body: parsedBody,
+        method,
+        path: url.pathname,
+        recorderEvent: event,
+        state,
+        url,
       });
-      return await handleMatrixApi({ body: parsedBody, method, path: url.pathname, state, url });
+      await appendEvent(state, event, response.ok && ["DELETE", "POST", "PUT"].includes(method));
+      return response;
     },
   });
 
