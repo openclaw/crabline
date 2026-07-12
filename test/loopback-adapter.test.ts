@@ -19,6 +19,23 @@ describe("loopback chat adapter", () => {
     }
   });
 
+  it("recovers delimiter-containing v2 channel ids for thread metadata", async () => {
+    adapter = new LoopbackChatAdapter("crabline");
+    const address = {
+      channelId: "channel:west::1",
+      id: "user:east::2",
+      threadId: "topic:north::3",
+    };
+    const threadId = adapter.encodeThreadId(address);
+
+    expect(adapter.channelIdFromThreadId(threadId)).toBe(address.channelId);
+    await expect(adapter.fetchThread(threadId)).resolves.toMatchObject({
+      channelId: address.channelId,
+      id: threadId,
+    });
+    expect(adapter.channelIdFromThreadId("loopback:legacy::topic")).toBe("loopback:legacy");
+  });
+
   it("preserves legacy percent-encoded-looking thread ids", () => {
     adapter = new LoopbackChatAdapter("crabline");
 
