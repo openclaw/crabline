@@ -42,6 +42,22 @@ describe("registry", () => {
     expect(provider.status).toBe("ready");
   });
 
+  it("does not execute providers marked as planned", () => {
+    const plannedManifest: ManifestDefinition = {
+      ...manifest,
+      providers: {
+        local: {
+          ...manifest.providers.local!,
+          status: "planned",
+        },
+      },
+    };
+
+    expect(() =>
+      createRegistry(plannedManifest, "/tmp/crabline.yaml").resolve("local", "fixture"),
+    ).toThrow('Provider "local" is planned and cannot run.');
+  });
+
   it("uses configured capabilities and concrete target normalization before loading adapters", () => {
     const config: ProviderConfig = {
       adapter: "telegram",

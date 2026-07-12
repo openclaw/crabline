@@ -211,4 +211,53 @@ describe("runFixtureCommand retries", () => {
     expect(waitCalls).toBe(1);
     expect(cleanupCalls).toBe(1);
   });
+
+  it("bounds cleanup after an inbound wait ignores cancellation", async () => {
+    let releaseWait: (() => void) | undefined;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        return { accepted: true, messageId: "sent-1", threadId: "thread-1" };
+      },
+      async waitForInbound() {
+        return await new Promise<null>((resolve) => {
+          releaseWait = () => resolve(null);
+        });
+      },
+      async cleanup() {
+        await new Promise(() => undefined);
+      },
+    };
+    const registry: Registry = {
+      catalog: OPENCLAW_SUPPORT_CATALOG,
+      resolve() {
+        return provider;
+      },
+    };
+
+    try {
+      const result = await runFixtureCommand({
+        fixtureId: "fixture",
+        manifest,
+        manifestPath: "/tmp/crabline.yaml",
+        registry,
+      });
+
+      expect(result).toMatchObject({ failureKind: "inbound", ok: false });
+      expect(result.diagnostics).toContain(
+        "cleanup failed: Provider cleanup did not settle within 250ms after an aborted inbound wait.",
+      );
+    } finally {
+      releaseWait?.();
+    }
+  });
 });

@@ -273,16 +273,29 @@ export function createProgram(
           });
         }
 
-        let watchError: unknown;
-        let watchFailed = false;
+        const controller = new AbortController();
+        const watch = provider.watch({
+          config: manifest.providers[fixture.provider]!,
+          fixture,
+          manifestPath: path,
+          providerId: fixture.provider,
+          signal: controller.signal,
+          userName: manifest.userName,
+        });
+        const iterator = watch[Symbol.asyncIterator]();
+        const stopWatch = onceAsync(async () => {
+          controller.abort();
+          await iterator.return?.();
+        });
+        const shutdown = installShutdownHandler(stopWatch);
+        const lifecycleErrors: unknown[] = [];
         try {
-          for await (const message of provider.watch({
-            config: manifest.providers[fixture.provider]!,
-            fixture,
-            manifestPath: path,
-            providerId: fixture.provider,
-            userName: manifest.userName,
-          })) {
+          while (true) {
+            const result = await iterator.next();
+            if (result.done) {
+              break;
+            }
+            const message = result.value;
             print(
               options.json
                 ? formatJson(message)
@@ -290,19 +303,26 @@ export function createProgram(
             );
           }
         } catch (error) {
-          watchFailed = true;
-          watchError = error;
+          lifecycleErrors.push(error);
+        }
+        try {
+          await stopWatch();
+        } catch (error) {
+          if (!lifecycleErrors.includes(error)) {
+            lifecycleErrors.push(error);
+          }
         }
         try {
           await provider.cleanup?.();
-        } catch (cleanupError) {
-          throw combineLifecycleErrors(
-            watchFailed ? [watchError, cleanupError] : [cleanupError],
-            "Crabline watch lifecycle failed.",
-          );
+        } catch (error) {
+          if (!lifecycleErrors.includes(error)) {
+            lifecycleErrors.push(error);
+          }
+        } finally {
+          shutdown.dispose();
         }
-        if (watchFailed) {
-          throw watchError;
+        if (lifecycleErrors.length > 0) {
+          throw combineLifecycleErrors(lifecycleErrors, "Crabline watch lifecycle failed.");
         }
       });
     });
@@ -516,6 +536,15 @@ function sameReadyFileIdentity(left: ReadyFileIdentity, right: ReadyFileIdentity
   );
 }
 
+function sameReadyFileObject(left: ReadyFileIdentity, right: ReadyFileIdentity): boolean {
+  return (
+    left.birthtimeNs === right.birthtimeNs &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size
+  );
+}
+
 async function withReadyFileLock<T>(filePath: string, action: () => Promise<T>): Promise<T> {
   const release = await acquireReadyFileLease(filePath);
   let actionFailed = false;
@@ -563,27 +592,9 @@ export async function publishReadyFile(
   filePath: string,
   contents: string,
 ): Promise<ReadyFileIdentity> {
-  let publishedIdentity: ReadyFileIdentity | undefined;
-  try {
-    return await withReadyFileLock(filePath, async () => {
-      publishedIdentity = await publishReadyFileUnlocked(filePath, contents);
-      return publishedIdentity;
-    });
-  } catch (error) {
-    if (publishedIdentity) {
-      try {
-        await removeReadyFileIfOwned(filePath, contents, publishedIdentity);
-      } catch (cleanupError) {
-        const aggregateError = new AggregateError(
-          [error, cleanupError],
-          `Ready-file publication and compensation both failed for "${filePath}".`,
-        );
-        aggregateError.cause = error;
-        throw aggregateError;
-      }
-    }
-    throw error;
-  }
+  return await withReadyFileLock(filePath, async () =>
+    publishReadyFileUnlocked(filePath, contents),
+  );
 }
 
 async function publishReadyFileUnlocked(
@@ -641,19 +652,6 @@ async function publishReadyFileUnlocked(
 
 async function backupReadyFile(filePath: string, backupPath: string): Promise<boolean> {
   try {
-    await fs.link(filePath, backupPath);
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      return false;
-    }
-    if (code === "EEXIST") {
-      throw error;
-    }
-  }
-
-  try {
     await fs.copyFile(filePath, backupPath, fsConstants.COPYFILE_EXCL);
     return true;
   } catch (error) {
@@ -669,6 +667,10 @@ async function removeReadyFileIfOwned(
   expectedContents: string,
   expectedIdentity: ReadyFileIdentity,
 ): Promise<void> {
+  const tombstonePath = nodePath.join(
+    nodePath.dirname(filePath),
+    `.${nodePath.basename(filePath)}.${process.pid}.${randomUUID()}.remove`,
+  );
   try {
     if (
       (await fs.readFile(filePath, "utf8")) !== expectedContents ||
@@ -676,7 +678,23 @@ async function removeReadyFileIfOwned(
     ) {
       return;
     }
-    await fs.rm(filePath);
+    await fs.rename(filePath, tombstonePath);
+    if (
+      (await fs.readFile(tombstonePath, "utf8")) === expectedContents &&
+      sameReadyFileObject(await readReadyFileIdentity(tombstonePath), expectedIdentity)
+    ) {
+      await fs.rm(tombstonePath);
+      return;
+    }
+    try {
+      await fs.link(tombstonePath, filePath);
+      await fs.rm(tombstonePath);
+    } catch (restoreError) {
+      throw new Error(
+        `Ready-file path changed while removing "${filePath}"; the moved file remains at "${tombstonePath}".`,
+        { cause: restoreError },
+      );
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
