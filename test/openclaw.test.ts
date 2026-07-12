@@ -31,6 +31,7 @@ import {
   startOpenClawCrablineAdapter,
   type CrablineFakeProviderManifest,
   type CrablineServerManifest,
+  type OpenClawCrablineChannelDriverSelection,
   type OpenClawCrablineConversation,
 } from "../src/index.js";
 import {
@@ -425,6 +426,15 @@ describe("OpenClaw local provider bridge", () => {
       providerReadinessArtifactPath: OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
       smokeArtifactPath: OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
     });
+    const legacySelection: OpenClawCrablineChannelDriverSelection = {
+      capabilityMatrixPath: OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
+      channel: "telegram",
+      channelDriver: "crabline",
+      smokeArtifactPath: OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
+    };
+    expect(createOpenClawCrablineChannelReportNotes(legacySelection)[3]).toBe(
+      "Generation provider-readiness filename: crabline-fake-provider-smoke.json.",
+    );
     expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " TELEGRAM " })).toMatchObject({
       channel: "telegram",
     });
