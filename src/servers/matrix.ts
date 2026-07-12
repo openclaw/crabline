@@ -48,6 +48,7 @@ type MatrixServerState = {
   rooms: Map<string, MatrixRoom>;
   serverName: string;
   syncWaiters: Set<() => void>;
+  transactions: Map<string, string>;
 };
 
 export type MatrixServerManifest = {
@@ -413,6 +414,11 @@ async function handleMatrixApi(params: {
     if (!room) {
       return matrixError("M_NOT_FOUND", "Unknown room", 404);
     }
+    const transactionKey = relativePath;
+    const existingEventId = params.state.transactions.get(transactionKey);
+    if (existingEventId) {
+      return jsonResponse({ event_id: existingEventId });
+    }
     const event = createEvent({
       content: params.body,
       roomId: room.id,
@@ -422,6 +428,7 @@ async function handleMatrixApi(params: {
       type: decodeURIComponent(match[2]!),
     });
     room.timeline.push({ event, sequence: params.state.nextSequence++ });
+    params.state.transactions.set(transactionKey, event.event_id);
     notifySyncWaiters(params.state);
     return jsonResponse({ event_id: event.event_id });
   }
@@ -457,6 +464,7 @@ export async function startMatrixServer(
     rooms: new Map(),
     serverName,
     syncWaiters: new Set(),
+    transactions: new Map(),
   };
   const roomId = params.roomId ?? matrixId("!", "default-room", serverName);
   state.rooms.set(

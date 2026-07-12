@@ -160,6 +160,42 @@ describe("Matrix local provider server", () => {
 
       const sent = await client.sendTextMessage(dynamicRoomId, "hello from the SDK");
       expect(sent.event_id).toMatch(/^\$/u);
+
+      const firstRetry = await client.sendTextMessage(
+        dynamicRoomId,
+        "idempotent send",
+        "stable-transaction",
+      );
+      const replayClient = createClient({
+        accessToken: server.manifest.accessToken,
+        baseUrl: server.manifest.baseUrl,
+        deviceId: server.manifest.deviceId,
+        userId: server.manifest.botUserId,
+        useAuthorizationHeader: true,
+      });
+      const secondRetry = await replayClient.sendTextMessage(
+        dynamicRoomId,
+        "changed body is ignored on retry",
+        "stable-transaction",
+      );
+      expect(secondRetry.event_id).toBe(firstRetry.event_id);
+
+      const retrySync = await fetch(`${server.manifest.endpoints.syncUrl}?timeout=0`, {
+        headers: auth("matrix-token"),
+      });
+      const retrySyncBody = (await retrySync.json()) as {
+        rooms: {
+          join: Record<
+            string,
+            { timeline: { events: Array<{ content: Record<string, unknown>; event_id: string }> } }
+          >;
+        };
+      };
+      const retryEvents = retrySyncBody.rooms.join[dynamicRoomId]?.timeline.events.filter(
+        (event) => event.event_id === firstRetry.event_id,
+      );
+      expect(retryEvents).toHaveLength(1);
+      expect(retryEvents?.[0]?.content).toMatchObject({ body: "idempotent send" });
     } finally {
       client.stopClient();
     }
