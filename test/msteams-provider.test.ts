@@ -22,13 +22,30 @@ describe("Microsoft Teams webhook authentication", () => {
     const config = await createLocalMockConfig("msteams", "/msteams/webhook");
     config.msteams!.appId = "teams-app-id";
     const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const rotatedKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const now = Date.now();
     const jwk = keys.publicKey.export({ format: "jwk" });
+    const rotatedJwk = rotatedKeys.publicKey.export({ format: "jwk" });
+    let keyFetches = 0;
     const authenticate = createMsTeamsWebhookAuthenticator(config, {
-      fetch: async (input: string | URL | Request) =>
-        String(input).includes("openidconfiguration")
-          ? Response.json({ jwks_uri: "https://login.example.test/keys" })
-          : Response.json({ keys: [{ ...jwk, kid: "test-key" }] }),
+      fetch: async (input: string | URL | Request) => {
+        if (String(input).includes("openidconfiguration")) {
+          return Response.json(
+            { jwks_uri: "https://login.example.test/keys" },
+            { headers: { "cache-control": "max-age=3600" } },
+          );
+        }
+        keyFetches += 1;
+        return Response.json(
+          {
+            keys: [
+              { ...jwk, kid: "test-key" },
+              ...(keyFetches > 1 ? [{ ...rotatedJwk, kid: "rotated-key" }] : []),
+            ],
+          },
+          { headers: { "cache-control": "max-age=3600" } },
+        );
+      },
       now: () => now,
     });
     expect(authenticate).toBeDefined();
@@ -70,6 +87,26 @@ describe("Microsoft Teams webhook authentication", () => {
         body,
       ),
     ).resolves.toBeUndefined();
+
+    const rotatedHeader = Buffer.from(
+      JSON.stringify({ alg: "RS256", kid: "rotated-key" }),
+    ).toString("base64url");
+    const rotatedSignature = sign(
+      "RSA-SHA256",
+      Buffer.from(`${rotatedHeader}.${payload}`),
+      rotatedKeys.privateKey,
+    ).toString("base64url");
+    await expect(
+      authenticate!(
+        new Request(url, {
+          headers: {
+            authorization: `Bearer ${rotatedHeader}.${payload}.${rotatedSignature}`,
+          },
+        }),
+        body,
+      ),
+    ).resolves.toBeUndefined();
+    expect(keyFetches).toBe(2);
 
     const mismatchedPayload = Buffer.from(
       JSON.stringify({
