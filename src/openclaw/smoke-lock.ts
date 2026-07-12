@@ -6,7 +6,9 @@ import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "./shared.js";
 
 type SmokeLockOwner = {
   channel: CrablineServerChannel;
+  createdAtMs: number;
   pid: number;
+  processStartedAtMs: number;
   token: string;
 };
 
@@ -16,10 +18,21 @@ export type OpenClawCrablineSmokeRunLock = {
 
 type RemoveLockDirectory = (lockDirectory: string) => Promise<void>;
 type Sleep = (delayMs: number) => Promise<void>;
+type IsProcessAlive = (pid: number) => boolean;
+
+type SmokeLockRuntime = {
+  currentPid: number;
+  currentProcessStartedAtMs: number;
+  isProcessAlive: IsProcessAlive;
+  leaseMs: number;
+  now: () => number;
+};
 
 const LOCK_OWNER_FILE = "owner.json";
+const LOCK_LEASE_MS = 10 * 60 * 1000;
 const RELEASE_ATTEMPTS = 3;
 const RELEASE_RETRY_DELAY_MS = 10;
+const CURRENT_PROCESS_STARTED_AT_MS = Math.trunc(Date.now() - process.uptime() * 1000);
 
 const removeLockDirectory: RemoveLockDirectory = async (lockDirectory) => {
   await fs.rm(lockDirectory, { force: true, recursive: true });
@@ -38,6 +51,10 @@ async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
+function isPositiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
 async function readLockOwner(lockDirectory: string): Promise<SmokeLockOwner | undefined> {
   try {
     const owner = JSON.parse(
@@ -46,8 +63,11 @@ async function readLockOwner(lockDirectory: string): Promise<SmokeLockOwner | un
     if (
       typeof owner.channel === "string" &&
       isCrablineServerChannel(owner.channel) &&
-      typeof owner.pid === "number" &&
-      typeof owner.token === "string"
+      isPositiveSafeInteger(owner.createdAtMs) &&
+      isPositiveSafeInteger(owner.pid) &&
+      isPositiveSafeInteger(owner.processStartedAtMs) &&
+      typeof owner.token === "string" &&
+      owner.token.length > 0
     ) {
       return owner as SmokeLockOwner;
     }
@@ -57,7 +77,7 @@ async function readLockOwner(lockDirectory: string): Promise<SmokeLockOwner | un
   return undefined;
 }
 
-function isProcessAlive(pid: number): boolean {
+const isProcessAlive: IsProcessAlive = (pid) => {
   if (!Number.isSafeInteger(pid) || pid <= 0) {
     return false;
   }
@@ -67,6 +87,20 @@ function isProcessAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
+};
+
+function isLockOwnerActive(owner: SmokeLockOwner, runtime: SmokeLockRuntime): boolean {
+  if (!runtime.isProcessAlive(owner.pid)) {
+    return false;
+  }
+  if (
+    owner.pid === runtime.currentPid &&
+    owner.processStartedAtMs !== runtime.currentProcessStartedAtMs
+  ) {
+    return false;
+  }
+  const ageMs = runtime.now() - owner.createdAtMs;
+  return ageMs >= -runtime.leaseMs && ageMs <= runtime.leaseMs;
 }
 
 function activeRunError(params: {
@@ -98,9 +132,10 @@ async function resolveRecoveryDirectory(params: {
   outputDir: string;
   recoveryDirectory: string;
   requestedChannel: CrablineServerChannel;
+  runtime: SmokeLockRuntime;
 }): Promise<void> {
   const owner = await readLockOwner(params.recoveryDirectory);
-  if (owner && isProcessAlive(owner.pid)) {
+  if (owner && isLockOwnerActive(owner, params.runtime)) {
     throw activeRunError({
       channel: owner.channel,
       outputDir: params.outputDir,
@@ -116,6 +151,7 @@ async function resolveLockContention(params: {
   outputDir: string;
   recoveryDirectory: string;
   requestedChannel: CrablineServerChannel;
+  runtime: SmokeLockRuntime;
 }): Promise<void> {
   if (await pathExists(params.recoveryDirectory)) {
     await resolveRecoveryDirectory(params);
@@ -123,7 +159,7 @@ async function resolveLockContention(params: {
   }
 
   const observedOwner = await readLockOwner(params.lockDirectory);
-  if (observedOwner && isProcessAlive(observedOwner.pid)) {
+  if (observedOwner && isLockOwnerActive(observedOwner, params.runtime)) {
     throw activeRunError({
       cause: params.cause,
       channel: observedOwner.channel,
@@ -155,7 +191,7 @@ async function createLockCandidate(params: {
   lockDirectory: string;
   owner: SmokeLockOwner;
 }): Promise<string> {
-  const candidateDirectory = `${params.lockDirectory}.${process.pid}.${params.owner.token}.tmp`;
+  const candidateDirectory = `${params.lockDirectory}.${params.owner.pid}.${params.owner.token}.tmp`;
   await fs.mkdir(candidateDirectory, { mode: 0o700 });
   try {
     await fs.chmod(candidateDirectory, 0o700);
@@ -179,6 +215,11 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     outputDir: string;
   },
   dependencies: {
+    isProcessAlive?: IsProcessAlive;
+    leaseMs?: number;
+    now?: () => number;
+    pid?: number;
+    processStartedAtMs?: number;
     removeDirectory?: RemoveLockDirectory;
   } = {},
 ): Promise<OpenClawCrablineSmokeRunLock> {
@@ -186,9 +227,27 @@ export async function acquireOpenClawCrablineSmokeRunLock(
   const lockDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
   const recoveryDirectory = `${lockDirectory}.recovering`;
   const token = randomUUID();
+  const runtime: SmokeLockRuntime = {
+    currentPid: dependencies.pid ?? process.pid,
+    currentProcessStartedAtMs: dependencies.processStartedAtMs ?? CURRENT_PROCESS_STARTED_AT_MS,
+    isProcessAlive: dependencies.isProcessAlive ?? isProcessAlive,
+    leaseMs: dependencies.leaseMs ?? LOCK_LEASE_MS,
+    now: dependencies.now ?? Date.now,
+  };
+  const createdAtMs = runtime.now();
+  if (
+    !isPositiveSafeInteger(runtime.currentPid) ||
+    !isPositiveSafeInteger(runtime.currentProcessStartedAtMs) ||
+    !isPositiveSafeInteger(runtime.leaseMs) ||
+    !isPositiveSafeInteger(createdAtMs)
+  ) {
+    throw new Error("Invalid OpenClaw Crabline smoke lock runtime.");
+  }
   const owner: SmokeLockOwner = {
     channel: params.channel,
-    pid: process.pid,
+    createdAtMs,
+    pid: runtime.currentPid,
+    processStartedAtMs: runtime.currentProcessStartedAtMs,
     token,
   };
 
@@ -199,6 +258,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         outputDir,
         recoveryDirectory,
         requestedChannel: params.channel,
+        runtime,
       });
       continue;
     }
@@ -217,6 +277,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         outputDir,
         recoveryDirectory,
         requestedChannel: params.channel,
+        runtime,
       });
       continue;
     }

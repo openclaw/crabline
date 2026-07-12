@@ -69,4 +69,72 @@ describe("OpenClaw smoke lock cleanup", () => {
       await disposeTempDir(outputDir);
     }
   });
+
+  it("reclaims a live PID lock when the acquiring process has a new start identity", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    try {
+      const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        now: () => 1_000,
+        pid: 4_242,
+        processStartedAtMs: 100,
+      });
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        now: () => 1_100,
+        pid: 4_242,
+        processStartedAtMs: 200,
+      });
+
+      await firstLock.release();
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(params, {
+          isProcessAlive: () => true,
+          now: () => 1_200,
+          pid: 4_242,
+          processStartedAtMs: 200,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+      await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("expires an old lock whose PID now belongs to another live process", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    try {
+      const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 1_000,
+        pid: 4_242,
+        processStartedAtMs: 100,
+      });
+
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(params, {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => 1_999,
+          pid: 5_252,
+          processStartedAtMs: 200,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 2_001,
+        pid: 5_252,
+        processStartedAtMs: 200,
+      });
+      await firstLock.release();
+      await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
 });
