@@ -61,5 +61,6 @@ describe("errors and reporters", () => {
     expect(output).toContain(String.raw`first\x1b[2J\rsecond`);
     expect(output).toContain("  - third\\u202e");
     expect(sanitizeTerminalText("line\nbreak", true)).toBe(String.raw`line\nbreak`);
+    expect(sanitizeTerminalText("\u061c\u200e\u200f")).toBe(String.raw`\u061c\u200e\u200f`);
   });
 });
