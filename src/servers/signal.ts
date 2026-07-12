@@ -38,12 +38,12 @@ type SignalServerState = {
 
 type SignalClientBuffer = {
   bytes: number;
-  connectedAfterSequence: number;
   draining: boolean;
   events: SignalSseChunk[];
 };
 type SignalSseChunk = {
   data: string;
+  recipients?: Set<ServerResponse> | undefined;
   sequence?: number | undefined;
 };
 const SIGNAL_CLI_SSE_KEEPALIVE_MS = 15_000;
@@ -112,24 +112,20 @@ function removeSignalClient(
   state.clientBuffers.delete(client);
   if (buffer) {
     const undeliveredEvents = buffer.events.filter((event) => {
-      const sequence = event.sequence;
-      return (
-        sequence !== undefined &&
-        [...state.clientBuffers.values()].every(
-          (otherBuffer) => otherBuffer.connectedAfterSequence >= sequence,
-        )
-      );
+      event.recipients?.delete(client);
+      return event.sequence !== undefined && event.recipients?.size === 0;
     });
     if (undeliveredEvents.length > 0) {
-      state.pendingEvents.unshift(...undeliveredEvents);
+      state.pendingEvents.push(
+        ...undeliveredEvents.filter((event) => !state.pendingEvents.includes(event)),
+      );
+      state.pendingEvents.sort(
+        (left, right) => (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? 0),
+      );
       state.pendingEventBytes += undeliveredEvents.reduce(
         (total, event) => total + Buffer.byteLength(event.data),
         0,
       );
-      const replacement = state.clients.values().next().value;
-      if (replacement) {
-        flushPendingSignalEvents(state, replacement);
-      }
     }
   }
   if (destroy) {
@@ -167,8 +163,10 @@ function queueSignalClientEvent(
 ): SignalSseWriteResult {
   const buffer = state.clientBuffers.get(client);
   const eventBytes = Buffer.byteLength(event.data);
+  const alreadyBuffered = isSignalEventBuffered(state, event);
   if (
     !buffer ||
+    (!alreadyBuffered && signalBufferedEventCount(state) >= state.maxPendingInboundEvents) ||
     state.pendingEventBytes + buffer.bytes + eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES
   ) {
     evictSignalClient(state, client);
@@ -176,6 +174,7 @@ function queueSignalClientEvent(
   }
   buffer.events.push(event);
   buffer.bytes += eventBytes;
+  event.recipients?.add(client);
   scheduleSignalDrain(state, client);
   return "queued";
 }
@@ -205,7 +204,9 @@ function writeSignalSse(
     evictSignalClient(state, client);
     return "rejected";
   }
-  if (!client.write(event.data)) {
+  const accepted = client.write(event.data);
+  event.recipients?.add(client);
+  if (!accepted) {
     scheduleSignalDrain(state, client);
   }
   return "accepted";
@@ -219,19 +220,69 @@ function maxSignalClientBufferBytes(state: SignalServerState): number {
   return maxBytes;
 }
 
+function isSignalEventBuffered(state: SignalServerState, event: SignalSseChunk): boolean {
+  return (
+    state.pendingEvents.includes(event) ||
+    [...state.clientBuffers.values()].some((buffer) => buffer.events.includes(event))
+  );
+}
+
+function signalBufferedEventCount(state: SignalServerState): number {
+  const sequences = new Set<number>();
+  for (const event of state.pendingEvents) {
+    if (event.sequence !== undefined) {
+      sequences.add(event.sequence);
+    }
+  }
+  for (const buffer of state.clientBuffers.values()) {
+    for (const event of buffer.events) {
+      if (event.sequence !== undefined) {
+        sequences.add(event.sequence);
+      }
+    }
+  }
+  return sequences.size;
+}
+
 function queueSignalEvent(state: SignalServerState, event: SignalSseChunk): boolean {
   const eventBytes = Buffer.byteLength(event.data);
   if (
     eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES ||
     state.pendingEventBytes + maxSignalClientBufferBytes(state) + eventBytes >
       MAX_SIGNAL_SSE_BUFFER_BYTES ||
-    state.pendingEvents.length >= state.maxPendingInboundEvents
+    (!isSignalEventBuffered(state, event) &&
+      signalBufferedEventCount(state) >= state.maxPendingInboundEvents)
   ) {
     return false;
   }
   state.pendingEvents.push(event);
   state.pendingEventBytes += eventBytes;
   return true;
+}
+
+function replayExclusiveSignalEvents(state: SignalServerState, client: ServerResponse): void {
+  const events = new Map<number, SignalSseChunk>();
+  for (const [owner, buffer] of state.clientBuffers) {
+    if (owner === client) {
+      continue;
+    }
+    for (const event of buffer.events) {
+      if (
+        event.sequence !== undefined &&
+        event.recipients?.size === 1 &&
+        event.recipients.has(owner)
+      ) {
+        events.set(event.sequence, event);
+      }
+    }
+  }
+  for (const event of [...events.values()].sort(
+    (left, right) => left.sequence! - right.sequence!,
+  )) {
+    if (writeSignalSse(state, client, event) === "rejected") {
+      break;
+    }
+  }
 }
 
 function flushSignalClientEvents(state: SignalServerState, client: ServerResponse): void {
@@ -266,6 +317,7 @@ function flushPendingSignalEvents(state: SignalServerState, client: ServerRespon
 function emitSignalEvent(state: SignalServerState, payload: unknown): boolean {
   const event: SignalSseChunk = {
     data: `event:receive\ndata:${JSON.stringify(payload)}\n\n`,
+    recipients: new Set(),
     sequence: state.nextEventSequence++,
   };
   if (state.clients.size === 0 || state.pendingEvents.length > 0) {
@@ -469,11 +521,13 @@ async function handleRequest(params: {
     params.state.clients.add(params.response);
     params.state.clientBuffers.set(params.response, {
       bytes: 0,
-      connectedAfterSequence: params.state.nextEventSequence - 1,
       draining: false,
       events: [],
     });
-    flushPendingSignalEvents(params.state, params.response);
+    replayExclusiveSignalEvents(params.state, params.response);
+    if (params.state.clients.has(params.response)) {
+      flushPendingSignalEvents(params.state, params.response);
+    }
     return;
   }
 
