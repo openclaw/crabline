@@ -198,7 +198,7 @@ export async function startHttpJsonServer(params: {
         handled ??
           jsonResponse(
             {
-              error: error instanceof Error ? error.message : String(error),
+              error: "internal server error",
               ok: false,
             },
             500,
