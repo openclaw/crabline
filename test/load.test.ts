@@ -120,6 +120,11 @@ describe("config load", () => {
     expect((failure as Error).message).toContain("line 1, column");
     expect((failure as Error).message).not.toContain(sentinel);
     expect((failure as Error).message).not.toContain("accessToken");
+    const cause = (failure as Error & { cause?: unknown }).cause;
+    expect(cause).toBeInstanceOf(Error);
+    expect((cause as Error).message).toContain("YAML parse error");
+    expect((cause as Error).message).not.toContain(sentinel);
+    expect((cause as Error).message).not.toContain("accessToken");
   });
 
   it("resolves default config names from cwd", async () => {
