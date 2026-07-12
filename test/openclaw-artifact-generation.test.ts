@@ -60,6 +60,27 @@ function publishParams(outputDir: string, lock = createLock()) {
 }
 
 describe("OpenClaw artifact generation publication", () => {
+  it("rejects caller-controlled artifact paths before creating the store", async () => {
+    const outputDir = await createTempDir();
+    const params = publishParams(outputDir);
+    try {
+      await expect(
+        publishOpenClawCrablineArtifactGeneration({
+          ...params,
+          selection: {
+            ...params.selection,
+            capabilityMatrixPath: "../escaped.json",
+          } as unknown as typeof params.selection,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline artifact selection paths are malformed.");
+      await expect(
+        fs.access(path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY)),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("publishes one complete owner-only generation behind an atomic pointer", async () => {
     const outputDir = await createTempDir();
     const lock = createLock();
@@ -379,7 +400,7 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
-  it("preserves owner-only crash leftovers while publishing a new generation", async () => {
+  it("removes failed staging and retains only the current and previous generations", async () => {
     const outputDir = await createTempDir();
     const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
     const abandonedGeneration = "generation-22222222-2222-4222-8222-222222222222";
@@ -407,13 +428,24 @@ describe("OpenClaw artifact generation publication", () => {
         createGenerationId: () => "44444444-4444-4444-8444-444444444444",
       });
 
-      await expect(fs.stat(path.join(storePath, abandonedGeneration))).resolves.toBeDefined();
+      await expect(fs.stat(path.join(storePath, abandonedGeneration))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
       await expect(
         fs.stat(path.join(storePath, ".staging-33333333-3333-4333-8333-333333333333")),
-      ).resolves.toBeDefined();
+      ).rejects.toMatchObject({ code: "ENOENT" });
       expect((await readOpenClawCrablineArtifactPointer(outputDir))?.generation).toBe(
         third.generation,
       );
+
+      const fourth = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "55555555-5555-4555-8555-555555555555",
+      });
+      await expect(fs.stat(path.join(storePath, first.generation))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(fs.stat(path.join(storePath, third.generation))).resolves.toBeDefined();
+      await expect(fs.stat(path.join(storePath, fourth.generation))).resolves.toBeDefined();
     } finally {
       await disposeTempDir(outputDir);
     }

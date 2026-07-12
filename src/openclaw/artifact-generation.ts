@@ -27,6 +27,7 @@ export type OpenClawCrablineArtifactPointer = {
 export type PublishedOpenClawCrablineArtifactGeneration = OpenClawCrablineArtifactPointer & {
   pointerPath: string;
   smoke: Record<string, unknown>;
+  warnings?: string[];
 };
 
 type PublishGenerationDependencies = {
@@ -37,6 +38,15 @@ type PublishGenerationDependencies = {
   secureWindowsDirectory?: (directoryPath: string) => Promise<void>;
   secureWindowsFile?: (filePath: string) => Promise<void>;
 };
+
+function assertCanonicalSelectionPaths(selection: OpenClawCrablineChannelDriverSelection): void {
+  if (
+    selection.capabilityMatrixPath !== OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH ||
+    selection.smokeArtifactPath !== OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH
+  ) {
+    throw new Error("OpenClaw Crabline artifact selection paths are malformed.");
+  }
+}
 
 function isMissingPathError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
@@ -135,6 +145,37 @@ async function assertCurrentGenerationExists(
   }
 }
 
+async function pruneArtifactStore(params: {
+  lock: OpenClawCrablineSmokeRunLock;
+  pointer: OpenClawCrablineArtifactPointer | null;
+  store: Awaited<ReturnType<typeof securePrivateDirectory>>;
+}): Promise<void> {
+  const retainedGenerations = new Set(
+    params.pointer
+      ? [params.pointer.generation, params.pointer.previousGeneration].filter(
+          (generation): generation is string => generation !== undefined,
+        )
+      : [],
+  );
+  for (const entry of await fs.readdir(params.store.directoryPath, { withFileTypes: true })) {
+    const isAbandonedStaging = entry.isDirectory() && entry.name.startsWith(".staging-");
+    const isObsoleteGeneration =
+      entry.isDirectory() &&
+      GENERATION_NAME_PATTERN.test(entry.name) &&
+      !retainedGenerations.has(entry.name);
+    if (!isAbandonedStaging && !isObsoleteGeneration) {
+      continue;
+    }
+    await params.lock.assertOwned();
+    await params.store.assertIdentityAt();
+    await fs.rm(path.join(params.store.directoryPath, entry.name), {
+      force: true,
+      recursive: true,
+    });
+    await params.store.assertIdentityAt();
+  }
+}
+
 export async function publishOpenClawCrablineArtifactGeneration(
   params: {
     capabilityReport: unknown;
@@ -146,6 +187,7 @@ export async function publishOpenClawCrablineArtifactGeneration(
   },
   dependencies: PublishGenerationDependencies = {},
 ): Promise<PublishedOpenClawCrablineArtifactGeneration> {
+  assertCanonicalSelectionPaths(params.selection);
   const outputDir = path.resolve(params.outputDir);
   await fs.mkdir(outputDir, { recursive: true });
   const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
@@ -161,6 +203,11 @@ export async function publishOpenClawCrablineArtifactGeneration(
   if (currentPointer) {
     await assertCurrentGenerationExists(outputDir, currentPointer);
   }
+  await pruneArtifactStore({
+    lock: params.lock,
+    pointer: currentPointer,
+    store,
+  });
 
   const generationId = dependencies.createGenerationId?.() ?? randomUUID();
   const generation = `generation-${generationId}`;
@@ -226,36 +273,62 @@ export async function publishOpenClawCrablineArtifactGeneration(
     },
   ] as const;
 
-  await params.lock.assertOwned();
-  for (const artifact of artifactContents) {
-    await staging.assertIdentityAt();
-    await publishPrivateFile(
-      path.join(stagingPath, artifact.fileName),
-      artifact.contents,
-      fileOptions,
-    );
-    await staging.assertIdentityAt();
+  let installed = false;
+  let committed = false;
+  try {
+    await params.lock.assertOwned();
+    for (const artifact of artifactContents) {
+      await staging.assertIdentityAt();
+      await publishPrivateFile(
+        path.join(stagingPath, artifact.fileName),
+        artifact.contents,
+        fileOptions,
+      );
+      await staging.assertIdentityAt();
+    }
+    await params.lock.assertOwned();
+    await fs.rename(stagingPath, generationPath);
+    installed = true;
+    await staging.assertIdentityAt(generationPath);
+    await store.assertIdentityAt();
+
+    await dependencies.beforePointerSwitch?.(pointer);
+    await params.lock.commitFileAtomically({
+      contents: `${JSON.stringify(pointer, null, 2)}\n`,
+      destinationPath: path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH),
+      stageDirectory: store.directoryPath,
+      stageFile: async (filePath, contents) => {
+        await store.assertIdentityAt();
+        await publishPrivateFile(filePath, contents, fileOptions);
+        await store.assertIdentityAt();
+      },
+    });
+    committed = true;
+    let warnings: string[] | undefined;
+    try {
+      await pruneArtifactStore({
+        lock: params.lock,
+        pointer: await readOpenClawCrablineArtifactPointer(outputDir),
+        store,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      warnings = [`OpenClaw Crabline artifact retention cleanup failed: ${detail}`];
+    }
+
+    return {
+      ...pointer,
+      pointerPath: OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
+      smoke,
+      ...(warnings ? { warnings } : {}),
+    };
+  } finally {
+    if (!committed) {
+      const unpublishedPath = installed ? generationPath : stagingPath;
+      await staging
+        .assertIdentityAt(unpublishedPath)
+        .then(() => fs.rm(unpublishedPath, { force: true, recursive: true }))
+        .catch(() => undefined);
+    }
   }
-  await params.lock.assertOwned();
-  await fs.rename(stagingPath, generationPath);
-  await staging.assertIdentityAt(generationPath);
-  await store.assertIdentityAt();
-
-  await dependencies.beforePointerSwitch?.(pointer);
-  await params.lock.commitFileAtomically({
-    contents: `${JSON.stringify(pointer, null, 2)}\n`,
-    destinationPath: path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH),
-    stageDirectory: store.directoryPath,
-    stageFile: async (filePath, contents) => {
-      await store.assertIdentityAt();
-      await publishPrivateFile(filePath, contents, fileOptions);
-      await store.assertIdentityAt();
-    },
-  });
-
-  return {
-    ...pointer,
-    pointerPath: OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
-    smoke,
-  };
 }

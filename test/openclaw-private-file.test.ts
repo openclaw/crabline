@@ -215,6 +215,28 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
+  it("preserves a replacement installed after the atomic rename", async () => {
+    const directory = await createTempDir();
+    try {
+      const filePath = path.join(directory, "manifest.json");
+      const displacedPath = `${filePath}.published`;
+
+      await expect(
+        publishPrivateFileAtomically(filePath, "private\n", {
+          afterRename: async (publishedPath) => {
+            await fs.rename(publishedPath, displacedPath);
+            await fs.writeFile(publishedPath, "replacement\n");
+          },
+        }),
+      ).rejects.toThrow("Private file path identity changed during publication.");
+
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("replacement\n");
+      await expect(fs.readFile(displacedPath, "utf8")).resolves.toBe("private\n");
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
   it("uses Windows PowerShell to set and verify the current SID ACL", async () => {
     const calls: Parameters<WindowsAclRunner>[] = [];
     const run: WindowsAclRunner = async (...args) => {
