@@ -310,6 +310,47 @@ describe("Mattermost local provider server", () => {
     });
   });
 
+  it("disconnects slow WebSocket clients and queues undelivered events", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "test-token-placeholder",
+      maxPendingInboundEvents: 1,
+      maxWebSocketBufferedBytes: 512,
+    });
+    servers.push(server);
+    const socket = new WebSocket(server.manifest.endpoints.websocketUrl);
+    await waitForSocketOpen(socket);
+    const authenticated = nextMessages(socket, 2);
+    socket.send(
+      JSON.stringify({
+        action: "authentication_challenge",
+        data: { token: "test-token-placeholder" },
+        seq: 1,
+      }),
+    );
+    await authenticated;
+    const closed = waitForSocketClose(socket);
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ channelId: "channel-1", senderId: "user-1", text }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+
+    expect((await sendInbound("x".repeat(2_000))).status).toBe(200);
+    await expect(closed).resolves.toEqual({ code: 1013, reason: "client too slow" });
+    expect((await sendInbound("queue is full")).status).toBe(503);
+  });
+
+  it("validates the WebSocket delivery buffer limit", async () => {
+    await expect(startMattermostServer({ maxWebSocketBufferedBytes: 0 })).rejects.toThrow(
+      "maxWebSocketBufferedBytes must be a positive safe integer.",
+    );
+  });
+
   it("drains request bodies rejected by REST and admin authentication", async () => {
     const server = await startMattermostServer({
       adminToken: "admin",

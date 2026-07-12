@@ -34,17 +34,17 @@ export function jsonResponse(value: unknown, status = 200): Response {
 }
 
 export function drainRequestBody(request: IncomingMessage): void {
+  const ignoreError = () => {};
+  request.on("error", ignoreError);
   if (request.destroyed || request.readableEnded) {
     return;
   }
-  const ignoreError = () => {};
   const cleanup = () => {
     request.off("close", cleanup);
     request.off("end", cleanup);
     request.off("error", ignoreError);
   };
 
-  request.on("error", ignoreError);
   request.once("close", cleanup);
   request.once("end", cleanup);
   request.resume();
@@ -271,7 +271,8 @@ export function readInteger(value: unknown): number | undefined {
   if (!stringValue || !/^-?\d+$/u.test(stringValue)) {
     return undefined;
   }
-  return Number(stringValue);
+  const parsed = Number(stringValue);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function readBearerToken(authorization: string | undefined): string | undefined {

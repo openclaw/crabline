@@ -8,6 +8,7 @@ import {
   type StartedSlackServer,
   type StartSlackServerParams,
 } from "../src/index.js";
+import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedSlackServer[] = [];
@@ -507,6 +508,48 @@ describe("slack local provider server", () => {
     }
   });
 
+  it("cancels unread Events API response bodies", async () => {
+    let resolveClosed: () => void = () => undefined;
+    const responseClosed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
+    });
+    const eventsReceiver = createServer((_request, response) => {
+      response.once("close", resolveClosed);
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.write("ignored response body");
+    });
+    await new Promise<void>((resolve) => eventsReceiver.listen(0, "127.0.0.1", resolve));
+    const address = eventsReceiver.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve Slack Events API receiver address.");
+    }
+    const server = await startTestSlackServer({
+      eventsRequestUrl: `http://127.0.0.1:${address.port}/slack/events`,
+      signingSecret: "test-token-placeholder",
+    });
+
+    try {
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          channel: "C1234567890",
+          text: "response body disposal",
+          user: "U1234567890",
+        }),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+      expect(inbound.status).toBe(200);
+      await responseClosed;
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        eventsReceiver.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("redacts body/query tokens and skips rejected admin inbound recording", async () => {
     const server = await startTestSlackServer();
 
@@ -557,7 +600,9 @@ describe("slack local provider server", () => {
   });
 
   it("returns Slack-shaped posting errors", async () => {
-    const server = await startTestSlackServer();
+    const server = await startTestSlackServer({
+      chatPostMessageRateLimit: { remaining: 2, retryAfterSeconds: 2 },
+    });
 
     await expect(
       (
@@ -572,10 +617,16 @@ describe("slack local provider server", () => {
       ok: false,
     });
 
+    await expect(
+      (
+        await slackApi(server, "chat.postMessage", {
+          channel: "C1234567890",
+          text: "first request",
+        })
+      ).json(),
+    ).resolves.toMatchObject({ ok: true });
     const rateLimited = await slackApi(server, "chat.postMessage", {
       channel: "C1234567890",
-      retry_after: 2,
-      simulate_rate_limit: true,
       text: "slow down",
     });
     expect(rateLimited.status).toBe(429);
@@ -584,6 +635,31 @@ describe("slack local provider server", () => {
       error: "ratelimited",
       ok: false,
     });
+  });
+
+  it("validates out-of-band rate-limit controls", async () => {
+    await expect(
+      startSlackServer({
+        chatPostMessageRateLimit: { remaining: -1, retryAfterSeconds: 1 },
+      }),
+    ).rejects.toThrow("remaining must be a non-negative safe integer");
+    await expect(
+      startSlackServer({
+        chatPostMessageRateLimit: { remaining: 0, retryAfterSeconds: 0 },
+      }),
+    ).rejects.toThrow("retryAfterSeconds must be a positive safe integer");
+  });
+
+  it("does not expose rate-limit controls through chat.postMessage fields", async () => {
+    const server = await startTestSlackServer();
+    const response = await slackApi(server, "chat.postMessage", {
+      channel: "C1234567890",
+      retry_after: 30,
+      simulate_rate_limit: true,
+      text: "ordinary provider payload",
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true });
   });
 
   it("handles Slack Events API URL verification", async () => {
