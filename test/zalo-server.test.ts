@@ -380,6 +380,61 @@ describe("Zalo local provider server", () => {
     });
   });
 
+  it("does not let a disconnected replacement terminate the active poll", async () => {
+    let observeFirstPoll: (() => void) | undefined;
+    let observeSecondPoll: (() => void) | undefined;
+    let releaseSecondPoll: (() => void) | undefined;
+    const firstPollReady = new Promise<void>((resolve) => {
+      observeFirstPoll = resolve;
+    });
+    const secondPollObserved = new Promise<void>((resolve) => {
+      observeSecondPoll = resolve;
+    });
+    const secondPollBlocked = new Promise<void>((resolve) => {
+      releaseSecondPoll = resolve;
+    });
+    let polls = 0;
+    const server = await startZaloServer({
+      botToken: "sample",
+      onEvent: async (event) => {
+        if (event.path !== "/bot<redacted>/getUpdates") {
+          return;
+        }
+        polls++;
+        if (polls === 1) {
+          observeFirstPoll?.();
+        } else if (polls === 2) {
+          observeSecondPoll?.();
+          await secondPollBlocked;
+        }
+      },
+    });
+    servers.push(server);
+
+    const first = fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=30`);
+    await firstPollReady;
+    const controller = new AbortController();
+    const second = fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=30`, {
+      signal: controller.signal,
+    });
+    await secondPollObserved;
+    controller.abort();
+    await expect(second).rejects.toThrow(/aborted/u);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    releaseSecondPoll?.();
+
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "active poll" }),
+      headers: adminHeaders(server),
+      method: "POST",
+    });
+    expect(inbound.status).toBe(200);
+    await expect((await first).json()).resolves.toMatchObject({
+      ok: true,
+      result: { message: { text: "active poll" } },
+    });
+  });
+
   it("enforces an absolute webhook delivery deadline while responses trickle", async () => {
     const webhook = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/plain" });
