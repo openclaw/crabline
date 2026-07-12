@@ -229,14 +229,32 @@ describe("Zalo local provider server", () => {
         },
       );
       expect(invalidWebhook.status).toBe(400);
+      const protocolRelativeCredential = [
+        "//protocol-user:",
+        "protocol-relative-credential-placeholder",
+        "@example.com/hook",
+      ].join("");
+      const invalidProtocolRelativeWebhook = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
+        {
+          body: JSON.stringify({
+            url: protocolRelativeCredential,
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(invalidProtocolRelativeWebhook.status).toBe(400);
 
       const recorder = await fs.readFile(recorderPath, "utf8");
       expect(recorder).toContain('"secret_token":"<redacted>"');
       expect(recorder).toContain(`http://<redacted>@127.0.0.1:${address.port}/zalo?mode=test`);
+      expect(recorder).toContain("//<redacted>@example.com/hook");
       expect(recorder).not.toContain("test-auth-token");
       expect(recorder).not.toContain("alice");
       expect(recorder).not.toContain("sample");
       expect(recorder).not.toContain("credential-placeholder");
+      expect(recorder).not.toContain("protocol-user");
     } finally {
       await new Promise<void>((resolve, reject) =>
         webhook.close((error) => (error ? reject(error) : resolve())),
@@ -387,6 +405,93 @@ describe("Zalo local provider server", () => {
         ok: true,
         result: { message: { text } },
       });
+    }
+  });
+
+  it("rejects webhook activation while a poll delivery is reserved", async () => {
+    const webhook = createServer((_request, response) => {
+      response.statusCode = 200;
+      response.end("ok");
+    });
+    await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+    const address = webhook.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve webhook test server address.");
+    }
+    const server = await startZaloServer({ botToken: "sample" });
+    servers.push(server);
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "reserved" }),
+      headers: adminHeaders(server),
+      method: "POST",
+    });
+    expect(inbound.status).toBe(200);
+
+    const responsePrototype = ServerResponse.prototype as unknown as {
+      end: (...args: unknown[]) => ServerResponse;
+    };
+    const originalEnd = responsePrototype.end;
+    let releaseResponse!: () => void;
+    let reportResponse!: () => void;
+    const responseReported = new Promise<void>((resolve) => {
+      reportResponse = resolve;
+    });
+    const responseReleased = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    responsePrototype.end = function (this: ServerResponse, ...args: unknown[]) {
+      if (this.req?.url?.includes("/getUpdates")) {
+        reportResponse();
+        void responseReleased.then(() => this.destroy(new Error("simulated response failure")));
+        return this;
+      }
+      return Reflect.apply(originalEnd, this, args) as ServerResponse;
+    };
+
+    const poll = requestHttp({
+      method: "GET",
+      url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`,
+    });
+    try {
+      await responseReported;
+      const blocked = await fetch(`${server.manifest.baseUrl}/botsample/setWebhook`, {
+        body: JSON.stringify({
+          secret_token: "secret-token",
+          url: `http://127.0.0.1:${address.port}/zalo`,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(blocked.status).toBe(409);
+      await expect(blocked.json()).resolves.toMatchObject({
+        description: "Polling deliveries are still in progress",
+      });
+      releaseResponse();
+      await Promise.allSettled([poll]);
+    } finally {
+      releaseResponse();
+      responsePrototype.end = originalEnd;
+    }
+
+    try {
+      const configured = await fetch(`${server.manifest.baseUrl}/botsample/setWebhook`, {
+        body: JSON.stringify({
+          secret_token: "secret-token",
+          url: `http://127.0.0.1:${address.port}/zalo`,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(configured.status).toBe(200);
+      await fetch(`${server.manifest.baseUrl}/botsample/deleteWebhook`, { method: "POST" });
+      const restored = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`);
+      await expect(restored.json()).resolves.toMatchObject({
+        result: { message: { text: "reserved" } },
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        webhook.close((error) => (error ? reject(error) : resolve())),
+      );
     }
   });
 

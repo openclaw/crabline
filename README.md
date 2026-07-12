@@ -409,6 +409,11 @@ and `agent` modes, the local mock also records a deterministic assistant reply:
 live service latency, external credentials, webhooks exposed to the internet, or
 provider SDK state.
 
+Recorder files remain JSONL. Individual events use one object per line; an
+accepted multi-message webhook is committed as one versioned batch object so
+readers never observe a partial batch. Crabline's recorder APIs flatten those
+batch objects back into their individual events.
+
 ## More Setup Detail
 
 See [Channel Setup](docs/channel-setup.md) for the provider matrix, webhook

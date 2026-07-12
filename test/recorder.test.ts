@@ -78,9 +78,16 @@ describe("recorder", () => {
       expect.objectContaining({ id: "evt-batch-1" }),
       expect.objectContaining({ id: "evt-batch-2" }),
     ]);
+    const lines = (await readFile(filePath, "utf8")).trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      events: [{ id: "evt-batch-1" }, { id: "evt-batch-2" }],
+      recordType: "crabline.recorder.batch",
+      recorderBatchVersion: 1,
+    });
   });
 
-  it("rolls back partial batch appends before retrying", async () => {
+  it("hides partial batch appends before retrying", async () => {
     const filePath = await createRecorderPath();
     const sentAt = new Date().toISOString();
     const event = (id: string) => ({
@@ -145,6 +152,66 @@ describe("recorder", () => {
       expect.objectContaining({ id: "existing" }),
       expect.objectContaining({ id: "retry-1" }),
       expect.objectContaining({ id: "retry-2" }),
+    ]);
+  });
+
+  it("does not overwrite a recorder rotated during a batch append", async () => {
+    const filePath = await createRecorderPath();
+    const rotatedPath = `${filePath}.rotated`;
+    const event = {
+      author: "user" as const,
+      id: "rotated-batch",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "preserve both generations",
+      threadId: "15551234567",
+    };
+    await appendRecordedInboundBatch(filePath, [{ ...event, id: "existing", text: "existing" }]);
+
+    const probeHandle = await open(filePath, "a+");
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+      writeFile(data: string, encoding: BufferEncoding): Promise<void>;
+    };
+    await probeHandle.close();
+    const originalWriteFile = fileHandlePrototype.writeFile;
+    let releaseWrite!: () => void;
+    let reportWrite!: () => void;
+    const writeReported = new Promise<void>((resolve) => {
+      reportWrite = resolve;
+    });
+    const writeReleased = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let interceptBatch = true;
+    fileHandlePrototype.writeFile = async function (
+      this: FileHandle,
+      data: string,
+      encoding: BufferEncoding,
+    ) {
+      await originalWriteFile.call(this, data, encoding);
+      if (interceptBatch && data.includes('"recorderBatchVersion"')) {
+        interceptBatch = false;
+        reportWrite();
+        await writeReleased;
+      }
+    };
+
+    const append = appendRecordedInboundBatch(filePath, [event]);
+    try {
+      await writeReported;
+      await rename(filePath, rotatedPath);
+      await writeFile(filePath, "", "utf8");
+      releaseWrite();
+      await expect(append).rejects.toThrow("Recorder rotated");
+    } finally {
+      releaseWrite();
+      fileHandlePrototype.writeFile = originalWriteFile;
+    }
+
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([]);
+    await expect(readRecordedInbound(rotatedPath)).resolves.toEqual([
+      expect.objectContaining({ id: "existing" }),
+      expect.objectContaining({ id: "rotated-batch" }),
     ]);
   });
 
@@ -628,16 +695,16 @@ describe("recorder", () => {
 
   it("bounds unterminated recorder records", async () => {
     const filePath = await createRecorderPath();
-    await writeFile(filePath, "x".repeat(1024 * 1024 + 1), "utf8");
+    await writeFile(filePath, "x".repeat(4 * 1024 * 1024 + 1), "utf8");
 
     await expect(
       waitForRecordedInbound({
         filePath,
         matches: () => false,
         pollMs: 10,
-        timeoutMs: 30,
+        timeoutMs: 1000,
       }),
-    ).rejects.toThrow(/exceeded 1048576 bytes without a newline/u);
+    ).rejects.toThrow(/exceeded 4194304 bytes without a newline/u);
   });
 
   it("resets incremental reads when the recorder is atomically replaced", async () => {

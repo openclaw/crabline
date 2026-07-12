@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderConfig } from "../src/config/schema.js";
 import { WhatsAppProviderAdapter } from "../src/providers/builtin/whatsapp.js";
 import { LocalMockProviderAdapter } from "../src/providers/local-mock.js";
+import { readRecordedInbound } from "../src/providers/recorder.js";
 import type { ProviderContext, SendContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
@@ -397,7 +398,7 @@ describe("WhatsApp provider lifecycle", () => {
       await expect(request).resolves.toMatchObject({ status: 200 });
       await cleanup;
       const contentsAfterCleanup = await readFile(recorderPath, "utf8");
-      expect(contentsAfterCleanup.trim().split("\n")).toHaveLength(2);
+      await expect(readRecordedInbound(recorderPath)).resolves.toHaveLength(2);
       await Promise.resolve();
       expect(await readFile(recorderPath, "utf8")).toBe(contentsAfterCleanup);
     } finally {

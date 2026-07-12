@@ -5,7 +5,7 @@ import {
   normalizeWhatsAppWebhookPayload,
   WhatsAppProviderAdapter,
 } from "../src/providers/builtin/whatsapp.js";
-import { appendRecordedInbound } from "../src/providers/recorder.js";
+import { appendRecordedInbound, readRecordedInbound } from "../src/providers/recorder.js";
 import {
   createLocalMockConfig,
   createProviderContext,
@@ -299,10 +299,7 @@ describe("WhatsApp webhook normalizer", () => {
         method: "POST",
       });
       expect(retried.status).toBe(200);
-      const records = (await readFile(config.whatsapp!.recorder.path!, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { id: string; sentAt: string });
+      const records = await readRecordedInbound(config.whatsapp!.recorder.path!);
       expect(records).toEqual([
         expect.objectContaining({
           id: "wamid.signed",
