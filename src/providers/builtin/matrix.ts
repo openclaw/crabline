@@ -69,7 +69,7 @@ export class MatrixProviderAdapter extends LocalMockProviderAdapter implements P
   }
 }
 
-function normalizeMatrixWebhookPayload(payload: unknown) {
+export function normalizeMatrixWebhookPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("Matrix webhook payload must be an object", { kind: "inbound" });
   }
@@ -92,6 +92,12 @@ function normalizeMatrixWebhookPayload(payload: unknown) {
     });
   }
 
+  const relation = content ? optionalRecord(content, "m.relates_to") : undefined;
+  const threadRootId =
+    relation && optionalString(relation, "rel_type") === "m.thread"
+      ? optionalString(relation, "event_id")
+      : undefined;
+
   return {
     author: authorFromBotFlag(false),
     ...(eventId
@@ -99,8 +105,8 @@ function normalizeMatrixWebhookPayload(payload: unknown) {
       : {}),
     raw: payload,
     text,
-    threadId: eventId
-      ? requireNativeInboundId(eventId, MATRIX_EVENT_ID_RULE, "Matrix event_id")
+    threadId: threadRootId
+      ? requireNativeInboundId(threadRootId, MATRIX_EVENT_ID_RULE, "Matrix thread root event_id")
       : requireNativeInboundId(roomId, MATRIX_ROOM_ID_RULE, "Matrix room_id"),
   };
 }
