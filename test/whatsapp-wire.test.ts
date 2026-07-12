@@ -1,4 +1,5 @@
 import { deflateSync } from "node:zlib";
+import { Curve as BaileysCurve } from "baileys";
 import { describe, expect, it } from "vitest";
 import {
   decodeBinaryNode,
@@ -7,8 +8,48 @@ import {
   WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES,
   type BinaryNode,
 } from "../src/servers/whatsapp-wire/binary-node.js";
+import { Curve } from "../src/servers/whatsapp-wire/crypto.js";
 import { decodeHandshakeMessage } from "../src/servers/whatsapp-wire/handshake.js";
 import { createSerializedMessageHandler } from "../src/servers/whatsapp-baileys-websocket.js";
+
+const RFC_7748_ALICE_PRIVATE = Buffer.from(
+  "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+  "hex",
+);
+const RFC_7748_BOB_PUBLIC = Buffer.from(
+  "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+  "hex",
+);
+const RFC_7748_SHARED_SECRET = Buffer.from(
+  "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742",
+  "hex",
+);
+
+describe("WhatsApp X25519 agreement", () => {
+  it("matches the RFC 7748 vector and bundled Baileys Curve", () => {
+    expect(Curve.sharedKey(RFC_7748_ALICE_PRIVATE, RFC_7748_BOB_PUBLIC)).toEqual(
+      RFC_7748_SHARED_SECRET,
+    );
+    expect(BaileysCurve.sharedKey(RFC_7748_ALICE_PRIVATE, RFC_7748_BOB_PUBLIC)).toEqual(
+      RFC_7748_SHARED_SECRET,
+    );
+  });
+
+  it("rejects invalid peer key lengths", () => {
+    expect(() => Curve.sharedKey(RFC_7748_ALICE_PRIVATE, Buffer.alloc(31))).toThrow(
+      "Invalid Signal public key length: 31.",
+    );
+  });
+
+  it("propagates Node rejection of an all-zero peer key", () => {
+    expect(() => Curve.sharedKey(RFC_7748_ALICE_PRIVATE, Buffer.alloc(32))).toThrow(
+      "failed during derivation",
+    );
+    expect(() => BaileysCurve.sharedKey(RFC_7748_ALICE_PRIVATE, Buffer.alloc(32))).toThrow(
+      "failed during derivation",
+    );
+  });
+});
 
 describe("WhatsApp WebSocket message processing", () => {
   it("serializes concurrent frames within one session", async () => {
