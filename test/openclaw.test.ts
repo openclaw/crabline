@@ -25,6 +25,7 @@ import {
   startOpenClawCrablineAdapter,
   type CrablineFakeProviderManifest,
   type CrablineServerManifest,
+  type OpenClawCrablineConversation,
 } from "../src/index.js";
 
 const manifest: CrablineServerManifest = {
@@ -167,6 +168,10 @@ const zaloManifest: CrablineServerManifest = {
 describe("OpenClaw local provider bridge", () => {
   it("keeps legacy fake-provider root aliases", () => {
     const legacyManifest: CrablineFakeProviderManifest = manifest;
+    const conversation: OpenClawCrablineConversation = {
+      id: "alice",
+      kind: "direct",
+    };
 
     expect(CRABLINE_FAKE_PROVIDER_CHANNELS).toBe(CRABLINE_SERVER_CHANNELS);
     expect(isCrablineFakeProviderChannel).toBe(isCrablineServerChannel);
@@ -174,6 +179,7 @@ describe("OpenClaw local provider bridge", () => {
     expect(createOpenClawCrablineFakeProviderBinding).toBe(createOpenClawCrablineProviderBinding);
     expect(probeOpenClawCrablineFakeProvider).toBe(probeOpenClawCrablineProvider);
     expect(legacyManifest.provider).toBe("telegram");
+    expect(conversation).toEqual({ id: "alice", kind: "direct" });
   });
 
   it("resolves channel-driver metadata through Crabline", () => {
