@@ -437,7 +437,11 @@ function hasExactProcessIdentity(owner: SmokeLockOwner): owner is (
 
 function hasProcessIdentityMismatch(owner: SmokeLockOwner, runtime: SmokeLockRuntime): boolean {
   if (!hasExactProcessIdentity(owner)) {
-    return false;
+    return (
+      hasProcessIdentity(owner) &&
+      owner.pid === runtime.currentPid &&
+      owner.processStartedAtMs !== runtime.currentProcessStartedAtMs
+    );
   }
   const actualProcessIdentity =
     owner.pid === runtime.currentPid
