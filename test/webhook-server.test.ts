@@ -8,6 +8,20 @@ afterEach(async () => {
 });
 
 describe("webhook server", () => {
+  it("advertises a valid URL when bound to IPv6", async () => {
+    const server = await startWebhookServer({
+      handle: async () => new Response("ok"),
+      host: "::1",
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+
+    expect(new URL(server.endpointUrl).hostname).toBe("[::1]");
+    const response = await fetch(server.endpointUrl, { method: "POST" });
+    expect(response.status).toBe(200);
+  });
+
   it("serves the configured POST path", async () => {
     const server = await startWebhookServer({
       async handle(request) {

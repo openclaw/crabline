@@ -156,7 +156,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async probe(context: ProviderContext): Promise<ProbeResult> {
-    const server = await this.#ensureWebhookServer(true);
+    const server = await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
     const details = [
       `${this.platform} local mock ready`,
@@ -218,7 +218,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
-    await this.#ensureWebhookServer(true);
+    await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
     const expectedAuthor = context.fixture.inboundMatch.author;
     return await waitForRecordedInbound({
@@ -233,7 +233,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async *watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
-    await this.#ensureWebhookServer(false);
+    await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
     for await (const event of watchRecordedInbound({
       filePath: this.#recorderPath,
@@ -292,7 +292,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     });
   }
 
-  async #ensureWebhookServer(allowExisting: boolean): Promise<StartedWebhookServer> {
+  async #ensureWebhookServer(): Promise<StartedWebhookServer> {
     if (this.#server) {
       return this.#server;
     }
@@ -310,13 +310,6 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       });
       return this.#server;
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (allowExisting && code === "EADDRINUSE") {
-        return {
-          async close() {},
-          endpointUrl: `http://${host}:${port}${webhookPath}`,
-        };
-      }
       throw new CrablineError(
         `${this.platform} local mock webhook server failed: ${ensureErrorMessage(error)}`,
         { cause: error, kind: "connectivity" },

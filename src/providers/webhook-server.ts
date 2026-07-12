@@ -100,6 +100,10 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
+function formatUrlHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
 export async function startWebhookServer(params: {
   handle(request: Request): Promise<Response>;
   host: string;
@@ -147,6 +151,6 @@ export async function startWebhookServer(params: {
     async close() {
       await closeServer(server);
     },
-    endpointUrl: `http://${params.host}:${address.port}${params.path}`,
+    endpointUrl: `http://${formatUrlHost(params.host)}:${address.port}${params.path}`,
   };
 }
