@@ -236,10 +236,7 @@ describe("script provider", () => {
 
   it("reports watch subprocess spawn failures without crashing", async () => {
     const context = await createContext();
-    context.config.script!.shell = path.join(
-      path.dirname(context.manifestPath),
-      "missing-shell",
-    );
+    context.config.script!.shell = path.join(path.dirname(context.manifestPath), "missing-shell");
     const provider = new ScriptProviderAdapter(context);
 
     await expect(provider.watch(context).next()).rejects.toThrow(/failed to start/u);
