@@ -26,7 +26,7 @@ export function resolveMatrixAdapterConfig(
     auth: config.matrix?.auth ?? {
       accessToken: env.MATRIX_ACCESS_TOKEN ?? "local-mock-matrix-token",
       type: "accessToken" as const,
-      userID: `@${userName}:matrix.local`,
+      userID: env.MATRIX_USER_ID?.trim() || `@${userName}:matrix.local`,
     },
     baseURL: config.matrix?.baseURL ?? env.MATRIX_BASE_URL ?? "http://matrix.local",
     commandPrefix: config.matrix?.commandPrefix,
