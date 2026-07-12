@@ -331,6 +331,7 @@ export async function publishPrivateFileAtomically(
   filePath: string,
   contents: string,
   options: {
+    afterRename?: (filePath: string) => Promise<void>;
     platform?: NodeJS.Platform;
     secureWindowsFile?: (temporaryPath: string) => Promise<void>;
   } = {},
@@ -355,12 +356,8 @@ export async function publishPrivateFileAtomically(
     await handle.sync();
     await assertPathIdentity(temporaryPath, identity);
     await fs.rename(temporaryPath, filePath);
-    try {
-      await assertPathIdentity(filePath, identity);
-    } catch (error) {
-      await fs.rm(filePath, { force: true }).catch(() => undefined);
-      throw error;
-    }
+    await options.afterRename?.(filePath);
+    await assertPathIdentity(filePath, identity);
   } finally {
     try {
       await handle?.close();
