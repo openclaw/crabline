@@ -75,10 +75,13 @@ export async function loadManifest(
   try {
     parsed = resolvedPath.endsWith(".json") ? JSON.parse(raw) : YAML.parse(raw, { merge: true });
   } catch (error) {
+    const detail = resolvedPath.endsWith(".json")
+      ? ensureErrorMessage(error)
+      : formatYamlParseError(error);
     throw configLoadError(
       resolvedPath,
-      error,
-      resolvedPath.endsWith(".json") ? ensureErrorMessage(error) : formatYamlParseError(error),
+      resolvedPath.endsWith(".json") ? error : new Error(detail),
+      detail,
     );
   }
 
