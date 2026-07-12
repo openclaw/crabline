@@ -130,8 +130,13 @@ async function readHandleIdentity(handle: FileHandle): Promise<FileIdentity> {
 
 async function assertPathIdentity(filePath: string, expected: FileIdentity): Promise<void> {
   try {
-    const stats = await fs.stat(filePath, { bigint: true });
-    if (stats.dev === expected.device && stats.ino === expected.inode) {
+    const stats = await fs.lstat(filePath, { bigint: true });
+    if (
+      stats.isFile() &&
+      stats.nlink === 1n &&
+      stats.dev === expected.device &&
+      stats.ino === expected.inode
+    ) {
       return;
     }
   } catch (error) {
