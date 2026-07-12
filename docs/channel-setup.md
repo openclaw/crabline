@@ -32,6 +32,11 @@ Built-in adapters infer `platform` from `adapter`. `platform` is required only
 for `adapter: script`, where Crabline needs to know which OpenClaw channel the
 bridge profile represents.
 
+Each provider selects exactly one adapter and may include only that adapter's
+config block. For example, `adapter: slack` may use `slack:`, but it cannot also
+contain `telegram:` or `script:`. When migrating an older mixed provider entry,
+remove stale config blocks or split them into separate provider ids.
+
 ## Built-In Local Mocks
 
 | Adapter      | Default Webhook Path    | Default Port |
@@ -69,6 +74,32 @@ providers:
 Provider credential fields such as `botToken`, `accessToken`, `baseURL`, or
 `serverUrl` are optional mock metadata. They are not required for local mock
 execution.
+
+## Script Bridge Config
+
+Script providers use only the `script:` config block. Their required `platform`
+labels the OpenClaw channel represented by the bridge; it does not allow the
+matching built-in block such as `slack:` or `telegram:`. Move any behavior from
+those blocks into the commands or command environment when migrating:
+
+```yaml
+providers:
+  slack-openclaw:
+    adapter: script
+    platform: slack
+    capabilities: [probe, send, roundtrip]
+    env:
+      - OPENCLAW_URL
+      - OPENCLAW_TOKEN
+    script:
+      commands:
+        probe: node ./scripts/openclaw-bridge-probe.mjs
+        send: node ./scripts/openclaw-bridge-send.mjs
+        waitForInbound: node ./scripts/openclaw-bridge-wait.mjs
+```
+
+The complete multi-channel script fixture is available in
+`fixtures/examples/openclaw-bridge.yaml`.
 
 ## Local Provider Servers
 
