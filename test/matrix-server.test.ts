@@ -176,7 +176,12 @@ describe("Matrix local provider server", () => {
   });
 
   it("returns filters only through their owning user URL", async () => {
-    const server = await startMatrixServer({ accessToken: "matrix-token" });
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startMatrixServer({
+      accessToken: "matrix-token",
+      recorderPath: path.join(directory, "matrix-filter-owner.jsonl"),
+    });
     servers.push(server);
     const filter = { room: { timeline: { limit: 10 } } };
     const created = await fetch(
