@@ -2,13 +2,25 @@ import { createHmac } from "node:crypto";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProviderConfig } from "../src/config/schema.js";
-import { SlackProviderAdapter } from "../src/providers/builtin/slack.js";
+import { handleSlackWebhookPayload, SlackProviderAdapter } from "../src/providers/builtin/slack.js";
 import { appendRecordedInbound } from "../src/providers/recorder.js";
 import type { ProviderContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const directories: string[] = [];
 const providers: SlackProviderAdapter[] = [];
+
+describe("Slack URL verification", () => {
+  it("echoes the challenge", async () => {
+    const response = handleSlackWebhookPayload({
+      challenge: "challenge-token",
+      type: "url_verification",
+    });
+
+    expect(response?.status).toBe(200);
+    await expect(response?.json()).resolves.toEqual({ challenge: "challenge-token" });
+  });
+});
 
 afterEach(async () => {
   await Promise.all(providers.splice(0).map((provider) => provider.cleanup()));

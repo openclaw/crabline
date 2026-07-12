@@ -1,5 +1,123 @@
-import { GoogleChatProviderAdapter } from "../src/providers/builtin/googlechat.js";
-import { runLocalMockProviderContract } from "./local-mock-provider-helpers.js";
+import { generateKeyPairSync, sign } from "node:crypto";
+import { describe, expect, it } from "vitest";
+import {
+  createGoogleChatWebhookAuthenticator,
+  GoogleChatProviderAdapter,
+  matchesGoogleChatThread,
+} from "../src/providers/builtin/googlechat.js";
+import {
+  createLocalMockConfig,
+  runLocalMockProviderContract,
+} from "./local-mock-provider-helpers.js";
+
+function signedJwt(
+  privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
+  claims: Record<string, unknown>,
+): string {
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "test-key" })).toString(
+    "base64url",
+  );
+  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString(
+    "base64url",
+  );
+  return `${header}.${payload}.${signature}`;
+}
+
+describe("Google Chat webhook authentication", () => {
+  it("verifies configured direct webhook bearer tokens", async () => {
+    const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    config.googlechat!.googleChatProjectNumber = "1234567890";
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = Date.now();
+    const authenticate = createGoogleChatWebhookAuthenticator(config, {
+      fetch: async () =>
+        Response.json({
+          "test-key": keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+        }),
+      now: () => now,
+    });
+    expect(authenticate).toBeDefined();
+    const url = "https://chat.example.test/googlechat/webhook";
+    const body = JSON.stringify({ chat: { messagePayload: {} } });
+    expect((await authenticate!(new Request(url), body))?.status).toBe(401);
+
+    const jwt = signedJwt(keys.privateKey, {
+      aud: config.googlechat!.googleChatProjectNumber,
+      email: "chat@system.gserviceaccount.com",
+      exp: Math.floor(now / 1000) + 60,
+      iss: "chat@system.gserviceaccount.com",
+    });
+    await expect(
+      authenticate!(
+        new Request(url, {
+          headers: { authorization: `Bearer ${jwt}` },
+        }),
+        body,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("uses the configured Pub/Sub audience for push deliveries", async () => {
+    const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    config.googlechat!.pubsubAudience = "https://chat.example.test/pubsub";
+    config.googlechat!.credentials = {
+      client_email: "chat-push@example.iam.gserviceaccount.com",
+      private_key: "unused",
+    };
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = Date.now();
+    const authenticate = createGoogleChatWebhookAuthenticator(config, {
+      fetch: async () =>
+        Response.json({
+          "test-key": keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+        }),
+      now: () => now,
+    });
+    const body = JSON.stringify({
+      message: { data: Buffer.from("{}").toString("base64") },
+      subscription: "projects/example/subscriptions/chat",
+    });
+    const jwt = signedJwt(keys.privateKey, {
+      aud: config.googlechat!.pubsubAudience,
+      email: config.googlechat!.credentials.client_email,
+      email_verified: true,
+      exp: Math.floor(now / 1000) + 60,
+      iss: "https://accounts.google.com",
+    });
+
+    await expect(
+      authenticate!(
+        new Request("https://chat.example.test/googlechat/webhook", {
+          headers: { authorization: `Bearer ${jwt}` },
+        }),
+        body,
+      ),
+    ).resolves.toBeUndefined();
+
+    const wrongIdentityJwt = signedJwt(keys.privateKey, {
+      aud: config.googlechat!.pubsubAudience,
+      email: "other@example.iam.gserviceaccount.com",
+      email_verified: true,
+      exp: Math.floor(now / 1000) + 60,
+      iss: "https://accounts.google.com",
+    });
+    await expect(
+      authenticate!(
+        new Request("https://chat.example.test/googlechat/webhook", {
+          headers: { authorization: `Bearer ${wrongIdentityJwt}` },
+        }),
+        body,
+      ),
+    ).resolves.toMatchObject({ status: 401 });
+  });
+
+  it("matches native threads while waiting at space scope", async () => {
+    expect(
+      matchesGoogleChatThread("spaces/AAAABbbbCCC/threads/BBBBccccDDD", "spaces/AAAABbbbCCC"),
+    ).toBe(true);
+  });
+});
 
 runLocalMockProviderContract({
   Adapter: GoogleChatProviderAdapter,

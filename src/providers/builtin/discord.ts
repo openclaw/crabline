@@ -124,6 +124,19 @@ function normalizeDiscordWebhookPayload(payload: unknown) {
   };
 }
 
+export function createDiscordInteractionResponse(payload: unknown): Response {
+  if (!isRecord(payload)) {
+    return Response.json({ type: 5 }, { status: 200 });
+  }
+  if (payload.type === 3) {
+    return Response.json({ type: 6 }, { status: 200 });
+  }
+  if (payload.type === 4) {
+    return Response.json({ data: { choices: [] }, type: 8 }, { status: 200 });
+  }
+  return Response.json({ type: 5 }, { status: 200 });
+}
+
 export class DiscordProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, userName: string) {
     const resolvedConfig = resolveDiscordAdapterConfigValue(config, userName);
@@ -146,6 +159,7 @@ export class DiscordProviderAdapter extends LocalMockProviderAdapter implements 
           path: "/discord/interactions",
           port: 8788,
         },
+        createWebhookSuccessResponse: createDiscordInteractionResponse,
         endpointLabel: "interactions endpoint",
         handleWebhookPayload: (payload) =>
           isRecord(payload) && payload.type === 1
