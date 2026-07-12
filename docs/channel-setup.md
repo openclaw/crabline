@@ -423,8 +423,10 @@ installs the complete directory, and then atomically switches the single
 `current.json` pointer. Readers therefore see either the prior complete
 generation or the next complete generation, never per-file mixtures. Setup,
 probe, cleanup, staging, or ownership failures leave the prior pointer
-unchanged. Abandoned staging directories and installed-but-uncommitted
-generations are claimed by rename and removed on a later locked run.
+unchanged. Crash-leftover staging directories and installed-but-uncommitted
+generations remain owner-only and are not removed automatically: a lease that
+can expire cannot safely authorize a resumed stale process to delete another
+publisher's generation.
 
 POSIX generation directories use mode `0700` and files use mode `0600`. Windows
 hosts require `powershell.exe` with `Set-Acl`; Crabline resolves it from the

@@ -2,11 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { CrablineServerManifest } from "../servers/index.js";
-import {
-  publishPrivateFileAtomically,
-  securePrivateDirectory,
-  type SecuredPrivateDirectory,
-} from "./private-file.js";
+import { publishPrivateFileAtomically, securePrivateDirectory } from "./private-file.js";
 import {
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
@@ -19,11 +15,6 @@ import type { OpenClawCrablineSmokeRunLock } from "./smoke-lock.js";
 
 const GENERATION_NAME_PATTERN =
   /^generation-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const STAGING_NAME_PATTERN =
-  /^\.staging-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const CLEANUP_NAME_PATTERN =
-  /^\.cleanup-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-
 export type OpenClawCrablineArtifactPointer = {
   capabilityMatrixPath: string;
   generation: string;
@@ -144,66 +135,6 @@ async function assertCurrentGenerationExists(
   }
 }
 
-async function claimAndRemoveDirectory(params: {
-  candidatePath: string;
-  store: SecuredPrivateDirectory;
-}): Promise<void> {
-  let candidateStats;
-  try {
-    candidateStats = await fs.lstat(params.candidatePath, { bigint: true });
-  } catch (error) {
-    if (isMissingPathError(error)) {
-      return;
-    }
-    throw error;
-  }
-  if (!candidateStats.isDirectory() || candidateStats.ino <= 0n) {
-    throw new Error("OpenClaw Crabline artifact cleanup candidate is not a directory.");
-  }
-
-  const claimPath = path.join(params.store.directoryPath, `.cleanup-${randomUUID()}`);
-  await params.store.assertIdentityAt();
-  await fs.rename(params.candidatePath, claimPath);
-  const claimedStats = await fs.lstat(claimPath, { bigint: true });
-  if (
-    !claimedStats.isDirectory() ||
-    claimedStats.dev !== candidateStats.dev ||
-    claimedStats.ino !== candidateStats.ino
-  ) {
-    throw new Error("OpenClaw Crabline artifact cleanup directory identity changed.");
-  }
-  await fs.rm(claimPath, { recursive: true });
-  await params.store.assertIdentityAt();
-}
-
-async function cleanupAbandonedArtifactDirectories(params: {
-  pointer: OpenClawCrablineArtifactPointer | null;
-  store: SecuredPrivateDirectory;
-}): Promise<void> {
-  const retainedGenerations = new Set(
-    [params.pointer?.generation, params.pointer?.previousGeneration].filter(
-      (value): value is string => value !== undefined,
-    ),
-  );
-  const entries = await fs.readdir(params.store.directoryPath, { withFileTypes: true });
-  for (const entry of entries) {
-    const shouldRemove =
-      STAGING_NAME_PATTERN.test(entry.name) ||
-      CLEANUP_NAME_PATTERN.test(entry.name) ||
-      (GENERATION_NAME_PATTERN.test(entry.name) && !retainedGenerations.has(entry.name));
-    if (!shouldRemove) {
-      continue;
-    }
-    if (!entry.isDirectory()) {
-      throw new Error("OpenClaw Crabline artifact cleanup candidate is not a directory.");
-    }
-    await claimAndRemoveDirectory({
-      candidatePath: path.join(params.store.directoryPath, entry.name),
-      store: params.store,
-    });
-  }
-}
-
 export async function publishOpenClawCrablineArtifactGeneration(
   params: {
     capabilityReport: unknown;
@@ -230,7 +161,6 @@ export async function publishOpenClawCrablineArtifactGeneration(
   if (currentPointer) {
     await assertCurrentGenerationExists(outputDir, currentPointer);
   }
-  await cleanupAbandonedArtifactDirectories({ pointer: currentPointer, store });
 
   const generationId = dependencies.createGenerationId?.() ?? randomUUID();
   const generation = `generation-${generationId}`;
