@@ -2,9 +2,27 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createProgram, runCli, waitForShutdown } from "../src/cli/program.js";
+import { createProgram, publishReadyFile, runCli, waitForShutdown } from "../src/cli/program.js";
 import type { StartedCrablineServer } from "../src/servers/index.js";
 import { captureWrites, createTempDir, disposeTempDir, writeText } from "./test-helpers.js";
+
+const lockState = vi.hoisted(() => ({ releaseError: undefined as Error | undefined }));
+
+vi.mock("proper-lockfile", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("proper-lockfile")>();
+  return {
+    ...actual,
+    async lock(...args: Parameters<typeof actual.lock>) {
+      const release = await actual.lock(...args);
+      return async () => {
+        await release();
+        if (lockState.releaseError) {
+          throw lockState.releaseError;
+        }
+      };
+    },
+  };
+});
 
 const directories: string[] = [];
 const ansiPattern = new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, "g");
@@ -13,6 +31,7 @@ const stripAnsi = (value: string): string => value.replace(ansiPattern, "");
 
 afterEach(async () => {
   process.exitCode = 0;
+  lockState.releaseError = undefined;
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
@@ -401,10 +420,40 @@ describe("cli", () => {
     await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("does not recursively remove a stale non-lock directory", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, "server.json");
+    const lockPath = `${readyFile}.lock`;
+    const sentinelPath = path.join(lockPath, "keep.txt");
+    await fs.mkdir(lockPath);
+    await fs.writeFile(sentinelPath, "unrelated\n");
+    const staleTime = new Date(Date.now() - 20_000);
+    await fs.utimes(lockPath, staleTime, staleTime);
+
+    await expect(publishReadyFile(readyFile, "manifest\n")).rejects.toMatchObject({
+      code: "ENOTEMPTY",
+    });
+    await expect(fs.readFile(sentinelPath, "utf8")).resolves.toBe("unrelated\n");
+  });
+
+  it("removes a committed ready file when lock release fails", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, "server.json");
+    const releaseError = new Error("release exploded");
+    lockState.releaseError = releaseError;
+
+    await expect(publishReadyFile(readyFile, "manifest\n")).rejects.toBe(releaseError);
+
+    await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("closes the server once when ready-file publication fails after startup", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const close = vi.fn(async () => undefined);
+    const removeReadyFile = vi.fn(async () => undefined);
     const publishError = new Error("publish exploded");
     const server = {
       close,
@@ -428,6 +477,7 @@ describe("cli", () => {
       publishReadyFile: async () => {
         throw publishError;
       },
+      removeReadyFile,
       startServer: async () => server,
     });
 
@@ -443,16 +493,18 @@ describe("cli", () => {
       ]),
     ).rejects.toBe(publishError);
     expect(close).toHaveBeenCalledTimes(1);
+    expect(removeReadyFile).not.toHaveBeenCalled();
   });
 
-  it("does not remove a ready file replaced during server shutdown", async () => {
+  it("does not remove a same-content ready file replaced during server shutdown", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, "server.json");
-    const replacement = "replacement owner\n";
+    let replacementContents: string | undefined;
     const server = {
       async close() {
-        await fs.writeFile(readyFile, replacement);
+        replacementContents = await fs.readFile(readyFile, "utf8");
+        await publishReadyFile(readyFile, replacementContents);
       },
       manifest: {
         adminToken: "fake",
@@ -490,7 +542,7 @@ describe("cli", () => {
       captured.restore();
     }
 
-    await expect(fs.readFile(readyFile, "utf8")).resolves.toBe(replacement);
+    await expect(fs.readFile(readyFile, "utf8")).resolves.toBe(replacementContents);
   });
 
   it("redacts serve credentials from text output unless explicitly requested", async () => {
@@ -512,6 +564,21 @@ describe("cli", () => {
           "sample",
           "--recorder",
           path.join(directory, "redacted.jsonl"),
+        ]),
+      ).toBe(0);
+      expect(
+        await runCli([
+          "node",
+          "crabline",
+          "serve",
+          "whatsapp",
+          "--once",
+          "--admin-token",
+          "example",
+          "--access-token",
+          "placeholder",
+          "--recorder",
+          path.join(directory, "whatsapp-redacted.jsonl"),
         ]),
       ).toBe(0);
       expect(
@@ -541,6 +608,8 @@ describe("cli", () => {
     expect(stdout).toContain("botToken: <redacted>");
     expect(stdout).toContain("adminToken: example");
     expect(stdout).toContain("botToken: placeholder");
+    expect(stdout).not.toContain("access_token=placeholder");
+    expect(stdout).toContain("access_token=<redacted>");
   });
 
   it("prints a Telegram server runtime manifest", async () => {
