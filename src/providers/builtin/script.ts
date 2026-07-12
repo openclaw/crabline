@@ -133,7 +133,7 @@ function redactSensitiveEnvironmentValues(detail: string): string {
 function collectSensitivePayloadValues(
   value: unknown,
   values: Set<string>,
-  seen: Set<object>,
+  seen: { nonSensitive: WeakSet<object>; sensitive: WeakSet<object> },
   sensitive = false,
 ): void {
   if (typeof value === "string") {
@@ -142,10 +142,14 @@ function collectSensitivePayloadValues(
     }
     return;
   }
-  if (!value || typeof value !== "object" || seen.has(value)) {
+  if (!value || typeof value !== "object") {
     return;
   }
-  seen.add(value);
+  const visited = sensitive ? seen.sensitive : seen.nonSensitive;
+  if (visited.has(value)) {
+    return;
+  }
+  visited.add(value);
   if (Array.isArray(value)) {
     for (const entry of value) {
       collectSensitivePayloadValues(entry, values, seen, sensitive);
@@ -164,7 +168,10 @@ function collectSensitivePayloadValues(
 
 function redactSensitivePayloadValues(detail: string, payload: unknown): string {
   const values = new Set<string>();
-  collectSensitivePayloadValues(payload, values, new Set());
+  collectSensitivePayloadValues(payload, values, {
+    nonSensitive: new WeakSet(),
+    sensitive: new WeakSet(),
+  });
   let redacted = detail;
   for (const value of [...values].sort((left, right) => right.length - left.length)) {
     redacted = redacted.split(value).join("[redacted configured value]");

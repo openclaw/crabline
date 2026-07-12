@@ -8,6 +8,7 @@ import type { InboundEnvelope, ProviderAdapter } from "../types.js";
 import {
   genericMockPayloadWithNativeThread,
   isRecord,
+  optionalString,
   requireNativeInboundId,
 } from "./native-local-mock.js";
 
@@ -51,11 +52,57 @@ function normalizeSlackEventsPayload(payload: unknown) {
     };
   }
 
-  return genericMockPayloadWithNativeThread({
+  const normalized = genericMockPayloadWithNativeThread({
     channelRule: SLACK_CHANNEL_ID_RULE,
     payload,
     threadRule: SLACK_TS_RULE,
   });
+  const message = isRecord(payload.message) ? payload.message : undefined;
+  const channelId =
+    (message ? optionalString(message, "channelId") : undefined) ??
+    optionalString(payload, "channelId") ??
+    optionalString(payload, "channel");
+  const threadId =
+    (message ? optionalString(message, "threadId") : undefined) ??
+    optionalString(payload, "threadId");
+  if (!channelId || !threadId || !SLACK_TS_RULE.pattern.test(threadId)) {
+    return normalized;
+  }
+  const scopedThreadId = slackTargetKey(
+    requireNativeInboundId(channelId, SLACK_CHANNEL_ID_RULE, "Slack channelId"),
+    threadId,
+  );
+  return {
+    ...normalized,
+    ...("message" in normalized && isRecord(normalized.message)
+      ? { message: { ...normalized.message, threadId: scopedThreadId } }
+      : {}),
+    threadId: scopedThreadId,
+  };
+}
+
+function matchesSlackThread(candidateThreadId: string, expectedThreadId?: string): boolean {
+  if (!expectedThreadId) {
+    return true;
+  }
+  if (
+    candidateThreadId === expectedThreadId ||
+    candidateThreadId.startsWith(`${expectedThreadId}:`)
+  ) {
+    return true;
+  }
+  const marker = ":thread:";
+  const separator = expectedThreadId.indexOf(marker);
+  if (separator <= 0) {
+    return false;
+  }
+  const channelId = expectedThreadId.slice(0, separator);
+  const threadTs = expectedThreadId.slice(separator + marker.length);
+  return (
+    SLACK_CHANNEL_ID_RULE.pattern.test(channelId) &&
+    SLACK_TS_RULE.pattern.test(threadTs) &&
+    candidateThreadId === threadTs
+  );
 }
 
 export class SlackProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
@@ -67,6 +114,7 @@ export class SlackProviderAdapter extends LocalMockProviderAdapter implements Pr
       options: {
         defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 8787 },
         endpointLabel: "events endpoint",
+        matchesThread: matchesSlackThread,
         normalizeWebhookPayload: normalizeSlackEventsPayload,
         platform: "slack",
         publicUrl: config.slack?.webhook.publicUrl,
