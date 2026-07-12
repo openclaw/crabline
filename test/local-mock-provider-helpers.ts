@@ -55,7 +55,7 @@ export async function createLocalMockConfig(
   const directory = await createTempDir();
   directories.push(directory);
 
-  return {
+  const config = {
     adapter,
     capabilities: ["probe", "send", "roundtrip", "agent"],
     env: [],
@@ -70,6 +70,11 @@ export async function createLocalMockConfig(
     },
     status: "active",
   } as ProviderConfig;
+  if (platform === "whatsapp") {
+    config.whatsapp!.appSecret = "test-token-placeholder";
+    config.whatsapp!.verifyToken = "test-token-placeholder";
+  }
+  return config;
 }
 
 export function createProviderContext(
@@ -111,7 +116,7 @@ function webhookHeaders(
 ): Record<string, string> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (platform === "whatsapp") {
-    const signingKey = config.whatsapp?.appSecret ?? "local-mock-secret";
+    const signingKey = config.whatsapp!.appSecret!;
     headers["x-hub-signature-256"] =
       `sha256=${createHmac("sha256", signingKey).update(body).digest("hex")}`;
   }

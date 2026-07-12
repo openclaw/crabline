@@ -334,7 +334,9 @@ describe("lazy provider lifecycle", () => {
         platform: "whatsapp",
         status: "active",
         whatsapp: {
+          appSecret: "test-token-placeholder",
           recorder: { path: recorderPath },
+          verifyToken: "test-token-placeholder",
           webhook: {
             host: "127.0.0.1",
             path: "/whatsapp/webhook",

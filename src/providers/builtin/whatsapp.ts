@@ -58,12 +58,20 @@ export function resolveWhatsAppAdapterConfig(
   config: ProviderConfig,
   env: NodeJS.ProcessEnv = process.env,
 ) {
+  const appSecret = config.whatsapp?.appSecret ?? env.WHATSAPP_APP_SECRET;
+  const verifyToken = config.whatsapp?.verifyToken ?? env.WHATSAPP_VERIFY_TOKEN;
+  if (!appSecret || !verifyToken) {
+    throw new CrablineError(
+      "WhatsApp webhook operation requires appSecret and verifyToken configuration.",
+      { kind: "config" },
+    );
+  }
   return {
     accessToken: config.whatsapp?.accessToken ?? env.WHATSAPP_ACCESS_TOKEN ?? "local-mock-token",
-    appSecret: config.whatsapp?.appSecret ?? env.WHATSAPP_APP_SECRET ?? "local-mock-secret",
+    appSecret,
     phoneNumberId:
       config.whatsapp?.phoneNumberId ?? env.WHATSAPP_PHONE_NUMBER_ID ?? "local-mock-phone",
-    verifyToken: config.whatsapp?.verifyToken ?? env.WHATSAPP_VERIFY_TOKEN ?? "local-mock-verify",
+    verifyToken,
   };
 }
 
