@@ -40,12 +40,12 @@ describe("matrix provider default runtime", () => {
 
   it("uses MATRIX_USER_ID for event attribution with environment auth", () => {
     const resolved = resolveMatrixAdapterConfig(createConfig(), "crabline", {
-      MATRIX_ACCESS_TOKEN: "env-access-token",
+      MATRIX_ACCESS_TOKEN: "test-token-placeholder",
       MATRIX_USER_ID: "@env-bot:example.com",
     });
 
     expect(resolved.auth).toEqual({
-      accessToken: "env-access-token",
+      accessToken: "test-token-placeholder",
       type: "accessToken",
       userID: "@env-bot:example.com",
     });
