@@ -385,7 +385,11 @@ const isProcessAlive: IsProcessAlive = (pid) => {
   }
 };
 
-export function processIdentityFromLinuxStat(value: string): string | null {
+export function processIdentityFromLinuxStat(value: string, bootId: string): string | null {
+  const normalizedBootId = bootId.trim();
+  if (!/^[0-9a-f-]{16,64}$/iu.test(normalizedBootId)) {
+    return null;
+  }
   const commandEnd = value.lastIndexOf(") ");
   if (commandEnd < 0) {
     return null;
@@ -398,16 +402,43 @@ export function processIdentityFromLinuxStat(value: string): string | null {
   if (!startTicks || !/^\d+$/u.test(startTicks)) {
     return null;
   }
-  return `linux:${startTicks}`;
+  return `linux:${normalizedBootId}:${startTicks}`;
+}
+
+export function processIdentityFromDarwin(
+  processStartedAt: string,
+  bootTime: string,
+): string | null {
+  const bootMatch = /\bsec = (\d+), usec = (\d+)\b/u.exec(bootTime);
+  const normalizedStartedAt = processStartedAt.trim().replace(/\s+/gu, " ");
+  if (!bootMatch || normalizedStartedAt.length === 0 || normalizedStartedAt.length > 64) {
+    return null;
+  }
+  return `darwin:${bootMatch[1]}.${bootMatch[2]}:${normalizedStartedAt}`;
 }
 
 const getProcessIdentity: GetProcessIdentity = (pid) => {
   if (process.platform === "linux") {
     try {
-      return processIdentityFromLinuxStat(readFileSync(`/proc/${pid}/stat`, "utf8"));
+      return processIdentityFromLinuxStat(
+        readFileSync(`/proc/${pid}/stat`, "utf8"),
+        readFileSync("/proc/sys/kernel/random/boot_id", "utf8"),
+      );
     } catch {
       return null;
     }
+  }
+  if (process.platform === "darwin") {
+    const options = {
+      encoding: "utf8" as const,
+      env: { ...process.env, LC_ALL: "C" },
+      timeout: 1_000,
+    };
+    const startedAt = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], options);
+    const bootTime = spawnSync("sysctl", ["-n", "kern.boottime"], options);
+    return startedAt.status === 0 && bootTime.status === 0
+      ? processIdentityFromDarwin(startedAt.stdout, bootTime.stdout)
+      : null;
   }
   if (process.platform !== "win32") {
     return null;
