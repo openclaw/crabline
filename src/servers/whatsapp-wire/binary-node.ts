@@ -8,7 +8,13 @@ export type BinaryNode = {
   tag: string;
 };
 
-const inflateAsync = promisify(inflate);
+export const WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES = 1024 * 1024;
+export const WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES = 8 * 1024 * 1024;
+
+const inflateAsync = promisify(inflate) as (
+  buffer: Uint8Array,
+  options: { maxOutputLength: number },
+) => Promise<Buffer>;
 
 const TAGS = {
   AD_JID: 247,
@@ -84,11 +90,13 @@ const SINGLE_BYTE_TOKENS: Readonly<Record<number, string>> = {
   155: "true",
   156: "identity",
   158: "key",
+  160: "background",
   169: "auth",
   173: "registration",
   189: "ttl",
   194: "w:m",
   197: "token",
+  198: "inactive",
   203: "encrypt",
   212: "signature",
   217: "trusted_contact",
@@ -131,14 +139,36 @@ async function decompressIfRequired(buffer: Buffer): Promise<Buffer> {
   }
   const flag = buffer.readUInt8();
   if ((flag & 2) !== 0) {
-    return await inflateAsync(buffer.subarray(1));
+    if (buffer.length > WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES) {
+      throw new Error(`Compressed WhatsApp binary node frame is too large: ${buffer.length}.`);
+    }
+    try {
+      return await inflateAsync(buffer.subarray(1), {
+        maxOutputLength: WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES,
+      });
+    } catch (error) {
+      if (
+        error instanceof RangeError ||
+        (error instanceof Error && (error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE")
+      ) {
+        throw new Error(
+          `WhatsApp binary node expands beyond ${WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES} bytes.`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
   }
-  return buffer.subarray(1);
+  const payload = buffer.subarray(1);
+  if (payload.length > WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES) {
+    throw new Error(`WhatsApp binary node payload is too large: ${payload.length}.`);
+  }
+  return payload;
 }
 
 function decodeDecompressedBinaryNode(buffer: Buffer, indexRef = { index: 0 }): BinaryNode {
   const checkEOS = (length: number) => {
-    if (indexRef.index + length > buffer.length) {
+    if (!Number.isSafeInteger(length) || length < 0 || length > buffer.length - indexRef.index) {
       throw new Error("Unexpected end of WhatsApp binary node.");
     }
   };
@@ -164,8 +194,8 @@ function decodeDecompressedBinaryNode(buffer: Buffer, indexRef = { index: 0 }): 
     checkEOS(length);
     let value = 0;
     for (let index = 0; index < length; index += 1) {
-      const shift = littleEndian ? index : length - 1 - index;
-      value |= next() << (shift * 8);
+      const byte = next();
+      value = littleEndian ? value + byte * 256 ** index : value * 256 + byte;
     }
     return value;
   };
@@ -431,6 +461,9 @@ function writeString(buffer: number[], value: string): void {
 }
 
 function writeListStart(buffer: number[], size: number): void {
+  if (!Number.isSafeInteger(size) || size < 0 || size > 0xffff) {
+    throw new Error(`WhatsApp binary node list is too large: ${size}.`);
+  }
   if (size === 0) {
     pushByte(buffer, TAGS.LIST_EMPTY);
     return;

@@ -21,13 +21,16 @@ const WHATSAPP_USER_JID_RE = /^\d{7,15}(?::\d+)?@s\.whatsapp\.net$/iu;
 const WHATSAPP_LEGACY_USER_JID_RE = /^\d{7,15}@c\.us$/iu;
 const WHATSAPP_GROUP_JID_RE = /^\d{5,}@g\.us$/iu;
 const WHATSAPP_LID_RE = /^\d{7,15}@lid$/iu;
+const WHATSAPP_CLOUD_RECIPIENT_RE = /^\d{7,15}$/u;
+const WHATSAPP_GRAPH_VERSION_RE = /^v\d+\.\d+$/u;
+const DEFAULT_GRAPH_VERSION = "v25.0";
 
 type WhatsAppServerState = {
   accessToken: string;
   adminToken: string;
-  apiRoot: string;
   displayPhoneNumber: string;
-  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): void;
+  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): "delivered" | "queued";
+  graphVersion: string;
   nextMessageId: number;
   onEvent: ServerEventObserver | undefined;
   phoneNumberId: string;
@@ -46,16 +49,17 @@ export type WhatsAppServerManifest = {
     apiRoot: string;
     baileysWebSocketUrl: string;
     messagesUrl: string;
-    presenceUrl: string;
+    phoneNumberUrl: string;
+    statusUrl: string;
   };
   env: {
-    CRABLINE_WHATSAPP_ADMIN_TOKEN: string;
-    CRABLINE_WHATSAPP_ACCESS_TOKEN: string;
-    CRABLINE_WHATSAPP_API_ROOT: string;
-    CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL: string;
-    CRABLINE_WHATSAPP_RECORDER_PATH: string;
-    CRABLINE_WHATSAPP_SELF_JID: string;
+    CLOUD_API_ACCESS_TOKEN: string;
+    CLOUD_API_VERSION: string;
+    WA_BASE_URL: string;
+    WA_PHONE_NUMBER_ID: string;
   };
+  graphVersion: string;
+  phoneNumberId: string;
   provider: "whatsapp";
   recorderPath: string;
   selfJid: string;
@@ -70,8 +74,11 @@ export type StartedWhatsAppServer = {
 export type StartWhatsAppServerParams = {
   accessToken?: string | undefined;
   adminToken?: string | undefined;
+  displayPhoneNumber?: string | undefined;
+  graphVersion?: string | undefined;
   host?: string | undefined;
   onEvent?: ServerEventObserver | undefined;
+  phoneNumberId?: string | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
   selfJid?: string | undefined;
@@ -79,7 +86,8 @@ export type StartWhatsAppServerParams = {
 
 type WhatsAppAdminInboundResult = {
   message?: WhatsAppBaileysMessage | undefined;
-  response: Response;
+  response?: Response | undefined;
+  webhook?: Record<string, unknown> | undefined;
 };
 
 type WhatsAppRecorderEvent = ServerRequestEvent & {
@@ -113,7 +121,6 @@ function graphError(params: {
         message: params.message,
         type: params.type ?? "OAuthException",
       },
-      ok: false,
     },
     params.status ?? 400,
   );
@@ -155,6 +162,17 @@ function requireWhatsAppJid(value: unknown, label: string): string | Response {
   return stringValue;
 }
 
+function requireCloudRecipient(value: unknown): string | Response {
+  const recipient = readTrimmedString(value);
+  if (!recipient || !WHATSAPP_CLOUD_RECIPIENT_RE.test(recipient)) {
+    return graphParameterError(
+      "(#100) Invalid parameter: to",
+      "to must be a WhatsApp phone number in international format without punctuation.",
+    );
+  }
+  return recipient;
+}
+
 function requireAuth(request: IncomingMessage, state: WhatsAppServerState): boolean {
   const authorization = request.headers.authorization;
   return (
@@ -172,7 +190,7 @@ function waIdFromJid(jid: string): string {
 
 function requireMessagingProduct(body: Record<string, unknown>): Response | undefined {
   const messagingProduct = readTrimmedString(body.messaging_product);
-  if (messagingProduct && messagingProduct !== "whatsapp") {
+  if (messagingProduct !== "whatsapp") {
     return graphParameterError(
       "(#100) Invalid parameter: messaging_product",
       'messaging_product must be "whatsapp".',
@@ -190,17 +208,11 @@ function readTextMessageBody(body: Record<string, unknown>): string | Response {
     );
   }
   const textPayload = body.text;
-  const textBody =
+  const text =
     textPayload && typeof textPayload === "object"
-      ? readTrimmedString((textPayload as Record<string, unknown>).body)
-      : readTrimmedString(textPayload);
-  const content = body.content;
-  const contentText =
-    content && typeof content === "object"
-      ? readTrimmedString((content as Record<string, unknown>).text)
+      ? readMessageText((textPayload as Record<string, unknown>).body)
       : undefined;
-  const text = textBody ?? contentText;
-  if (!text) {
+  if (text === undefined) {
     return graphParameterError(
       "(#100) Missing required parameter: text.body",
       "A WhatsApp text send requires text.body.",
@@ -240,7 +252,14 @@ async function handleSendMessage(params: {
   if (productError) {
     return productError;
   }
-  const to = requireWhatsAppJid(params.body.to ?? params.body.jid, "to");
+  const recipientType = readTrimmedString(params.body.recipient_type);
+  if (recipientType && recipientType !== "individual") {
+    return graphParameterError(
+      "(#100) Invalid parameter: recipient_type",
+      'recipient_type must be "individual".',
+    );
+  }
+  const to = requireCloudRecipient(params.body.to);
   if (to instanceof Response) {
     return to;
   }
@@ -251,24 +270,39 @@ async function handleSendMessage(params: {
   const message = createWhatsAppMessage({
     fromMe: true,
     id: nextMessageId(params.state),
-    remoteJid: to,
+    remoteJid: `${to}@s.whatsapp.net`,
     text,
   });
-  const waId = waIdFromJid(to);
-  return whatsappOk({
+  return jsonResponse({
     contacts: [
       {
         input: to,
-        wa_id: waId,
+        wa_id: to,
       },
     ],
-    key: message.key,
-    message,
-    messageId: message.key.id,
     messages: [{ id: message.key.id }],
     messaging_product: "whatsapp",
-    toJid: to,
   });
+}
+
+function handleMessageStatus(body: Record<string, unknown>): Response {
+  const productError = requireMessagingProduct(body);
+  if (productError) {
+    return productError;
+  }
+  if (readTrimmedString(body.status) !== "read") {
+    return graphParameterError(
+      "(#100) Invalid parameter: status",
+      'status must be "read" for message status updates.',
+    );
+  }
+  if (!readTrimmedString(body.message_id)) {
+    return graphParameterError(
+      "(#100) Missing required parameter: message_id",
+      "A message status update requires message_id.",
+    );
+  }
+  return jsonResponse({ success: true });
 }
 
 async function handleAdminInbound(params: {
@@ -283,8 +317,8 @@ async function handleAdminInbound(params: {
   if (senderJid instanceof Response) {
     return { response: senderJid };
   }
-  const text = readTrimmedString(params.body.text);
-  if (!text) {
+  const text = readMessageText(params.body.text);
+  if (text === undefined) {
     return {
       response: graphParameterError(
         "(#100) Missing required parameter: text",
@@ -336,17 +370,13 @@ async function handleAdminInbound(params: {
     ],
     object: "whatsapp_business_account",
   };
-  return { message, response: whatsappOk({ message, webhook }) };
+  return { message, webhook };
 }
 
 async function handleRequest(params: { request: IncomingMessage; state: WhatsAppServerState }) {
   const url = new URL(params.request.url ?? "/", "http://127.0.0.1");
 
-  if (url.pathname === "/crabline/whatsapp/health") {
-    return whatsappOk({ selfJid: params.state.selfJid });
-  }
-
-  if (url.pathname === "/crabline/whatsapp/inbound") {
+  if (url.pathname === "/_crabline/admin/whatsapp/inbound") {
     if (params.request.method !== "POST") {
       return new Response("not found", { status: 404 });
     }
@@ -355,6 +385,9 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
     }
     const body = await parseRequestBody(params.request);
     const result = await handleAdminInbound({ body, state: params.state });
+    if (result.response) {
+      return result.response;
+    }
     const event: WhatsAppRecorderEvent = {
       at: new Date().toISOString(),
       body,
@@ -368,11 +401,14 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
     }
     await appendEvent(params.state, event);
     if (result.message) {
-      params.state.deliverInboundMessage(result.message);
+      const delivery = params.state.deliverInboundMessage(result.message);
+      return whatsappOk({ delivery, message: result.message, webhook: result.webhook });
     }
-    return result.response;
+    return graphParameterError("(#100) Invalid inbound WhatsApp event");
   }
 
+  const phoneNumberPath = `/${params.state.graphVersion}/${params.state.phoneNumberId}`;
+  const messagesPath = `${phoneNumberPath}/messages`;
   const body =
     params.request.method === "GET" ? queryRecord(url) : await parseRequestBody(params.request);
   await appendEvent(params.state, {
@@ -387,21 +423,22 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
   if (!requireAuth(params.request, params.state)) {
     return graphAuthError();
   }
-  if (url.pathname === "/crabline/whatsapp/messages") {
+  if (url.pathname === phoneNumberPath && params.request.method === "GET") {
+    return jsonResponse({
+      display_phone_number: params.state.displayPhoneNumber,
+      id: params.state.phoneNumberId,
+      quality_rating: "GREEN",
+      verified_name: "Crabline Test Bot",
+    });
+  }
+  if (url.pathname === messagesPath) {
     if (params.request.method !== "POST") {
       return new Response("not found", { status: 404 });
     }
-    return await handleSendMessage({ body, state: params.state });
-  }
-  if (url.pathname === "/crabline/whatsapp/presence") {
-    const presence = readTrimmedString(body.presence) ?? "composing";
-    if (!["available", "composing", "paused", "unavailable"].includes(presence)) {
-      return graphParameterError(
-        "(#100) Invalid parameter: presence",
-        "presence must be available, composing, paused, or unavailable.",
-      );
+    if ("status" in body || "message_id" in body) {
+      return handleMessageStatus(body);
     }
-    return whatsappOk({ presence });
+    return await handleSendMessage({ body, state: params.state });
   }
   return new Response("not found", { status: 404 });
 }
@@ -409,15 +446,23 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
 export async function startWhatsAppServer(
   params: StartWhatsAppServerParams = {},
 ): Promise<StartedWhatsAppServer> {
+  const graphVersion = params.graphVersion ?? DEFAULT_GRAPH_VERSION;
+  if (!WHATSAPP_GRAPH_VERSION_RE.test(graphVersion)) {
+    throw new Error(`Invalid WhatsApp Graph API version: ${graphVersion}.`);
+  }
+  const phoneNumberId = params.phoneNumberId ?? "100000000000000";
+  if (!/^\d+$/u.test(phoneNumberId)) {
+    throw new Error("WhatsApp phoneNumberId must contain only digits.");
+  }
   const state: WhatsAppServerState = {
     accessToken: params.accessToken ?? "crabline-whatsapp-access-token",
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
-    apiRoot: "",
-    deliverInboundMessage: () => undefined,
-    displayPhoneNumber: "15550000000",
+    deliverInboundMessage: () => "queued",
+    displayPhoneNumber: params.displayPhoneNumber ?? "15550000000",
+    graphVersion,
     nextMessageId: 1,
     onEvent: params.onEvent,
-    phoneNumberId: "TEST_PHONE_NUMBER_ID",
+    phoneNumberId,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "whatsapp.jsonl"),
     selfJid: params.selfJid ?? "15550000000@s.whatsapp.net",
   };
@@ -429,17 +474,18 @@ export async function startWhatsAppServer(
     serverName: "WhatsApp",
   });
   const baseUrl = httpServer.baseUrl;
-  const apiRoot = `${baseUrl}/crabline/whatsapp`;
+  const apiRoot = `${baseUrl}/${state.graphVersion}`;
+  const phoneNumberUrl = `${apiRoot}/${state.phoneNumberId}`;
+  const messagesUrl = `${phoneNumberUrl}/messages`;
   const baileysWebSocketUrl = `${baseUrl.replace(
     /^http/u,
     "ws",
-  )}/crabline/whatsapp/ws/chat?access_token=${encodeURIComponent(state.accessToken)}`;
-  state.apiRoot = apiRoot;
+  )}/ws/chat?access_token=${encodeURIComponent(state.accessToken)}`;
   const baileysWebSocketServer = attachWhatsAppBaileysWebSocketServer({
     accessToken: state.accessToken,
     appendEvent: (event) => appendEvent(state, event),
     httpServer: httpServer.server,
-    path: "/crabline/whatsapp/ws/chat",
+    path: "/ws/chat",
     selfJid: state.selfJid,
   });
   state.deliverInboundMessage = (message) => baileysWebSocketServer.deliverInboundMessage(message);
@@ -453,24 +499,29 @@ export async function startWhatsAppServer(
       adminToken: state.adminToken,
       baseUrl,
       endpoints: {
-        adminInboundUrl: `${apiRoot}/inbound`,
+        adminInboundUrl: `${baseUrl}/_crabline/admin/whatsapp/inbound`,
         apiRoot,
         baileysWebSocketUrl,
-        messagesUrl: `${apiRoot}/messages`,
-        presenceUrl: `${apiRoot}/presence`,
+        messagesUrl,
+        phoneNumberUrl,
+        statusUrl: messagesUrl,
       },
       env: {
-        CRABLINE_WHATSAPP_ADMIN_TOKEN: state.adminToken,
-        CRABLINE_WHATSAPP_ACCESS_TOKEN: state.accessToken,
-        CRABLINE_WHATSAPP_API_ROOT: apiRoot,
-        CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL: baileysWebSocketUrl,
-        CRABLINE_WHATSAPP_RECORDER_PATH: state.recorderPath,
-        CRABLINE_WHATSAPP_SELF_JID: state.selfJid,
+        CLOUD_API_ACCESS_TOKEN: state.accessToken,
+        CLOUD_API_VERSION: state.graphVersion,
+        WA_BASE_URL: baseUrl,
+        WA_PHONE_NUMBER_ID: state.phoneNumberId,
       },
+      graphVersion: state.graphVersion,
+      phoneNumberId: state.phoneNumberId,
       provider: "whatsapp",
       recorderPath: state.recorderPath,
       selfJid: state.selfJid,
       version: 1,
     },
   };
+}
+
+function readMessageText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }

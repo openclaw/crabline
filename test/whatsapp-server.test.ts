@@ -129,7 +129,7 @@ afterEach(async () => {
 });
 
 describe("whatsapp local provider server", () => {
-  it("serves Graph-style sends and injected inbound webhook payloads", async () => {
+  it("serves Cloud API sends and injected inbound webhook payloads", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startWhatsAppServer({
@@ -142,14 +142,18 @@ describe("whatsapp local provider server", () => {
     const baileysWebSocketUrl = new URL(server.manifest.endpoints.baileysWebSocketUrl);
     expect(baileysWebSocketUrl).toMatchObject({
       hostname: "127.0.0.1",
-      pathname: "/crabline/whatsapp/ws/chat",
+      pathname: "/ws/chat",
       protocol: "ws:",
     });
     expect(baileysWebSocketUrl.searchParams.get("access_token")).toBe("fake-whatsapp-token");
-    const health = await fetch(`${server.manifest.endpoints.apiRoot}/health`);
-    await expect(health.json()).resolves.toMatchObject({
-      ok: true,
-      selfJid: "15550000000@s.whatsapp.net",
+    expect(server.manifest.endpoints.messagesUrl).toMatch(/\/v25\.0\/100000000000000\/messages$/u);
+    const phoneNumber = await fetch(server.manifest.endpoints.phoneNumberUrl, {
+      headers: { authorization: "Bearer fake-whatsapp-token" },
+    });
+    await expect(phoneNumber.json()).resolves.toMatchObject({
+      display_phone_number: "15550000000",
+      id: "100000000000000",
+      quality_rating: "GREEN",
     });
 
     const unauthenticated = await fetch(server.manifest.endpoints.messagesUrl, {
@@ -167,14 +171,13 @@ describe("whatsapp local provider server", () => {
         message: "Invalid OAuth access token.",
         type: "OAuthException",
       },
-      ok: false,
     });
 
     const sent = await fetch(server.manifest.endpoints.messagesUrl, {
       body: JSON.stringify({
         messaging_product: "whatsapp",
         text: { body: "hello fake whatsapp" },
-        to: "15551234567@s.whatsapp.net",
+        to: "15551234567",
         type: "text",
       }),
       headers: {
@@ -184,27 +187,16 @@ describe("whatsapp local provider server", () => {
       method: "POST",
     });
     await expect(sent.json()).resolves.toMatchObject({
-      contacts: [{ input: "15551234567@s.whatsapp.net", wa_id: "15551234567" }],
-      key: {
-        fromMe: true,
-        remoteJid: "15551234567@s.whatsapp.net",
-      },
-      message: {
-        message: {
-          conversation: "hello fake whatsapp",
-        },
-      },
+      contacts: [{ input: "15551234567", wa_id: "15551234567" }],
       messages: [{ id: expect.stringMatching(/^wamid\.FAKE/u) }],
       messaging_product: "whatsapp",
-      ok: true,
-      toJid: "15551234567@s.whatsapp.net",
     });
 
     const invalidProduct = await fetch(server.manifest.endpoints.messagesUrl, {
       body: JSON.stringify({
         messaging_product: "messenger",
         text: { body: "hello fake whatsapp" },
-        to: "15551234567@s.whatsapp.net",
+        to: "15551234567",
         type: "text",
       }),
       headers: {
@@ -222,12 +214,13 @@ describe("whatsapp local provider server", () => {
         },
         type: "OAuthException",
       },
-      ok: false,
     });
 
-    const presence = await fetch(server.manifest.endpoints.presenceUrl, {
+    const status = await fetch(server.manifest.endpoints.statusUrl, {
       body: JSON.stringify({
-        presence: "paused",
+        message_id: "wamid.FAKE00000001",
+        messaging_product: "whatsapp",
+        status: "read",
       }),
       headers: {
         authorization: "Bearer fake-whatsapp-token",
@@ -235,10 +228,7 @@ describe("whatsapp local provider server", () => {
       },
       method: "POST",
     });
-    await expect(presence.json()).resolves.toMatchObject({
-      ok: true,
-      presence: "paused",
-    });
+    await expect(status.json()).resolves.toEqual({ success: true });
 
     const unauthenticatedInbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
@@ -304,7 +294,7 @@ describe("whatsapp local provider server", () => {
     });
     const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
     expect(recorder).not.toContain("forged user nonce");
-    expect(recorder).toContain('"path":"/crabline/whatsapp/inbound"');
+    expect(recorder).toContain('"path":"/_crabline/admin/whatsapp/inbound"');
   });
 
   it("does not accept admin inbound messages when recorder append fails", async () => {
@@ -362,6 +352,28 @@ describe("whatsapp local provider server", () => {
       selfJid: "15550000001:0@s.whatsapp.net",
     });
     servers.push(server);
+    const queuedInbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        chatJid: "120363001234567890@g.us",
+        pushName: "Fake Sender",
+        senderJid: "15551234567@s.whatsapp.net",
+        text: "hello from queued admin inbound",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+    await expect(queuedInbound.json()).resolves.toMatchObject({
+      delivery: "queued",
+      message: {
+        message: {
+          conversation: "hello from queued admin inbound",
+        },
+      },
+      ok: true,
+    });
     const creds: AuthenticationCreds = {
       ...initAuthCreds(),
       me: {
@@ -422,34 +434,6 @@ describe("whatsapp local provider server", () => {
       expect(recorder).toContain('"tag":"message"');
       expect(recorder).toContain('"to":"15551234567@s.whatsapp.net"');
 
-      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
-        body: JSON.stringify({
-          chatJid: "120363001234567890@g.us",
-          pushName: "Fake Sender",
-          senderJid: "15551234567@s.whatsapp.net",
-          text: "hello from admin inbound",
-        }),
-        headers: {
-          "content-type": "application/json",
-          "x-crabline-admin-token": server.manifest.adminToken,
-        },
-        method: "POST",
-      });
-      await expect(inbound.json()).resolves.toMatchObject({
-        message: {
-          key: {
-            fromMe: false,
-            participant: "15551234567@s.whatsapp.net",
-            remoteJid: "120363001234567890@g.us",
-          },
-          message: {
-            conversation: "hello from admin inbound",
-          },
-          pushName: "Fake Sender",
-        },
-        ok: true,
-      });
-
       await waitForCondition(
         () =>
           messageUpserts
@@ -458,26 +442,26 @@ describe("whatsapp local provider server", () => {
               (message) =>
                 message.key?.remoteJid === "120363001234567890@g.us" &&
                 message.key.participant === "15551234567@s.whatsapp.net" &&
-                message.message?.conversation === "hello from admin inbound",
+                message.message?.conversation === "hello from queued admin inbound",
             ),
-        "Baileys inbound messages.upsert",
+        "queued Baileys inbound messages.upsert",
       );
-      expect(
-        messageUpserts
-          .flatMap((event) => event.messages)
-          .find(
-            (message) =>
-              message.key?.remoteJid === "120363001234567890@g.us" &&
-              message.message?.conversation === "hello from admin inbound",
-          ),
-      ).toMatchObject({
+      const queuedMessages = messageUpserts
+        .flatMap((event) => event.messages)
+        .filter(
+          (message) =>
+            message.key?.remoteJid === "120363001234567890@g.us" &&
+            message.message?.conversation === "hello from queued admin inbound",
+        );
+      expect(queuedMessages).toHaveLength(1);
+      expect(queuedMessages[0]).toMatchObject({
         key: {
           fromMe: false,
           participant: "15551234567@s.whatsapp.net",
           remoteJid: "120363001234567890@g.us",
         },
         message: {
-          conversation: "hello from admin inbound",
+          conversation: "hello from queued admin inbound",
         },
         pushName: "Fake Sender",
       });
