@@ -4,7 +4,7 @@ import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
-import { readBearerToken, verifySignedJwt } from "../signed-jwt.js";
+import { readBearerToken, resolveHttpCacheExpiry, verifySignedJwt } from "../signed-jwt.js";
 import {
   getBuiltinTargetCodec,
   GOOGLE_CHAT_SPACE_RULE,
@@ -60,6 +60,23 @@ export function createGoogleChatWebhookAuthenticator(
     string,
     { expiresAt: number; values: Record<string, string> }
   >();
+  const loadCertificates = async (certificateUrl: string, force: boolean) => {
+    const now = runtime.now?.() ?? Date.now();
+    const cached = cachedCertificates.get(certificateUrl);
+    if (!force && cached && cached.expiresAt > now) {
+      return cached;
+    }
+    const response = await fetchImpl(certificateUrl);
+    if (!response.ok) {
+      throw new Error(`Google certificate fetch failed with HTTP ${response.status}.`);
+    }
+    const certificates = {
+      expiresAt: resolveHttpCacheExpiry(response, now),
+      values: (await response.json()) as Record<string, string>,
+    };
+    cachedCertificates.set(certificateUrl, certificates);
+    return certificates;
+  };
   return async (request: Request, rawBody: string): Promise<Response | undefined> => {
     const token = readBearerToken(request);
     if (!token) {
@@ -80,11 +97,12 @@ export function createGoogleChatWebhookAuthenticator(
         isRecord(payload.message) &&
         typeof payload.message.data === "string" &&
         typeof payload.subscription === "string";
-      const audience = isPubsub ? pubsubAudience : (endpointAudience ?? projectAudience);
+      const audience = isPubsub ? pubsubAudience : (projectAudience ?? endpointAudience);
       if (!audience) {
         throw new Error("Google Chat verification is not configured for this transport.");
       }
-      const usesGoogleIdentityToken = isPubsub || endpointAudience !== undefined;
+      const usesGoogleIdentityToken =
+        isPubsub || (projectAudience === undefined && endpointAudience !== undefined);
       const certificateUrl = usesGoogleIdentityToken
         ? GOOGLE_OAUTH_CERTS_URL
         : GOOGLE_CHAT_CERTS_URL;
@@ -95,18 +113,12 @@ export function createGoogleChatWebhookAuthenticator(
           : [GOOGLE_CHAT_SERVICE_ACCOUNT],
         now: runtime.now,
         async resolveKey(header) {
-          const now = runtime.now?.() ?? Date.now();
-          let certificates = cachedCertificates.get(certificateUrl);
-          if (!certificates || certificates.expiresAt <= now) {
-            const response = await fetchImpl(certificateUrl);
-            if (!response.ok) {
-              throw new Error(`Google certificate fetch failed with HTTP ${response.status}.`);
-            }
-            const values = (await response.json()) as Record<string, string>;
-            certificates = { expiresAt: now + 60 * 60 * 1000, values };
-            cachedCertificates.set(certificateUrl, certificates);
+          let certificates = await loadCertificates(certificateUrl, false);
+          let certificate = certificates.values[header.kid];
+          if (!certificate) {
+            certificates = await loadCertificates(certificateUrl, true);
+            certificate = certificates.values[header.kid];
           }
-          const certificate = certificates.values[header.kid];
           if (!certificate) {
             throw new Error("Google JWT signing key is unknown.");
           }
@@ -124,7 +136,7 @@ export function createGoogleChatWebhookAuthenticator(
       }
       if (
         !isPubsub &&
-        endpointAudience &&
+        usesGoogleIdentityToken &&
         (claims.email !== GOOGLE_CHAT_SERVICE_ACCOUNT || claims.email_verified !== true)
       ) {
         throw new Error("Google Chat ID token identity is invalid.");

@@ -4,7 +4,7 @@ import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
-import { readBearerToken, verifySignedJwt } from "../signed-jwt.js";
+import { readBearerToken, resolveHttpCacheExpiry, verifySignedJwt } from "../signed-jwt.js";
 import { getBuiltinTargetCodec, MSTEAMS_CONVERSATION_ID_RULE } from "../target-normalizers.js";
 import {
   authorFromBotFlag,
@@ -52,6 +52,37 @@ export function createMsTeamsWebhookAuthenticator(
         values: Array<JsonWebKey & { endorsements?: string[] | undefined; kid?: string }>;
       }
     | undefined;
+  const loadKeys = async (force: boolean) => {
+    const now = runtime.now?.() ?? Date.now();
+    if (!force && cachedKeys && cachedKeys.expiresAt > now) {
+      return cachedKeys;
+    }
+    const metadataResponse = await fetchImpl(BOT_CONNECTOR_OPENID_URL);
+    if (!metadataResponse.ok) {
+      throw new Error(`Bot Connector metadata fetch failed with HTTP ${metadataResponse.status}.`);
+    }
+    const metadataExpiry = resolveHttpCacheExpiry(metadataResponse, now);
+    const metadata = (await metadataResponse.json()) as { jwks_uri?: unknown };
+    if (typeof metadata.jwks_uri !== "string") {
+      throw new Error("Bot Connector metadata omitted jwks_uri.");
+    }
+    const keysResponse = await fetchImpl(metadata.jwks_uri);
+    if (!keysResponse.ok) {
+      throw new Error(`Bot Connector key fetch failed with HTTP ${keysResponse.status}.`);
+    }
+    const keyExpiry = resolveHttpCacheExpiry(keysResponse, now);
+    const keys = (await keysResponse.json()) as { keys?: unknown };
+    if (!Array.isArray(keys.keys)) {
+      throw new Error("Bot Connector key response omitted keys.");
+    }
+    cachedKeys = {
+      expiresAt: Math.min(metadataExpiry, keyExpiry),
+      values: keys.keys as Array<
+        JsonWebKey & { endorsements?: string[] | undefined; kid?: string }
+      >,
+    };
+    return cachedKeys;
+  };
   return async (request: Request, rawBody: string): Promise<Response | undefined> => {
     const token = readBearerToken(request);
     if (!token) {
@@ -75,34 +106,12 @@ export function createMsTeamsWebhookAuthenticator(
         issuers: [BOT_CONNECTOR_ISSUER],
         now: runtime.now,
         async resolveKey(header) {
-          const now = runtime.now?.() ?? Date.now();
-          if (!cachedKeys || cachedKeys.expiresAt <= now) {
-            const metadataResponse = await fetchImpl(BOT_CONNECTOR_OPENID_URL);
-            if (!metadataResponse.ok) {
-              throw new Error(
-                `Bot Connector metadata fetch failed with HTTP ${metadataResponse.status}.`,
-              );
-            }
-            const metadata = (await metadataResponse.json()) as { jwks_uri?: unknown };
-            if (typeof metadata.jwks_uri !== "string") {
-              throw new Error("Bot Connector metadata omitted jwks_uri.");
-            }
-            const keysResponse = await fetchImpl(metadata.jwks_uri);
-            if (!keysResponse.ok) {
-              throw new Error(`Bot Connector key fetch failed with HTTP ${keysResponse.status}.`);
-            }
-            const keys = (await keysResponse.json()) as { keys?: unknown };
-            if (!Array.isArray(keys.keys)) {
-              throw new Error("Bot Connector key response omitted keys.");
-            }
-            cachedKeys = {
-              expiresAt: now + 60 * 60 * 1000,
-              values: keys.keys as Array<
-                JsonWebKey & { endorsements?: string[] | undefined; kid?: string }
-              >,
-            };
+          let keys = await loadKeys(false);
+          let key = keys.values.find((candidate) => candidate.kid === header.kid);
+          if (!key) {
+            keys = await loadKeys(true);
+            key = keys.values.find((candidate) => candidate.kid === header.kid);
           }
-          const key = cachedKeys.values.find((candidate) => candidate.kid === header.kid);
           if (!key) {
             throw new Error("Bot Connector JWT signing key is unknown.");
           }

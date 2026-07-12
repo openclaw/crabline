@@ -13,10 +13,9 @@ import {
 function signedJwt(
   privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
   claims: Record<string, unknown>,
+  kid = "test-key",
 ): string {
-  const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "test-key" })).toString(
-    "base64url",
-  );
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", kid })).toString("base64url");
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString(
     "base64url",
@@ -29,12 +28,23 @@ describe("Google Chat webhook authentication", () => {
     const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
     config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
     const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const rotatedKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const now = Date.now();
+    let certificateFetches = 0;
     const authenticate = createGoogleChatWebhookAuthenticator(config, {
-      fetch: async () =>
-        Response.json({
+      fetch: async () => {
+        certificateFetches += 1;
+        return Response.json({
           "test-key": keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
-        }),
+          ...(certificateFetches > 1
+            ? {
+                "rotated-key": rotatedKeys.publicKey
+                  .export({ format: "pem", type: "spki" })
+                  .toString(),
+              }
+            : {}),
+        });
+      },
       now: () => now,
     });
     const body = JSON.stringify({ chat: { messagePayload: {} } });
@@ -69,10 +79,32 @@ describe("Google Chat webhook authentication", () => {
         body,
       ),
     ).resolves.toMatchObject({ status: 401 });
+
+    const rotatedRequest = signedJwt(
+      rotatedKeys.privateKey,
+      {
+        aud: config.googlechat!.endpointUrl,
+        email: "chat@system.gserviceaccount.com",
+        email_verified: true,
+        exp: Math.floor(now / 1000) + 60,
+        iss: "https://accounts.google.com",
+      },
+      "rotated-key",
+    );
+    await expect(
+      authenticate!(
+        new Request(config.googlechat!.endpointUrl, {
+          headers: { authorization: `Bearer ${rotatedRequest}` },
+        }),
+        body,
+      ),
+    ).resolves.toBeUndefined();
+    expect(certificateFetches).toBe(2);
   });
 
   it("verifies configured direct webhook bearer tokens", async () => {
     const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
     config.googlechat!.googleChatProjectNumber = "1234567890";
     const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const now = Date.now();

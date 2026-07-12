@@ -37,6 +37,16 @@ export function readBearerToken(request: Request): string | undefined {
   return match?.[1];
 }
 
+export function resolveHttpCacheExpiry(response: Response, now: number): number {
+  const cacheControl = response.headers.get("cache-control");
+  const maxAge = /(?:^|,)\s*max-age=(\d+)/iu.exec(cacheControl ?? "");
+  if (maxAge) {
+    return now + Number(maxAge[1]) * 1_000;
+  }
+  const expires = Date.parse(response.headers.get("expires") ?? "");
+  return Number.isFinite(expires) && expires > now ? expires : now + 60 * 60 * 1_000;
+}
+
 export async function verifySignedJwt(params: {
   audience: string;
   clockSkewSeconds?: number | undefined;
