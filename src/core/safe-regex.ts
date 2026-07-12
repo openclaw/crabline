@@ -26,6 +26,9 @@ export function inboundRegexSafetyError(pattern: string): string | undefined {
     if (inCharacterClass) {
       continue;
     }
+    if (character === "|") {
+      return "must not contain alternation";
+    }
     if (
       character === "*" ||
       character === "+" ||
