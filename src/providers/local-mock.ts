@@ -134,8 +134,11 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   readonly #codec: LocalMockTargetCodec;
   readonly #config: ProviderConfig;
   readonly #options: LocalMockAdapterOptions;
+  readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
   #server: StartedWebhookServer | null = null;
+  #serverClosing: Promise<void> | null = null;
+  #serverStarting: Promise<StartedWebhookServer> | null = null;
 
   constructor(params: {
     codec: LocalMockTargetCodec;
@@ -148,6 +151,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     this.#codec = params.codec;
     this.#config = params.config;
     this.#options = params.options;
+    this.#publicUrl = params.options.publicUrl ?? params.options.webhook?.publicUrl;
     this.#recorderPath = toRecorderPath(params.id, params.options.recorderPath);
   }
 
@@ -163,8 +167,8 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       `recorder path ${this.#recorderPath}`,
       `${this.#options.endpointLabel} ${server.endpointUrl}`,
     ];
-    if (this.#options.publicUrl) {
-      details.push(`public webhook ${this.#options.publicUrl}`);
+    if (this.#publicUrl) {
+      details.push(`public webhook ${this.#publicUrl}`);
     }
     if (target.threadId) {
       details.push(`thread reachable ${target.threadId}`);
@@ -247,11 +251,20 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async cleanup(): Promise<void> {
-    if (!this.#server) {
+    if (this.#serverClosing) {
+      await this.#serverClosing;
       return;
     }
-    await this.#server.close();
-    this.#server = null;
+
+    const closing = this.#closeWebhookServer();
+    this.#serverClosing = closing;
+    try {
+      await closing;
+    } finally {
+      if (this.#serverClosing === closing) {
+        this.#serverClosing = null;
+      }
+    }
   }
 
   async #handleWebhook(request: Request): Promise<Response> {
@@ -293,27 +306,64 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async #ensureWebhookServer(): Promise<StartedWebhookServer> {
+    if (this.#serverClosing) {
+      await this.#serverClosing;
+    }
     if (this.#server) {
       return this.#server;
+    }
+    if (this.#serverStarting) {
+      return await this.#serverStarting;
     }
 
     const webhook = this.#options.webhook;
     const host = webhook?.host ?? this.#options.defaultWebhook.host;
     const port = webhook?.port ?? this.#options.defaultWebhook.port;
     const webhookPath = webhook?.path ?? this.#options.defaultWebhook.path;
+    const starting = (async () => {
+      try {
+        return await startWebhookServer({
+          handle: (request) => this.#handleWebhook(request),
+          host,
+          path: webhookPath,
+          port,
+        });
+      } catch (error) {
+        throw new CrablineError(
+          `${this.platform} local mock webhook server failed: ${ensureErrorMessage(error)}`,
+          { cause: error, kind: "connectivity" },
+        );
+      }
+    })();
+    this.#serverStarting = starting;
+
     try {
-      this.#server = await startWebhookServer({
-        handle: (request) => this.#handleWebhook(request),
-        host,
-        path: webhookPath,
-        port,
-      });
-      return this.#server;
-    } catch (error) {
-      throw new CrablineError(
-        `${this.platform} local mock webhook server failed: ${ensureErrorMessage(error)}`,
-        { cause: error, kind: "connectivity" },
-      );
+      const server = await starting;
+      this.#server = server;
+      return server;
+    } finally {
+      if (this.#serverStarting === starting) {
+        this.#serverStarting = null;
+      }
     }
+  }
+
+  async #closeWebhookServer(): Promise<void> {
+    let server = this.#server;
+    if (!server && this.#serverStarting) {
+      try {
+        server = await this.#serverStarting;
+      } catch {
+        return;
+      }
+    }
+    if (!server) {
+      return;
+    }
+
+    if (this.#server === server) {
+      this.#server = null;
+    }
+    await server.close();
   }
 }
