@@ -17,6 +17,7 @@ import { ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/zalo.
 import {
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
+  OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
   OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
@@ -26,6 +27,7 @@ import {
   type OpenClawCrablineAgentDelivery,
   type OpenClawCrablineChannelDriverSelection,
   type OpenClawCrablineChannelDriverSmokeResult,
+  type OpenClawCrablineProviderReadinessResult,
   type OpenClawCrablineGatewayBinding,
   type OpenClawCrablineInbound,
   type OpenClawCrablineInboundInput,
@@ -37,6 +39,7 @@ import {
   type StartOpenClawCrablineAdapterParams,
 } from "./openclaw/shared.js";
 import { publishOpenClawCrablineArtifactGeneration } from "./openclaw/artifact-generation.js";
+import { isAcceptedOpenClawCrablineOutbound } from "./openclaw/outbound-contract.js";
 import {
   acquireOpenClawCrablineSmokeRunLock,
   releaseOpenClawCrablineSmokeRunLock,
@@ -49,6 +52,7 @@ export {
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
+  OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
   OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
 };
@@ -56,6 +60,7 @@ export type {
   OpenClawCrablineAgentDelivery,
   OpenClawCrablineChannelDriverSelection,
   OpenClawCrablineChannelDriverSmokeResult,
+  OpenClawCrablineProviderReadinessResult,
   OpenClawCrablineConversation,
   OpenClawCrablineGatewayBinding,
   OpenClawCrablineInbound,
@@ -89,6 +94,13 @@ function createOpenClawCrablineProviderAdapter(
     const adapter = bridge.createAdapterFromManifest(manifest);
     return {
       ...adapter,
+      createOutboundFromRecorderEvent: (params) =>
+        isAcceptedOpenClawCrablineOutbound({
+          event: params.event,
+          manifest,
+        })
+          ? adapter.createOutboundFromRecorderEvent(params)
+          : null,
       probe: () =>
         runOpenClawCrablineProviderProbe(manifest.provider, (signal) => adapter.probe(signal)),
     };
@@ -116,6 +128,7 @@ export function resolveOpenClawCrablineChannelDriverSelection(params: {
     channel: resolveOpenClawCrablineChannel(params.channel),
     channelDriver: "crabline",
     capabilityMatrixPath: OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
+    providerReadinessArtifactPath: OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
     smokeArtifactPath: OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   };
 }
@@ -207,24 +220,24 @@ export async function startOpenClawCrablineAdapter(
   }
 }
 
-type SmokeRunDependencies = {
+type ProviderReadinessDependencies = {
   acquireLock?: typeof acquireOpenClawCrablineSmokeRunLock;
   publishGeneration?: typeof publishOpenClawCrablineArtifactGeneration;
   releaseLock?: typeof releaseOpenClawCrablineSmokeRunLock;
   startAdapter?: typeof startOpenClawCrablineAdapter;
 };
 
-export function runOpenClawCrablineChannelDriverSmoke(params: {
+export function runOpenClawCrablineProviderReadiness(params: {
   outputDir: string;
   selection: OpenClawCrablineChannelDriverSelection;
-}): Promise<OpenClawCrablineChannelDriverSmokeResult>;
-export async function runOpenClawCrablineChannelDriverSmoke(
+}): Promise<OpenClawCrablineProviderReadinessResult>;
+export async function runOpenClawCrablineProviderReadiness(
   params: {
     outputDir: string;
     selection: OpenClawCrablineChannelDriverSelection;
   },
-  dependencies: SmokeRunDependencies = {},
-): Promise<OpenClawCrablineChannelDriverSmokeResult> {
+  dependencies: ProviderReadinessDependencies = {},
+): Promise<OpenClawCrablineProviderReadinessResult> {
   const outputDir = path.resolve(params.outputDir);
   const releaseLock = dependencies.releaseLock ?? releaseOpenClawCrablineSmokeRunLock;
   const smokeLock = await (dependencies.acquireLock ?? acquireOpenClawCrablineSmokeRunLock)({
@@ -233,7 +246,7 @@ export async function runOpenClawCrablineChannelDriverSmoke(
   });
   let outcome:
     | { committed: false; error: unknown }
-    | { committed: true; result: OpenClawCrablineChannelDriverSmokeResult };
+    | { committed: true; result: OpenClawCrablineProviderReadinessResult };
 
   try {
     const recorderPath = path.join(
@@ -300,9 +313,10 @@ export async function runOpenClawCrablineChannelDriverSmoke(
         supportedChannels: [...CRABLINE_SERVER_CHANNELS],
       },
     };
-    const smoke = {
+    const providerReadiness = {
       result: {
-        ok: true,
+        proof: "provider-api-probe",
+        ready: true,
         probe,
         provider: adapter.manifest.provider,
         endpoints: adapter.manifest.endpoints,
@@ -317,7 +331,7 @@ export async function runOpenClawCrablineChannelDriverSmoke(
       manifest: adapter.manifest,
       outputDir,
       selection: params.selection,
-      smoke,
+      providerReadiness,
     });
     outcome = {
       committed: true,
@@ -327,8 +341,10 @@ export async function runOpenClawCrablineChannelDriverSmoke(
         capabilityMatrixPath: generation.capabilityMatrixPath,
         generation: generation.generation,
         manifestPath: generation.manifestPath,
-        smoke: generation.smoke,
-        smokeArtifactPath: generation.smokeArtifactPath,
+        providerReadiness: generation.providerReadiness,
+        providerReadinessArtifactPath: generation.providerReadinessArtifactPath,
+        smoke: generation.providerReadiness,
+        smokeArtifactPath: generation.providerReadinessArtifactPath,
         ...(generation.warnings ? { warnings: generation.warnings } : {}),
       },
     };
@@ -383,6 +399,9 @@ export async function runOpenClawCrablineChannelDriverSmoke(
   return outcome.result;
 }
 
+/** @deprecated Use runOpenClawCrablineProviderReadiness. */
+export const runOpenClawCrablineChannelDriverSmoke = runOpenClawCrablineProviderReadiness;
+
 export function createOpenClawCrablineChannelReportNotes(
   selection: OpenClawCrablineChannelDriverSelection | null | undefined,
 ): string[] {
@@ -394,7 +413,7 @@ export function createOpenClawCrablineChannelReportNotes(
     `Channel driver: ${selection.channelDriver} local provider for ${selection.channel}.`,
     `Channel artifact pointer: ${OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH}.`,
     `Generation capability filename: ${selection.capabilityMatrixPath}.`,
-    `Generation smoke filename: ${selection.smokeArtifactPath}.`,
-    "Crabline starts local provider-shaped servers; OpenClaw uses its normal channel adapter against those endpoints.",
+    `Generation provider-readiness filename: ${selection.providerReadinessArtifactPath}.`,
+    "Crabline verifies the local provider API is ready; OpenClaw channel behavior is proven separately by QA scenarios that run the real channel adapter.",
   ];
 }

@@ -55,11 +55,33 @@ function publishParams(outputDir: string, lock = createLock()) {
     manifest,
     outputDir,
     selection: resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" }),
-    smoke: { result: { ok: true, provider: "telegram" } },
+    providerReadiness: {
+      result: { proof: "provider-api-probe", provider: "telegram", ready: true },
+    },
   };
 }
 
 describe("OpenClaw artifact generation publication", () => {
+  it("reads legacy smoke-only artifact pointers", async () => {
+    const outputDir = await createTempDir();
+    try {
+      const result = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      });
+      const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
+      const pointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<string, unknown>;
+      delete pointer.providerReadinessArtifactPath;
+      await fs.writeFile(pointerPath, `${JSON.stringify(pointer, null, 2)}\n`);
+
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toMatchObject({
+        providerReadinessArtifactPath: result.providerReadinessArtifactPath,
+        smokeArtifactPath: result.smokeArtifactPath,
+      });
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("rejects caller-controlled artifact paths before creating the store", async () => {
     const outputDir = await createTempDir();
     const params = publishParams(outputDir);
@@ -99,22 +121,27 @@ describe("OpenClaw artifact generation publication", () => {
 
       expect(result).toMatchObject({
         generation: "generation-11111111-1111-4111-8111-111111111111",
-        smoke: {
+        providerReadiness: {
           manifestPath: result.manifestPath,
-          result: { ok: true, provider: "telegram" },
+          result: {
+            proof: "provider-api-probe",
+            provider: "telegram",
+            ready: true,
+          },
         },
       });
       await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toEqual({
         capabilityMatrixPath: result.capabilityMatrixPath,
         generation: result.generation,
         manifestPath: result.manifestPath,
-        smokeArtifactPath: result.smokeArtifactPath,
+        providerReadinessArtifactPath: result.providerReadinessArtifactPath,
+        smokeArtifactPath: result.providerReadinessArtifactPath,
         version: 1,
       });
       for (const artifactPath of [
         result.manifestPath,
         result.capabilityMatrixPath,
-        result.smokeArtifactPath,
+        result.providerReadinessArtifactPath,
       ]) {
         expect((await fs.stat(path.join(outputDir, artifactPath))).mode & 0o777).toBe(0o600);
       }
@@ -210,6 +237,10 @@ describe("OpenClaw artifact generation publication", () => {
               generation: successorGeneration,
               manifestPath: String(pointer.manifestPath).replace(generation, successorGeneration),
               previousGeneration: generation,
+              providerReadinessArtifactPath: String(pointer.providerReadinessArtifactPath).replace(
+                generation,
+                successorGeneration,
+              ),
               smokeArtifactPath: String(pointer.smokeArtifactPath).replace(
                 generation,
                 successorGeneration,
@@ -332,7 +363,7 @@ describe("OpenClaw artifact generation publication", () => {
           manifest,
           outputDir,
           selection,
-          smoke: { result: { generation: "successor" } },
+          providerReadiness: { result: { generation: "successor" } },
         },
         {
           beforePointerSwitch: async () => {
@@ -353,7 +384,7 @@ describe("OpenClaw artifact generation publication", () => {
             manifest,
             outputDir,
             selection,
-            smoke: { result: { generation: "expired" } },
+            providerReadiness: { result: { generation: "expired" } },
           },
           { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
         ),
@@ -417,7 +448,7 @@ describe("OpenClaw artifact generation publication", () => {
           manifest,
           outputDir,
           selection,
-          smoke: { result: { generation: "old" } },
+          providerReadiness: { result: { generation: "old" } },
         },
         { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
       );
@@ -442,7 +473,7 @@ describe("OpenClaw artifact generation publication", () => {
           manifest,
           outputDir,
           selection,
-          smoke: { result: { generation: "successor" } },
+          providerReadiness: { result: { generation: "successor" } },
         },
         { createGenerationId: () => "22222222-2222-4222-8222-222222222222" },
       );
@@ -533,7 +564,9 @@ describe("OpenClaw artifact generation publication", () => {
           manifest,
           outputDir,
           selection: resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" }),
-          smoke: { result: { ok: true } },
+          providerReadiness: {
+            result: { proof: "provider-api-probe", ready: true },
+          },
         }),
       ).rejects.toMatchObject({ code: "ENOENT" });
 

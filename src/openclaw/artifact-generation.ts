@@ -13,6 +13,7 @@ import {
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
+  OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
   type OpenClawCrablineChannelDriverSelection,
 } from "./shared.js";
@@ -25,12 +26,14 @@ export type OpenClawCrablineArtifactPointer = {
   generation: string;
   manifestPath: string;
   previousGeneration?: string;
+  providerReadinessArtifactPath: string;
   smokeArtifactPath: string;
   version: 1;
 };
 
 export type PublishedOpenClawCrablineArtifactGeneration = OpenClawCrablineArtifactPointer & {
   pointerPath: string;
+  providerReadiness: Record<string, unknown>;
   smoke: Record<string, unknown>;
   warnings?: string[];
 };
@@ -45,13 +48,17 @@ type PublishGenerationDependencies = {
   syncParent?: typeof syncParentDirectory;
 };
 
-function assertCanonicalSelectionPaths(selection: OpenClawCrablineChannelDriverSelection): void {
+function resolveProviderReadinessArtifactPath(
+  selection: OpenClawCrablineChannelDriverSelection,
+): typeof OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH {
+  const readinessPath = selection.providerReadinessArtifactPath ?? selection.smokeArtifactPath;
   if (
     selection.capabilityMatrixPath !== OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH ||
-    selection.smokeArtifactPath !== OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH
+    readinessPath !== OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH
   ) {
     throw new Error("OpenClaw Crabline artifact selection paths are malformed.");
   }
+  return readinessPath;
 }
 
 function isMissingPathError(error: unknown): boolean {
@@ -92,6 +99,10 @@ function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer
       OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
     ),
     manifestPath: generationArtifactPath(value.generation, OPENCLAW_CRABLINE_MANIFEST_PATH),
+    providerReadinessArtifactPath: generationArtifactPath(
+      value.generation,
+      OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
+    ),
     smokeArtifactPath: generationArtifactPath(
       value.generation,
       OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
@@ -101,8 +112,11 @@ function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer
     typeof value.capabilityMatrixPath !== "string" ||
     value.capabilityMatrixPath !== expected.capabilityMatrixPath ||
     value.manifestPath !== expected.manifestPath ||
-    typeof value.smokeArtifactPath !== "string" ||
-    value.smokeArtifactPath !== expected.smokeArtifactPath
+    (value.providerReadinessArtifactPath !== undefined &&
+      value.providerReadinessArtifactPath !== expected.providerReadinessArtifactPath) ||
+    (value.smokeArtifactPath !== undefined &&
+      value.smokeArtifactPath !== expected.smokeArtifactPath) ||
+    (value.providerReadinessArtifactPath === undefined && value.smokeArtifactPath === undefined)
   ) {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.");
   }
@@ -112,7 +126,8 @@ function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer
     generation: value.generation,
     ...(value.previousGeneration ? { previousGeneration: value.previousGeneration } : {}),
     manifestPath: value.manifestPath,
-    smokeArtifactPath: value.smokeArtifactPath,
+    providerReadinessArtifactPath: value.providerReadinessArtifactPath ?? value.smokeArtifactPath!,
+    smokeArtifactPath: value.smokeArtifactPath ?? value.providerReadinessArtifactPath!,
     version: 1,
   };
 }
@@ -142,7 +157,7 @@ async function assertCurrentGenerationExists(
   for (const artifactPath of [
     pointer.manifestPath,
     pointer.capabilityMatrixPath,
-    pointer.smokeArtifactPath,
+    pointer.providerReadinessArtifactPath,
   ]) {
     const stats = await fs.lstat(path.join(outputDir, artifactPath));
     if (!stats.isFile()) {
@@ -191,11 +206,11 @@ export async function publishOpenClawCrablineArtifactGeneration(
     manifest: CrablineServerManifest;
     outputDir: string;
     selection: OpenClawCrablineChannelDriverSelection;
-    smoke: Record<string, unknown>;
+    providerReadiness: Record<string, unknown>;
   },
   dependencies: PublishGenerationDependencies = {},
 ): Promise<PublishedOpenClawCrablineArtifactGeneration> {
-  assertCanonicalSelectionPaths(params.selection);
+  const providerReadinessArtifactPath = resolveProviderReadinessArtifactPath(params.selection);
   const outputDir = path.resolve(params.outputDir);
   await fs.mkdir(outputDir, { recursive: true });
   const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
@@ -247,11 +262,15 @@ export async function publishOpenClawCrablineArtifactGeneration(
       generation,
       manifestPath: generationArtifactPath(generation, OPENCLAW_CRABLINE_MANIFEST_PATH),
       ...(currentPointer ? { previousGeneration: currentPointer.generation } : {}),
-      smokeArtifactPath: generationArtifactPath(generation, params.selection.smokeArtifactPath),
+      providerReadinessArtifactPath: generationArtifactPath(
+        generation,
+        providerReadinessArtifactPath,
+      ),
+      smokeArtifactPath: generationArtifactPath(generation, providerReadinessArtifactPath),
       version: 1,
     };
-    const smoke = {
-      ...params.smoke,
+    const providerReadiness = {
+      ...params.providerReadiness,
       manifestPath: pointer.manifestPath,
     };
     const artifactContents = [
@@ -282,12 +301,13 @@ export async function publishOpenClawCrablineArtifactGeneration(
             channelDriver: params.selection.channelDriver,
             selectedChannel: params.selection.channel,
             manifestPath: pointer.manifestPath,
-            smoke,
+            providerReadiness,
+            smoke: providerReadiness,
           },
           null,
           2,
         )}\n`,
-        fileName: params.selection.smokeArtifactPath,
+        fileName: providerReadinessArtifactPath,
       },
     ] as const;
 
@@ -340,7 +360,8 @@ export async function publishOpenClawCrablineArtifactGeneration(
     published = {
       ...pointer,
       pointerPath: OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
-      smoke,
+      providerReadiness,
+      smoke: providerReadiness,
       ...(warnings ? { warnings } : {}),
     };
   } catch (error) {

@@ -216,6 +216,10 @@ separate OpenClaw bridge.
 Local provider servers sit below OpenClaw's normal channel adapters. QA starts
 the server, writes the emitted runtime manifest into OpenClaw config/env, and
 then OpenClaw talks to the local provider instead of the public provider.
+Recorder-to-outbound translation requires the server-owned `accepted: true`
+outcome together with the provider's exact send method and path. Rejected
+requests and lookalike route suffixes can remain diagnostic recorder entries,
+but they are never exposed as successful outbound deliveries.
 
 Slack:
 
@@ -481,17 +485,22 @@ execution:
 That means "run Telegram-shaped behavior through the mock Telegram backend."
 It does not mean "connect to live Telegram."
 
-OpenClaw smoke runs claim their output directory exclusively across processes.
-Crabline stages the manifest, capability report, and smoke report inside one
-owner-only generation directory under `.crabline-smoke-artifacts/`, atomically
-installs the complete directory, and then atomically switches the single
-`current.json` pointer. Readers therefore see either the prior complete
-generation or the next complete generation, never per-file mixtures. Setup,
-probe, cleanup, staging, or ownership failures leave the prior pointer
-unchanged. Crash-leftover staging directories and installed-but-uncommitted
-generations remain owner-only and are not removed automatically: a lease that
-can expire cannot safely authorize a resumed stale process to delete another
-publisher's generation.
+Crabline provider-readiness runs claim their output directory exclusively across
+processes. `runOpenClawCrablineProviderReadiness` probes the selected local
+provider API; it does not claim that OpenClaw started or completed a channel
+roundtrip. Real OpenClaw channel proof comes from QA scenarios that launch the
+gateway and run its normal channel adapter against the local provider.
+
+Crabline stages the manifest, capability report, and provider-readiness report
+inside one owner-only generation directory under the legacy
+`.crabline-smoke-artifacts/` store name, atomically installs the complete
+directory, and then atomically switches the single `current.json` pointer.
+Readers therefore see either the prior complete generation or the next complete
+generation, never per-file mixtures. Setup, probe, cleanup, staging, or
+ownership failures leave the prior pointer unchanged. Crash-leftover staging
+directories and installed-but-uncommitted generations remain owner-only and are
+not removed automatically: a lease that can expire cannot safely authorize a
+resumed stale process to delete another publisher's generation.
 
 POSIX generation directories use mode `0700` and files use mode `0600`. Windows
 hosts require `powershell.exe` with `Set-Acl`; Crabline resolves it from the
@@ -499,21 +508,22 @@ absolute local `SystemRoot` and applies a protected, inheritable DACL containing
 only the current user SID to an empty generation directory before creating
 sensitive files. Directory and file identities are verified throughout
 publication. If `SystemRoot`, the ACL tooling, or identity verification is
-unavailable, publication aborts without switching the pointer. Smoke results
-retain the legacy `capabilityReport` and `smoke` payloads while their manifest,
-capability, and smoke paths identify the authoritative immutable generation.
+unavailable, publication aborts without switching the pointer. Readiness results
+contain `capabilityReport` and `providerReadiness` payloads while their manifest,
+capability, and provider-readiness paths identify the authoritative immutable
+generation.
 
 Lock owners record both PID and process-start identity. Dead owners, and stale
 locks whose PID was reused by the next Crabline process, are reclaimed on the
-next run. New lock owners renew a 10-minute lease while the smoke run remains
-active, so a live run retains exclusive ownership beyond the initial lease. A
-heartbeat failure or lost ownership aborts publication before the generation is
-committed. Recovery first atomically moves a stale candidate away from the
-heartbeat path, then revalidates its token-specific lease before deletion; a
-renewal that wins the rename race is restored rather than reclaimed. The lease
-also bounds stale locks when an unrelated live process has inherited the
-abandoned PID. Older owner records remain PID-protected for compatibility and
-are reclaimed only after their recorded process exits.
+next run. New lock owners renew a 10-minute lease while the readiness run
+remains active, so a live run retains exclusive ownership beyond the initial
+lease. A heartbeat failure or lost ownership aborts publication before the
+generation is committed. Recovery first atomically moves a stale candidate away
+from the heartbeat path, then revalidates its token-specific lease before
+deletion; a renewal that wins the rename race is restored rather than reclaimed.
+The lease also bounds stale locks when an unrelated live process has inherited
+the abandoned PID. Older owner records remain PID-protected for compatibility
+and are reclaimed only after their recorded process exits.
 
 For release or live verification, use OpenClaw's live driver:
 

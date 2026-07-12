@@ -5,7 +5,9 @@ import type { ServerEventObserver } from "../servers/recorder.js";
 export const DEFAULT_ACCOUNT_ID = "default";
 export const OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH =
   "crabline-fake-provider-capabilities.json";
-export const OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH = "crabline-fake-provider-smoke.json";
+export const OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH = "crabline-fake-provider-smoke.json";
+/** @deprecated Use OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH. */
+export const OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH = OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH;
 export const OPENCLAW_CRABLINE_MANIFEST_PATH = "crabline-fake-provider-server.json";
 export const OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY = ".crabline-smoke-artifacts";
 export const OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH = `${OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY}/current.json`;
@@ -22,24 +24,41 @@ const OPENCLAW_CRABLINE_PROVIDER_PROBE_LABELS = {
   zalo: "Zalo getMe",
 } satisfies Record<CrablineServerManifest["provider"], string>;
 
-export type OpenClawCrablineChannelDriverSelection = {
+type OpenClawCrablineChannelDriverSelectionBase = {
   channel: CrablineServerChannel;
   channelDriver: "crabline";
   capabilityMatrixPath: typeof OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH;
-  smokeArtifactPath: typeof OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH;
 };
 
-export type OpenClawCrablineChannelDriverSmokeResult = {
+export type OpenClawCrablineChannelDriverSelection = OpenClawCrablineChannelDriverSelectionBase &
+  (
+    | {
+        providerReadinessArtifactPath: typeof OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH;
+        smokeArtifactPath?: typeof OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH;
+      }
+    | {
+        providerReadinessArtifactPath?: typeof OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH;
+        smokeArtifactPath: typeof OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH;
+      }
+  );
+
+export type OpenClawCrablineProviderReadinessResult = {
   artifactPointerPath: string;
   capabilityReport: unknown;
   capabilityMatrixPath: string;
   generation: string;
   manifestPath: string;
+  providerReadiness: unknown;
+  providerReadinessArtifactPath: string;
+  /** @deprecated Use providerReadiness. */
   smoke: unknown;
+  /** @deprecated Use providerReadinessArtifactPath. */
   smokeArtifactPath: string;
   warnings?: string[];
 };
 
+/** @deprecated Use OpenClawCrablineProviderReadinessResult. */
+export type OpenClawCrablineChannelDriverSmokeResult = OpenClawCrablineProviderReadinessResult;
 export type OpenClawCrablineConversation = {
   id: string;
   kind: "direct" | "group";
