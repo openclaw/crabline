@@ -13,10 +13,15 @@ import {
   optionalString,
   requireNativeInboundId,
 } from "./native-local-mock.js";
+import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
 type DiscordEnvironment = Partial<
   Pick<NodeJS.ProcessEnv, "DISCORD_APPLICATION_ID" | "DISCORD_BOT_TOKEN" | "DISCORD_PUBLIC_KEY">
 >;
+
+type DiscordRuntime = {
+  env?: DiscordEnvironment | undefined;
+};
 
 function resolveDiscordAdapterConfigValue(
   config: ProviderConfig,
@@ -75,6 +80,32 @@ function authenticateDiscordWebhook(publicKey: KeyObject, request: Request, rawB
   return undefined;
 }
 
+function discordApplicationCommandText(data: Record<string, unknown>): string | undefined {
+  const name = optionalString(data, "name");
+  if (!name) {
+    return undefined;
+  }
+
+  const values: string[] = [];
+  const collectValues = (options: unknown): void => {
+    if (!Array.isArray(options)) {
+      return;
+    }
+    for (const option of options) {
+      if (!isRecord(option)) {
+        continue;
+      }
+      const value = option.value;
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        values.push(String(value));
+      }
+      collectValues(option.options);
+    }
+  };
+  collectValues(data.options);
+  return [name, ...values].join(" ");
+}
+
 function toRecorderPath(providerId: string, config: ProviderConfig): string {
   const configuredPath = config.discord?.recorder.path;
   return configuredPath
@@ -107,7 +138,7 @@ export function normalizeDiscordWebhookPayload(payload: unknown) {
     optionalString(payload, "content") ??
     (data
       ? (optionalString(data, "content") ??
-        optionalString(data, "name") ??
+        discordApplicationCommandText(data) ??
         optionalString(data, "custom_id"))
       : undefined) ??
     (message ? optionalString(message, "content") : undefined);
@@ -155,11 +186,18 @@ export function handleDiscordWebhookPayload(payload: unknown): Response | undefi
 }
 
 export class DiscordProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
-  constructor(id: string, config: ProviderConfig, userName: string) {
-    const resolvedConfig = resolveDiscordAdapterConfigValue(config, userName);
+  constructor(id: string, config: ProviderConfig, userName: string, runtime?: unknown) {
+    const env = (runtime as DiscordRuntime | undefined)?.env ?? process.env;
+    const resolvedConfig = resolveDiscordAdapterConfigValue(config, userName, env);
     const publicKey = resolvedConfig.publicKey
       ? discordPublicKey(resolvedConfig.publicKey)
       : undefined;
+    requireExternalWebhookAuthentication({
+      authenticated: Boolean(publicKey),
+      provider: "Discord",
+      requirement: "discord.publicKey or DISCORD_PUBLIC_KEY",
+      webhook: config.discord?.webhook,
+    });
     super({
       codec: getBuiltinTargetCodec("discord"),
       config,

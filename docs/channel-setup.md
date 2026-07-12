@@ -86,6 +86,9 @@ header before JSON parsing or recorder writes:
   `pubsubServiceAccountEmail`; `credentials.client_email` remains the fallback
   when inline service-account credentials are configured. Wrapped Pub/Sub
   `message.data` is base64-decoded before Google Chat event normalization.
+  Google Workspace add-on `chat.messagePayload` events are rejected until the
+  adapter can bind the verified request to a configured add-on deployment
+  identity.
 - Microsoft Teams `appId` or `TEAMS_APP_ID` verifies Bot Connector bearer
   tokens, including the activity channel and exact `serviceUrl`. An `appId` is
   required when the webhook host is non-loopback or `publicUrl` is set; an
@@ -93,9 +96,10 @@ header before JSON parsing or recorder writes:
 - Matrix webhook ingress currently has no provider-native authentication mode,
   so it is restricted to loopback hosts and cannot set `publicUrl`.
 - Feishu `verificationToken` or `FEISHU_VERIFICATION_TOKEN` verifies plaintext
-  callback tokens. `encryptKey` or `FEISHU_ENCRYPT_KEY` verifies
-  `X-Lark-Signature` and decrypts encrypted event envelopes before challenge
-  handling or event normalization.
+  callback tokens on loopback and remains an additional check when configured
+  with encryption. Externally reachable webhooks require `encryptKey` or
+  `FEISHU_ENCRYPT_KEY` to verify `X-Lark-Signature` and decrypt encrypted event
+  envelopes before challenge handling or event normalization.
 - Slack `signingSecret` or `SLACK_SIGNING_SECRET` verifies
   `X-Slack-Request-Timestamp` and `X-Slack-Signature`.
 - Telegram `secretToken` or `TELEGRAM_WEBHOOK_SECRET_TOKEN` verifies

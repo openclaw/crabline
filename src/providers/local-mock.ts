@@ -54,6 +54,7 @@ export type LocalMockAdapterOptions = {
   platform: ProviderPlatform;
   publicUrl?: string | undefined;
   recorderPath?: string | undefined;
+  settleWebhookRequest?: (params: { accepted: boolean; payload: unknown; rawBody: string }) => void;
   webhook?: LocalMockWebhookConfig | undefined;
 };
 
@@ -431,59 +432,87 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       try {
         rawPayload = JSON.parse(rawBody) as unknown;
       } catch {
+        this.#options.settleWebhookRequest?.({
+          accepted: false,
+          payload: undefined,
+          rawBody,
+        });
         return new Response("invalid JSON", { status: 400 });
       }
     } else {
       rawPayload = rawBody;
     }
-    const directResponse = await this.#options.handleWebhookPayload?.(rawPayload, request, rawBody);
-    if (directResponse) {
-      return directResponse;
-    }
-    if (mediaType !== "application/json") {
-      return new Response("expected application/json", { status: 415 });
-    }
-    let payload: MockWebhookPayload;
+    let settled = false;
+    const settle = (accepted: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      this.#options.settleWebhookRequest?.({ accepted, payload: rawPayload, rawBody });
+    };
+    const respond = (response: Response) => {
+      settle(response.ok);
+      return response;
+    };
     try {
-      payload = normalizeWebhookPayload(
-        this.#options.normalizeWebhookPayload
-          ? this.#options.normalizeWebhookPayload(rawPayload)
-          : rawPayload,
+      const directResponse = await this.#options.handleWebhookPayload?.(
+        rawPayload,
+        request,
+        rawBody,
+      );
+      if (directResponse) {
+        return respond(directResponse);
+      }
+      if (mediaType !== "application/json") {
+        return respond(new Response("expected application/json", { status: 415 }));
+      }
+      let payload: MockWebhookPayload;
+      try {
+        payload = normalizeWebhookPayload(
+          this.#options.normalizeWebhookPayload
+            ? this.#options.normalizeWebhookPayload(rawPayload)
+            : rawPayload,
+        );
+      } catch (error) {
+        if (error instanceof CrablineError && error.kind === "inbound") {
+          return respond(new Response(ensureErrorMessage(error), { status: 400 }));
+        }
+        throw error;
+      }
+
+      const id = payload.message?.id ?? payload.id ?? createMessageId(this.platform);
+      const threadId = payload.message?.threadId ?? payload.threadId;
+      const text = payload.message?.text ?? payload.text;
+      if (!threadId || !text) {
+        return respond(
+          new Response("payload requires message.threadId and message.text", { status: 400 }),
+        );
+      }
+      if (this.#cleanupBegun) {
+        return respond(new Response("provider is shutting down", { status: 503 }));
+      }
+
+      await appendRecordedInbound(this.#recorderPath, {
+        author: authorFromPayload(payload),
+        id,
+        provider: this.id,
+        raw: payload.message?.raw ?? payload.raw ?? payload,
+        recordedDirection: "inbound",
+        sentAt: new Date().toISOString(),
+        text,
+        threadId,
+      });
+      return respond(
+        (await this.#options.createWebhookSuccessResponse?.(rawPayload, id)) ??
+          new Response(JSON.stringify({ ok: true, id }), {
+            headers: { "content-type": "application/json" },
+            status: 200,
+          }),
       );
     } catch (error) {
-      if (error instanceof CrablineError && error.kind === "inbound") {
-        return new Response(ensureErrorMessage(error), { status: 400 });
-      }
+      settle(false);
       throw error;
     }
-
-    const id = payload.message?.id ?? payload.id ?? createMessageId(this.platform);
-    const threadId = payload.message?.threadId ?? payload.threadId;
-    const text = payload.message?.text ?? payload.text;
-    if (!threadId || !text) {
-      return new Response("payload requires message.threadId and message.text", { status: 400 });
-    }
-    if (this.#cleanupBegun) {
-      return new Response("provider is shutting down", { status: 503 });
-    }
-
-    await appendRecordedInbound(this.#recorderPath, {
-      author: authorFromPayload(payload),
-      id,
-      provider: this.id,
-      raw: payload.message?.raw ?? payload.raw ?? payload,
-      recordedDirection: "inbound",
-      sentAt: new Date().toISOString(),
-      text,
-      threadId,
-    });
-    return (
-      (await this.#options.createWebhookSuccessResponse?.(rawPayload, id)) ??
-      new Response(JSON.stringify({ ok: true, id }), {
-        headers: { "content-type": "application/json" },
-        status: 200,
-      })
-    );
   }
 
   async #ensureWebhookServer(): Promise<StartedWebhookServer> {

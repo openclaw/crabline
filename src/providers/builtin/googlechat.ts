@@ -23,6 +23,7 @@ import {
   optionalString,
   requireNativeInboundId,
 } from "./native-local-mock.js";
+import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
 export function resolveGoogleChatAdapterConfig(
   config: ProviderConfig,
@@ -61,9 +62,9 @@ export function createGoogleChatWebhookAuthenticator(
   if (config.googlechat?.disableSignatureVerification) {
     return undefined;
   }
-  const endpointAudience = config.googlechat?.endpointUrl;
+  const endpointAudience = config.googlechat?.endpointUrl ?? config.googlechat?.webhook.publicUrl;
   const projectAudience = config.googlechat?.googleChatProjectNumber;
-  const pubsubAudience = config.googlechat?.pubsubAudience;
+  const pubsubAudience = config.googlechat?.pubsubAudience ?? endpointAudience;
   const pubsubServiceAccount =
     config.googlechat?.pubsubServiceAccountEmail ?? config.googlechat?.credentials?.client_email;
   if (!(endpointAudience || projectAudience || pubsubAudience)) {
@@ -171,7 +172,14 @@ export function createGoogleChatWebhookAuthenticator(
 export function matchesGoogleChatThread(
   candidateThreadId: string,
   expectedThreadId: string | undefined,
+  target: { channelId?: string | undefined } = {},
 ): boolean {
+  const candidateSpace = GOOGLE_CHAT_THREAD_RULE.pattern.test(candidateThreadId)
+    ? candidateThreadId.slice(0, candidateThreadId.indexOf("/threads/"))
+    : candidateThreadId;
+  if (target.channelId && candidateSpace !== target.channelId) {
+    return false;
+  }
   if (!expectedThreadId) {
     return true;
   }
@@ -184,6 +192,23 @@ export function matchesGoogleChatThread(
 
 export class GoogleChatProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, runtime?: unknown) {
+    const endpointAudience = config.googlechat?.endpointUrl ?? config.googlechat?.webhook.publicUrl;
+    const pubsubServiceAccount =
+      config.googlechat?.pubsubServiceAccountEmail ?? config.googlechat?.credentials?.client_email;
+    const authenticationConfigured =
+      !config.googlechat?.disableSignatureVerification &&
+      Boolean(
+        endpointAudience ||
+        config.googlechat?.googleChatProjectNumber ||
+        (config.googlechat?.pubsubAudience && pubsubServiceAccount),
+      );
+    requireExternalWebhookAuthentication({
+      authenticated: authenticationConfigured,
+      provider: "Google Chat",
+      requirement:
+        "googlechat.endpointUrl, googlechat.googleChatProjectNumber, or googlechat.pubsubAudience with a Pub/Sub service-account identity and signature verification enabled",
+      webhook: config.googlechat?.webhook,
+    });
     const authenticateWebhookRequest = createGoogleChatWebhookAuthenticator(
       config,
       (runtime as GoogleChatAuthRuntime | undefined) ?? {},
@@ -217,6 +242,13 @@ export function normalizeGoogleChatWebhookPayload(payload: unknown) {
     });
   }
 
+  const chat = optionalRecord(payload, "chat");
+  if (chat && "messagePayload" in chat) {
+    throw new CrablineError(
+      "Google Workspace add-on chat.messagePayload events are unsupported without a configured deployment identity",
+      { kind: "inbound" },
+    );
+  }
   const payloadMessage = optionalRecord(payload, "message");
   const message = payloadMessage ?? payload;
   if (payloadMessage && optionalString(payloadMessage, "threadId")) {
@@ -235,6 +267,11 @@ export function normalizeGoogleChatWebhookPayload(payload: unknown) {
   const text = optionalString(message, "text") ?? optionalString(message, "argumentText");
   if (!spaceName || !text) {
     throw new CrablineError("Google Chat message payload requires space.name and text", {
+      kind: "inbound",
+    });
+  }
+  if (threadName && !threadName.startsWith(`${spaceName}/threads/`)) {
+    throw new CrablineError("Google Chat thread.name must belong to message.space.name", {
       kind: "inbound",
     });
   }
