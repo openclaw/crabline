@@ -80,6 +80,12 @@ header before JSON parsing or recorder writes:
 
 - Discord `publicKey` or `DISCORD_PUBLIC_KEY` verifies
   `X-Signature-Ed25519` over `X-Signature-Timestamp` plus the raw request body.
+- Google Chat `endpointUrl` verifies Google ID tokens for the configured HTTP
+  audience. `googleChatProjectNumber` selects project-number JWT verification
+  instead. Pub/Sub delivery uses `pubsubAudience` and
+  `credentials.client_email`.
+- Microsoft Teams `appId` or `TEAMS_APP_ID` verifies Bot Connector bearer
+  tokens, including the activity channel and exact `serviceUrl`.
 - Slack `signingSecret` or `SLACK_SIGNING_SECRET` verifies
   `X-Slack-Request-Timestamp` and `X-Slack-Signature`.
 - Telegram `secretToken` or `TELEGRAM_WEBHOOK_SECRET_TOKEN` verifies

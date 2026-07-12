@@ -72,7 +72,7 @@ function normalizeIMessageWebhookPayload(payload: unknown) {
   }
 
   const data = optionalRecord(payload, "data") ?? payload;
-  const threadId = optionalString(data, "chatIdentifier") ?? optionalString(data, "chatGuid");
+  const threadId = optionalString(data, "chatGuid") ?? optionalString(data, "chatIdentifier");
   const text = optionalString(data, "text") ?? optionalString(data, "message");
   if (!threadId || !text) {
     throw new CrablineError("iMessage webhook payload requires chatGuid and text", {

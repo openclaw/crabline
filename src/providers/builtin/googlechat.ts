@@ -30,7 +30,7 @@ export function resolveGoogleChatAdapterConfig(
   };
 }
 
-const GOOGLE_CHAT_ISSUER = "chat@system.gserviceaccount.com";
+const GOOGLE_CHAT_SERVICE_ACCOUNT = "chat@system.gserviceaccount.com";
 const GOOGLE_OAUTH_CERTS_URL = "https://www.googleapis.com/oauth2/v1/certs";
 const GOOGLE_CHAT_CERTS_URL =
   "https://www.googleapis.com/service_accounts/v1/metadata/x509/chat@system.gserviceaccount.com";
@@ -47,10 +47,11 @@ export function createGoogleChatWebhookAuthenticator(
   if (config.googlechat?.disableSignatureVerification) {
     return undefined;
   }
+  const endpointAudience = config.googlechat?.endpointUrl;
   const projectAudience = config.googlechat?.googleChatProjectNumber;
   const pubsubAudience = config.googlechat?.pubsubAudience;
   const pubsubServiceAccount = config.googlechat?.credentials?.client_email;
-  if (!(projectAudience || pubsubAudience)) {
+  if (!(endpointAudience || projectAudience || pubsubAudience)) {
     return undefined;
   }
 
@@ -79,16 +80,19 @@ export function createGoogleChatWebhookAuthenticator(
         isRecord(payload.message) &&
         typeof payload.message.data === "string" &&
         typeof payload.subscription === "string";
-      const audience = isPubsub ? pubsubAudience : projectAudience;
+      const audience = isPubsub ? pubsubAudience : (endpointAudience ?? projectAudience);
       if (!audience) {
         throw new Error("Google Chat verification is not configured for this transport.");
       }
-      const certificateUrl = isPubsub ? GOOGLE_OAUTH_CERTS_URL : GOOGLE_CHAT_CERTS_URL;
+      const usesGoogleIdentityToken = isPubsub || endpointAudience !== undefined;
+      const certificateUrl = usesGoogleIdentityToken
+        ? GOOGLE_OAUTH_CERTS_URL
+        : GOOGLE_CHAT_CERTS_URL;
       const claims = await verifySignedJwt({
         audience,
-        issuers: isPubsub
+        issuers: usesGoogleIdentityToken
           ? ["accounts.google.com", "https://accounts.google.com"]
-          : [GOOGLE_CHAT_ISSUER],
+          : [GOOGLE_CHAT_SERVICE_ACCOUNT],
         now: runtime.now,
         async resolveKey(header) {
           const now = runtime.now?.() ?? Date.now();
@@ -117,6 +121,13 @@ export function createGoogleChatWebhookAuthenticator(
           claims.email_verified !== true)
       ) {
         throw new Error("Google Pub/Sub token identity is invalid.");
+      }
+      if (
+        !isPubsub &&
+        endpointAudience &&
+        (claims.email !== GOOGLE_CHAT_SERVICE_ACCOUNT || claims.email_verified !== true)
+      ) {
+        throw new Error("Google Chat ID token identity is invalid.");
       }
       return undefined;
     } catch {
