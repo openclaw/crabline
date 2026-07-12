@@ -436,7 +436,7 @@ describe("telegram local provider server", () => {
     if (!address || typeof address === "string") {
       throw new Error("Unable to resolve Telegram webhook receiver.");
     }
-    const server = await startTelegramServer({ botToken: "test-token" });
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
 
     try {
@@ -446,14 +446,17 @@ describe("telegram local provider server", () => {
       });
       expect(queued.status).toBe(200);
 
-      const configured = await fetch(`${server.manifest.baseUrl}/bottest-token/setWebhook`, {
-        body: JSON.stringify({
-          secret_token: "telegram-secret",
-          url: `http://127.0.0.1:${address.port}/telegram`,
-        }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
+      const configured = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
+        {
+          body: JSON.stringify({
+            secret_token: "test-auth-token",
+            url: `http://127.0.0.1:${address.port}/telegram`,
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
       await expect(configured.json()).resolves.toEqual({ ok: true, result: true });
       await expect.poll(() => delivered.length).toBe(1);
 
@@ -468,18 +471,20 @@ describe("telegram local provider server", () => {
             message: expect.objectContaining({ text: "queued before webhook" }),
             update_id: 1,
           }),
-          secret: "telegram-secret",
+          secret: "test-auth-token",
         },
         {
           body: expect.objectContaining({
             message: expect.objectContaining({ text: "webhook update" }),
             update_id: 2,
           }),
-          secret: "telegram-secret",
+          secret: "test-auth-token",
         },
       ]);
 
-      const info = await fetch(`${server.manifest.baseUrl}/bottest-token/getWebhookInfo`);
+      const info = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/getWebhookInfo`,
+      );
       await expect(info.json()).resolves.toMatchObject({
         ok: true,
         result: {
@@ -488,20 +493,26 @@ describe("telegram local provider server", () => {
         },
       });
 
-      const removed = await fetch(`${server.manifest.baseUrl}/bottest-token/setWebhook`, {
-        body: JSON.stringify({ url: "" }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
+      const removed = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
+        {
+          body: JSON.stringify({ url: "" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
       await expect(removed.json()).resolves.toEqual({ ok: true, result: true });
       expect((await injectUpdate(server, { chatId: 42, text: "drop this update" })).status).toBe(
         200,
       );
-      const dropped = await fetch(`${server.manifest.baseUrl}/bottest-token/setWebhook`, {
-        body: JSON.stringify({ drop_pending_updates: true, url: "" }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
+      const dropped = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
+        {
+          body: JSON.stringify({ drop_pending_updates: true, url: "" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
       await expect(dropped.json()).resolves.toEqual({ ok: true, result: true });
       await expect((await getUpdates(server, {})).json()).resolves.toEqual({
         ok: true,
@@ -545,7 +556,7 @@ describe("telegram local provider server", () => {
     if (!address || typeof address === "string") {
       throw new Error("Unable to resolve Telegram webhook receiver.");
     }
-    const server = await startTelegramServer({ botToken: "test-token" });
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
 
     try {
@@ -558,7 +569,7 @@ describe("telegram local provider server", () => {
           })
         ).status,
       ).toBe(200);
-      await fetch(`${server.manifest.baseUrl}/bottest-token/setWebhook`, {
+      await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`, {
         body: JSON.stringify({ url: `http://127.0.0.1:${address.port}/telegram` }),
         headers: { "content-type": "application/json" },
         method: "POST",
@@ -595,17 +606,19 @@ describe("telegram local provider server", () => {
     if (!address || typeof address === "string") {
       throw new Error("Unable to resolve Telegram webhook receiver.");
     }
-    const server = await startTelegramServer({ botToken: "test-token" });
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
     try {
-      await fetch(`${server.manifest.baseUrl}/bottest-token/setWebhook`, {
+      await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`, {
         body: JSON.stringify({ url: `http://127.0.0.1:${address.port}/telegram` }),
         headers: { "content-type": "application/json" },
         method: "POST",
       });
       expect((await injectUpdate(server, { chatId: 42, text: "retry me" })).status).toBe(502);
       await expect.poll(() => attempts).toBeGreaterThan(1);
-      const info = await fetch(`${server.manifest.baseUrl}/bottest-token/getWebhookInfo`);
+      const info = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/getWebhookInfo`,
+      );
       await expect(info.json()).resolves.toMatchObject({
         result: {
           last_error_date: expect.any(Number),
