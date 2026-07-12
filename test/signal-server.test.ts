@@ -238,6 +238,7 @@ describe("signal local provider server", () => {
       });
     expect((await sendInbound("first queued")).status).toBe(200);
     expect((await sendInbound("second queued")).status).toBe(200);
+    expect((await sendInbound("third queued")).status).toBe(200);
 
     const originalWrite = ServerResponse.prototype.write;
     let backpressuredResponse: ServerResponse | undefined;
@@ -267,7 +268,7 @@ describe("signal local provider server", () => {
       const reader = events.body!.getReader();
       const decoder = new TextDecoder();
       let received = "";
-      while (!received.includes("second queued")) {
+      while (!received.includes("third queued")) {
         const chunk = await reader.read();
         if (chunk.done) {
           break;
@@ -276,8 +277,74 @@ describe("signal local provider server", () => {
       }
       expect(received).toContain("first queued");
       expect(received).toContain("second queued");
+      expect(received).toContain("third queued");
     } finally {
       controller.abort();
+      write.mockRestore();
+    }
+  });
+
+  it("restores buffered events when the only SSE client disconnects", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const originalWrite = ServerResponse.prototype.write;
+    let backpressuredResponse: ServerResponse | undefined;
+    const write = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<typeof originalWrite>
+    ) {
+      const accepted = Reflect.apply(originalWrite, this, args) as boolean;
+      if (
+        backpressuredResponse === undefined &&
+        typeof args[0] === "string" &&
+        args[0].includes("first event")
+      ) {
+        backpressuredResponse = this;
+        return false;
+      }
+      return accepted;
+    });
+    const firstController = new AbortController();
+    try {
+      const firstEvents = await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: firstController.signal,
+      });
+      const sendInbound = (text: string) =>
+        fetch(server.manifest.endpoints.adminInboundUrl, {
+          body: JSON.stringify({ sourceNumber: "+15557654321", text }),
+          headers: {
+            "content-type": "application/json",
+            "x-crabline-admin-token": "admin",
+          },
+          method: "POST",
+        });
+      expect((await sendInbound("first event")).status).toBe(200);
+      await vi.waitFor(() => expect(backpressuredResponse).toBeDefined());
+      expect((await sendInbound("buffered event")).status).toBe(200);
+      firstController.abort();
+      await firstEvents.body?.cancel().catch(() => undefined);
+
+      const secondController = new AbortController();
+      try {
+        const secondEvents = await fetch(server.manifest.endpoints.eventsUrl, {
+          signal: secondController.signal,
+        });
+        const reader = secondEvents.body!.getReader();
+        const decoder = new TextDecoder();
+        let received = "";
+        while (!received.includes("buffered event")) {
+          const chunk = await reader.read();
+          if (chunk.done) {
+            break;
+          }
+          received += decoder.decode(chunk.value, { stream: true });
+        }
+        expect(received).toContain("buffered event");
+      } finally {
+        secondController.abort();
+      }
+    } finally {
+      firstController.abort();
       write.mockRestore();
     }
   });

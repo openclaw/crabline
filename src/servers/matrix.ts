@@ -69,6 +69,7 @@ type MatrixServerState = {
 const MAX_MATRIX_TIMELINE_EVENTS = 1_000;
 // Preserve idempotency within a bounded replay window instead of retaining every transaction.
 const MAX_MATRIX_TRANSACTION_RESPONSES = 1_000;
+const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
 
 export type MatrixServerManifest = {
   accessToken: string;
@@ -596,6 +597,9 @@ async function handleMatrixApi(params: {
       return matrixError("M_NOT_FOUND", "Unknown room", 404);
     }
     const userId = decodeURIComponent(match[2]!);
+    if (userId !== params.state.botUserId) {
+      return matrixError("M_FORBIDDEN", "Cannot set typing state for another user", 403);
+    }
     if (typeof params.body.typing !== "boolean") {
       return matrixError("M_BAD_JSON", "typing must be a boolean", 400);
     }
@@ -605,8 +609,15 @@ async function handleMatrixApi(params: {
       Number.isSafeInteger(params.body.timeout)
         ? params.body.timeout
         : undefined;
-    if (params.body.typing && (timeout === undefined || timeout < 1)) {
-      return matrixError("M_BAD_JSON", "timeout must be a positive integer", 400);
+    if (
+      params.body.typing &&
+      (timeout === undefined || timeout < 1 || timeout > MAX_NODE_TIMER_DELAY_MS)
+    ) {
+      return matrixError(
+        "M_BAD_JSON",
+        `timeout must be a positive integer no greater than ${MAX_NODE_TIMER_DELAY_MS}`,
+        400,
+      );
     }
     const existingTimeout = room.typingTimeouts.get(userId);
     if (existingTimeout) {

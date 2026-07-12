@@ -553,6 +553,25 @@ describe("Matrix local provider server", () => {
       },
     );
     expect(stringTimeout.status).toBe(400);
+    const foreignUser = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/typing/${encodeURIComponent("@alice:matrix.test")}`,
+      {
+        body: JSON.stringify({ timeout: 30_000, typing: true }),
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    expect(foreignUser.status).toBe(403);
+    await expect(foreignUser.json()).resolves.toMatchObject({ errcode: "M_FORBIDDEN" });
+    const oversizedTimeout = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/typing/${encodeURIComponent(server.manifest.botUserId)}`,
+      {
+        body: JSON.stringify({ timeout: 2_147_483_648, typing: true }),
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    expect(oversizedTimeout.status).toBe(400);
     const receipt = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/receipt/m.read/${encodeURIComponent(sent.event_id)}`,
       {
