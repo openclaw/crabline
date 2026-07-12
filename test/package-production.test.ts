@@ -132,11 +132,21 @@ describe("production package", () => {
       );
       expect(importOutput.trim()).toBe("function");
 
-      const installedCliPath = path.join(installedRoot, cliPath!);
-      const { stdout: installedCliHelp } = await execFileAsync(process.execPath, [
-        installedCliPath,
-        "--help",
-      ]);
+      const cliShim = path.join(
+        consumerDirectory,
+        "node_modules",
+        ".bin",
+        process.platform === "win32" ? "crabline.cmd" : "crabline",
+      );
+      await expect(fs.stat(cliShim)).resolves.toBeDefined();
+      const { stdout: installedCliHelp } =
+        process.platform === "win32"
+          ? await execFileAsync(
+              process.env.ComSpec ?? "cmd.exe",
+              ["/d", "/s", "/c", `"${cliShim}" --help`],
+              { cwd: consumerDirectory },
+            )
+          : await execFileAsync(cliShim, ["--help"], { cwd: consumerDirectory });
       expect(installedCliHelp).toContain("Usage: crabline");
     } finally {
       await fs.rm(installRoot, { force: true, recursive: true });
