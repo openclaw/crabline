@@ -22,6 +22,7 @@ type ReleaseWorkflow = {
   concurrency?: {
     "cancel-in-progress"?: boolean;
     group?: string;
+    queue?: string;
   };
   jobs?: Record<
     string,
@@ -86,6 +87,9 @@ describe("release workflow", () => {
     const steps = [...verifySteps, ...publishSteps, ...releaseSteps];
     const commands = steps.map((step) => step.run).filter((run): run is string => Boolean(run));
     const packageStep = verifySteps.find((step) => step.id === "package")?.run;
+    const uploadStep = verifySteps.find((step) =>
+      step.uses?.startsWith("actions/upload-artifact@"),
+    );
     const publishStep = publishSteps.find(
       (step) => step.name === "Publish package with npm provenance",
     )?.run;
@@ -94,6 +98,7 @@ describe("release workflow", () => {
     expect(workflow.concurrency).toEqual({
       "cancel-in-progress": false,
       group: "release",
+      queue: "max",
     });
     expect(
       verifySteps.find((step) => step.uses?.startsWith("actions/setup-node@"))?.with?.[
@@ -108,9 +113,18 @@ describe("release workflow", () => {
       expect(jobCommands).toContain("npm install -g npm@12.0.1");
     }
     expect(commands.some((command) => command.includes("npm@latest"))).toBe(false);
-    expect(packageStep).toContain('npm pack --json --pack-destination "$RUNNER_TEMP"');
+    const verifyCommands = verifySteps
+      .map((step) => step.run)
+      .filter((run): run is string => Boolean(run));
+    expect(verifyCommands.indexOf("pnpm build")).toBeLessThan(
+      verifyCommands.indexOf("pnpm verify"),
+    );
+    expect(packageStep).toContain(
+      'npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP"',
+    );
     expect(packageStep).toContain("Packed artifact is missing the crabline CLI");
     expect(packageStep).toContain('execFileSync("tar", ["-xzf", tarballPath');
+    expect(uploadStep?.with?.path).toBe("${{ steps.package.outputs.tarball }}");
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity');
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@latest" version');
     expect(publishStep).toContain('"Refusing to publish " +');
@@ -156,6 +170,20 @@ describe("release workflow", () => {
     for (const actionRef of actionRefs) {
       expect(actionRef).toMatch(/^[^@]+@[0-9a-f]{40}$/u);
     }
+  });
+
+  it("identifies the dependency-review checkout pin as v7", async () => {
+    const contents = await fs.readFile(
+      path.join(process.cwd(), ".github/workflows/dependency-review.yml"),
+      "utf8",
+    );
+
+    expect(contents).toContain(
+      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0",
+    );
+    expect(contents).not.toContain(
+      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6",
+    );
   });
 
   it("isolates package verification, OIDC publication, and GitHub release authority", async () => {

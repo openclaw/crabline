@@ -73,6 +73,69 @@ class AutoreviewHardeningTests(unittest.TestCase):
         for disabled_engine in ("droid", "copilot", "opencode", "cursor"):
             self.assertNotIn(f"'{disabled_engine}'", harness)
 
+    def test_powershell_wrappers_launch_only_verified_python3(self) -> None:
+        scripts = SCRIPT.parent
+        wrappers = {
+            "autoreview.ps1": "autoreview",
+            "test-review-harness.ps1": "test-review-harness.py",
+        }
+
+        for filename, helper in wrappers.items():
+            with self.subTest(filename=filename):
+                wrapper = (scripts / filename).read_text(encoding="utf-8")
+                self.assertIn("@{ Name = 'py'; Arguments = @('-3') }", wrapper)
+                self.assertIn("@{ Name = 'python3'; Arguments = @() }", wrapper)
+                self.assertIn("@{ Name = 'python'; Arguments = @() }", wrapper)
+                self.assertIn("-CommandType Application", wrapper)
+                self.assertIn("sys.version_info.major == 3", wrapper)
+                self.assertIn(f"Join-Path $PSScriptRoot '{helper}'", wrapper)
+
+    @unittest.skipIf(os.name == "nt", "POSIX harness wrapper test")
+    def test_posix_harness_skips_non_python3_fallbacks(self) -> None:
+        harness = SCRIPT.with_name("test-review-harness")
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            log_path = root / "launch.log"
+            fake_python3 = bin_dir / "python3"
+            fake_python = bin_dir / "python"
+            fake_python3.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ \"$1\" == \"-c\" ]]; then exit 1; fi\n"
+                'printf "python3:%s\\n" "$*" >> "$HARNESS_LOG"\n'
+                "exit 91\n",
+                encoding="utf-8",
+            )
+            fake_python.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ \"$1\" == \"-c\" ]]; then exit 0; fi\n"
+                'printf "python:%s\\n" "$*" >> "$HARNESS_LOG"\n'
+                "exit 23\n",
+                encoding="utf-8",
+            )
+            fake_python3.chmod(0o755)
+            fake_python.chmod(0o755)
+
+            result = subprocess.run(
+                [str(harness), "--help"],
+                check=False,
+                env={
+                    **os.environ,
+                    "HARNESS_LOG": str(log_path),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                },
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 23)
+            self.assertEqual(
+                log_path.read_text(encoding="utf-8").splitlines(),
+                [f"python:{harness.with_name('test-review-harness.py')} --help"],
+            )
+
     def test_local_bundle_blocks_sensitive_untracked_file(self) -> None:
         for rel in (".env", "tokens/session.dat", "secrets/local.py"):
             with self.subTest(rel=rel), tempfile.TemporaryDirectory() as tempdir:

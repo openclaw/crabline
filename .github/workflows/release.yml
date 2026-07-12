@@ -15,6 +15,7 @@ permissions: {}
 concurrency:
   group: release
   cancel-in-progress: false
+  queue: max
 
 jobs:
   verify:
@@ -92,6 +93,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm install -g npm@12.0.1
       - run: pnpm install --frozen-lockfile
+      - run: pnpm build
       - run: pnpm verify
       - name: Pack and verify release artifact
         id: package
@@ -100,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           metadata_path="$RUNNER_TEMP/npm-pack.json"
-          npm pack --json --pack-destination "$RUNNER_TEMP" > "$metadata_path"
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" > "$metadata_path"
           node --input-type=module <<'NODE'
           import { execFileSync } from "node:child_process";
           import fs from "node:fs";

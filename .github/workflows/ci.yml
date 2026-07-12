@@ -30,7 +30,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Validate workflows
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+        # actionlint 1.7.7 predates GitHub's concurrency.queue schema.
+        run: >-
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          -ignore 'unexpected key "queue" for "concurrency" section'
 
       - name: Verify
         run: pnpm verify
