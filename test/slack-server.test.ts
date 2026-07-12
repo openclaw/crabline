@@ -68,6 +68,11 @@ describe("slack local provider server", () => {
       team_id: "TCRABLINE",
       user_id: "UCRABBOT",
     });
+    const lowerCaseBearer = await fetch(`${server.manifest.endpoints.apiRoot}auth.test`, {
+      headers: { authorization: "bearer xoxb-fake" },
+      method: "POST",
+    });
+    await expect(lowerCaseBearer.json()).resolves.toMatchObject({ ok: true });
 
     const unauthenticated = await fetch(`${server.manifest.endpoints.apiRoot}auth.test`, {
       method: "POST",
@@ -170,6 +175,14 @@ describe("slack local provider server", () => {
     });
     await expect(tooMany.json()).resolves.toEqual({
       error: "too_many_users",
+      ok: false,
+    });
+
+    const selfConversation = await slackApi(server, "conversations.open", {
+      users: "UCRABBOT",
+    });
+    await expect(selfConversation.json()).resolves.toEqual({
+      error: "invalid_user_combination",
       ok: false,
     });
   });
@@ -275,21 +288,31 @@ describe("slack local provider server", () => {
       unfurl_links: false,
     });
 
-    await expect(
-      (
-        await slackApi(server, "chat.postMessage", {
-          channel: "C1234567890",
-          text: "thread reply",
-          thread_ts: parent.ts,
-        })
-      ).json(),
-    ).resolves.toMatchObject({
+    const replyResponse = await slackApi(server, "chat.postMessage", {
+      channel: "C1234567890",
+      text: "thread reply",
+      thread_ts: parent.ts,
+    });
+    const reply = (await replyResponse.json()) as { ts: string };
+    expect(reply).toMatchObject({
       channel: "C1234567890",
       message: {
         text: "thread reply",
         thread_ts: parent.ts,
       },
       ok: true,
+    });
+    await expect(
+      (
+        await slackApi(server, "chat.postMessage", {
+          channel: "C1234567890",
+          text: "nested reply",
+          thread_ts: reply.ts,
+        })
+      ).json(),
+    ).resolves.toEqual({
+      error: "thread_not_found",
+      ok: false,
     });
 
     await expect(
@@ -317,6 +340,42 @@ describe("slack local provider server", () => {
       messages: [{ text: "thread reply" }],
       ok: true,
     });
+
+    for (const limit of [0, -1]) {
+      await expect(
+        (
+          await slackApi(server, "conversations.history", {
+            channel: "C1234567890",
+            limit,
+          })
+        ).json(),
+      ).resolves.toEqual({
+        error: "invalid_limit",
+        ok: false,
+      });
+    }
+  });
+
+  it("rejects malformed blocks and attachments", async () => {
+    const server = await startTestSlackServer();
+    for (const [field, value, error] of [
+      ["blocks", { type: "section" }, "invalid_blocks"],
+      ["blocks", "not-json", "invalid_blocks"],
+      ["attachments", { text: "attachment" }, "invalid_attachments"],
+      ["attachments", '{"text":"attachment"}', "invalid_attachments"],
+    ] as const) {
+      const response = await slackApi(server, "chat.postMessage", {
+        channel: "C1234567890",
+        [field]: value,
+        text: "must not persist",
+      });
+      await expect(response.json()).resolves.toEqual({ error, ok: false });
+    }
+
+    const history = await slackApi(server, "conversations.history", {
+      channel: "C1234567890",
+    });
+    await expect(history.json()).resolves.toMatchObject({ messages: [], ok: true });
   });
 
   it("delivers authenticated admin inbound through signed Slack Events API requests", async () => {

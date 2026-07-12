@@ -24,19 +24,21 @@ type SignalServerState = {
   account: string;
   adminToken: string;
   clients: Set<ServerResponse>;
-  drainingClients: WeakSet<ServerResponse>;
+  clientBuffers: Map<ServerResponse, { bytes: number; draining: boolean; events: string[] }>;
   maxPendingInboundEvents: number;
   maxSseClients: number;
   nextTimestamp: number;
   onEvent: ServerEventObserver | undefined;
+  pendingEventBytes: number;
   pendingEvents: string[];
+  pendingSseClients: number;
   recorderPath: string;
 };
 
 const SIGNAL_CLI_SSE_KEEPALIVE_MS = 15_000;
 const DEFAULT_MAX_SIGNAL_SSE_CLIENTS = 32;
 const MAX_SIGNAL_SSE_BUFFER_BYTES = 2 * 1024 * 1024;
-type SignalSseWriteResult = "accepted" | "backpressured" | "rejected";
+type SignalSseWriteResult = "accepted" | "queued" | "rejected";
 
 export type SignalServerManifest = {
   account: string;
@@ -91,19 +93,40 @@ function rpcError(code: number, message: string, id: unknown = null, status = 40
 
 function evictSignalClient(state: SignalServerState, client: ServerResponse): void {
   state.clients.delete(client);
-  state.drainingClients.delete(client);
+  state.clientBuffers.delete(client);
   client.destroy();
 }
 
 function scheduleSignalDrain(state: SignalServerState, client: ServerResponse): void {
-  if (state.drainingClients.has(client) || client.destroyed || client.writableEnded) {
+  const buffer = state.clientBuffers.get(client);
+  if (!buffer || buffer.draining || client.destroyed || client.writableEnded) {
     return;
   }
-  state.drainingClients.add(client);
+  buffer.draining = true;
   client.once("drain", () => {
-    state.drainingClients.delete(client);
-    flushPendingSignalEvents(state, client);
+    const current = state.clientBuffers.get(client);
+    if (current) {
+      current.draining = false;
+      flushSignalClientEvents(state, client);
+    }
   });
+}
+
+function queueSignalClientEvent(
+  state: SignalServerState,
+  client: ServerResponse,
+  event: string,
+): SignalSseWriteResult {
+  const buffer = state.clientBuffers.get(client);
+  const eventBytes = Buffer.byteLength(event);
+  if (!buffer || buffer.bytes + eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES) {
+    evictSignalClient(state, client);
+    return "rejected";
+  }
+  buffer.events.push(event);
+  buffer.bytes += eventBytes;
+  scheduleSignalDrain(state, client);
+  return "queued";
 }
 
 function writeSignalSse(
@@ -123,9 +146,9 @@ function writeSignalSse(
   if (eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES) {
     return "rejected";
   }
-  if (client.writableNeedDrain) {
-    evictSignalClient(state, client);
-    return "rejected";
+  const buffer = state.clientBuffers.get(client);
+  if (client.writableNeedDrain || buffer?.draining || buffer?.events.length) {
+    return queueSignalClientEvent(state, client, event);
   }
   if (client.writableLength + eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES) {
     evictSignalClient(state, client);
@@ -133,31 +156,48 @@ function writeSignalSse(
   }
   if (!client.write(event)) {
     scheduleSignalDrain(state, client);
-    return "backpressured";
   }
   return "accepted";
 }
 
 function queueSignalEvent(state: SignalServerState, event: string): boolean {
+  const eventBytes = Buffer.byteLength(event);
   if (
-    Buffer.byteLength(event) > MAX_SIGNAL_SSE_BUFFER_BYTES ||
+    eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES ||
+    state.pendingEventBytes + eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES ||
     state.pendingEvents.length >= state.maxPendingInboundEvents
   ) {
     return false;
   }
   state.pendingEvents.push(event);
+  state.pendingEventBytes += eventBytes;
   return true;
+}
+
+function flushSignalClientEvents(state: SignalServerState, client: ServerResponse): void {
+  while (!client.writableNeedDrain) {
+    const buffer = state.clientBuffers.get(client);
+    if (!buffer || buffer.events.length === 0) {
+      break;
+    }
+    const event = buffer.events.shift()!;
+    buffer.bytes -= Buffer.byteLength(event);
+    if (!client.write(event)) {
+      scheduleSignalDrain(state, client);
+      break;
+    }
+  }
 }
 
 function flushPendingSignalEvents(state: SignalServerState, client: ServerResponse): void {
   while (state.pendingEvents.length > 0) {
     const result = writeSignalSse(state, client, state.pendingEvents[0]!);
-    if (result === "accepted") {
-      state.pendingEvents.shift();
-      continue;
-    }
-    if (result === "backpressured") {
-      state.pendingEvents.shift();
+    if (result === "accepted" || result === "queued") {
+      const event = state.pendingEvents.shift()!;
+      state.pendingEventBytes -= Buffer.byteLength(event);
+      if (result === "accepted") {
+        continue;
+      }
     }
     break;
   }
@@ -171,7 +211,7 @@ function emitSignalEvent(state: SignalServerState, payload: unknown): boolean {
   let delivered = false;
   for (const client of state.clients) {
     const result = writeSignalSse(state, client, event);
-    delivered = result === "accepted" || result === "backpressured" || delivered;
+    delivered = result === "accepted" || result === "queued" || delivered;
   }
   return delivered || queueSignalEvent(state, event);
 }
@@ -219,10 +259,16 @@ async function handleRpc(params: {
   if (!method) {
     return rpcError(-32600, "Invalid Request", params.body.id);
   }
+  if (params.body.jsonrpc !== "2.0") {
+    return rpcError(-32600, "Invalid Request", params.body.id);
+  }
   if (method === "version") {
     return rpcResponse(params.body.id, { version: "crabline-signal-1" });
   }
   if (["send", "sendReaction", "sendReceipt", "sendTyping"].includes(method)) {
+    if (!validSignalRpcParams(method, params.body.params)) {
+      return rpcError(-32602, "Invalid params", params.body.id);
+    }
     const timestamp = params.state.nextTimestamp++;
     return rpcResponse(params.body.id, method === "sendTyping" ? {} : { timestamp });
   }
@@ -233,6 +279,70 @@ async function handleRpc(params: {
   });
 }
 
+function hasRecipients(params: Record<string, unknown>): boolean {
+  const values = [params.recipient, params.groupId, params.username];
+  return (
+    params.noteToSelf === true ||
+    values.some(
+      (value) =>
+        (typeof value === "string" && value.trim().length > 0) ||
+        (Array.isArray(value) &&
+          value.length > 0 &&
+          value.every((entry) => typeof entry === "string" && entry.trim().length > 0)),
+    )
+  );
+}
+
+function hasTypingRecipients(params: Record<string, unknown>): boolean {
+  if (
+    params.noteToSelf !== undefined ||
+    params.username !== undefined ||
+    (params.stop !== undefined && typeof params.stop !== "boolean")
+  ) {
+    return false;
+  }
+  return [params.recipient, params.groupId].some(
+    (value) =>
+      (typeof value === "string" && value.trim().length > 0) ||
+      (Array.isArray(value) &&
+        value.length > 0 &&
+        value.every((entry) => typeof entry === "string" && entry.trim().length > 0)),
+  );
+}
+
+function validTimestamp(value: unknown): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function validSignalRpcParams(method: string, value: unknown): boolean {
+  if (!isJsonObject(value)) {
+    return false;
+  }
+  if (method === "send") {
+    return hasRecipients(value) && readTrimmedString(value.message) !== undefined;
+  }
+  if (method === "sendReaction") {
+    return (
+      hasRecipients(value) &&
+      readTrimmedString(value.emoji) !== undefined &&
+      readTrimmedString(value.targetAuthor) !== undefined &&
+      validTimestamp(value.targetTimestamp)
+    );
+  }
+  if (method === "sendReceipt") {
+    const timestamps = Array.isArray(value.targetTimestamp)
+      ? value.targetTimestamp
+      : [value.targetTimestamp];
+    return (
+      readTrimmedString(value.recipient) !== undefined &&
+      timestamps.length > 0 &&
+      timestamps.every(validTimestamp) &&
+      (value.type === undefined || value.type === "read" || value.type === "viewed")
+    );
+  }
+  return method === "sendTyping" && hasTypingRecipients(value);
+}
+
 async function handleRequest(params: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -240,20 +350,28 @@ async function handleRequest(params: {
 }): Promise<void> {
   const url = new URL(params.request.url ?? "/", "http://localhost");
   if (url.pathname === "/api/v1/events" && params.request.method === "GET") {
-    if (params.state.clients.size >= params.state.maxSseClients) {
+    if (params.state.clients.size + params.state.pendingSseClients >= params.state.maxSseClients) {
       await writeResponse(
         params.response,
         jsonResponse({ error: "Too many event stream clients", ok: false }, 503),
       );
       return;
     }
-    await appendEvent(params.state, {
-      at: new Date().toISOString(),
-      method: "GET",
-      path: url.pathname,
-      query: queryRecord(url),
-      type: "api",
-    });
+    params.state.pendingSseClients += 1;
+    try {
+      await appendEvent(params.state, {
+        at: new Date().toISOString(),
+        method: "GET",
+        path: url.pathname,
+        query: queryRecord(url),
+        type: "api",
+      });
+    } finally {
+      params.state.pendingSseClients -= 1;
+    }
+    if (params.request.destroyed || params.response.destroyed) {
+      return;
+    }
     params.response.writeHead(200, {
       "cache-control": "no-cache",
       connection: "keep-alive",
@@ -262,9 +380,10 @@ async function handleRequest(params: {
     params.response.flushHeaders();
     params.response.once("close", () => {
       params.state.clients.delete(params.response);
-      params.state.drainingClients.delete(params.response);
+      params.state.clientBuffers.delete(params.response);
     });
     params.state.clients.add(params.response);
+    params.state.clientBuffers.set(params.response, { bytes: 0, draining: false, events: [] });
     flushPendingSignalEvents(params.state, params.response);
     return;
   }
@@ -331,7 +450,7 @@ export async function startSignalServer(
     account: params.account ?? "+15550000000",
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     clients: new Set(),
-    drainingClients: new WeakSet(),
+    clientBuffers: new Map(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     maxSseClients:
       Number.isSafeInteger(params.maxSseClients) && (params.maxSseClients ?? 0) > 0
@@ -339,7 +458,9 @@ export async function startSignalServer(
         : DEFAULT_MAX_SIGNAL_SSE_CLIENTS,
     nextTimestamp: Date.now(),
     onEvent: params.onEvent,
+    pendingEventBytes: 0,
     pendingEvents: [],
+    pendingSseClients: 0,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "signal.jsonl"),
   };
   const host = params.host ?? "127.0.0.1";
@@ -358,10 +479,7 @@ export async function startSignalServer(
             ? jsonResponse({ error: "Request body is too large", ok: false }, 413)
             : rpcError(-32600, "Request body is too large", null, 413);
         } else {
-          errorResponse = jsonResponse(
-            { error: error instanceof Error ? error.message : String(error), ok: false },
-            500,
-          );
+          errorResponse = jsonResponse({ error: "internal server error", ok: false }, 500);
         }
         await writeResponse(response, errorResponse);
       } else {

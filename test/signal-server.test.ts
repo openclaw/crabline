@@ -120,6 +120,27 @@ describe("signal local provider server", () => {
       result: { timestamp: expect.any(Number) },
     });
 
+    for (const [method, params] of [
+      ["send", {}],
+      ["sendReaction", { emoji: "👍", recipient: ["+15551234567"] }],
+      ["sendReceipt", { recipient: "+15551234567", targetTimestamp: [] }],
+      ["sendTyping", null],
+      ["sendTyping", { username: ["alice"] }],
+      ["sendTyping", { noteToSelf: true }],
+      ["sendTyping", { recipient: ["+15551234567"], stop: "yes" }],
+    ] as const) {
+      const invalid = await fetch(server.manifest.endpoints.rpcUrl, {
+        body: JSON.stringify({ id: `invalid-${method}`, jsonrpc: "2.0", method, params }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      await expect(invalid.json()).resolves.toEqual({
+        error: { code: -32602, message: "Invalid params" },
+        id: `invalid-${method}`,
+        jsonrpc: "2.0",
+      });
+    }
+
     const rejected = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({ sourceNumber: "+15557654321", text: "nope" }),
       headers: { "content-type": "application/json" },
@@ -180,6 +201,27 @@ describe("signal local provider server", () => {
       error: "Pending inbound queue is full (1 events)",
       ok: false,
     });
+  });
+
+  it("bounds the disconnected event queue by encoded bytes", async () => {
+    const server = await startSignalServer({
+      adminToken: "admin",
+      maxPendingInboundEvents: 10,
+    });
+    servers.push(server);
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ sourceNumber: "+15557654321", text }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+
+    expect((await sendInbound("a".repeat(700_000))).status).toBe(200);
+    expect((await sendInbound("b".repeat(700_000))).status).toBe(200);
+    expect((await sendInbound("c".repeat(700_000))).status).toBe(503);
   });
 
   it("resumes queued event delivery after SSE backpressure drains", async () => {
@@ -256,6 +298,52 @@ describe("signal local provider server", () => {
       ok: false,
     });
     controller.abort();
+  });
+
+  it("reserves event stream capacity before awaited recording", async () => {
+    let releaseRecording!: () => void;
+    const recordingBlocked = new Promise<void>((resolve) => {
+      releaseRecording = resolve;
+    });
+    let observeRecording!: () => void;
+    const recordingStarted = new Promise<void>((resolve) => {
+      observeRecording = resolve;
+    });
+    const server = await startSignalServer({
+      maxSseClients: 1,
+      async onEvent(event) {
+        if (event.path === "/api/v1/events") {
+          observeRecording();
+          await recordingBlocked;
+        }
+      },
+    });
+    servers.push(server);
+
+    const controller = new AbortController();
+    const first = fetch(server.manifest.endpoints.eventsUrl, { signal: controller.signal });
+    await recordingStarted;
+    const overloaded = await fetch(server.manifest.endpoints.eventsUrl);
+    expect(overloaded.status).toBe(503);
+    releaseRecording();
+    expect((await first).status).toBe(200);
+    controller.abort();
+  });
+
+  it("hides observer failures from public error responses", async () => {
+    const server = await startSignalServer({
+      onEvent() {
+        throw new Error("sensitive Signal observer detail");
+      },
+    });
+    servers.push(server);
+
+    const response = await fetch(`${server.manifest.baseUrl}/api/v1/check`);
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "internal server error",
+      ok: false,
+    });
   });
 
   it("drains unauthenticated admin request bodies", async () => {
