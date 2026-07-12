@@ -81,4 +81,29 @@ describe("server HTTP body reader", () => {
       await server.close();
     }
   });
+
+  it("contains failures from custom error handlers", async () => {
+    const server = await startHttpJsonServer({
+      async handle() {
+        throw new Error("request failure");
+      },
+      handleError() {
+        throw new Error("error handler failure");
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const response = await fetch(server.baseUrl);
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        error: "internal server error",
+        ok: false,
+      });
+    } finally {
+      await server.close();
+    }
+  });
 });

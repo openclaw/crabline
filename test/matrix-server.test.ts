@@ -181,9 +181,10 @@ describe("Matrix local provider server", () => {
     const server = await startMatrixServer({
       accessToken: "test-token-placeholder",
       recorderPath: path.join(directory, "matrix-filter-owner.jsonl"),
+      roomId: "!filter:matrix.test",
     });
     servers.push(server);
-    const filter = { room: { timeline: { limit: 10 } } };
+    const filter = { room: { timeline: { limit: 1 } } };
     const created = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent(server.manifest.botUserId)}/filter`,
       {
@@ -199,6 +200,34 @@ describe("Matrix local provider server", () => {
       { headers: auth("test-token-placeholder") },
     );
     await expect(owned.json()).resolves.toEqual(filter);
+
+    for (const [index, text] of ["first", "second"].entries()) {
+      const sent = await fetch(
+        `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!filter:matrix.test")}/send/m.room.message/filter-${index}`,
+        {
+          body: JSON.stringify({ body: text, msgtype: "m.text" }),
+          headers: { ...auth("matrix-token"), "content-type": "application/json" },
+          method: "PUT",
+        },
+      );
+      expect(sent.status).toBe(200);
+    }
+    const filteredSync = await fetch(
+      `${server.manifest.endpoints.syncUrl}?filter=${createdBody.filter_id}`,
+      { headers: auth("matrix-token") },
+    );
+    const filteredSyncBody = (await filteredSync.json()) as {
+      rooms: {
+        join: Record<
+          string,
+          { timeline: { events: Array<{ content: { body?: string } }>; limited: boolean } }
+        >;
+      };
+    };
+    expect(Object.values(filteredSyncBody.rooms.join)[0]?.timeline).toMatchObject({
+      events: [{ content: { body: "second" } }],
+      limited: true,
+    });
 
     const forged = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent("@other:matrix.test")}/filter/${createdBody.filter_id}`,
@@ -484,5 +513,176 @@ describe("Matrix local provider server", () => {
       is_direct: true,
       membership: "join",
     });
+  });
+
+  it("publishes typing and receipt updates through room ephemeral sync", async () => {
+    const server = await startMatrixServer({
+      accessToken: "matrix-token",
+      roomId: "!ephemeral:matrix.test",
+    });
+    servers.push(server);
+    const initial = (await (
+      await fetch(server.manifest.endpoints.syncUrl, { headers: auth("matrix-token") })
+    ).json()) as { next_batch: string };
+    const sent = (await (
+      await fetch(
+        `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/send/m.room.message/ephemeral-message`,
+        {
+          body: JSON.stringify({ body: "read me", msgtype: "m.text" }),
+          headers: { ...auth("matrix-token"), "content-type": "application/json" },
+          method: "PUT",
+        },
+      )
+    ).json()) as { event_id: string };
+
+    const typing = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/typing/${encodeURIComponent(server.manifest.botUserId)}`,
+      {
+        body: JSON.stringify({ timeout: 30_000, typing: true }),
+        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    expect(typing.status).toBe(200);
+    const stringTimeout = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/typing/${encodeURIComponent(server.manifest.botUserId)}`,
+      {
+        body: JSON.stringify({ timeout: "30000", typing: true }),
+        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    expect(stringTimeout.status).toBe(400);
+    const receipt = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/receipt/m.read/${encodeURIComponent(sent.event_id)}`,
+      {
+        body: "{}",
+        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(receipt.status).toBe(200);
+
+    const sync = (await (
+      await fetch(`${server.manifest.endpoints.syncUrl}?since=${initial.next_batch}`, {
+        headers: auth("matrix-token"),
+      })
+    ).json()) as {
+      rooms: { join: Record<string, { ephemeral: { events: unknown[] } }> };
+    };
+    expect(sync.rooms.join["!ephemeral:matrix.test"]?.ephemeral.events).toEqual([
+      { content: { user_ids: [server.manifest.botUserId] }, type: "m.typing" },
+      {
+        content: {
+          [sent.event_id]: {
+            "m.read": {
+              [server.manifest.botUserId]: { ts: expect.any(Number) },
+            },
+          },
+        },
+        type: "m.receipt",
+      },
+    ]);
+
+    const beforeExpiry = (await (
+      await fetch(server.manifest.endpoints.syncUrl, { headers: auth("matrix-token") })
+    ).json()) as { next_batch: string };
+    await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!ephemeral:matrix.test")}/typing/${encodeURIComponent(server.manifest.botUserId)}`,
+      {
+        body: JSON.stringify({ timeout: 10, typing: true }),
+        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const expired = (await (
+      await fetch(`${server.manifest.endpoints.syncUrl}?since=${beforeExpiry.next_batch}`, {
+        headers: auth("matrix-token"),
+      })
+    ).json()) as {
+      rooms: { join: Record<string, { ephemeral: { events: unknown[] } }> };
+    };
+    expect(expired.rooms.join["!ephemeral:matrix.test"]?.ephemeral.events).toEqual([
+      { content: { user_ids: [server.manifest.botUserId] }, type: "m.typing" },
+      { content: { user_ids: [] }, type: "m.typing" },
+    ]);
+  });
+
+  it("updates membership state when an inbound sender is renamed", async () => {
+    const server = await startMatrixServer({
+      accessToken: "matrix-token",
+      adminToken: "admin-secret",
+    });
+    servers.push(server);
+    const roomId = "!rename:matrix.test";
+    for (const senderName of ["Alice", "Alicia"]) {
+      const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          roomId,
+          senderId: "@alice:matrix.test",
+          senderName,
+          text: `hello from ${senderName}`,
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin-secret",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+    }
+
+    const membership = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent(roomId)}/state/m.room.member/${encodeURIComponent("@alice:matrix.test")}`,
+      { headers: auth("matrix-token") },
+    );
+    await expect(membership.json()).resolves.toEqual({
+      displayname: "Alicia",
+      membership: "join",
+    });
+  });
+
+  it("bounds retained timelines and transaction responses", async () => {
+    const server = await startMatrixServer({
+      accessToken: "matrix-token",
+      roomId: "!bounded:matrix.test",
+    });
+    servers.push(server);
+    let firstEventId = "";
+    for (let index = 0; index <= 1_000; index += 1) {
+      const response = await fetch(
+        `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-${index}`,
+        {
+          body: JSON.stringify({ body: `message ${index}`, msgtype: "m.text" }),
+          headers: { ...auth("matrix-token"), "content-type": "application/json" },
+          method: "PUT",
+        },
+      );
+      const body = (await response.json()) as { event_id: string };
+      if (index === 0) {
+        firstEventId = body.event_id;
+      }
+    }
+
+    const sync = (await (
+      await fetch(server.manifest.endpoints.syncUrl, { headers: auth("matrix-token") })
+    ).json()) as {
+      rooms: { join: Record<string, { timeline: { events: unknown[]; limited: boolean } }> };
+    };
+    expect(sync.rooms.join["!bounded:matrix.test"]?.timeline).toMatchObject({
+      limited: true,
+    });
+    expect(sync.rooms.join["!bounded:matrix.test"]?.timeline.events).toHaveLength(1_000);
+
+    const retried = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-0`,
+      {
+        body: JSON.stringify({ body: "transaction was evicted", msgtype: "m.text" }),
+        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    await expect(retried.json()).resolves.not.toEqual({ event_id: firstEventId });
   });
 });

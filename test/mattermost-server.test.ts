@@ -310,6 +310,60 @@ describe("Mattermost local provider server", () => {
     });
   });
 
+  it("keeps REST mutations independent from disconnected WebSocket delivery", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "bot-secret",
+      maxPendingInboundEvents: 1,
+    });
+    servers.push(server);
+    const direct = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
+      body: JSON.stringify([server.manifest.botUserId, "user-1"]),
+      headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+      method: "POST",
+    });
+    const channel = (await direct.json()) as { id: string };
+
+    for (const message of ["first REST post", "second REST post"]) {
+      const response = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+        body: JSON.stringify({ channel_id: channel.id, message }),
+        headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(response.status).toBe(201);
+    }
+
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ channelId: channel.id, senderId: "user-1", text: "queued inbound" }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(inbound.status).toBe(200);
+  });
+
+  it("rejects posts and typing for unknown channels", async () => {
+    const server = await startMattermostServer({ botToken: "bot-secret" });
+    servers.push(server);
+    for (const [apiPath, body] of [
+      ["/posts", { channel_id: "missing", message: "hello" }],
+      ["/users/me/typing", { channel_id: "missing" }],
+    ] as const) {
+      const response = await fetch(`${server.manifest.endpoints.apiRoot}${apiPath}`, {
+        body: JSON.stringify(body),
+        headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toMatchObject({
+        message: "Channel not found",
+        status_code: 404,
+      });
+    }
+  });
+
   it("disconnects slow WebSocket clients and queues undelivered events", async () => {
     const server = await startMattermostServer({
       adminToken: "admin",
@@ -342,13 +396,67 @@ describe("Mattermost local provider server", () => {
 
     expect((await sendInbound("x".repeat(2_000))).status).toBe(503);
     await expect(closed).resolves.toEqual({ code: 1013, reason: "client too slow" });
+    for (const apiPath of ["/users/user-1", "/channels/channel-1"]) {
+      const response = await fetch(`${server.manifest.endpoints.apiRoot}${apiPath}`, {
+        headers: { authorization: "Bearer test-token-placeholder" },
+      });
+      expect(response.status).toBe(404);
+    }
     expect((await sendInbound("queued after oversized event")).status).toBe(200);
     expect((await sendInbound("queue is full")).status).toBe(503);
   });
 
-  it("validates the WebSocket delivery buffer limit", async () => {
+  it("bounds unauthenticated clients and inbound WebSocket messages", async () => {
+    const server = await startMattermostServer({
+      botToken: "test-token-placeholder",
+      maxUnauthenticatedWebSocketClients: 1,
+      maxWebSocketMessageBytes: 32,
+    });
+    servers.push(server);
+
+    const first = new WebSocket(server.manifest.endpoints.websocketUrl);
+    await waitForSocketOpen(first);
+    const second = new WebSocket(server.manifest.endpoints.websocketUrl);
+    const secondClosed = waitForSocketClose(second);
+    await waitForSocketOpen(second);
+    await expect(secondClosed).resolves.toEqual({
+      code: 1013,
+      reason: "too many unauthenticated clients",
+    });
+
+    const firstClosed = waitForSocketClose(first);
+    first.send(JSON.stringify({ action: "x".repeat(64) }));
+    await expect(firstClosed).resolves.toMatchObject({ code: 1009 });
+    const me = await fetch(`${server.manifest.endpoints.apiRoot}/users/me`, {
+      headers: { authorization: "Bearer test-token-placeholder" },
+    });
+    expect(me.status).toBe(200);
+  });
+
+  it("rejects non-object WebSocket messages without crashing", async () => {
+    const server = await startMattermostServer({ botToken: "bot-secret" });
+    servers.push(server);
+    const socket = new WebSocket(server.manifest.endpoints.websocketUrl);
+    const closed = waitForSocketClose(socket);
+    await waitForSocketOpen(socket);
+    socket.send("null");
+    await expect(closed).resolves.toEqual({ code: 1003, reason: "invalid json" });
+
+    const me = await fetch(`${server.manifest.endpoints.apiRoot}/users/me`, {
+      headers: { authorization: "Bearer bot-secret" },
+    });
+    expect(me.status).toBe(200);
+  });
+
+  it("validates WebSocket resource limits", async () => {
     await expect(startMattermostServer({ maxWebSocketBufferedBytes: 0 })).rejects.toThrow(
       "maxWebSocketBufferedBytes must be a positive safe integer.",
+    );
+    await expect(startMattermostServer({ maxWebSocketMessageBytes: 0 })).rejects.toThrow(
+      "maxWebSocketMessageBytes must be a positive safe integer.",
+    );
+    await expect(startMattermostServer({ maxUnauthenticatedWebSocketClients: 0 })).rejects.toThrow(
+      "maxUnauthenticatedWebSocketClients must be a positive safe integer.",
     );
   });
 

@@ -30,10 +30,17 @@ type MatrixEvent = {
 
 type MatrixRoom = {
   createdSequence: number;
+  ephemeral: Array<{
+    event: { content: Record<string, unknown>; type: "m.receipt" | "m.typing" };
+    sequence: number;
+  }>;
   id: string;
   name: string;
   state: MatrixEvent[];
   timeline: Array<{ sequence: number; event: MatrixEvent }>;
+  timelineDropped: boolean;
+  typingTimeouts: Map<string, NodeJS.Timeout>;
+  typingUsers: Set<string>;
   users: Map<string, { avatar_url?: string; display_name?: string }>;
 };
 
@@ -58,6 +65,10 @@ type MatrixServerState = {
   syncWaiters: Set<() => void>;
   transactions: Map<string, MatrixTransactionResponse>;
 };
+
+const MAX_MATRIX_TIMELINE_EVENTS = 1_000;
+// Preserve idempotency within a bounded replay window instead of retaining every transaction.
+const MAX_MATRIX_TRANSACTION_RESPONSES = 1_000;
 
 export type MatrixServerManifest = {
   accessToken: string;
@@ -173,10 +184,14 @@ function createRoom(params: {
 }): MatrixRoom {
   const room: MatrixRoom = {
     createdSequence: params.createdSequence,
+    ephemeral: [],
     id: params.id,
     name: params.name,
     state: [],
     timeline: [],
+    timelineDropped: false,
+    typingTimeouts: new Map(),
+    typingUsers: new Set(),
     users: new Map([[params.botUserId, { display_name: "OpenClaw QA" }]]),
   };
   room.state.push(
@@ -212,15 +227,104 @@ function createRoom(params: {
   return room;
 }
 
-function syncRoom(room: MatrixRoom, since: number | undefined) {
-  const events = room.timeline
-    .filter((entry) => since === undefined || entry.sequence > since)
-    .map((entry) => entry.event);
+function appendTimelineEvent(
+  room: MatrixRoom,
+  entry: { event: MatrixEvent; sequence: number },
+): void {
+  room.timeline.push(entry);
+  if (room.timeline.length > MAX_MATRIX_TIMELINE_EVENTS) {
+    room.timelineDropped = true;
+    room.timeline.splice(0, room.timeline.length - MAX_MATRIX_TIMELINE_EVENTS);
+  }
+}
+
+function appendEphemeralEvent(
+  room: MatrixRoom,
+  entry: {
+    event: { content: Record<string, unknown>; type: "m.receipt" | "m.typing" };
+    sequence: number;
+  },
+): void {
+  room.ephemeral.push(entry);
+  if (room.ephemeral.length > MAX_MATRIX_TIMELINE_EVENTS) {
+    room.ephemeral.splice(0, room.ephemeral.length - MAX_MATRIX_TIMELINE_EVENTS);
+  }
+}
+
+function publishTypingState(state: MatrixServerState, room: MatrixRoom): void {
+  appendEphemeralEvent(room, {
+    event: { content: { user_ids: [...room.typingUsers] }, type: "m.typing" },
+    sequence: state.nextSequence++,
+  });
+  notifySyncWaiters(state);
+}
+
+function rememberTransaction(
+  state: MatrixServerState,
+  key: string,
+  response: MatrixTransactionResponse,
+): void {
+  state.transactions.set(key, response);
+  if (state.transactions.size > MAX_MATRIX_TRANSACTION_RESPONSES) {
+    const oldest = state.transactions.keys().next().value;
+    if (oldest !== undefined) {
+      state.transactions.delete(oldest);
+    }
+  }
+}
+
+function readTimelineLimit(filter: Record<string, unknown> | undefined): number | undefined {
+  const room = filter?.room;
+  const timeline = isJsonObject(room) ? room.timeline : undefined;
+  const limit = isJsonObject(timeline) ? readInteger(timeline.limit) : undefined;
+  return limit === undefined ? undefined : Math.max(0, limit);
+}
+
+function resolveSyncFilter(
+  url: URL,
+  state: MatrixServerState,
+): Record<string, unknown> | Response | undefined {
+  const value = url.searchParams.get("filter");
+  if (value === null) {
+    return undefined;
+  }
+  const stored = state.filters.get(value);
+  if (stored) {
+    return stored;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isJsonObject(parsed) ? parsed : matrixError("M_INVALID_PARAM", "Invalid filter", 400);
+  } catch {
+    return matrixError("M_INVALID_PARAM", "Unknown filter", 400);
+  }
+}
+
+function syncRoom(room: MatrixRoom, since: number | undefined, timelineLimit: number | undefined) {
+  const available = room.timeline.filter((entry) => since === undefined || entry.sequence > since);
+  const timeline =
+    timelineLimit === undefined
+      ? available
+      : available.slice(Math.max(0, available.length - timelineLimit));
+  const firstSequence = timeline[0]?.sequence;
+  const retainedFirstSequence = room.timeline[0]?.sequence;
+  const historyWasTrimmed =
+    room.timelineDropped &&
+    retainedFirstSequence !== undefined &&
+    (since === undefined || since < retainedFirstSequence - 1);
   return {
     account_data: { events: [] },
-    ephemeral: { events: [] },
+    ephemeral: {
+      events: room.ephemeral
+        .filter((entry) => since === undefined || entry.sequence > since)
+        .map((entry) => entry.event),
+    },
     state: { events: since === undefined || room.createdSequence > since ? room.state : [] },
-    timeline: { events, limited: false, prev_batch: `s${since ?? 0}` },
+    timeline: {
+      events: timeline.map((entry) => entry.event),
+      limited: historyWasTrimmed || timeline.length < available.length,
+      prev_batch: `s${firstSequence === undefined ? (since ?? 0) : firstSequence - 1}`,
+    },
     unread_notifications: { highlight_count: 0, notification_count: 0 },
   };
 }
@@ -242,15 +346,22 @@ async function handleSync(url: URL, state: MatrixServerState): Promise<Response>
   if (since === null || (since !== undefined && since > state.nextSequence - 1)) {
     return matrixError("M_UNKNOWN_POS", "Unknown position", 400);
   }
+  const filter = resolveSyncFilter(url, state);
+  if (filter instanceof Response) {
+    return filter;
+  }
+  const timelineLimit = readTimelineLimit(filter);
   const timeout = Math.min(readInteger(url.searchParams.get("timeout")) ?? 0, 1_000);
   const hasNewEvents = [...state.rooms.values()].some((room) =>
-    room.timeline.some((entry) => since === undefined || entry.sequence > since),
+    [...room.timeline, ...room.ephemeral].some(
+      (entry) => since === undefined || entry.sequence > since,
+    ),
   );
   if (since !== undefined && !hasNewEvents && timeout > 0) {
     await waitForSyncEvent(state, timeout);
   }
   const join = Object.fromEntries(
-    [...state.rooms.values()].map((room) => [room.id, syncRoom(room, since)]),
+    [...state.rooms.values()].map((room) => [room.id, syncRoom(room, since, timelineLimit)]),
   );
   return jsonResponse({
     account_data: { events: [] },
@@ -305,9 +416,32 @@ async function handleAdminInbound(params: {
       type: "m.room.member",
     });
     room.state.push(membership);
-    room.timeline.push({ event: membership, sequence: params.state.nextSequence++ });
+    appendTimelineEvent(room, { event: membership, sequence: params.state.nextSequence++ });
   } else if (senderName) {
-    room.users.set(sender, { display_name: senderName });
+    const profile = room.users.get(sender);
+    if (profile?.display_name !== senderName) {
+      room.users.set(sender, { ...profile, display_name: senderName });
+      const membership = createEvent({
+        content: { membership: "join", displayname: senderName },
+        roomId,
+        sender,
+        state: params.state,
+        stateKey: sender,
+        type: "m.room.member",
+      });
+      const stateIndex = room.state.findIndex(
+        (event) => event.type === "m.room.member" && event.state_key === sender,
+      );
+      if (stateIndex >= 0) {
+        room.state[stateIndex] = membership;
+      } else {
+        room.state.push(membership);
+      }
+      appendTimelineEvent(room, {
+        event: membership,
+        sequence: params.state.nextSequence++,
+      });
+    }
   }
   const content: Record<string, unknown> = { body: text, msgtype: "m.text" };
   const threadId = readTrimmedString(params.body.threadId);
@@ -326,7 +460,7 @@ async function handleAdminInbound(params: {
     state: params.state,
     type: "m.room.message",
   });
-  room.timeline.push({ event, sequence: params.state.nextSequence++ });
+  appendTimelineEvent(room, { event, sequence: params.state.nextSequence++ });
   notifySyncWaiters(params.state);
   return jsonResponse({ event, ok: true });
 }
@@ -437,7 +571,7 @@ async function handleMatrixApi(params: {
     const room = findRoom(params.state, match[1]!);
     if (!room) {
       const body = { errcode: "M_NOT_FOUND", error: "Unknown room" };
-      params.state.transactions.set(transactionKey, { body, status: 404 });
+      rememberTransaction(params.state, transactionKey, { body, status: 404 });
       return jsonResponse(body, 404);
     }
     const event = createEvent({
@@ -448,19 +582,79 @@ async function handleMatrixApi(params: {
       transactionId: decodeURIComponent(match[3]!),
       type: decodeURIComponent(match[2]!),
     });
-    room.timeline.push({ event, sequence: params.state.nextSequence++ });
+    appendTimelineEvent(room, { event, sequence: params.state.nextSequence++ });
     const body = { event_id: event.event_id };
-    params.state.transactions.set(transactionKey, { body, status: 200 });
+    rememberTransaction(params.state, transactionKey, { body, status: 200 });
     notifySyncWaiters(params.state);
     return jsonResponse(body);
   }
 
   match = /^\/rooms\/([^/]+)\/typing\/([^/]+)$/u.exec(relativePath);
   if (params.method === "PUT" && match) {
+    const room = findRoom(params.state, match[1]!);
+    if (!room) {
+      return matrixError("M_NOT_FOUND", "Unknown room", 404);
+    }
+    const userId = decodeURIComponent(match[2]!);
+    if (typeof params.body.typing !== "boolean") {
+      return matrixError("M_BAD_JSON", "typing must be a boolean", 400);
+    }
+    const timeout =
+      params.body.typing &&
+      typeof params.body.timeout === "number" &&
+      Number.isSafeInteger(params.body.timeout)
+        ? params.body.timeout
+        : undefined;
+    if (params.body.typing && (timeout === undefined || timeout < 1)) {
+      return matrixError("M_BAD_JSON", "timeout must be a positive integer", 400);
+    }
+    const existingTimeout = room.typingTimeouts.get(userId);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+      room.typingTimeouts.delete(userId);
+    }
+    if (params.body.typing) {
+      room.typingUsers.add(userId);
+      const timer = setTimeout(() => {
+        room.typingTimeouts.delete(userId);
+        if (room.typingUsers.delete(userId)) {
+          publishTypingState(params.state, room);
+        }
+      }, timeout!);
+      timer.unref();
+      room.typingTimeouts.set(userId, timer);
+    } else {
+      room.typingUsers.delete(userId);
+    }
+    publishTypingState(params.state, room);
     return jsonResponse({});
   }
   match = /^\/rooms\/([^/]+)\/receipt\/m\.read\/([^/]+)$/u.exec(relativePath);
   if (params.method === "POST" && match) {
+    const room = findRoom(params.state, match[1]!);
+    if (!room) {
+      return matrixError("M_NOT_FOUND", "Unknown room", 404);
+    }
+    const receiptEventId = decodeURIComponent(match[2]!);
+    appendEphemeralEvent(room, {
+      event: {
+        content: {
+          [receiptEventId]: {
+            "m.read": {
+              [params.state.botUserId]: {
+                ts: Date.now(),
+                ...(readTrimmedString(params.body.thread_id)
+                  ? { thread_id: readTrimmedString(params.body.thread_id) }
+                  : {}),
+              },
+            },
+          },
+        },
+        type: "m.receipt",
+      },
+      sequence: params.state.nextSequence++,
+    });
+    notifySyncWaiters(params.state);
     return jsonResponse({});
   }
 
@@ -577,7 +771,15 @@ export async function startMatrixServer(
 
   const clientApiRoot = `${server.baseUrl}/_matrix/client/v3`;
   return {
-    close: server.close,
+    async close() {
+      for (const room of state.rooms.values()) {
+        for (const timer of room.typingTimeouts.values()) {
+          clearTimeout(timer);
+        }
+        room.typingTimeouts.clear();
+      }
+      await server.close();
+    },
     manifest: {
       accessToken: state.accessToken,
       adminToken: state.adminToken,
