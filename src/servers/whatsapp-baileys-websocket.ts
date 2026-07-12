@@ -39,7 +39,7 @@ export const MAX_WHATSAPP_NOISE_FRAMES_PER_MESSAGE = 1_024;
 export const WHATSAPP_WEBSOCKET_SEND_TIMEOUT_MS = 5_000;
 const MAX_PENDING_WEBSOCKET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_WEBSOCKET_MESSAGES = 32;
-const MAX_WEBSOCKET_FRAGMENTS = 1_024;
+export const MAX_WHATSAPP_WEBSOCKET_FRAGMENTS = 1_024;
 export const MAX_WHATSAPP_SIGNAL_BUNDLES = 1_024;
 const SIGNAL_BUNDLE_JID_RE = /^\d{7,15}(?::\d+)?@(?:s\.whatsapp\.net|lid)$/iu;
 type NodeBuffer = Buffer<ArrayBufferLike>;
@@ -789,8 +789,8 @@ export function attachWhatsAppBaileysWebSocketServer(
     maxBufferedChunks: number;
     maxFragments: number;
   } = {
-    maxBufferedChunks: MAX_WEBSOCKET_FRAGMENTS,
-    maxFragments: MAX_WEBSOCKET_FRAGMENTS,
+    maxBufferedChunks: MAX_WHATSAPP_WEBSOCKET_FRAGMENTS,
+    maxFragments: MAX_WHATSAPP_WEBSOCKET_FRAGMENTS,
     maxPayload: MAX_WHATSAPP_WEBSOCKET_MESSAGE_BYTES,
     noServer: true,
   };

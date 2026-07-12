@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { startWhatsAppServer, type StartedWhatsAppServer } from "../src/index.js";
 import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
+import { MAX_WHATSAPP_WEBSOCKET_FRAGMENTS } from "../src/servers/whatsapp-baileys-websocket.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedWhatsAppServer[] = [];
@@ -646,6 +647,33 @@ describe("whatsapp local provider server", () => {
     const wrongTokenUrl = new URL(server.manifest.endpoints.baileysWebSocketUrl);
     wrongTokenUrl.searchParams.set("access_token", "wrong-token");
     await expect(expectWebSocketUpgradeRejected(wrongTokenUrl.toString())).resolves.toBeUndefined();
+  });
+
+  it("closes Baileys sockets that exceed the WebSocket fragment limit", async () => {
+    const server = await startWhatsAppServer();
+    servers.push(server);
+    const socket = new WebSocket(server.manifest.endpoints.baileysWebSocketUrl);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+    });
+    const closed = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        socket.terminate();
+        reject(new Error("Expected fragmented WebSocket message to be rejected."));
+      }, 2_000);
+      socket.once("error", () => undefined);
+      socket.once("close", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+
+    for (let index = 0; index <= MAX_WHATSAPP_WEBSOCKET_FRAGMENTS; index += 1) {
+      socket.send(Buffer.from([index & 0xff]), { binary: true, fin: false });
+    }
+
+    await expect(closed).resolves.toBeUndefined();
   });
 
   it("accepts a real Baileys socket over waWebSocketUrl and records outbound stanzas", async () => {
