@@ -116,9 +116,11 @@ async function readRecordedInboundAppend(
     const stats = await handle.stat();
     const identity = { dev: stats.dev, ino: stats.ino };
     const sameFile = state.identity?.dev === identity.dev && state.identity.ino === identity.ino;
-    let hasContinuity = sameFile && stats.size >= state.offset;
+    let hasContinuity = stats.size >= state.offset;
 
-    if (hasContinuity && state.continuity.length > 0) {
+    if (hasContinuity && state.offset > 0 && state.continuity.length === 0) {
+      hasContinuity = sameFile;
+    } else if (hasContinuity && state.continuity.length > 0) {
       const actual = await readBufferAt(
         handle,
         state.continuity.length,
