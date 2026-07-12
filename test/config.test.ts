@@ -49,6 +49,83 @@ describe("manifest schema", () => {
     expect(manifest.fixtures[0]?.inboundMatch.author).toBe("assistant");
   });
 
+  it("rejects unknown keys throughout user-authored config", () => {
+    const base = {
+      configVersion: 1,
+      fixtures: [
+        {
+          id: "loopback-send",
+          mode: "send",
+          provider: "local",
+          target: { id: "sink-bot" },
+        },
+      ],
+      providers: {
+        local: {
+          adapter: "loopback",
+          loopback: {},
+        },
+      },
+    };
+    const candidates = [
+      { ...base, typo: true },
+      {
+        ...base,
+        providers: {
+          local: {
+            ...base.providers.local,
+            typo: true,
+          },
+        },
+      },
+      {
+        ...base,
+        fixtures: [
+          {
+            ...base.fixtures[0],
+            target: {
+              ...base.fixtures[0]!.target,
+              typo: true,
+            },
+          },
+        ],
+      },
+    ];
+
+    const issueCodes = candidates.map((candidate) => {
+      const result = ManifestSchema.safeParse(candidate);
+      return result.success ? [] : result.error.issues.map((issue) => issue.code);
+    });
+    expect(issueCodes).toEqual([
+      ["unrecognized_keys"],
+      ["unrecognized_keys"],
+      ["unrecognized_keys"],
+    ]);
+  });
+
+  it("allows provider-defined fields in Google credential payloads", () => {
+    const manifest = ManifestSchema.parse({
+      configVersion: 1,
+      fixtures: [],
+      providers: {
+        googlechat: {
+          adapter: "googlechat",
+          googlechat: {
+            credentials: {
+              client_email: "bot@example.com",
+              private_key: "secret",
+              private_key_id: "provider-defined",
+            },
+          },
+        },
+      },
+    });
+
+    expect(manifest.providers.googlechat?.googlechat?.credentials).toMatchObject({
+      private_key_id: "provider-defined",
+    });
+  });
+
   it("rejects script providers without script config", () => {
     expect(() =>
       ManifestSchema.parse({
