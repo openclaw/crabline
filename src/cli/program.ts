@@ -592,9 +592,27 @@ export async function publishReadyFile(
   filePath: string,
   contents: string,
 ): Promise<ReadyFileIdentity> {
-  return await withReadyFileLock(filePath, async () =>
-    publishReadyFileUnlocked(filePath, contents),
-  );
+  let publishedIdentity: ReadyFileIdentity | undefined;
+  try {
+    return await withReadyFileLock(filePath, async () => {
+      publishedIdentity = await publishReadyFileUnlocked(filePath, contents);
+      return publishedIdentity;
+    });
+  } catch (error) {
+    if (publishedIdentity) {
+      try {
+        await removeReadyFileIfOwned(filePath, contents, publishedIdentity);
+      } catch (cleanupError) {
+        const aggregateError = new AggregateError(
+          [error, cleanupError],
+          `Ready-file publication and compensation both failed for "${filePath}".`,
+        );
+        aggregateError.cause = error;
+        throw aggregateError;
+      }
+    }
+    throw error;
+  }
 }
 
 async function publishReadyFileUnlocked(
