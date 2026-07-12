@@ -5,10 +5,12 @@ import {
   adminAuthError,
   hasAdminToken,
   InvalidJsonBodyError,
+  isJsonObject,
   jsonResponse,
-  parseRequestBody,
+  parseUnknownRequestBody,
   queryRecord,
   readTrimmedString,
+  RequestBodyTooLargeError,
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
@@ -137,10 +139,6 @@ function graphAuthError(): Response {
     message: "Invalid OAuth access token.",
     status: 401,
   });
-}
-
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 async function appendEvent(state: WhatsAppServerState, event: ServerRequestEvent) {
@@ -386,9 +384,16 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       return new Response("not found", { status: 404 });
     }
     if (!hasAdminToken(params.request, params.state.adminToken)) {
+      params.request.resume();
       return adminAuthError();
     }
-    const body = await parseRequestBody(params.request);
+    const body = await parseUnknownRequestBody(params.request);
+    if (!isJsonObject(body)) {
+      return graphParameterError(
+        "(#100) Invalid parameter: request body",
+        "The request body must be a JSON object.",
+      );
+    }
     const result = await handleAdminInbound({ body, state: params.state });
     if (result.response) {
       return result.response;
@@ -414,21 +419,20 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
 
   const phoneNumberPath = `/${params.state.graphVersion}/${params.state.phoneNumberId}`;
   const messagesPath = `${phoneNumberPath}/messages`;
-  const body =
-    params.request.method === "GET" ? queryRecord(url) : await parseRequestBody(params.request);
-  await appendEvent(params.state, {
-    at: new Date().toISOString(),
-    body,
-    method: params.request.method ?? "GET",
-    path: url.pathname,
-    query: queryRecord(url),
-    type: "api",
-  });
-
   if (!requireAuth(params.request, params.state)) {
+    params.request.resume();
     return graphAuthError();
   }
   if (url.pathname === phoneNumberPath && params.request.method === "GET") {
+    const body = queryRecord(url);
+    await appendEvent(params.state, {
+      at: new Date().toISOString(),
+      body,
+      method: params.request.method,
+      path: url.pathname,
+      query: body,
+      type: "api",
+    });
     return jsonResponse({
       display_phone_number: params.state.displayPhoneNumber,
       id: params.state.phoneNumberId,
@@ -440,6 +444,15 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
     if (params.request.method !== "POST") {
       return new Response("not found", { status: 404 });
     }
+    const body = await parseUnknownRequestBody(params.request);
+    await appendEvent(params.state, {
+      at: new Date().toISOString(),
+      body,
+      method: params.request.method,
+      path: url.pathname,
+      query: queryRecord(url),
+      type: "api",
+    });
     if (!isJsonObject(body)) {
       return graphParameterError(
         "(#100) Invalid parameter: request body",
@@ -480,13 +493,23 @@ export async function startWhatsAppServer(
   const host = params.host ?? "127.0.0.1";
   const httpServer = await startHttpJsonServer({
     handle: (request) => handleRequest({ request, state }),
-    handleError: (error) =>
-      error instanceof InvalidJsonBodyError
-        ? graphParameterError(
-            "(#100) Invalid parameter: request body",
-            "The request body must be valid JSON.",
-          )
-        : undefined,
+    handleError: (error) => {
+      if (error instanceof InvalidJsonBodyError) {
+        return graphParameterError(
+          "(#100) Invalid parameter: request body",
+          "The request body must be valid JSON.",
+        );
+      }
+      if (error instanceof RequestBodyTooLargeError) {
+        return graphError({
+          code: 100,
+          details: "The request body exceeds the supported size limit.",
+          message: "(#100) Request body is too large.",
+          status: 413,
+        });
+      }
+      return undefined;
+    },
     host,
     port: params.port ?? 0,
     serverName: "WhatsApp",

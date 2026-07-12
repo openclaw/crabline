@@ -5,11 +5,13 @@ import {
   adminAuthError,
   hasAdminToken,
   InvalidJsonBodyError,
+  isJsonObject,
   jsonResponse,
-  parseRequestBody,
+  parseUnknownRequestBody,
   queryRecord,
   readInteger,
   readTrimmedString,
+  RequestBodyTooLargeError,
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
@@ -351,14 +353,8 @@ async function deliverSlackEvent(
 async function handleSlackApi(params: {
   body: Record<string, unknown>;
   method: string;
-  request: IncomingMessage;
   state: SlackServerState;
 }): Promise<Response> {
-  const authError = requireSlackToken(params.request, params.body, params.state);
-  if (authError) {
-    return authError;
-  }
-
   switch (params.method) {
     case "auth.test":
       return slackOk({
@@ -557,9 +553,13 @@ async function handleRequest(params: { request: IncomingMessage; state: SlackSer
       return new Response("not found", { status: 404 });
     }
     if (!hasAdminToken(params.request, params.state.adminToken)) {
+      params.request.resume();
       return adminAuthError();
     }
-    const body = await parseRequestBody(params.request);
+    const body = await parseUnknownRequestBody(params.request);
+    if (!isJsonObject(body)) {
+      return slackError("invalid_json", 400);
+    }
     await appendEvent(params.state, {
       at: new Date().toISOString(),
       body,
@@ -572,17 +572,20 @@ async function handleRequest(params: { request: IncomingMessage; state: SlackSer
   }
 
   const query = queryRecord(url);
-  const body = params.request.method === "GET" ? query : await parseRequestBody(params.request);
-  await appendEvent(params.state, {
-    at: new Date().toISOString(),
-    body: redactSlackAuthFields(body),
-    method: params.request.method ?? "GET",
-    path: url.pathname,
-    query: redactSlackAuthQuery(query),
-    type: "api",
-  });
-
   if (url.pathname === "/slack/events") {
+    const body =
+      params.request.method === "GET" ? query : await parseUnknownRequestBody(params.request);
+    if (!isJsonObject(body)) {
+      return slackError("invalid_json", 400);
+    }
+    await appendEvent(params.state, {
+      at: new Date().toISOString(),
+      body: redactSlackAuthFields(body),
+      method: params.request.method ?? "GET",
+      path: url.pathname,
+      query: redactSlackAuthQuery(query),
+      type: "api",
+    });
     if (body.type === "url_verification") {
       return jsonResponse({ challenge: readTrimmedString(body.challenge) ?? "" });
     }
@@ -593,10 +596,34 @@ async function handleRequest(params: { request: IncomingMessage; state: SlackSer
   if (!methodMatch?.[1]) {
     return new Response("not found", { status: 404 });
   }
+
+  if (params.request.headers.authorization) {
+    const headerAuthError = requireSlackToken(params.request, {}, params.state);
+    if (headerAuthError) {
+      params.request.resume();
+      return headerAuthError;
+    }
+  }
+  const body =
+    params.request.method === "GET" ? query : await parseUnknownRequestBody(params.request);
+  if (!isJsonObject(body)) {
+    return slackError("json_not_object", 400);
+  }
+  const authError = requireSlackToken(params.request, body, params.state);
+  if (authError) {
+    return authError;
+  }
+  await appendEvent(params.state, {
+    at: new Date().toISOString(),
+    body: redactSlackAuthFields(body),
+    method: params.request.method ?? "GET",
+    path: url.pathname,
+    query: redactSlackAuthQuery(query),
+    type: "api",
+  });
   return await handleSlackApi({
     body,
     method: methodMatch[1],
-    request: params.request,
     state: params.state,
   });
 }
@@ -621,8 +648,15 @@ export async function startSlackServer(
   const host = params.host ?? "127.0.0.1";
   const httpServer = await startHttpJsonServer({
     handle: (request) => handleRequest({ request, state }),
-    handleError: (error) =>
-      error instanceof InvalidJsonBodyError ? slackError("invalid_json", 400) : undefined,
+    handleError: (error) => {
+      if (error instanceof InvalidJsonBodyError) {
+        return slackError("invalid_json", 400);
+      }
+      if (error instanceof RequestBodyTooLargeError) {
+        return slackError("request_too_large", 413);
+      }
+      return undefined;
+    },
     host,
     port: params.port ?? 0,
     serverName: "Slack",

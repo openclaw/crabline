@@ -5,10 +5,13 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 import {
   adminAuthError,
   hasAdminToken,
+  InvalidJsonBodyError,
+  isJsonObject,
   jsonResponse,
-  parseRequestBody,
+  parseUnknownRequestBody,
   queryRecord,
   readTrimmedString,
+  RequestBodyTooLargeError,
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
@@ -218,7 +221,7 @@ async function handleAdminInbound(params: {
 }
 
 async function handleApi(params: {
-  body: Record<string, unknown>;
+  body: unknown;
   method: string;
   path: string;
   state: MattermostServerState;
@@ -252,6 +255,9 @@ async function handleApi(params: {
     const channel = { display_name: "", id: channelId, name: channelId, type: "D" };
     state.channels.set(channelId, channel);
     return jsonResponse(channel, 201);
+  }
+  if (!isJsonObject(body)) {
+    return mattermostError("Request body must be a JSON object", 400);
   }
   if (method === "POST" && apiPath === "/users/me/typing") {
     const channelId = readTrimmedString(body.channel_id);
@@ -337,7 +343,10 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
     if (!hasAdminToken(request, state.adminToken)) {
       return adminAuthError();
     }
-    const body = await parseRequestBody(request);
+    const body = await parseUnknownRequestBody(request);
+    if (!isJsonObject(body)) {
+      return jsonResponse({ error: "Request body must be a JSON object", ok: false }, 400);
+    }
     await appendEvent(state, {
       at: new Date().toISOString(),
       body,
@@ -354,10 +363,11 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
   if (!authorized(request, state.botToken)) {
     return mattermostError("Invalid or missing token", 401);
   }
-  const body = method === "GET" || method === "DELETE" ? {} : await parseRequestBody(request);
+  const body =
+    method === "GET" || method === "DELETE" ? {} : await parseUnknownRequestBody(request);
   await appendEvent(state, {
     at: new Date().toISOString(),
-    ...(Object.keys(body).length > 0 ? { body } : {}),
+    ...(typeof body === "object" && body !== null && Object.keys(body).length > 0 ? { body } : {}),
     method,
     path: url.pathname,
     query: queryRecord(url),
@@ -489,6 +499,15 @@ export async function startMattermostServer(
   };
   const httpServer = await startHttpJsonServer({
     handle: (request) => handleRequest(request, state),
+    handleError: (error) => {
+      if (error instanceof InvalidJsonBodyError) {
+        return mattermostError("Request body is not valid JSON", 400);
+      }
+      if (error instanceof RequestBodyTooLargeError) {
+        return mattermostError("Request body is too large", 413);
+      }
+      return undefined;
+    },
     host: params.host ?? "127.0.0.1",
     port: params.port ?? 0,
     serverName: "Mattermost",

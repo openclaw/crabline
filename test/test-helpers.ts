@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -15,6 +16,39 @@ export const writeJson = async (filePath: string, value: unknown): Promise<void>
 export const writeText = async (filePath: string, value: string): Promise<void> => {
   await writeFile(filePath, value, "utf8");
 };
+
+export async function requestHttp(params: {
+  body?: Buffer | string;
+  headers?: Record<string, string>;
+  method: string;
+  url: string;
+}): Promise<{ body: string; headers: import("node:http").IncomingHttpHeaders; status: number }> {
+  return await new Promise((resolve, reject) => {
+    const request = httpRequest(
+      params.url,
+      {
+        headers: params.headers,
+        method: params.method,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.once("end", () =>
+          resolve({
+            body: Buffer.concat(chunks).toString("utf8"),
+            headers: response.headers,
+            status: response.statusCode ?? 0,
+          }),
+        );
+      },
+    );
+    request.once("error", reject);
+    if (params.body !== undefined) {
+      request.write(params.body);
+    }
+    request.end();
+  });
+}
 
 export const captureWrites = (): {
   restore: () => void;

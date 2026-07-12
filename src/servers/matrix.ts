@@ -5,11 +5,13 @@ import {
   adminAuthError,
   hasAdminToken,
   InvalidJsonBodyError,
+  isJsonObject,
   jsonResponse,
-  parseRequestBody,
+  parseUnknownRequestBody,
   queryRecord,
   readInteger,
   readTrimmedString,
+  RequestBodyTooLargeError,
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
@@ -489,44 +491,76 @@ export async function startMatrixServer(
   );
 
   const server = await startHttpJsonServer({
-    handleError: (error) =>
-      error instanceof InvalidJsonBodyError
-        ? matrixError("M_NOT_JSON", "Request body is not valid JSON", 400)
-        : undefined,
+    handleError: (error) => {
+      if (error instanceof InvalidJsonBodyError) {
+        return matrixError("M_NOT_JSON", "Request body is not valid JSON", 400);
+      }
+      if (error instanceof RequestBodyTooLargeError) {
+        return matrixError("M_TOO_LARGE", "Request body is too large", 413);
+      }
+      return undefined;
+    },
     host,
     port: params.port ?? 0,
     serverName: "Matrix",
     async handle(request) {
       const url = new URL(request.url ?? "/", "http://localhost");
       const method = request.method ?? "GET";
-      const body = ["POST", "PUT"].includes(method) ? await parseRequestBody(request) : {};
       const type = url.pathname === "/crabline/matrix/inbound" ? "admin" : "api";
-      await appendEvent(state, {
-        at: new Date().toISOString(),
-        ...(Object.keys(body).length > 0 ? { body } : {}),
-        method,
-        path: url.pathname,
-        query: queryRecord(url),
-        type,
-      });
       if (type === "admin") {
         if (method !== "POST") {
           return jsonResponse({ error: "Method not allowed", ok: false }, 405);
         }
-        return hasAdminToken(request, state.adminToken)
-          ? await handleAdminInbound({ body, state })
-          : adminAuthError();
+        if (!hasAdminToken(request, state.adminToken)) {
+          request.resume();
+          return adminAuthError();
+        }
+        const body = await parseUnknownRequestBody(request);
+        if (!isJsonObject(body)) {
+          return jsonResponse({ error: "Request body must be a JSON object", ok: false }, 400);
+        }
+        await appendEvent(state, {
+          at: new Date().toISOString(),
+          ...(Object.keys(body).length > 0 ? { body } : {}),
+          method,
+          path: url.pathname,
+          query: queryRecord(url),
+          type,
+        });
+        return await handleAdminInbound({ body, state });
       }
       if (url.pathname === "/_matrix/client/versions" && method === "GET") {
+        await appendEvent(state, {
+          at: new Date().toISOString(),
+          method,
+          path: url.pathname,
+          query: queryRecord(url),
+          type,
+        });
         return jsonResponse({ unstable_features: {}, versions: ["v1.11"] });
       }
       if (!url.pathname.startsWith("/_matrix/client/")) {
         return matrixError("M_UNRECOGNIZED", "Unrecognized request", 404);
       }
       if (!authorized(request, state.accessToken)) {
+        request.resume();
         return matrixError("M_UNKNOWN_TOKEN", "Invalid access token", 401);
       }
-      return await handleMatrixApi({ body, method, path: url.pathname, state, url });
+      const parsedBody = ["POST", "PUT"].includes(method)
+        ? await parseUnknownRequestBody(request)
+        : {};
+      if (!isJsonObject(parsedBody)) {
+        return matrixError("M_BAD_JSON", "Request body must be a JSON object", 400);
+      }
+      await appendEvent(state, {
+        at: new Date().toISOString(),
+        ...(Object.keys(parsedBody).length > 0 ? { body: parsedBody } : {}),
+        method,
+        path: url.pathname,
+        query: queryRecord(url),
+        type,
+      });
+      return await handleMatrixApi({ body: parsedBody, method, path: url.pathname, state, url });
     },
   });
 

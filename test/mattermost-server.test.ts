@@ -3,7 +3,7 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { startMattermostServer, type StartedMattermostServer } from "../src/index.js";
-import { createTempDir, disposeTempDir } from "./test-helpers.js";
+import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedMattermostServer[] = [];
 const directories: string[] = [];
@@ -38,6 +38,57 @@ function nextMessages(socket: WebSocket, count: number): Promise<Record<string, 
 }
 
 describe("Mattermost local provider server", () => {
+  it("returns Mattermost errors for non-object and oversized request bodies", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startMattermostServer({
+      botToken: "bot-secret",
+      recorderPath: path.join(directory, "mattermost-bodies.jsonl"),
+    });
+    servers.push(server);
+    const postsUrl = `${server.manifest.endpoints.apiRoot}/posts`;
+
+    for (const scalarBody of ["null", '"scalar"', "42", "true", "[]"]) {
+      const invalid = await fetch(postsUrl, {
+        body: scalarBody,
+        headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toMatchObject({
+        message: "Request body must be a JSON object",
+        status_code: 400,
+      });
+    }
+
+    const malformed = await fetch(postsUrl, {
+      body: "{",
+      headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({
+      message: "Request body is not valid JSON",
+      status_code: 400,
+    });
+
+    const oversized = await requestHttp({
+      body: Buffer.alloc(1024 * 1024 + 1, 0x20),
+      headers: {
+        authorization: "Bearer bot-secret",
+        "content-length": String(1024 * 1024 + 1),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      url: postsUrl,
+    });
+    expect(oversized.status).toBe(413);
+    expect(JSON.parse(oversized.body)).toMatchObject({
+      message: "Request body is too large",
+      status_code: 413,
+    });
+  });
+
   it("serves authenticated REST and delivers admin inbound over the native WebSocket", async () => {
     const directory = await createTempDir();
     directories.push(directory);
