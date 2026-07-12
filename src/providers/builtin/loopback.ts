@@ -54,13 +54,27 @@ export class LoopbackChatAdapter {
 
   decodeThreadId(threadId: string): ThreadAddress {
     const [address = threadId, rawThreadId] = threadId.split("::");
-    const [, channelId = address, id = address] = address.split(":");
-    const decoded: ThreadAddress = { id };
-    if (channelId) {
-      decoded.channelId = channelId;
+    const [platform, rawChannelOrId, rawId] = address.split(":");
+    if (platform !== "loopback+v2" || !rawChannelOrId) {
+      const [, channelId = address, id = address] = address.split(":");
+      const decoded: ThreadAddress = { id };
+      if (channelId) {
+        decoded.channelId = channelId;
+      }
+      if (rawThreadId) {
+        decoded.threadId = rawThreadId;
+      }
+      return decoded;
+    }
+
+    const decoded: ThreadAddress = {
+      id: decodeURIComponent(rawId ?? rawChannelOrId),
+    };
+    if (rawId) {
+      decoded.channelId = decodeURIComponent(rawChannelOrId);
     }
     if (rawThreadId) {
-      decoded.threadId = rawThreadId;
+      decoded.threadId = decodeURIComponent(rawThreadId);
     }
     return decoded;
   }
@@ -95,8 +109,12 @@ export class LoopbackChatAdapter {
   }
 
   encodeThreadId(platformData: ThreadAddress): string {
-    const channelId = platformData.channelId ?? `loopback:${platformData.id}`;
-    return platformData.threadId ? `${channelId}::${platformData.threadId}` : channelId;
+    const address = platformData.channelId
+      ? `loopback+v2:${encodeURIComponent(platformData.channelId)}:${encodeURIComponent(platformData.id)}`
+      : `loopback+v2:${encodeURIComponent(platformData.id)}`;
+    return platformData.threadId
+      ? `${address}::${encodeURIComponent(platformData.threadId)}`
+      : address;
   }
 
   fetchMessages(
@@ -106,9 +124,13 @@ export class LoopbackChatAdapter {
     const messages = [...(this.#messages.get(threadId) ?? [])];
     const limit = options?.limit ?? messages.length;
     if (!options?.cursor) {
-      return Promise.resolve({
+      const result: { messages: LoopbackMessage[]; nextCursor?: string } = {
         messages: messages.slice(-limit),
-      });
+      };
+      if (messages.length - limit > 0) {
+        result.nextCursor = String(messages.length - limit);
+      }
+      return Promise.resolve(result);
     }
 
     const offset = Number(options.cursor);

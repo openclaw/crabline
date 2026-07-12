@@ -8,6 +8,46 @@ afterEach(() => {
 });
 
 describe("loopback chat adapter", () => {
+  it("round-trips direct and channel thread addresses", () => {
+    adapter = new LoopbackChatAdapter("crabline");
+
+    for (const address of [
+      { id: "user:1", threadId: "dm::1" },
+      { channelId: "channel:1", id: "user:1", threadId: "topic::1" },
+    ]) {
+      expect(adapter.decodeThreadId(adapter.encodeThreadId(address))).toEqual(address);
+    }
+  });
+
+  it("preserves legacy percent-encoded-looking thread ids", () => {
+    adapter = new LoopbackChatAdapter("crabline");
+
+    expect(adapter.decodeThreadId("loopback:user%2F::topic%2F")).toEqual({
+      channelId: "user%2F",
+      id: "loopback:user%2F",
+      threadId: "topic%2F",
+    });
+  });
+
+  it("returns a cursor with the initial limited page", async () => {
+    adapter = new LoopbackChatAdapter("crabline");
+    const threadId = adapter.encodeThreadId({ id: "user-1" });
+    adapter.ingestUserMessage(threadId, "first");
+    adapter.ingestUserMessage(threadId, "second");
+    adapter.ingestUserMessage(threadId, "third");
+
+    const latest = await adapter.fetchMessages(threadId, { limit: 2 });
+    expect(latest.messages.map((message) => message.text)).toEqual(["second", "third"]);
+    expect(latest.nextCursor).toBe("1");
+
+    const previous = await adapter.fetchMessages(threadId, {
+      cursor: latest.nextCursor,
+      limit: 2,
+    });
+    expect(previous.messages.map((message) => message.text)).toEqual(["first"]);
+    expect(previous.nextCursor).toBeUndefined();
+  });
+
   it("supports direct adapter operations", async () => {
     adapter = new LoopbackChatAdapter("crabline");
 
