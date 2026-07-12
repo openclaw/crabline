@@ -1376,4 +1376,35 @@ describe("OpenClaw local provider bridge", () => {
       await fs.rm(outputDir, { recursive: true, force: true });
     }
   });
+
+  it("rejects overlapping smoke runs that share an output artifact set", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-overlap-"));
+    try {
+      const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+      const first = runOpenClawCrablineChannelDriverSmoke({ outputDir, selection });
+      const overlapping = runOpenClawCrablineChannelDriverSmoke({ outputDir, selection });
+      const otherSelection = resolveOpenClawCrablineChannelDriverSelection({ channel: "slack" });
+      const otherChannel = runOpenClawCrablineChannelDriverSmoke({
+        outputDir,
+        selection: otherSelection,
+      });
+
+      await expect(overlapping).rejects.toThrow(
+        `OpenClaw Crabline smoke is already running for channel "telegram" in "${outputDir}"; cannot start channel "telegram".`,
+      );
+      await expect(otherChannel).rejects.toThrow(
+        `OpenClaw Crabline smoke is already running for channel "telegram" in "${outputDir}"; cannot start channel "slack".`,
+      );
+      await expect(first).resolves.toMatchObject({
+        smoke: { result: { ok: true, provider: "telegram" } },
+      });
+      await expect(
+        runOpenClawCrablineChannelDriverSmoke({ outputDir, selection }),
+      ).resolves.toMatchObject({
+        smoke: { result: { ok: true, provider: "telegram" } },
+      });
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
 });
