@@ -254,7 +254,7 @@ describe("Mattermost local provider server", () => {
 
   it("expires silent and invalid WebSocket authentication", async () => {
     const server = await startMattermostServer({
-      botToken: "bot-secret",
+      botToken: "test-token-placeholder",
       websocketAuthenticationTimeoutMs: 25,
     });
     servers.push(server);
@@ -274,7 +274,7 @@ describe("Mattermost local provider server", () => {
     invalid.send(
       JSON.stringify({
         action: "authentication_challenge",
-        data: { token: "wrong-token" },
+        data: { token: "not-a-real" },
         seq: 1,
       }),
     );

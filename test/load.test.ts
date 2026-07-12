@@ -105,8 +105,8 @@ describe("config load", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const configPath = path.join(directory, "crabline.yaml");
-    const secret = "sentinel-secret-value";
-    await writeText(configPath, `accessToken: ${secret}: invalid\n`);
+    const sentinel = "sentinel-secret-value";
+    await writeText(configPath, `accessToken: ${sentinel}: invalid\n`);
 
     let failure: unknown;
     try {
@@ -118,7 +118,7 @@ describe("config load", () => {
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toContain("YAML parse error");
     expect((failure as Error).message).toContain("line 1, column");
-    expect((failure as Error).message).not.toContain(secret);
+    expect((failure as Error).message).not.toContain(sentinel);
     expect((failure as Error).message).not.toContain("accessToken");
   });
 
