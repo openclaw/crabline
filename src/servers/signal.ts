@@ -164,10 +164,11 @@ function queueSignalClientEvent(
   const buffer = state.clientBuffers.get(client);
   const eventBytes = Buffer.byteLength(event.data);
   const alreadyBuffered = isSignalEventBuffered(state, event);
+  const pendingEventBytes = state.pendingEvents.includes(event) ? 0 : eventBytes;
   if (
     !buffer ||
     (!alreadyBuffered && signalBufferedEventCount(state) >= state.maxPendingInboundEvents) ||
-    state.pendingEventBytes + buffer.bytes + eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES
+    state.pendingEventBytes + buffer.bytes + pendingEventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES
   ) {
     evictSignalClient(state, client);
     return "rejected";
