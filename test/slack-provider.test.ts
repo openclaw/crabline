@@ -233,6 +233,53 @@ describe("slack provider", () => {
     });
   });
 
+  it("normalizes Slack message_changed callbacks from the replacement message", async () => {
+    const config = await createSlackConfig(0);
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+    const context = createContext(config, {
+      channelId: "C1234567890",
+      id: "reply-target",
+      metadata: {},
+      threadId: "1700000000.000100",
+    });
+    context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
+    const endpoint = endpointFromDetails((await provider.probe(context)).details);
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "edited-nonce",
+      since: new Date(Date.now() - 1000).toISOString(),
+      timeoutMs: 500,
+    });
+    const response = await fetch(endpoint, {
+      body: JSON.stringify({
+        event: {
+          channel: "C1234567890",
+          message: {
+            text: "edited ACK edited-nonce",
+            thread_ts: "1700000000.000100",
+            ts: "1700000001.000200",
+            type: "message",
+            user: "U1234567890",
+          },
+          subtype: "message_changed",
+          type: "message",
+        },
+        type: "event_callback",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(waiting).resolves.toMatchObject({
+      author: "user",
+      id: "1700000001.000200",
+      text: "edited ACK edited-nonce",
+      threadId: "C1234567890:thread:1700000000.000100",
+    });
+  });
+
   it("verifies Slack request signatures before parsing", async () => {
     const signingSecret = "test-token-placeholder";
     const config = await createSlackConfig(0, signingSecret);
@@ -276,7 +323,7 @@ describe("slack provider", () => {
     expect(accepted.status).toBe(200);
   });
 
-  it("matches channel-aware and legacy generic thread webhooks", async () => {
+  it("scopes generic thread webhooks and rejects bare timestamps", async () => {
     const config = await createSlackConfig(0);
     const provider = new SlackProviderAdapter("slack", config, "crabline");
     providers.push(provider);
@@ -288,41 +335,41 @@ describe("slack provider", () => {
     });
     const endpoint = endpointFromDetails((await provider.probe(context)).details);
     const threadKey = "C1234567890:thread:1700000000.000100";
-    const since = new Date(Date.now() - 1_000).toISOString();
-
-    for (const [index, payload] of [
-      {
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "generic-thread",
+      since: new Date(Date.now() - 1_000).toISOString(),
+      threadId: threadKey,
+      timeoutMs: 500,
+    });
+    const scoped = await fetch(endpoint, {
+      body: JSON.stringify({
         channelId: "C1234567890",
         id: "generic-scoped",
         text: "ACK scoped",
         threadId: "1700000000.000100",
-      },
-      {
-        id: "generic-legacy",
-        text: "ACK legacy",
-        threadId: "1700000000.000100",
-      },
-    ].entries()) {
-      const waiting = provider.waitForInbound({
-        ...context,
-        nonce: "generic-thread",
-        since,
-        threadId: threadKey,
-        timeoutMs: 500,
-      });
-      const response = await fetch(endpoint, {
-        body: JSON.stringify(payload),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
 
-      expect(response.status).toBe(200);
-      await expect(waiting).resolves.toMatchObject({
-        id: payload.id,
-        text: payload.text,
-        threadId: index === 0 ? threadKey : "1700000000.000100",
-      });
-    }
+    expect(scoped.status).toBe(200);
+    await expect(waiting).resolves.toMatchObject({
+      id: "generic-scoped",
+      threadId: threadKey,
+    });
+
+    const unscoped = await fetch(endpoint, {
+      body: JSON.stringify({
+        id: "generic-unscoped",
+        text: "ACK unscoped",
+        threadId: "1700000000.000100",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(unscoped.status).toBe(400);
+    await expect(unscoped.text()).resolves.toContain("requires a native channelId");
   });
 
   it("keeps watched Slack threads scoped to their channel", async () => {

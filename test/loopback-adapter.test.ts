@@ -55,13 +55,34 @@ describe("loopback chat adapter", () => {
 
     const latest = await adapter.fetchMessages(threadId, { limit: 2 });
     expect(latest.messages.map((message) => message.text)).toEqual(["second", "third"]);
-    expect(latest.nextCursor).toBe("1");
+    expect(latest.nextCursor).toBe("2");
 
     const previous = await adapter.fetchMessages(threadId, {
       ...(latest.nextCursor ? { cursor: latest.nextCursor } : {}),
       limit: 2,
     });
     expect(previous.messages.map((message) => message.text)).toEqual(["first"]);
+    expect(previous.nextCursor).toBeUndefined();
+  });
+
+  it("keeps pagination cursors stable when earlier messages are deleted", async () => {
+    adapter = new LoopbackChatAdapter("crabline");
+    const threadId = adapter.encodeThreadId({ id: "user-1" });
+    const first = adapter.ingestUserMessage(threadId, "first");
+    adapter.ingestUserMessage(threadId, "second");
+    adapter.ingestUserMessage(threadId, "third");
+
+    const latest = await adapter.fetchMessages(threadId, { limit: 2 });
+    expect(latest.messages.map((message) => message.text)).toEqual(["second", "third"]);
+    expect(latest.nextCursor).toBeDefined();
+
+    await adapter.deleteMessage(threadId, first.id);
+    const previous = await adapter.fetchMessages(threadId, {
+      cursor: latest.nextCursor!,
+      limit: 2,
+    });
+
+    expect(previous.messages).toEqual([]);
     expect(previous.nextCursor).toBeUndefined();
   });
 

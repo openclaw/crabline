@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Harden secondary provider adapters with stable pagination, scoped native IDs, immutable diagnostics redaction, Slack edit normalization, and bounded WhatsApp ingress.
 - Bound signed-JWT key refreshes and authenticate, decode, or suppress Google Chat, Teams, Feishu, and Discord webhook ingress according to provider contracts.
 - Bound recorder tail memory, harden shared provider cleanup and inbound matching, and reject non-global webhook targets.
 - Recover backpressured Signal events without recording rejected RPC calls.

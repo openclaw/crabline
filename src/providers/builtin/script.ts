@@ -34,6 +34,7 @@ type ScriptPayload = {
 type ScriptDiagnosticsSnapshot = {
   configuredCommands: string[];
   sensitiveEnvironmentValues: string[];
+  sensitivePayloadValues: string[];
 };
 
 type SpawnedScriptChild = ChildProcessByStdio<Writable, Readable, Readable>;
@@ -217,14 +218,18 @@ function collectSensitivePayloadValues(
   }
 }
 
-function redactSensitivePayloadValues(detail: string, payload: unknown): string {
+function snapshotSensitivePayloadValues(payload: unknown): string[] {
   const values = new Set<string>();
   collectSensitivePayloadValues(payload, values, {
     nonSensitive: new WeakSet(),
     sensitive: new WeakSet(),
   });
+  return [...values].sort((left, right) => right.length - left.length);
+}
+
+function redactSensitivePayloadValues(detail: string, sensitivePayloadValues: string[]): string {
   let redacted = detail;
-  for (const value of [...values].sort((left, right) => right.length - left.length)) {
+  for (const value of sensitivePayloadValues) {
     redacted = redacted.split(value).join("[redacted configured value]");
   }
   return redacted;
@@ -235,7 +240,6 @@ function formatScriptError(
   detail: string,
   command: string,
   diagnostics: ScriptDiagnosticsSnapshot,
-  payload?: unknown,
 ): string {
   if (!detail.trim()) {
     return summary;
@@ -245,7 +249,7 @@ function formatScriptError(
   }
   let redacted = redactSensitivePayloadValues(
     redactSensitiveEnvironmentValues(detail, diagnostics.sensitiveEnvironmentValues),
-    payload,
+    diagnostics.sensitivePayloadValues,
   );
   for (const configuredCommand of diagnostics.configuredCommands) {
     redacted = redacted.split(configuredCommand).join("[configured script command]");
@@ -256,8 +260,9 @@ function formatScriptError(
 
 function createScriptDiagnosticsSnapshot(
   command: string,
-  payload: unknown,
+  serializedPayload: string,
 ): ScriptDiagnosticsSnapshot {
+  const payload = JSON.parse(serializedPayload) as unknown;
   const configuredCommands = new Set([command]);
   const commands = (
     payload as {
@@ -272,6 +277,7 @@ function createScriptDiagnosticsSnapshot(
   return {
     configuredCommands: [...configuredCommands].sort((left, right) => right.length - left.length),
     sensitiveEnvironmentValues: snapshotSensitiveEnvironmentValues(),
+    sensitivePayloadValues: snapshotSensitivePayloadValues(payload),
   };
 }
 
@@ -279,7 +285,6 @@ function parseScriptJson<T>(params: {
   command: string;
   diagnostics: ScriptDiagnosticsSnapshot;
   output: string;
-  payload?: unknown;
   schema: z.ZodType<T>;
 }): T {
   let parsed: unknown;
@@ -292,7 +297,6 @@ function parseScriptJson<T>(params: {
         ensureErrorMessage(error),
         params.command,
         params.diagnostics,
-        params.payload,
       ),
       { kind: "config" },
     );
@@ -322,7 +326,8 @@ function runScript<T>(params: {
   if (params.signal?.aborted) {
     return Promise.reject(params.signal.reason ?? new Error("Script command aborted."));
   }
-  const diagnostics = createScriptDiagnosticsSnapshot(params.command, params.payload);
+  const serializedPayload = JSON.stringify(params.payload);
+  const diagnostics = createScriptDiagnosticsSnapshot(params.command, serializedPayload);
   return new Promise((resolve, reject) => {
     let child: SpawnedScriptChild;
     try {
@@ -341,7 +346,6 @@ function runScript<T>(params: {
             ensureErrorMessage(error),
             params.command,
             diagnostics,
-            params.payload,
           ),
           { kind: "connectivity" },
         ),
@@ -416,7 +420,6 @@ function runScript<T>(params: {
               ensureErrorMessage(error),
               params.command,
               diagnostics,
-              params.payload,
             ),
             { kind: "connectivity" },
           ),
@@ -435,7 +438,6 @@ function runScript<T>(params: {
                 stderrText.trim() ? stderrText : stdoutText,
                 params.command,
                 diagnostics,
-                params.payload,
               ),
               { kind: "connectivity" },
             ),
@@ -448,7 +450,6 @@ function runScript<T>(params: {
             command: params.command,
             diagnostics,
             output: stdoutText,
-            payload: params.payload,
             schema: params.schema,
           });
           if (deadlineExceeded && !params.acceptResultDuringTimeoutGrace?.(result)) {
@@ -493,7 +494,7 @@ function runScript<T>(params: {
       return;
     }
     params.signal?.addEventListener("abort", abort, { once: true });
-    child.stdin.end(JSON.stringify(params.payload));
+    child.stdin.end(serializedPayload);
   });
 }
 
@@ -520,7 +521,8 @@ function watchScript(params: {
         target: params.normalizeTarget(params.context.fixture.target),
       },
     };
-    const diagnostics = createScriptDiagnosticsSnapshot(params.command, payload);
+    const serializedPayload = JSON.stringify(payload);
+    const diagnostics = createScriptDiagnosticsSnapshot(params.command, serializedPayload);
     let child: SpawnedScriptChild;
     try {
       child = spawn(params.command, {
@@ -537,7 +539,6 @@ function watchScript(params: {
           ensureErrorMessage(error),
           params.command,
           diagnostics,
-          payload,
         ),
         { kind: "connectivity" },
       );
@@ -585,7 +586,7 @@ function watchScript(params: {
         });
       },
     );
-    child.stdin.end(JSON.stringify(payload));
+    child.stdin.end(serializedPayload);
 
     try {
       for await (const chunk of child.stdout) {
@@ -612,7 +613,6 @@ function watchScript(params: {
             command: params.command,
             diagnostics,
             output: line,
-            payload,
             schema: ScriptMessageSchema,
           });
           yield {
@@ -633,7 +633,6 @@ function watchScript(params: {
           command: params.command,
           diagnostics,
           output: buffer,
-          payload,
           schema: ScriptMessageSchema,
         });
         yield {
@@ -653,7 +652,6 @@ function watchScript(params: {
             ensureErrorMessage(childError),
             params.command,
             diagnostics,
-            payload,
           ),
           { kind: "connectivity" },
         );
@@ -665,7 +663,6 @@ function watchScript(params: {
             stderr,
             params.command,
             diagnostics,
-            payload,
           ),
           { kind: "connectivity" },
         );
@@ -684,7 +681,6 @@ function watchScript(params: {
             ensureErrorMessage(childError),
             params.command,
             diagnostics,
-            payload,
           ),
           { kind: "connectivity" },
         );

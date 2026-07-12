@@ -71,17 +71,19 @@ function normalizeSlackEventsPayload(payload: unknown) {
 
   if (isRecord(payload.event)) {
     const event = payload.event;
+    const message =
+      event.subtype === "message_changed" && isRecord(event.message) ? event.message : event;
     const channel = event.channel;
-    const text = event.text;
+    const text = message.text;
     if (typeof channel !== "string" || typeof text !== "string") {
       throw new CrablineError("Slack event payload requires event.channel and event.text", {
         kind: "inbound",
       });
     }
-    const threadTs = event.thread_ts;
-    const ts = event.ts;
+    const threadTs = message.thread_ts;
+    const ts = message.ts;
     return {
-      author: slackAuthorFromEvent(event),
+      author: slackAuthorFromEvent(message),
       ...(typeof ts === "string"
         ? { id: requireNativeInboundId(ts, SLACK_TS_RULE, "Slack event.ts") }
         : {}),
@@ -110,6 +112,11 @@ function normalizeSlackEventsPayload(payload: unknown) {
   const threadId =
     (message ? optionalString(message, "threadId") : undefined) ??
     optionalString(payload, "threadId");
+  if (threadId && SLACK_TS_RULE.pattern.test(threadId) && !channelId) {
+    throw new CrablineError("Slack timestamp threadId requires a native channelId", {
+      kind: "inbound",
+    });
+  }
   if (!channelId || !threadId || !SLACK_TS_RULE.pattern.test(threadId)) {
     return normalized;
   }
@@ -138,32 +145,9 @@ function matchesSlackThread(
     target.channelId && SLACK_TS_RULE.pattern.test(expectedThreadId)
       ? slackTargetKey(target.channelId, expectedThreadId)
       : expectedThreadId;
-  if (
+  return (
     candidateThreadId === scopedExpectedThreadId ||
     candidateThreadId.startsWith(`${scopedExpectedThreadId}:`)
-  ) {
-    return true;
-  }
-  const marker = ":thread:";
-  if (SLACK_TS_RULE.pattern.test(scopedExpectedThreadId)) {
-    const separator = candidateThreadId.indexOf(marker);
-    if (separator <= 0) {
-      return false;
-    }
-    const channelId = candidateThreadId.slice(0, separator);
-    const threadTs = candidateThreadId.slice(separator + marker.length);
-    return SLACK_CHANNEL_ID_RULE.pattern.test(channelId) && threadTs === scopedExpectedThreadId;
-  }
-  const separator = scopedExpectedThreadId.indexOf(marker);
-  if (separator <= 0) {
-    return false;
-  }
-  const channelId = scopedExpectedThreadId.slice(0, separator);
-  const threadTs = scopedExpectedThreadId.slice(separator + marker.length);
-  return (
-    SLACK_CHANNEL_ID_RULE.pattern.test(channelId) &&
-    SLACK_TS_RULE.pattern.test(threadTs) &&
-    candidateThreadId === threadTs
   );
 }
 

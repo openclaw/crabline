@@ -18,6 +18,11 @@ type PostableMessage =
   | { markdown: string }
   | { raw: string };
 
+type StoredLoopbackMessage = {
+  message: LoopbackMessage;
+  sequence: number;
+};
+
 function createMessageId(): string {
   return `loopback-mock-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -57,7 +62,8 @@ export class LoopbackChatAdapter {
   readonly persistMessageHistory = true;
   readonly userName;
 
-  readonly #messages = new Map<string, LoopbackMessage[]>();
+  readonly #messages = new Map<string, StoredLoopbackMessage[]>();
+  readonly #nextSequence = new Map<string, number>();
 
   constructor(userName: string) {
     this.userName = userName;
@@ -106,7 +112,7 @@ export class LoopbackChatAdapter {
     const messages = this.#messages.get(threadId) ?? [];
     this.#messages.set(
       threadId,
-      messages.filter((entry) => entry.id !== messageId),
+      messages.filter((entry) => entry.message.id !== messageId),
     );
     return Promise.resolve();
   }
@@ -117,11 +123,12 @@ export class LoopbackChatAdapter {
     message: PostableMessage,
   ): Promise<{ id: string; raw: LoopbackRawMessage; threadId: string }> {
     const messages = this.#messages.get(threadId) ?? [];
-    const existing = messages.find((entry) => entry.id === messageId);
-    if (!existing) {
+    const stored = messages.find((entry) => entry.message.id === messageId);
+    if (!stored) {
       throw new CrablineError(`Loopback message not found: ${messageId}`, { kind: "inbound" });
     }
 
+    const existing = stored.message;
     const text = toPostableText(message);
     existing.text = text;
     existing.formatted = text;
@@ -144,7 +151,7 @@ export class LoopbackChatAdapter {
     threadId: string,
     options?: { cursor?: string; limit?: number },
   ): Promise<{ messages: LoopbackMessage[]; nextCursor?: string }> {
-    const messages = [...(this.#messages.get(threadId) ?? [])];
+    const storedMessages = [...(this.#messages.get(threadId) ?? [])];
     if (
       options?.limit !== undefined &&
       (!Number.isSafeInteger(options.limit) || options.limit <= 0)
@@ -153,34 +160,33 @@ export class LoopbackChatAdapter {
         kind: "config",
       });
     }
-    const limit = options?.limit ?? messages.length;
-    if (!options?.cursor) {
-      const result: { messages: LoopbackMessage[]; nextCursor?: string } = {
-        messages: messages.slice(-limit).map(cloneMessage),
-      };
-      if (messages.length - limit > 0) {
-        result.nextCursor = String(messages.length - limit);
+    const limit = options?.limit ?? storedMessages.length;
+    let cursor: number | undefined;
+    if (options?.cursor) {
+      if (!/^[1-9]\d*$/u.test(options.cursor)) {
+        throw new CrablineError("Loopback message cursor must be a positive safe integer.", {
+          kind: "config",
+        });
       }
-      return Promise.resolve(result);
+      cursor = Number(options.cursor);
+      if (!Number.isSafeInteger(cursor) || cursor > (this.#nextSequence.get(threadId) ?? 0)) {
+        throw new CrablineError(
+          "Loopback message cursor must be a positive safe integer within message history.",
+          { kind: "config" },
+        );
+      }
     }
 
-    if (!/^[1-9]\d*$/u.test(options.cursor)) {
-      throw new CrablineError("Loopback message cursor must be a positive safe integer.", {
-        kind: "config",
-      });
-    }
-    const offset = Number(options.cursor);
-    if (!Number.isSafeInteger(offset) || offset > messages.length) {
-      throw new CrablineError(
-        "Loopback message cursor must be a positive safe integer within message history.",
-        { kind: "config" },
-      );
-    }
+    const eligibleMessages =
+      cursor === undefined
+        ? storedMessages
+        : storedMessages.filter((entry) => entry.sequence < cursor);
+    const page = eligibleMessages.slice(-limit);
     const result: { messages: LoopbackMessage[]; nextCursor?: string } = {
-      messages: messages.slice(Math.max(0, offset - limit), offset).map(cloneMessage),
+      messages: page.map((entry) => cloneMessage(entry.message)),
     };
-    if (offset - limit > 0) {
-      result.nextCursor = String(offset - limit);
+    if (eligibleMessages.length > page.length && page[0]) {
+      result.nextCursor = String(page[0].sequence);
     }
     return Promise.resolve(result);
   }
@@ -267,14 +273,17 @@ export class LoopbackChatAdapter {
   listSince(threadId: string, since: string): LoopbackMessage[] {
     const sinceTime = new Date(since).getTime();
     return (this.#messages.get(threadId) ?? [])
-      .filter((entry) => entry.metadata.dateSent.getTime() >= sinceTime)
+      .map((entry) => entry.message)
+      .filter((message) => message.metadata.dateSent.getTime() >= sinceTime)
       .map(cloneMessage);
   }
 
   #append(threadId: string, message: LoopbackMessage): void {
     const bucket = this.#messages.get(threadId) ?? [];
-    bucket.push(cloneMessage(message));
+    const sequence = (this.#nextSequence.get(threadId) ?? 0) + 1;
+    bucket.push({ message: cloneMessage(message), sequence });
     this.#messages.set(threadId, bucket);
+    this.#nextSequence.set(threadId, sequence);
   }
 }
 
