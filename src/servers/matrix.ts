@@ -379,6 +379,10 @@ async function handleMatrixApi(params: {
 
   match = /^\/user\/([^/]+)\/filter\/([^/]+)$/u.exec(relativePath);
   if (params.method === "GET" && match) {
+    const userId = decodeURIComponent(match[1]!);
+    if (userId !== params.state.botUserId) {
+      return matrixError("M_FORBIDDEN", "Cannot get filters for another user", 403);
+    }
     const filter = params.state.filters.get(decodeURIComponent(match[2]!));
     return filter ? jsonResponse(filter) : matrixError("M_NOT_FOUND", "Unknown filter", 404);
   }
@@ -498,7 +502,7 @@ export async function startMatrixServer(
       if (error instanceof RequestBodyTooLargeError) {
         return matrixError("M_TOO_LARGE", "Request body is too large", 413);
       }
-      return undefined;
+      return matrixError("M_UNKNOWN", "Internal server error", 500);
     },
     host,
     port: params.port ?? 0,
