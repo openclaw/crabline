@@ -395,7 +395,7 @@ describe("telegram local provider server", () => {
   it("acknowledges unsupported and media-only updates without recording them", async () => {
     const observed: unknown[] = [];
     const server = await startTelegramServer({
-      botToken: "123:fake",
+      botToken: "test-token-placeholder",
       onEvent: (event) => {
         observed.push(event);
       },
@@ -1229,7 +1229,7 @@ describe("telegram local provider server", () => {
   });
 
   it("rejects unsafe integer identities without consuming generated IDs", async () => {
-    const server = await startTelegramServer({ botToken: "123:fake" });
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
     const unsafe = String(Number.MAX_SAFE_INTEGER + 1);
 
@@ -1244,11 +1244,14 @@ describe("telegram local provider server", () => {
       expect(response.status).toBe(400);
     }
 
-    const outbound = await fetch(`${server.manifest.baseUrl}/bot123:fake/sendMessage`, {
-      body: JSON.stringify({ chat_id: 42, message_thread_id: unsafe, text: "unsafe topic" }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    });
+    const outbound = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body: JSON.stringify({ chat_id: 42, message_thread_id: unsafe, text: "unsafe topic" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
     expect(outbound.status).toBe(400);
 
     const polling = await getUpdates(server, { offset: unsafe });
