@@ -15,9 +15,9 @@ import {
 } from "./native-local-mock.js";
 
 const MSTEAMS_CONVERSATION_ID_RULE: NativeIdRule = {
-  example: "19:meeting_abc@thread.v2",
+  example: "a:opaque-conversation-id",
   name: "Microsoft Teams conversation id",
-  pattern: /^19:[^@]+@thread\.[A-Za-z0-9.]+$/u,
+  pattern: /^.+$/su,
 };
 
 export function resolveMsTeamsAdapterConfig(
