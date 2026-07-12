@@ -150,6 +150,66 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("preserves a generation retained as a successor pointer rollback", async () => {
+    const outputDir = await createTempDir();
+    const lock = createLock();
+    const commitFailure = new Error("successor replaced the pointer");
+    const successorGeneration = "generation-22222222-2222-4222-8222-222222222222";
+    lock.commitFileAtomically.mockImplementation(
+      async ({ contents, destinationPath, stageFile }) => {
+        await stageFile(destinationPath, contents);
+        const pointer = JSON.parse(contents) as Record<string, unknown>;
+        const generation = String(pointer.generation);
+        await fs.writeFile(
+          destinationPath,
+          `${JSON.stringify(
+            {
+              ...pointer,
+              capabilityMatrixPath: String(pointer.capabilityMatrixPath).replace(
+                generation,
+                successorGeneration,
+              ),
+              generation: successorGeneration,
+              manifestPath: String(pointer.manifestPath).replace(generation, successorGeneration),
+              previousGeneration: generation,
+              smokeArtifactPath: String(pointer.smokeArtifactPath).replace(
+                generation,
+                successorGeneration,
+              ),
+            },
+            null,
+            2,
+          )}\n`,
+        );
+        throw commitFailure;
+      },
+    );
+    try {
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParams(outputDir, lock), {
+          createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+        }),
+      ).rejects.toBe(commitFailure);
+
+      const pointer = await readOpenClawCrablineArtifactPointer(outputDir);
+      expect(pointer).toMatchObject({
+        generation: successorGeneration,
+        previousGeneration: "generation-11111111-1111-4111-8111-111111111111",
+      });
+      await expect(
+        fs.stat(
+          path.join(
+            outputDir,
+            OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
+            pointer!.previousGeneration!,
+          ),
+        ),
+      ).resolves.toBeDefined();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("retains the committed generation when the pointer disappears before pruning", async () => {
     const outputDir = await createTempDir();
     const lock = createLock();

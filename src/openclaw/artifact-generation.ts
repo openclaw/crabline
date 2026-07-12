@@ -332,8 +332,10 @@ export async function publishOpenClawCrablineArtifactGeneration(
       let referencedByPointer = false;
       if (installed) {
         try {
+          const livePointer = await readOpenClawCrablineArtifactPointer(outputDir);
           referencedByPointer =
-            (await readOpenClawCrablineArtifactPointer(outputDir))?.generation === generation;
+            livePointer?.generation === generation ||
+            livePointer?.previousGeneration === generation;
         } catch {
           referencedByPointer = true;
         }
