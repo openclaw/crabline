@@ -1,9 +1,23 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { CrablineError } from "../core/errors.js";
-import { adminAuthError, formatUrlHost, hasAdminToken, InvalidJsonBodyError } from "./http.js";
+import {
+  adminAuthError,
+  closeServer,
+  formatUrlHost,
+  hasAdminToken,
+  InvalidJsonBodyError,
+  isJsonObject,
+  jsonResponse,
+  queryRecord,
+  readBody,
+  RequestBodyTooLargeError,
+  writeResponse,
+} from "./http.js";
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+
+const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 
 type TelegramServerEvent = {
   at: string;
@@ -19,10 +33,12 @@ type TelegramServerState = {
   botId: number;
   botToken: string;
   botUsername: string;
+  closing: boolean;
   nextMessageId: number;
   nextUpdateId: number;
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
+  updateWaiters: Set<(hasUpdate: boolean) => void>;
   updates: TelegramUpdate[];
 };
 
@@ -111,10 +127,6 @@ export type StartTelegramServerParams = {
   recorderPath?: string | undefined;
 };
 
-function jsonResponse(value: unknown, status = 200): Response {
-  return Response.json(value, { status });
-}
-
 function telegramOk(result: unknown): Response {
   return jsonResponse({ ok: true, result });
 }
@@ -123,16 +135,8 @@ function telegramError(description: string, status = 400): Response {
   return jsonResponse({ description, error_code: status, ok: false }, status);
 }
 
-async function readBody(request: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
-}
-
-async function parseRequestBody(request: IncomingMessage): Promise<Record<string, unknown>> {
-  const body = await readBody(request);
+async function parseRequestBody(request: IncomingMessage): Promise<unknown> {
+  const body = await readBody(request, TELEGRAM_MAX_REQUEST_BODY_BYTES);
   if (body.length === 0) {
     return {};
   }
@@ -140,7 +144,7 @@ async function parseRequestBody(request: IncomingMessage): Promise<Record<string
   const contentTypes = Array.isArray(contentType) ? contentType : [contentType];
   if (contentTypes.some((entry) => entry.includes("json"))) {
     try {
-      return JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+      return JSON.parse(body.toString("utf8")) as unknown;
     } catch (error) {
       throw new InvalidJsonBodyError(error);
     }
@@ -183,26 +187,6 @@ function parseMultipartFormDataBody(body: Buffer, contentType: string): Record<s
     fields[name] = filename && filename.length > 0 ? filename : rawContent;
   }
   return fields;
-}
-
-function closeServer(server: Server): Promise<void> {
-  return new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
-}
-
-async function writeResponse(response: ServerResponse, fetchResponse: Response): Promise<void> {
-  response.statusCode = fetchResponse.status;
-  for (const [name, value] of fetchResponse.headers) {
-    response.setHeader(name, value);
-  }
-  response.end(Buffer.from(await fetchResponse.arrayBuffer()));
 }
 
 function requireTelegramBotPath(pathname: string): { method: string; token: string } | undefined {
@@ -388,13 +372,10 @@ function createInboundUpdate(
   };
 }
 
-function queryRecord(url: URL): Record<string, string> {
-  return Object.fromEntries(url.searchParams.entries());
-}
-
 async function handleTelegramApi(params: {
   body: Record<string, unknown>;
   method: string;
+  request: IncomingMessage;
   state: TelegramServerState;
 }) {
   switch (params.method) {
@@ -445,15 +426,91 @@ async function handleTelegramApi(params: {
     case "getUpdates": {
       const offset = toIntegerValue(params.body.offset);
       const limit = toIntegerValue(params.body.limit) ?? 100;
-      const updates =
-        offset === undefined
-          ? params.state.updates
-          : params.state.updates.filter((update) => update.update_id >= offset);
-      return telegramOk(updates.slice(0, limit));
+      const timeout = toIntegerValue(params.body.timeout) ?? 0;
+      if (limit < 1 || limit > 100) {
+        return telegramError("Bad Request: limit must be between 1 and 100");
+      }
+      if (timeout < 0) {
+        return telegramError("Bad Request: timeout must be non-negative");
+      }
+      let updates = takeTelegramUpdates(params.state, offset, limit);
+      const deadline = Date.now() + Math.min(timeout * 1_000, 2_147_483_647);
+      if (updates.length === 0 && timeout > 0) {
+        while (updates.length === 0) {
+          const remainingMs = deadline - Date.now();
+          if (
+            remainingMs <= 0 ||
+            !(await waitForTelegramUpdate(params.state, params.request, remainingMs))
+          ) {
+            break;
+          }
+          updates = takeTelegramUpdates(params.state, offset, limit);
+        }
+      }
+      return telegramOk(updates);
     }
     default:
       return telegramError(`Not Found: unsupported method ${params.method}`, 404);
   }
+}
+
+function takeTelegramUpdates(
+  state: TelegramServerState,
+  offset: number | undefined,
+  limit: number,
+): TelegramUpdate[] {
+  if (offset !== undefined && offset < 0) {
+    const retainedCount = Math.min(Math.abs(offset), state.updates.length);
+    state.updates.splice(0, state.updates.length - retainedCount);
+  } else if (offset !== undefined) {
+    const firstUnconfirmed = state.updates.findIndex((update) => update.update_id >= offset);
+    if (firstUnconfirmed === -1) {
+      state.updates.length = 0;
+    } else if (firstUnconfirmed > 0) {
+      state.updates.splice(0, firstUnconfirmed);
+    }
+  }
+  return state.updates.slice(0, limit);
+}
+
+function notifyTelegramUpdateWaiters(state: TelegramServerState, hasUpdate: boolean): void {
+  const waiters = [...state.updateWaiters];
+  state.updateWaiters.clear();
+  for (const resolve of waiters) {
+    resolve(hasUpdate);
+  }
+}
+
+async function waitForTelegramUpdate(
+  state: TelegramServerState,
+  request: IncomingMessage,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (state.closing || request.socket.destroyed) {
+    return false;
+  }
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (hasUpdate: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      request.socket.off("close", onSocketClose);
+      state.updateWaiters.delete(onUpdate);
+      resolve(hasUpdate);
+    };
+    const onUpdate = (hasUpdate: boolean) => finish(hasUpdate);
+    const onSocketClose = () => finish(false);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref();
+    request.socket.once("close", onSocketClose);
+    state.updateWaiters.add(onUpdate);
+    if (state.closing || request.socket.destroyed) {
+      finish(false);
+    }
+  });
 }
 
 async function handleRequest(params: { request: IncomingMessage; state: TelegramServerState }) {
@@ -466,6 +523,9 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
       return adminAuthError();
     }
     const body = await parseRequestBody(params.request);
+    if (!isJsonObject(body)) {
+      return telegramError("Bad Request: request body must be a JSON object");
+    }
     const update = createInboundUpdate(params.state, body);
     await appendEvent(params.state, {
       at: new Date().toISOString(),
@@ -479,6 +539,8 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
       return telegramError("Bad Request: chatId and text are required");
     }
     params.state.updates.push(update);
+    params.state.updates.sort((left, right) => left.update_id - right.update_id);
+    notifyTelegramUpdateWaiters(params.state, true);
     return jsonResponse({ ok: true, update });
   }
 
@@ -488,6 +550,9 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
   }
   const body =
     params.request.method === "GET" ? queryRecord(url) : await parseRequestBody(params.request);
+  if (!isJsonObject(body)) {
+    return telegramError("Bad Request: can't parse JSON object");
+  }
   await appendEvent(params.state, {
     at: new Date().toISOString(),
     body,
@@ -499,6 +564,7 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
   return handleTelegramApi({
     body,
     method: botPath.method,
+    request: params.request,
     state: params.state,
   });
 }
@@ -515,6 +581,8 @@ export async function startTelegramServer(
     nextUpdateId: 1,
     onEvent: params.onEvent,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "telegram.jsonl"),
+    closing: false,
+    updateWaiters: new Set(),
     updates: [],
   };
   const host = params.host ?? "127.0.0.1";
@@ -527,13 +595,15 @@ export async function startTelegramServer(
         response,
         error instanceof InvalidJsonBodyError
           ? telegramError("Bad Request: can't parse JSON object")
-          : jsonResponse(
-              {
-                error: error instanceof Error ? error.message : String(error),
-                ok: false,
-              },
-              500,
-            ),
+          : error instanceof RequestBodyTooLargeError
+            ? telegramError("Request Entity Too Large", 413)
+            : jsonResponse(
+                {
+                  error: error instanceof Error ? error.message : String(error),
+                  ok: false,
+                },
+                500,
+              ),
       );
     }
   });
@@ -553,6 +623,8 @@ export async function startTelegramServer(
   const baseUrl = `http://${formatUrlHost(host)}:${address.port}`;
   return {
     async close() {
+      state.closing = true;
+      notifyTelegramUpdateWaiters(state, false);
       await closeServer(server);
     },
     manifest: {

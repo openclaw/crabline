@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Implement Telegram `getUpdates` long polling with timeout wakeups, offset confirmation, negative offsets, and shutdown cleanup.
 - Restrict releases to stable version tags and resolve workflow-dispatch inputs through exact tag refs before publication.
 - Reject ambiguous fixture/config inputs and keep the published CLI, type dependencies, and README assets aligned with their public contract.
 - Poll recorder JSONL incrementally while preserving incomplete trailing records.
