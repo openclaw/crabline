@@ -37,6 +37,20 @@ describe("Matrix local provider server", () => {
       error: "Invalid access token",
     });
 
+    const invalidJson = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!qa:matrix.test")}/send/m.room.message/invalid-json`,
+      {
+        body: "{",
+        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    expect(invalidJson.status).toBe(400);
+    await expect(invalidJson.json()).resolves.toEqual({
+      errcode: "M_NOT_JSON",
+      error: "Request body is not valid JSON",
+    });
+
     const whoami = await fetch(`${server.manifest.endpoints.clientApiRoot}/account/whoami`, {
       headers: auth("matrix-token"),
     });

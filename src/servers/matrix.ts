@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   adminAuthError,
   hasAdminToken,
+  InvalidJsonBodyError,
   jsonResponse,
   parseRequestBody,
   queryRecord,
@@ -480,6 +481,10 @@ export async function startMatrixServer(
   );
 
   const server = await startHttpJsonServer({
+    handleError: (error) =>
+      error instanceof InvalidJsonBodyError
+        ? matrixError("M_NOT_JSON", "Request body is not valid JSON", 400)
+        : undefined,
     host,
     port: params.port ?? 0,
     serverName: "Matrix",

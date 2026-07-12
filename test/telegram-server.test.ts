@@ -80,6 +80,21 @@ describe("telegram local provider server", () => {
       },
     });
 
+    const invalidJson = await fetch(
+      `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
+      {
+        body: "{",
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(invalidJson.status).toBe(400);
+    await expect(invalidJson.json()).resolves.toEqual({
+      description: "Bad Request: can't parse JSON object",
+      error_code: 400,
+      ok: false,
+    });
+
     const sendMessage = await fetch(`${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`, {
       body: JSON.stringify({
         chat_id: "-1001234567890",

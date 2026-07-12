@@ -67,6 +67,17 @@ describe("slack local provider server", () => {
       ok: false,
     });
 
+    const invalidJson = await fetch(`${server.manifest.endpoints.apiRoot}chat.postMessage`, {
+      body: "{",
+      headers: {
+        authorization: "Bearer xoxb-fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(invalidJson.status).toBe(400);
+    await expect(invalidJson.json()).resolves.toEqual({ error: "invalid_json", ok: false });
+
     await expect(
       (
         await slackApi(server, "conversations.open", {

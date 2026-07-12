@@ -13,6 +13,13 @@ export type ServerRequestEvent = {
 
 export const ADMIN_TOKEN_HEADER = "x-crabline-admin-token";
 
+export class InvalidJsonBodyError extends Error {
+  constructor(cause: unknown) {
+    super("Request body is not valid JSON.", { cause });
+    this.name = "InvalidJsonBodyError";
+  }
+}
+
 export function jsonResponse(value: unknown, status = 200): Response {
   return Response.json(value, { status });
 }
@@ -35,7 +42,11 @@ export async function parseRequestBody(request: IncomingMessage): Promise<Record
     ? contentType.some((entry) => entry.includes("json"))
     : contentType.includes("json");
   if (includesJson) {
-    return JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+    try {
+      return JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+    } catch (error) {
+      throw new InvalidJsonBodyError(error);
+    }
   }
   const params = new URLSearchParams(body.toString("utf8"));
   return Object.fromEntries(params.entries());
@@ -74,6 +85,7 @@ export function closeServer(server: Server): Promise<void> {
 
 export async function startHttpJsonServer(params: {
   handle: (request: IncomingMessage) => Promise<Response>;
+  handleError?: (error: unknown, request: IncomingMessage) => Response | undefined;
   host: string;
   port: number;
   serverName: string;
@@ -82,15 +94,17 @@ export async function startHttpJsonServer(params: {
     try {
       await writeResponse(response, await params.handle(request));
     } catch (error) {
+      const handled = params.handleError?.(error, request);
       await writeResponse(
         response,
-        jsonResponse(
-          {
-            error: error instanceof Error ? error.message : String(error),
-            ok: false,
-          },
-          500,
-        ),
+        handled ??
+          jsonResponse(
+            {
+              error: error instanceof Error ? error.message : String(error),
+              ok: false,
+            },
+            500,
+          ),
       );
     }
   });
