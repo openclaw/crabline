@@ -531,7 +531,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       }
       response = prepared;
     }
-    event.accepted = response.ok;
+    event.accepted = false;
     await appendEvent(params.state, event);
     return response;
   }
