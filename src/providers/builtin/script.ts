@@ -11,6 +11,7 @@ import type {
 } from "../types.js";
 
 const MAX_SCRIPT_OUTPUT_BYTES = 1024 * 1024;
+const SCRIPT_WAIT_EXIT_GRACE_MS = 250;
 
 type ScriptPayload = {
   fixture: ProviderContext["fixture"];
@@ -101,11 +102,13 @@ function parseScriptJson<T>(params: { command: string; output: string; schema: z
 }
 
 function runScript<T>(params: {
+  acceptResultDuringTimeoutGrace?: ((result: T) => boolean) | undefined;
   command: string;
   cwd?: string | undefined;
   payload: unknown;
   schema: z.ZodType<T>;
   shell?: string | undefined;
+  timeoutGraceMs?: number | undefined;
   timeoutMs: number;
 }): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -119,8 +122,10 @@ function runScript<T>(params: {
 
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
+    let deadlineExceeded = false;
     let outputBytes = 0;
     let settled = false;
+    let timeoutGrace: NodeJS.Timeout | undefined;
 
     const finish = (callback: () => void) => {
       if (settled) {
@@ -128,6 +133,7 @@ function runScript<T>(params: {
       }
       settled = true;
       clearTimeout(timeout);
+      clearTimeout(timeoutGrace);
       callback();
     };
 
@@ -193,20 +199,28 @@ function runScript<T>(params: {
         }
 
         try {
-          resolve(
-            parseScriptJson({
-              command: params.command,
-              output: stdoutText,
-              schema: params.schema,
-            }),
-          );
+          const result = parseScriptJson({
+            command: params.command,
+            output: stdoutText,
+            schema: params.schema,
+          });
+          if (deadlineExceeded && !params.acceptResultDuringTimeoutGrace?.(result)) {
+            reject(
+              new CrablineError(
+                `Script command timed out after ${params.timeoutMs}ms: ${params.command}`,
+                { kind: "timeout" },
+              ),
+            );
+            return;
+          }
+          resolve(result);
         } catch (error) {
           reject(error);
         }
       });
     });
 
-    const timeout = setTimeout(() => {
+    const failForTimeout = () => {
       finish(() => {
         terminateChild(child);
         reject(
@@ -216,6 +230,16 @@ function runScript<T>(params: {
           ),
         );
       });
+    };
+    const timeout = setTimeout(() => {
+      const timeoutGraceMs = params.timeoutGraceMs ?? 0;
+      if (timeoutGraceMs <= 0) {
+        failForTimeout();
+        return;
+      }
+      deadlineExceeded = true;
+      timeoutGrace = setTimeout(failForTimeout, timeoutGraceMs);
+      timeoutGrace.unref();
     }, params.timeoutMs);
     timeout.unref();
 
@@ -313,6 +337,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
     }
 
     const result = await runScript({
+      acceptResultDuringTimeoutGrace: (candidate) => candidate.timeout === true,
       command,
       cwd: this.#config.cwd,
       payload: {
@@ -326,6 +351,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       },
       schema: ScriptInboundResultSchema,
       shell: this.#config.shell,
+      timeoutGraceMs: SCRIPT_WAIT_EXIT_GRACE_MS,
       timeoutMs: context.timeoutMs,
     });
 

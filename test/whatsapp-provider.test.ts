@@ -3,6 +3,7 @@ import {
   normalizeWhatsAppWebhookPayload,
   WhatsAppProviderAdapter,
 } from "../src/providers/builtin/whatsapp.js";
+import { appendRecordedInbound } from "../src/providers/recorder.js";
 import {
   createLocalMockConfig,
   createProviderContext,
@@ -180,6 +181,87 @@ describe("WhatsApp webhook normalizer", () => {
       ).resolves.toMatchObject({
         id: "wamid.second",
         text: `second valid ${nonce}`,
+      });
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
+  it("rejects a secondary probe when the webhook listener is occupied", async () => {
+    const primaryConfig = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    const primary = new WhatsAppProviderAdapter("whatsapp-primary", primaryConfig, "crabline");
+    const primaryContext = createProviderContext("whatsapp", primaryConfig, {
+      id: "15551234567",
+      metadata: {},
+    });
+    let secondary: WhatsAppProviderAdapter | undefined;
+
+    try {
+      const primaryProbe = await primary.probe(primaryContext);
+      expect(primaryProbe.healthy).toBe(true);
+      const endpoint = primaryProbe.details
+        .find((detail) => detail.startsWith("webhook endpoint "))
+        ?.replace("webhook endpoint ", "");
+      expect(endpoint).toBeDefined();
+
+      const secondaryConfig = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+      secondaryConfig.whatsapp!.webhook.port = Number(new URL(endpoint!).port);
+      secondary = new WhatsAppProviderAdapter("whatsapp-secondary", secondaryConfig, "crabline");
+      const secondaryContext = createProviderContext("whatsapp", secondaryConfig, {
+        id: "15551234567",
+        metadata: {},
+      });
+
+      await expect(secondary.probe(secondaryContext)).rejects.toThrow(/EADDRINUSE/u);
+      await expect(primary.probe(primaryContext)).resolves.toMatchObject({ healthy: true });
+    } finally {
+      await secondary?.cleanup();
+      await primary.cleanup();
+    }
+  });
+
+  it("skips an earlier wrong extracted nonce in exact mode", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
+    context.fixture.inboundMatch = { author: "user", nonce: "exact", strategy: "contains" };
+    const expectedNonce = "mp-whatsapp-exact-abc-1234abcd";
+    const wrongNonce = "mp-whatsapp-wrong-abc-87654321";
+    const recorderPath = config.whatsapp!.recorder.path!;
+    const since = new Date(Date.now() - 1000).toISOString();
+
+    try {
+      await appendRecordedInbound(recorderPath, {
+        author: "user",
+        id: "wrong-nonce",
+        provider: "whatsapp",
+        sentAt: new Date().toISOString(),
+        text: `forwarded ${wrongNonce}; expected ${expectedNonce}`,
+        threadId: "15551234567",
+      });
+      await appendRecordedInbound(recorderPath, {
+        author: "user",
+        id: "valid-nonce",
+        provider: "whatsapp",
+        sentAt: new Date().toISOString(),
+        text: `reply ${expectedNonce}`,
+        threadId: "15551234567",
+      });
+
+      await expect(
+        provider.waitForInbound({
+          ...context,
+          nonce: expectedNonce,
+          since,
+          threadId: "15551234567",
+          timeoutMs: 500,
+        }),
+      ).resolves.toMatchObject({
+        id: "valid-nonce",
+        text: `reply ${expectedNonce}`,
       });
     } finally {
       await provider.cleanup();
