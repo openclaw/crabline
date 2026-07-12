@@ -25,7 +25,7 @@ describe("externally bound provider server credentials", () => {
     );
     expect(second.mattermost.manifest.botToken).not.toBe(first.mattermost.manifest.botToken);
 
-    expect(first.slack.manifest.botToken).toMatch(/^xoxb-[a-f0-9]{12}-[A-Za-z0-9_-]{16}$/u);
+    expect(first.slack.manifest.botToken).toMatch(/^xoxb-\d{12}-\d{12}-[A-Za-z0-9_-]{24}$/u);
     expect(first.slack.manifest.signingSecret).toMatch(/^[a-f0-9]{32}$/u);
     expect(first.slack.manifest.env.SLACK_BOT_TOKEN).toBe(first.slack.manifest.botToken);
     expect(first.slack.manifest.env.SLACK_SIGNING_SECRET).toBe(first.slack.manifest.signingSecret);

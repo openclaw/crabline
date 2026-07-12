@@ -1,5 +1,5 @@
 import type { IncomingMessage } from "node:http";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, randomInt } from "node:crypto";
 import path from "node:path";
 import {
   adminAuthError,
@@ -223,6 +223,10 @@ function hasThreadParent(
 function nextSlackTs(state: SlackServerState): string {
   const index = state.nextTsIndex++;
   return `${1_700_000_000 + Math.floor(index / 1_000_000)}.${String(index % 1_000_000).padStart(6, "0")}`;
+}
+
+function randomDecimalDigits(length: number): string {
+  return Array.from({ length }, () => randomInt(10)).join("");
 }
 
 function nextDmChannelId(state: SlackServerState): string {
@@ -704,7 +708,7 @@ export async function startSlackServer(
     messagesByChannel: new Map(),
   };
   if (externallyBound && !params.botToken) {
-    const generatedBotValue = `xoxb-${randomBytes(6).toString("hex")}-${randomBytes(12).toString("base64url")}`;
+    const generatedBotValue = `xoxb-${randomDecimalDigits(12)}-${randomDecimalDigits(12)}-${randomBytes(18).toString("base64url")}`;
     state.botToken = generatedBotValue;
   }
   if (externallyBound && !params.signingSecret) {
