@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startTelegramServer, type StartedTelegramServer } from "../src/index.js";
-import { createTempDir, disposeTempDir } from "./test-helpers.js";
+import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedTelegramServer[] = [];
 const directories: string[] = [];
@@ -12,6 +13,28 @@ function adminHeaders(server: StartedTelegramServer) {
     "content-type": "application/json",
     "x-crabline-admin-token": server.manifest.adminToken,
   };
+}
+
+async function injectUpdate(
+  server: StartedTelegramServer,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  return await fetch(server.manifest.endpoints.adminInboundUrl, {
+    body: JSON.stringify(body),
+    headers: adminHeaders(server),
+    method: "POST",
+  });
+}
+
+async function getUpdates(
+  server: StartedTelegramServer,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  return await fetch(`${server.manifest.baseUrl}/bot${server.manifest.botToken}/getUpdates`, {
+    body: JSON.stringify(body),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
 }
 
 afterEach(async () => {
@@ -89,6 +112,38 @@ describe("telegram local provider server", () => {
     await expect(invalidJson.json()).resolves.toEqual({
       description: "Bad Request: can't parse JSON object",
       error_code: 400,
+      ok: false,
+    });
+
+    for (const scalarBody of ["null", '"scalar"', "42", "true", "[]"]) {
+      const invalidBody = await fetch(
+        `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
+        {
+          body: scalarBody,
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(invalidBody.status).toBe(400);
+      await expect(invalidBody.json()).resolves.toEqual({
+        description: "Bad Request: can't parse JSON object",
+        error_code: 400,
+        ok: false,
+      });
+    }
+
+    const oversized = await requestHttp({
+      headers: {
+        "content-length": String(50 * 1024 * 1024 + 1),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      url: `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
+    });
+    expect(oversized.status).toBe(413);
+    expect(JSON.parse(oversized.body)).toEqual({
+      description: "Request Entity Too Large",
+      error_code: 413,
       ok: false,
     });
 
@@ -238,6 +293,188 @@ describe("telegram local provider server", () => {
         message: { message_id: 201 },
         update_id: 101,
       },
+    });
+  });
+
+  it("long-polls until an update arrives and returns empty on timeout", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startTelegramServer({
+      botToken: "test-token",
+      recorderPath: path.join(directory, "telegram-long-poll.jsonl"),
+    });
+    servers.push(server);
+
+    const timeoutStartedAt = Date.now();
+    const timedOut = await getUpdates(server, { timeout: 1 });
+    expect(Date.now() - timeoutStartedAt).toBeGreaterThanOrEqual(800);
+    await expect(timedOut.json()).resolves.toEqual({ ok: true, result: [] });
+
+    const pending = getUpdates(server, { offset: 100, timeout: 5 });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const belowOffset = await injectUpdate(server, {
+      chatId: "123",
+      text: "below the poll offset",
+      updateId: 10,
+    });
+    expect(belowOffset.status).toBe(200);
+    await expect(
+      Promise.race([
+        pending.then(() => "resolved"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("waiting"), 100)),
+      ]),
+    ).resolves.toBe("waiting");
+
+    const matching = await injectUpdate(server, {
+      chatId: "123",
+      text: "wake the poll",
+      updateId: 100,
+    });
+    expect(matching.status).toBe(200);
+
+    await expect(pending.then((response) => response.json())).resolves.toMatchObject({
+      ok: true,
+      result: [{ message: { text: "wake the poll" }, update_id: 100 }],
+    });
+  });
+
+  it("confirms positive offsets and forgets updates before a negative offset", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startTelegramServer({
+      botToken: "test-token",
+      recorderPath: path.join(directory, "telegram-offsets.jsonl"),
+    });
+    servers.push(server);
+
+    for (const updateId of [10, 11, 12]) {
+      const inbound = await injectUpdate(server, {
+        chatId: "123",
+        text: `update ${updateId}`,
+        updateId,
+      });
+      expect(inbound.status).toBe(200);
+    }
+    await expect(
+      getUpdates(server, { offset: 11 }).then((response) => response.json()),
+    ).resolves.toMatchObject({
+      result: [{ update_id: 11 }, { update_id: 12 }],
+    });
+    await expect(
+      getUpdates(server, { offset: 13 }).then((response) => response.json()),
+    ).resolves.toEqual({
+      ok: true,
+      result: [],
+    });
+
+    for (const updateId of [20, 21, 22]) {
+      const inbound = await injectUpdate(server, {
+        chatId: "123",
+        text: `update ${updateId}`,
+        updateId,
+      });
+      expect(inbound.status).toBe(200);
+    }
+    await expect(
+      getUpdates(server, { offset: -2 }).then((response) => response.json()),
+    ).resolves.toMatchObject({
+      result: [{ update_id: 21 }, { update_id: 22 }],
+    });
+    await expect(getUpdates(server, {}).then((response) => response.json())).resolves.toMatchObject(
+      {
+        result: [{ update_id: 21 }, { update_id: 22 }],
+      },
+    );
+  });
+
+  it("releases pending long polls when the server closes", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startTelegramServer({
+      botToken: "test-token",
+      recorderPath: path.join(directory, "telegram-close.jsonl"),
+    });
+    servers.push(server);
+
+    const pending = getUpdates(server, { timeout: 30 });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const closeStartedAt = Date.now();
+    const closing = server.close();
+    const payload = await pending.then((response) => response.json());
+    await closing;
+    servers.splice(servers.indexOf(server), 1);
+    expect(Date.now() - closeStartedAt).toBeLessThan(1_000);
+    expect(payload).toEqual({
+      ok: true,
+      result: [],
+    });
+  });
+
+  it("does not register a long poll after shutdown starts", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startTelegramServer({
+      botToken: "test-token",
+      recorderPath: path.join(directory, "telegram-close-during-read.jsonl"),
+    });
+    servers.push(server);
+
+    let resolveConnected!: () => void;
+    let rejectConnected!: (error: Error) => void;
+    const connected = new Promise<void>((resolve, reject) => {
+      resolveConnected = resolve;
+      rejectConnected = reject;
+    });
+    let pendingRequest!: ReturnType<typeof httpRequest>;
+    const response = new Promise<{ body: string; status: number }>((resolve, reject) => {
+      pendingRequest = httpRequest(
+        `${server.manifest.baseUrl}/bot${server.manifest.botToken}/getUpdates`,
+        {
+          headers: {
+            "content-type": "application/json",
+            "transfer-encoding": "chunked",
+          },
+          method: "POST",
+        },
+        (incoming) => {
+          const chunks: Buffer[] = [];
+          incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+          incoming.once("end", () => {
+            resolve({
+              body: Buffer.concat(chunks).toString("utf8"),
+              status: incoming.statusCode ?? 0,
+            });
+          });
+        },
+      );
+      pendingRequest.once("socket", (socket) => {
+        if (socket.connecting) {
+          socket.once("connect", resolveConnected);
+        } else {
+          resolveConnected();
+        }
+      });
+      pendingRequest.once("error", (error) => {
+        rejectConnected(error);
+        reject(error);
+      });
+      pendingRequest.write('{"timeout":30');
+    });
+
+    await connected;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const closeStartedAt = Date.now();
+    const closing = server.close();
+    pendingRequest.end("}");
+    const result = await response;
+    await closing;
+    servers.splice(servers.indexOf(server), 1);
+
+    expect(Date.now() - closeStartedAt).toBeLessThan(1_000);
+    expect(result.status).toBe(200);
+    expect(JSON.parse(result.body)).toEqual({
+      ok: true,
+      result: [],
     });
   });
 
