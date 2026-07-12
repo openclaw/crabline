@@ -80,8 +80,18 @@ function formatValidationError(error: z.ZodError): string {
     .join("; ");
 }
 
+const sensitiveCommandValuePattern =
+  /(?:^|[\s;&|])(?:[A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS|PRIVATE|CREDENTIAL|AUTH)[A-Za-z0-9_]*\s*=|--(?:api[-_]?key|auth|credential|pass(?:word)?|private[-_]?key|secret|token)(?:=|\s))/iu;
+
 function formatScriptError(summary: string, detail: string, command: string): string {
-  const redacted = detail.split(command).join("[configured script command]").trim();
+  const trimmed = detail.trim();
+  if (!trimmed) {
+    return summary;
+  }
+  if (sensitiveCommandValuePattern.test(command)) {
+    return `${summary}\n[script diagnostics redacted]`;
+  }
+  const redacted = trimmed.split(command).join("[configured script command]").trim();
   return redacted ? `${summary}\n${redacted}` : summary;
 }
 

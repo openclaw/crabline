@@ -431,7 +431,10 @@ describe("script provider", () => {
     const context = await createContext();
     const sentinel = "redact-me";
     const failingScript = path.join(path.dirname(context.manifestPath), "send-secret.mjs");
-    await writeText(failingScript, 'process.stderr.write("failed");process.exitCode=7;');
+    await writeText(
+      failingScript,
+      "process.stderr.write(process.env.CRABLINE_PRIVATE_VALUE);process.exitCode=7;",
+    );
     const command = `CRABLINE_PRIVATE_VALUE=${sentinel} node ${JSON.stringify(failingScript)}`;
     context.config.script!.commands.send = command;
     const provider = new ScriptProviderAdapter(context);
@@ -449,11 +452,15 @@ describe("script provider", () => {
     }
 
     expect(ensureErrorMessage(sendError)).toContain("Script command failed");
+    expect(ensureErrorMessage(sendError)).toContain("[script diagnostics redacted]");
     expect(ensureErrorMessage(sendError)).not.toContain(command);
     expect(ensureErrorMessage(sendError)).not.toContain(sentinel);
 
     const watchScript = path.join(path.dirname(context.manifestPath), "watch-secret.mjs");
-    await writeText(watchScript, 'process.stderr.write("watch failed");process.exitCode=8;');
+    await writeText(
+      watchScript,
+      "process.stderr.write(process.env.CRABLINE_PRIVATE_VALUE);process.exitCode=8;",
+    );
     const watchCommand = `CRABLINE_PRIVATE_VALUE=${sentinel} node ${JSON.stringify(watchScript)}`;
     context.config.script!.commands.watch = watchCommand;
 
@@ -465,6 +472,7 @@ describe("script provider", () => {
     }
 
     expect(ensureErrorMessage(watchError)).toContain("Script watch command failed");
+    expect(ensureErrorMessage(watchError)).toContain("[script diagnostics redacted]");
     expect(ensureErrorMessage(watchError)).not.toContain(watchCommand);
     expect(ensureErrorMessage(watchError)).not.toContain(sentinel);
   });

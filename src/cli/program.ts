@@ -582,7 +582,13 @@ export async function runCli(argv: string[]): Promise<number> {
     return exitCode;
   } catch (error) {
     const errorExitCode =
-      error instanceof CrablineError || error instanceof CommanderError ? error.exitCode : 1;
+      error instanceof CommanderError
+        ? error.code === "commander.help" && error.exitCode !== 0
+          ? 1
+          : error.exitCode
+        : error instanceof CrablineError
+          ? error.exitCode
+          : 1;
     if (error instanceof CommanderError && errorExitCode === 0) {
       return 0;
     }
