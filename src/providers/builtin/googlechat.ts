@@ -110,9 +110,6 @@ export function createGoogleChatWebhookAuthenticator(
         },
         token,
       });
-      if (!isPubsub && claims.email !== GOOGLE_CHAT_ISSUER) {
-        throw new Error("Google Chat token identity is invalid.");
-      }
       if (
         isPubsub &&
         (!pubsubServiceAccount ||
