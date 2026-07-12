@@ -4,6 +4,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderConfig } from "../src/config/schema.js";
 import { WhatsAppProviderAdapter } from "../src/providers/builtin/whatsapp.js";
+import { LocalMockProviderAdapter } from "../src/providers/local-mock.js";
 import type { ProviderContext, SendContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
@@ -127,6 +128,26 @@ describe("WhatsApp provider lifecycle", () => {
     expect(close).toHaveBeenCalledTimes(1);
     await expect(provider.probe(context)).rejects.toThrow(/has been cleaned up/u);
     expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs superclass cleanup when listener close fails", async () => {
+    const closeError = new Error("close failed");
+    webhookMocks.startWebhookServer.mockResolvedValueOnce({
+      async close() {
+        throw closeError;
+      },
+      endpointUrl: "http://127.0.0.1:43210/whatsapp/webhook",
+    });
+    const superCleanup = vi.spyOn(LocalMockProviderAdapter.prototype, "cleanup");
+    const config = createConfig();
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    try {
+      await provider.probe(createContext(config));
+      await expect(provider.cleanup()).rejects.toBe(closeError);
+      expect(superCleanup).toHaveBeenCalledTimes(1);
+    } finally {
+      superCleanup.mockRestore();
+    }
   });
 
   it("closes an in-flight listener when cleanup wins the startup race", async () => {

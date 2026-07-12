@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProviderConfig } from "../src/config/schema.js";
@@ -14,7 +15,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
-async function createSlackConfig(port: number): Promise<ProviderConfig> {
+async function createSlackConfig(port: number, signingSecret?: string): Promise<ProviderConfig> {
   const directory = await createTempDir();
   directories.push(directory);
 
@@ -25,6 +26,7 @@ async function createSlackConfig(port: number): Promise<ProviderConfig> {
     platform: "slack",
     slack: {
       recorder: { path: path.join(directory, "slack.jsonl") },
+      ...(signingSecret ? { signingSecret } : {}),
       webhook: {
         host: "127.0.0.1",
         path: "/slack/events",
@@ -78,6 +80,12 @@ describe("slack provider", () => {
     expect(provider.normalizeTarget({ id: "C1234567890", metadata: {} })).toMatchObject({
       channelId: "C1234567890",
     });
+    expect(provider.normalizeTarget({ id: "U1234567890", metadata: {} })).toMatchObject({
+      channelId: "U1234567890",
+    });
+    expect(provider.normalizeTarget({ id: "W1234567890", metadata: {} })).toMatchObject({
+      channelId: "W1234567890",
+    });
     expect(
       provider.normalizeTarget({
         channelId: "C1234567890",
@@ -114,10 +122,10 @@ describe("slack provider", () => {
     providers.push(provider);
 
     expect(() => provider.normalizeTarget({ id: "target-1", metadata: {} })).toThrow(
-      /native Slack conversation id/u,
+      /native Slack conversation or user id/u,
     );
     expect(() => provider.normalizeTarget({ id: "slack:C1234567890", metadata: {} })).toThrow(
-      /native Slack conversation id/u,
+      /native Slack conversation or user id/u,
     );
     expect(() =>
       provider.normalizeTarget({
@@ -211,6 +219,49 @@ describe("slack provider", () => {
       text: "ACK nonce-2",
       threadId: threadKey,
     });
+  });
+
+  it("verifies Slack request signatures before parsing", async () => {
+    const signingSecret = "slack-signing-secret";
+    const config = await createSlackConfig(0, signingSecret);
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+    const endpoint = endpointFromDetails((await provider.probe(createContext(config))).details);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = JSON.stringify({
+      event: {
+        channel: "C1234567890",
+        text: "authenticated",
+        ts: "1700000001.000200",
+        type: "message",
+      },
+      type: "event_callback",
+    });
+    const signature = `v0=${createHmac("sha256", signingSecret)
+      .update(`v0:${timestamp}:${body}`)
+      .digest("hex")}`;
+
+    const rejected = await fetch(endpoint, {
+      body,
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": "v0=invalid",
+      },
+      method: "POST",
+    });
+    expect(rejected.status).toBe(401);
+
+    const accepted = await fetch(endpoint, {
+      body,
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": signature,
+      },
+      method: "POST",
+    });
+    expect(accepted.status).toBe(200);
   });
 
   it("matches channel-aware and legacy generic thread webhooks", async () => {

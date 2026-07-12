@@ -117,6 +117,7 @@ const SlackWebhookSchema = z.strictObject({
 
 const SlackConfigSchema = z.strictObject({
   recorder: SlackRecorderSchema.default({}),
+  signingSecret: z.string().min(1).optional(),
   webhook: SlackWebhookSchema.default({
     host: "127.0.0.1",
     path: "/slack/events",

@@ -332,4 +332,53 @@ describe("local mock provider", () => {
       ok: true,
     });
   });
+
+  it("bounds successful wait cursors while retaining recent progress", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "bounded-waits.jsonl");
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+        recorderPath,
+      },
+    });
+    providers.push(provider);
+    const contexts = Array.from({ length: 65 }, (_, index) => {
+      const context = createContext(config);
+      context.fixture.target = { id: `channel-${index}`, metadata: {} };
+      return {
+        ...context,
+        nonce: `nonce-${index}`,
+        since: new Date(0).toISOString(),
+        threadId: `channel-${index}`,
+        timeoutMs: 20,
+      };
+    });
+
+    for (const [index, context] of contexts.entries()) {
+      await appendRecordedInbound(recorderPath, {
+        author: "assistant",
+        id: `event-${index}`,
+        provider: "provider-a",
+        sentAt: new Date().toISOString(),
+        text: `event ${index}`,
+        threadId: context.threadId,
+      });
+      await expect(provider.waitForInbound(context)).resolves.toMatchObject({
+        id: `event-${index}`,
+      });
+    }
+
+    await expect(provider.waitForInbound(contexts[0]!)).resolves.toMatchObject({
+      id: "event-0",
+    });
+    await expect(provider.waitForInbound(contexts.at(-1)!)).resolves.toBeNull();
+  });
 });

@@ -75,6 +75,16 @@ Provider credential fields such as `botToken`, `accessToken`, `baseURL`, or
 `serverUrl` are optional mock metadata. They are not required for local mock
 execution.
 
+Optional webhook credentials enforce each provider's native authentication
+header before JSON parsing or recorder writes:
+
+- Slack `signingSecret` or `SLACK_SIGNING_SECRET` verifies
+  `X-Slack-Request-Timestamp` and `X-Slack-Signature`.
+- Telegram `secretToken` or `TELEGRAM_WEBHOOK_SECRET_TOKEN` verifies
+  `X-Telegram-Bot-Api-Secret-Token`.
+- Zalo `webhookSecret` or `ZALO_WEBHOOK_SECRET` verifies
+  `X-Bot-Api-Secret-Token`.
+
 The built-in `whatsapp` adapter implements Meta's GET verification challenge
 and requires `X-Hub-Signature-256` on POST requests. Set `whatsapp.appSecret`
 and `whatsapp.verifyToken` (or `WHATSAPP_APP_SECRET` and

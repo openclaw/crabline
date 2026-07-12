@@ -25,11 +25,22 @@ export function resolveZaloAdapterConfig(
 
 export class ZaloProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
+    const resolvedConfig = resolveZaloAdapterConfig(config);
     super({
       codec: getBuiltinTargetCodec("zalo"),
       config,
       id,
       options: {
+        ...(resolvedConfig.webhookSecret
+          ? {
+              authenticateWebhookRequest(request: Request) {
+                return request.headers.get("x-bot-api-secret-token") ===
+                  resolvedConfig.webhookSecret
+                  ? undefined
+                  : new Response("unauthorized", { status: 401 });
+              },
+            }
+          : {}),
         defaultWebhook: { host: "127.0.0.1", path: "/zalo/webhook", port: 8794 },
         endpointLabel: "webhook endpoint",
         normalizeWebhookPayload: normalizeZaloWebhookPayload,

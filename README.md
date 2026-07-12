@@ -91,6 +91,9 @@ explicit `env` declarations, script command availability, and config shape; it
 does not require live Slack, Discord, Telegram, WhatsApp, Matrix, iMessage, or
 other platform secrets for local mocks.
 
+When configured, Slack `signingSecret`, Telegram `secretToken`, and Zalo
+`webhookSecret` enforce the provider-native webhook authentication headers.
+
 ## Built-In Mock Channels
 
 All built-in mock providers support:

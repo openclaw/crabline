@@ -197,8 +197,23 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     this.#cleanedUp = true;
     this.#cleanupPromise ??= (async () => {
       await Promise.allSettled([...this.#inFlightSends, ...this.#inFlightWebhookRequests]);
-      await this.#serverClosing;
-      await super.cleanup();
+      const errors: unknown[] = [];
+      try {
+        await this.#serverClosing;
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await super.cleanup();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length === 1) {
+        throw errors[0];
+      }
+      if (errors.length > 1) {
+        throw new AggregateError(errors, "WhatsApp cleanup failed");
+      }
     })();
     await this.#cleanupPromise;
   }
