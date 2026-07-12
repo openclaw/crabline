@@ -26,11 +26,13 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 const pendingAppends = new Map<string, Promise<void>>();
+const recordIdentityIndexes = new Map<string, RecordIdentityIndex>();
 const MAX_RECENT_RECORD_KEYS = 4096;
 
 type IncrementalReadState = {
   caughtUp: boolean;
   continuity: Buffer;
+  generation: number;
   identity:
     | {
         dev: number;
@@ -39,6 +41,11 @@ type IncrementalReadState = {
     | undefined;
   offset: number;
   pending: Buffer;
+};
+
+type RecordIdentityIndex = {
+  readState: IncrementalReadState;
+  seen: Set<string>;
 };
 
 export type RecordedInboundCursor = {
@@ -55,6 +62,7 @@ function createIncrementalReadState(): IncrementalReadState {
   return {
     caughtUp: true,
     continuity: Buffer.alloc(0),
+    generation: 0,
     identity: undefined,
     offset: 0,
     pending: Buffer.alloc(0),
@@ -75,6 +83,7 @@ export function cloneRecordedInboundCursor(cursor: RecordedInboundCursor): Recor
     readState: {
       caughtUp: cursor.readState.caughtUp,
       continuity: Buffer.from(cursor.readState.continuity),
+      generation: cursor.readState.generation,
       identity: cursor.readState.identity ? { ...cursor.readState.identity } : undefined,
       offset: cursor.readState.offset,
       pending: Buffer.from(cursor.readState.pending),
@@ -96,6 +105,14 @@ function rememberRecentRecord(seen: Set<string>, event: InboundEnvelope): boolea
 }
 
 function resetIncrementalReadState(state: IncrementalReadState): void {
+  if (
+    state.identity !== undefined ||
+    state.offset > 0 ||
+    state.pending.length > 0 ||
+    state.continuity.length > 0
+  ) {
+    state.generation += 1;
+  }
   state.caughtUp = true;
   state.continuity = Buffer.alloc(0);
   state.offset = 0;
@@ -265,8 +282,7 @@ export async function appendRecordedInboundBatch(
 ): Promise<RecordedInboundEnvelope[]> {
   await mkdir(path.dirname(filePath), { recursive: true });
   return await serializeAppend(filePath, async () => {
-    const existing = await readRecordedInbound(filePath);
-    const seen = new Set(existing.map(recordIdentity));
+    const seen = await syncRecordIdentityIndex(filePath);
     const recorded: RecordedInboundEnvelope[] = [];
     for (const event of events) {
       const identity = recordIdentity(event);
@@ -285,6 +301,7 @@ export async function appendRecordedInboundBatch(
         recorded.map((event) => `${JSON.stringify(event)}\n`).join(""),
         "utf8",
       );
+      await syncRecordIdentityIndex(filePath);
     }
     return recorded;
   });
@@ -292,6 +309,25 @@ export async function appendRecordedInboundBatch(
 
 function recordIdentity(event: Pick<InboundEnvelope, "id" | "provider" | "threadId">): string {
   return JSON.stringify([event.provider, event.threadId, event.id]);
+}
+
+async function syncRecordIdentityIndex(filePath: string): Promise<Set<string>> {
+  const key = path.resolve(filePath);
+  let index = recordIdentityIndexes.get(key);
+  if (!index) {
+    index = { readState: createIncrementalReadState(), seen: new Set() };
+    recordIdentityIndexes.set(key, index);
+  }
+
+  const generation = index.readState.generation;
+  const appended = await readRecordedInboundAppend(filePath, index.readState);
+  if (index.readState.generation !== generation) {
+    index.seen.clear();
+  }
+  for (const event of appended) {
+    index.seen.add(recordIdentity(event));
+  }
+  return index.seen;
 }
 
 export async function readRecordedInbound(filePath: string): Promise<RecordedInboundEnvelope[]> {
