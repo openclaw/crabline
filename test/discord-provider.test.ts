@@ -3,13 +3,25 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { DiscordProviderAdapter } from "../src/providers/builtin/discord.js";
+import {
+  createDiscordInteractionResponse,
+  DiscordProviderAdapter,
+} from "../src/providers/builtin/discord.js";
 import type { ProviderConfig } from "../src/config/schema.js";
 import type { ProviderContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const directories: string[] = [];
 const providers: DiscordProviderAdapter[] = [];
+
+describe("Discord interaction responses", () => {
+  it("returns a native component acknowledgement", async () => {
+    const response = createDiscordInteractionResponse({ type: 3 });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ type: 6 });
+  });
+});
 
 afterEach(async () => {
   await Promise.all(providers.splice(0).map((provider) => provider.cleanup()));
@@ -322,6 +334,7 @@ describe("discord provider", () => {
     });
 
     expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ type: 6 });
     await expect(
       provider.waitForInbound({
         ...context,

@@ -27,6 +27,17 @@ export function resolveFeishuAdapterConfig(
   };
 }
 
+export function handleFeishuWebhookPayload(payload: unknown): Response | undefined {
+  if (
+    isRecord(payload) &&
+    payload.type === "url_verification" &&
+    typeof payload.challenge === "string"
+  ) {
+    return Response.json({ challenge: payload.challenge });
+  }
+  return undefined;
+}
+
 export class FeishuProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
@@ -36,6 +47,7 @@ export class FeishuProviderAdapter extends LocalMockProviderAdapter implements P
       options: {
         defaultWebhook: { host: "127.0.0.1", path: "/feishu/webhook", port: 8795 },
         endpointLabel: "webhook endpoint",
+        handleWebhookPayload: handleFeishuWebhookPayload,
         normalizeWebhookPayload: normalizeFeishuWebhookPayload,
         platform: "feishu",
         publicUrl: config.feishu?.webhook.publicUrl,
@@ -64,10 +76,16 @@ export function normalizeFeishuWebhookPayload(payload: unknown) {
   }
 
   const chatId = optionalString(message, "chat_id");
+  const messageType = optionalString(message, "message_type");
   const messageId = optionalString(message, "message_id");
   const rootId = optionalString(message, "root_id");
   const rawContent = optionalString(message, "content");
   const text = parseFeishuText(rawContent);
+  if (messageType !== "text") {
+    throw new CrablineError("Feishu event payload requires message.message_type=text", {
+      kind: "inbound",
+    });
+  }
   if (!chatId || !text) {
     throw new CrablineError("Feishu event payload requires message.chat_id and message.content", {
       kind: "inbound",

@@ -167,6 +167,17 @@ function matchesSlackThread(
   );
 }
 
+export function handleSlackWebhookPayload(payload: unknown): Response | undefined {
+  if (
+    isRecord(payload) &&
+    payload.type === "url_verification" &&
+    typeof payload.challenge === "string"
+  ) {
+    return Response.json({ challenge: payload.challenge });
+  }
+  return undefined;
+}
+
 export class SlackProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     const resolvedConfig = resolveSlackAdapterConfig(config);
@@ -184,6 +195,7 @@ export class SlackProviderAdapter extends LocalMockProviderAdapter implements Pr
           : {}),
         defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 8787 },
         endpointLabel: "events endpoint",
+        handleWebhookPayload: handleSlackWebhookPayload,
         matchesThread: matchesSlackThread,
         normalizeWebhookPayload: normalizeSlackEventsPayload,
         platform: "slack",
