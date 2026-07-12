@@ -9,6 +9,17 @@ export const OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH = "crabline-fake-provider-smok
 export const OPENCLAW_CRABLINE_MANIFEST_PATH = "crabline-fake-provider-server.json";
 export const OPENCLAW_CRABLINE_DEFAULT_CHANNEL = "telegram";
 
+const OPENCLAW_CRABLINE_PROVIDER_PROBE_TIMEOUT_MS = 5_000;
+const OPENCLAW_CRABLINE_PROVIDER_PROBE_LABELS = {
+  mattermost: "Mattermost users.me",
+  matrix: "Matrix whoami",
+  signal: "Signal check",
+  slack: "Slack auth.test",
+  telegram: "Telegram getMe",
+  whatsapp: "WhatsApp phone number",
+  zalo: "Zalo getMe",
+} satisfies Record<CrablineServerManifest["provider"], string>;
+
 export type OpenClawCrablineChannelDriverSelection = {
   channel: CrablineServerChannel;
   channelDriver: "crabline";
@@ -156,6 +167,42 @@ export function createOpenClawCrablineProviderBridge<
     provider: params.provider as ProviderManifest["provider"],
   };
   return bridge;
+}
+
+export async function runOpenClawCrablineProviderProbe<T>(
+  provider: CrablineServerManifest["provider"],
+  probe: () => Promise<T>,
+): Promise<T> {
+  const signal = AbortSignal.timeout(OPENCLAW_CRABLINE_PROVIDER_PROBE_TIMEOUT_MS);
+  const timeoutError = (cause: unknown) =>
+    new Error(
+      `Crabline ${OPENCLAW_CRABLINE_PROVIDER_PROBE_LABELS[provider]} probe timed out after ${OPENCLAW_CRABLINE_PROVIDER_PROBE_TIMEOUT_MS} ms.`,
+      { cause },
+    );
+  let onAbort: (() => void) | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    onAbort = () => reject(timeoutError(signal.reason));
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  const probeResult = Promise.resolve()
+    .then(probe)
+    .catch((error: unknown) => {
+      if (signal.aborted) {
+        throw timeoutError(error);
+      }
+      throw error;
+    });
+  try {
+    return await Promise.race([probeResult, timeout]);
+  } finally {
+    if (onAbort) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
 }
 
 export function readString(value: unknown): string | undefined {
