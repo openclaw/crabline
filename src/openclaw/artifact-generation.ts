@@ -252,7 +252,6 @@ export async function publishOpenClawCrablineArtifactGeneration(
       await store.assertIdentityAt();
     },
   });
-  await store.assertIdentityAt();
 
   return {
     ...pointer,

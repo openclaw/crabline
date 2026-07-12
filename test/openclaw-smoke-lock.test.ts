@@ -91,6 +91,66 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("rejects a Windows lock candidate replaced after owner metadata is written", async () => {
+    const outputDir = await createTempDir();
+    let displacedPath = "";
+    try {
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(
+          { channel: "telegram", outputDir },
+          {
+            afterLockOwnerWrite: async (candidateDirectory) => {
+              displacedPath = `${candidateDirectory}.displaced`;
+              await fs.rename(candidateDirectory, displacedPath);
+              await fs.mkdir(candidateDirectory);
+            },
+            now: () => 1_000,
+            pid: 4_242,
+            platform: "win32",
+            processStartedAtMs: 100,
+            secureWindowsDirectory: async () => undefined,
+            startHeartbeat: disableHeartbeat,
+          },
+        ),
+      ).rejects.toThrow("Private directory path identity changed during publication.");
+
+      await expect(fs.readdir(displacedPath)).resolves.toEqual(["owner.json"]);
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("rejects a Windows lock candidate replaced after installation", async () => {
+    const outputDir = await createTempDir();
+    let displacedPath = "";
+    try {
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(
+          { channel: "telegram", outputDir },
+          {
+            afterLockCandidateInstall: async (lockDirectory) => {
+              displacedPath = `${lockDirectory}.displaced`;
+              await fs.rename(lockDirectory, displacedPath);
+              await fs.mkdir(lockDirectory);
+            },
+            now: () => 1_000,
+            pid: 4_242,
+            platform: "win32",
+            processStartedAtMs: 100,
+            secureWindowsDirectory: async () => undefined,
+            startHeartbeat: disableHeartbeat,
+          },
+        ),
+      ).rejects.toThrow("Private directory path identity changed during publication.");
+
+      await expect(fs.readdir(displacedPath)).resolves.toEqual(
+        expect.arrayContaining(["owner.json"]),
+      );
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("retries release with bounded backoff before unwinding", async () => {
     const releaseError = new Error("transient removal failure");
     const release = vi

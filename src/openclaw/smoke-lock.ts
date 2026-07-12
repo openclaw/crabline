@@ -54,6 +54,7 @@ type BeforeRecoveryDeleteClaim = () => Promise<void>;
 type BeforeReleaseClaim = () => Promise<void>;
 type BeforeCommitFileRename = () => Promise<void>;
 type SecureWindowsDirectory = (directoryPath: string) => Promise<void>;
+type AfterLockDirectoryWrite = (directoryPath: string) => Promise<void>;
 type LockClaimKind = "commit" | "recovering" | "release";
 type LockClaim = {
   directoryPath: string;
@@ -616,11 +617,15 @@ async function resolveLockContention(params: {
 }
 
 async function createLockCandidate(params: {
+  afterOwnerWrite?: AfterLockDirectoryWrite;
   lockDirectory: string;
   owner: RenewableSmokeLockOwner;
   platform?: NodeJS.Platform;
   secureWindowsDirectory?: SecureWindowsDirectory;
-}): Promise<string> {
+}): Promise<{
+  candidateDirectory: string;
+  securedDirectory: Awaited<ReturnType<typeof securePrivateDirectory>>;
+}> {
   const candidateDirectory = `${params.lockDirectory}.${params.owner.pid}.${params.owner.token}.tmp`;
   await fs.mkdir(candidateDirectory, { mode: 0o700 });
   try {
@@ -638,6 +643,11 @@ async function createLockCandidate(params: {
       mode: 0o600,
     });
     await fs.chmod(ownerPath, 0o600);
+    const createdAt = new Date(params.owner.createdAtMs);
+    await fs.utimes(ownerPath, createdAt, createdAt);
+    await params.afterOwnerWrite?.(candidateDirectory);
+    await securedDirectory.assertIdentityAt();
+
     const leasePath = path.join(candidateDirectory, leaseFileName(params.owner.token));
     await fs.writeFile(
       leasePath,
@@ -649,10 +659,9 @@ async function createLockCandidate(params: {
       },
     );
     await fs.chmod(leasePath, 0o600);
-    const createdAt = new Date(params.owner.createdAtMs);
-    await fs.utimes(ownerPath, createdAt, createdAt);
     await fs.utimes(leasePath, createdAt, createdAt);
-    return candidateDirectory;
+    await securedDirectory.assertIdentityAt();
+    return { candidateDirectory, securedDirectory };
   } catch (error) {
     await fs.rm(candidateDirectory, { force: true, recursive: true }).catch(() => undefined);
     throw error;
@@ -665,6 +674,8 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     outputDir: string;
   },
   dependencies: {
+    afterLockCandidateInstall?: AfterLockDirectoryWrite;
+    afterLockOwnerWrite?: AfterLockDirectoryWrite;
     isProcessAlive?: IsProcessAlive;
     leaseMs?: number;
     now?: () => number;
@@ -723,7 +734,10 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       continue;
     }
 
-    const candidateDirectory = await createLockCandidate({
+    const { candidateDirectory, securedDirectory } = await createLockCandidate({
+      ...(dependencies.afterLockOwnerWrite
+        ? { afterOwnerWrite: dependencies.afterLockOwnerWrite }
+        : {}),
       lockDirectory,
       owner,
       ...(dependencies.platform ? { platform: dependencies.platform } : {}),
@@ -747,6 +761,8 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       });
       continue;
     }
+    await dependencies.afterLockCandidateInstall?.(lockDirectory);
+    await securedDirectory.assertIdentityAt(lockDirectory);
 
     if (
       (await listLockClaims(lockDirectory)).length > 0 ||

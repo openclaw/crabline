@@ -274,10 +274,30 @@ export async function runOpenClawCrablineChannelDriverSmoke(
 
   try {
     await releaseLock(smokeLock);
-  } catch (error) {
+  } catch (cleanupError) {
     // The pointer switch is authoritative; lock removal cannot roll it back.
     if (!outcome.committed) {
-      throw error;
+      if (outcome.error instanceof Error) {
+        const existingCause = outcome.error.cause;
+        Object.defineProperty(outcome.error, "cause", {
+          configurable: true,
+          value:
+            existingCause === undefined
+              ? cleanupError
+              : new AggregateError(
+                  [existingCause, cleanupError],
+                  "OpenClaw Crabline smoke failure cleanup also failed.",
+                ),
+        });
+        throw outcome.error;
+      }
+      const combinedError = new Error("OpenClaw Crabline smoke and lock cleanup both failed.", {
+        cause: cleanupError,
+      });
+      Object.defineProperty(combinedError, "errors", {
+        value: [outcome.error, cleanupError],
+      });
+      throw combinedError;
     }
   }
 
