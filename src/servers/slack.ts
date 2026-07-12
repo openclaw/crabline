@@ -47,11 +47,13 @@ type SlackServerState = {
   botUserId: string;
   eventsRequestUrl: string | undefined;
   nextDmIndex: number;
+  nextMpimIndex: number;
   nextTsIndex: number;
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
   signingSecret: string;
   userDmChannels: Map<string, string>;
+  userMpimChannels: Map<string, { id: string; users: string[] }>;
   messagesByChannel: Map<string, SlackMessage[]>;
 };
 
@@ -228,6 +230,11 @@ function nextDmChannelId(state: SlackServerState): string {
   return `D${String(index).padStart(9, "0")}`;
 }
 
+function nextMpimChannelId(state: SlackServerState): string {
+  const index = state.nextMpimIndex++;
+  return `G${String(index).padStart(9, "0")}`;
+}
+
 function dmChannelForUser(state: SlackServerState, userId: string): string {
   const existing = state.userDmChannels.get(userId);
   if (existing) {
@@ -236,6 +243,38 @@ function dmChannelForUser(state: SlackServerState, userId: string): string {
   const channelId = nextDmChannelId(state);
   state.userDmChannels.set(userId, channelId);
   return channelId;
+}
+
+function mpimChannelForUsers(
+  state: SlackServerState,
+  users: string[],
+): { id: string; users: string[] } {
+  const key = [...users].sort().join(",");
+  const existing = state.userMpimChannels.get(key);
+  if (existing) {
+    return existing;
+  }
+  const channel = { id: nextMpimChannelId(state), users: [...users] };
+  state.userMpimChannels.set(key, channel);
+  return channel;
+}
+
+function requireSlackUsers(value: unknown): string[] | Response {
+  const rawUsers = readTrimmedString(value);
+  if (!rawUsers) {
+    return slackError("users_list_not_supplied");
+  }
+  const users = rawUsers.split(",").map((user) => user.trim());
+  if (users.length > 8) {
+    return slackError("too_many_users");
+  }
+  if (users.some((user) => !SLACK_USER_ID_RULE.pattern.test(user))) {
+    return slackError("user_not_found");
+  }
+  if (new Set(users).size !== users.length) {
+    return slackError("invalid_user_combination");
+  }
+  return users;
 }
 
 function appendMessage(state: SlackServerState, message: SlackMessage): SlackMessage {
@@ -422,12 +461,22 @@ async function handleSlackApi(params: {
       return slackOk({ channel, message, ts: message.ts });
     }
     case "conversations.open": {
-      const users = readTrimmedString(params.body.users);
-      const firstUser = users?.split(",")[0]?.trim();
-      const user = requireSlackUserId(firstUser);
-      if (user instanceof Response) {
-        return user;
+      const users = requireSlackUsers(params.body.users);
+      if (users instanceof Response) {
+        return users;
       }
+      if (users.length > 1) {
+        const channel = mpimChannelForUsers(params.state, users);
+        return slackOk({
+          channel: {
+            id: channel.id,
+            is_group: true,
+            is_mpim: true,
+            members: channel.users,
+          },
+        });
+      }
+      const user = users[0]!;
       return slackOk({
         channel: {
           id: dmChannelForUser(params.state, user),
@@ -441,12 +490,16 @@ async function handleSlackApi(params: {
       if (channel instanceof Response) {
         return channel;
       }
+      const mpim = [...params.state.userMpimChannels.values()].find(
+        (candidate) => candidate.id === channel,
+      );
       return slackOk({
         channel: {
           id: channel,
           is_channel: channel.startsWith("C"),
           is_group: channel.startsWith("G"),
           is_im: channel.startsWith("D"),
+          ...(mpim ? { is_mpim: true, members: mpim.users } : {}),
           name: "crabline",
         },
       });
@@ -645,6 +698,7 @@ export async function startSlackServer(
     botUserId: params.botUserId ?? "UCRABBOT",
     eventsRequestUrl: params.eventsRequestUrl,
     nextDmIndex: 1,
+    nextMpimIndex: 1,
     nextTsIndex: 100,
     onEvent: params.onEvent,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "slack.jsonl"),
@@ -652,6 +706,7 @@ export async function startSlackServer(
       params.signingSecret ??
       (externallyBound ? randomBytes(16).toString("hex") : "crabline-slack-signing-secret"),
     userDmChannels: new Map(),
+    userMpimChannels: new Map(),
     messagesByChannel: new Map(),
   };
   const httpServer = await startHttpJsonServer({

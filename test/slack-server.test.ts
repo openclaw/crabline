@@ -117,6 +117,43 @@ describe("slack local provider server", () => {
     });
   });
 
+  it("opens stable MPIMs and rejects conversations with more than eight users", async () => {
+    const server = await startTestSlackServer();
+    const users = ["U111", "U222", "U333"];
+
+    const opened = await slackApi(server, "conversations.open", {
+      users: users.join(","),
+    });
+    await expect(opened.json()).resolves.toEqual({
+      channel: {
+        id: "G000000001",
+        is_group: true,
+        is_mpim: true,
+        members: users,
+      },
+      ok: true,
+    });
+
+    const reopened = await slackApi(server, "conversations.open", {
+      users: [...users].reverse().join(","),
+    });
+    await expect(reopened.json()).resolves.toMatchObject({
+      channel: {
+        id: "G000000001",
+        members: users,
+      },
+      ok: true,
+    });
+
+    const tooMany = await slackApi(server, "conversations.open", {
+      users: Array.from({ length: 9 }, (_, index) => `U${index + 100}`).join(","),
+    });
+    await expect(tooMany.json()).resolves.toEqual({
+      error: "too_many_users",
+      ok: false,
+    });
+  });
+
   it("bounds request bodies and does not record rejected API authentication", async () => {
     const observed: unknown[] = [];
     const server = await startTestSlackServer({
