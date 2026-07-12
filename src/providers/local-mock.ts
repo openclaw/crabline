@@ -21,6 +21,8 @@ import type {
 } from "./types.js";
 import { startWebhookServer, type StartedWebhookServer } from "./webhook-server.js";
 
+export { createGenericLocalMockTargetCodec } from "./target-normalizers.js";
+
 export type LocalMockWebhookConfig = {
   host?: string;
   path?: string;
@@ -42,37 +44,6 @@ export type LocalMockTargetCodec = {
   normalize(target: ProviderContext["fixture"]["target"]): NormalizedTarget;
   resolveThreadId(target: ProviderContext["fixture"]["target"]): string;
 };
-
-export function createGenericLocalMockTargetCodec(
-  platform: ProviderPlatform,
-): LocalMockTargetCodec {
-  const prefix = `${platform}:`;
-  const encode = (value: string) => (value.startsWith(prefix) ? value : `${prefix}${value}`);
-  return {
-    normalize(target): NormalizedTarget {
-      const normalized: NormalizedTarget = {
-        id: target.id,
-        metadata: target.metadata,
-      };
-      if (target.channelId) {
-        normalized.channelId = encode(target.channelId);
-      } else if (!target.threadId) {
-        normalized.channelId = encode(target.id);
-      }
-      if (target.threadId) {
-        normalized.channelId ??= encode(target.id);
-        normalized.threadId = target.threadId.startsWith(prefix)
-          ? target.threadId
-          : `${normalized.channelId}:${target.threadId}`;
-      }
-      return normalized;
-    },
-    resolveThreadId(target) {
-      const normalized = this.normalize(target);
-      return normalized.threadId ?? normalized.channelId ?? encode(normalized.id);
-    },
-  };
-}
 
 type MockWebhookPayload = {
   author?: "assistant" | "system" | "user";
@@ -135,7 +106,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   readonly id;
   readonly platform;
   readonly status = "ready" as const;
-  readonly supports = ["probe", "send", "roundtrip", "agent"] as const;
+  readonly supports: ProviderAdapter["supports"];
 
   readonly #codec: LocalMockTargetCodec;
   readonly #config: ProviderConfig;
@@ -155,6 +126,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }) {
     this.id = params.id;
     this.platform = params.options.platform;
+    this.supports = [...params.config.capabilities];
     this.#codec = params.codec;
     this.#config = params.config;
     this.#options = params.options;

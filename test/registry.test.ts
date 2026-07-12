@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { ManifestDefinition, ProviderConfig } from "../src/config/schema.js";
+import { TelegramProviderAdapter } from "../src/providers/builtin/telegram.js";
 import { createRegistry } from "../src/providers/registry.js";
-import type { ManifestDefinition } from "../src/config/schema.js";
 
 const manifest: ManifestDefinition = {
   configVersion: 1,
@@ -35,6 +36,97 @@ describe("registry", () => {
     const provider = registry.resolve("local", "fixture");
     expect(provider.id).toBe("local");
     expect(provider.status).toBe("ready");
+  });
+
+  it("uses configured capabilities and concrete target normalization before loading adapters", () => {
+    const config: ProviderConfig = {
+      adapter: "telegram",
+      capabilities: ["probe"],
+      env: [],
+      platform: "telegram",
+      status: "active",
+      telegram: {
+        mode: "auto",
+        recorder: {},
+        webhook: {
+          host: "127.0.0.1",
+          path: "/telegram/webhook",
+          port: 0,
+        },
+      },
+    };
+    const fixture = {
+      ...manifest.fixtures[0]!,
+      id: "telegram-topic",
+      mode: "probe" as const,
+      provider: "telegram",
+      target: {
+        id: "-1001234567890",
+        metadata: {},
+        threadId: "-1001234567890:42",
+      },
+    };
+    const telegramManifest: ManifestDefinition = {
+      ...manifest,
+      fixtures: [fixture],
+      providers: { telegram: config },
+    };
+
+    const lazyProvider = createRegistry(telegramManifest, "/tmp/crabline.yaml").resolve(
+      "telegram",
+      fixture.id,
+    );
+    const concreteProvider = new TelegramProviderAdapter("telegram", config, "crabline");
+
+    expect(lazyProvider.supports).toEqual(["probe"]);
+    expect(concreteProvider.supports).toEqual(["probe"]);
+    expect(lazyProvider.normalizeTarget(fixture.target)).toEqual(
+      concreteProvider.normalizeTarget(fixture.target),
+    );
+    expect(lazyProvider.normalizeTarget(fixture.target)).toMatchObject({
+      channelId: "-1001234567890",
+      threadId: "-1001234567890:42",
+    });
+  });
+
+  it("applies provider-specific validation through lazy adapters", () => {
+    const whatsappManifest: ManifestDefinition = {
+      ...manifest,
+      fixtures: [
+        {
+          ...manifest.fixtures[0]!,
+          id: "whatsapp-fixture",
+          provider: "whatsapp",
+          target: { id: "not-a-wa-id", metadata: {} },
+        },
+      ],
+      providers: {
+        whatsapp: {
+          adapter: "whatsapp",
+          capabilities: ["probe", "send", "roundtrip", "agent"],
+          env: [],
+          platform: "whatsapp",
+          status: "active",
+          whatsapp: {
+            recorder: {},
+            webhook: {
+              host: "127.0.0.1",
+              path: "/whatsapp/webhook",
+              port: 0,
+            },
+          },
+        },
+      },
+    };
+
+    const provider = createRegistry(whatsappManifest, "/tmp/crabline.yaml").resolve(
+      "whatsapp",
+      "whatsapp-fixture",
+    );
+
+    expect(() => provider.normalizeTarget(whatsappManifest.fixtures[0]!.target)).toThrow(
+      /WhatsApp wa_id/u,
+    );
   });
 
   it("throws for unknown providers", () => {

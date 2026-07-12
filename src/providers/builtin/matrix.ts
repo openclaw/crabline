@@ -4,27 +4,18 @@ import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
 import {
+  getBuiltinTargetCodec,
+  MATRIX_EVENT_ID_RULE,
+  MATRIX_ROOM_ID_RULE,
+} from "../target-normalizers.js";
+import {
   authorFromBotFlag,
-  createNativeTargetCodec,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
   optionalString,
   requireNativeInboundId,
-  type NativeIdRule,
 } from "./native-local-mock.js";
-
-const MATRIX_ROOM_ID_RULE: NativeIdRule = {
-  example: "!abcdef:matrix.org",
-  name: "Matrix room id",
-  pattern: /^![^:\s]+:[^\s]+$/u,
-};
-
-const MATRIX_EVENT_ID_RULE: NativeIdRule = {
-  example: "$eventid:matrix.org",
-  name: "Matrix event id",
-  pattern: /^\$[^\s]+(?::[^\s]+)?$/u,
-};
 
 export function resolveMatrixAdapterConfig(
   config: ProviderConfig,
@@ -46,12 +37,7 @@ export function resolveMatrixAdapterConfig(
 export class MatrixProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
-      codec: createNativeTargetCodec({
-        channel: MATRIX_ROOM_ID_RULE,
-        channelLabel: "Matrix room_id",
-        thread: MATRIX_EVENT_ID_RULE,
-        threadLabel: "Matrix event_id",
-      }),
+      codec: getBuiltinTargetCodec("matrix"),
       config,
       id,
       options: {

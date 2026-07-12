@@ -3,22 +3,15 @@ import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
+import { getBuiltinTargetCodec, MATTERMOST_ID_RULE } from "../target-normalizers.js";
 import {
   authorFromBotFlag,
-  createNativeTargetCodec,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
   optionalString,
   requireNativeInboundId,
-  type NativeIdRule,
 } from "./native-local-mock.js";
-
-const MATTERMOST_ID_RULE: NativeIdRule = {
-  example: "abcdefghijklmnopqrstuvwx12",
-  name: "Mattermost id",
-  pattern: /^[a-z0-9]{26}$/u,
-};
 
 export function resolveMattermostAdapterConfig(
   config: ProviderConfig,
@@ -34,10 +27,7 @@ export function resolveMattermostAdapterConfig(
 export class MattermostProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
-      codec: createNativeTargetCodec({
-        channel: MATTERMOST_ID_RULE,
-        channelLabel: "Mattermost channel_id",
-      }),
+      codec: getBuiltinTargetCodec("mattermost"),
       config,
       id,
       options: {

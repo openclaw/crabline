@@ -1,15 +1,9 @@
 import { CrablineError } from "../core/errors.js";
-import type {
-  BuiltinAdapterId,
-  FixtureMode,
-  ManifestDefinition,
-  ProviderConfig,
-} from "../config/schema.js";
+import type { BuiltinAdapterId, ManifestDefinition, ProviderConfig } from "../config/schema.js";
 import { ScriptProviderAdapter } from "./builtin/script.js";
 import { OPENCLAW_SUPPORT_CATALOG } from "./catalog.js";
 import type {
   InboundEnvelope,
-  NormalizedTarget,
   ProbeResult,
   ProviderAdapter,
   ProviderContext,
@@ -19,20 +13,14 @@ import type {
   WaitContext,
   WatchContext,
 } from "./types.js";
+import { getBuiltinTargetCodec, type BuiltinProviderAdapterId } from "./target-normalizers.js";
 
 export type Registry = {
   catalog: typeof OPENCLAW_SUPPORT_CATALOG;
   resolve(providerId: string, fixtureId: string): ProviderAdapter;
 };
 
-const COMMON_PROVIDER_SUPPORT = [
-  "probe",
-  "send",
-  "roundtrip",
-  "agent",
-] as const satisfies readonly FixtureMode[];
-
-type LazyAdapterId = Exclude<BuiltinAdapterId, "script">;
+type LazyAdapterId = BuiltinProviderAdapterId;
 type ProviderFactory = () => Promise<ProviderAdapter>;
 type LazyProviderFactory = (params: {
   config: ProviderConfig;
@@ -95,17 +83,6 @@ function isLazyAdapter(adapter: BuiltinAdapterId): adapter is LazyAdapterId {
   return adapter in LAZY_PROVIDER_FACTORIES;
 }
 
-function normalizeTarget(target: ProviderContext["fixture"]["target"]): NormalizedTarget {
-  const normalized: NormalizedTarget = { id: target.id, metadata: target.metadata };
-  if (target.channelId) {
-    normalized.channelId = target.channelId;
-  }
-  if (target.threadId) {
-    normalized.threadId = target.threadId;
-  }
-  return normalized;
-}
-
 function createLazyProvider(params: {
   adapter: LazyAdapterId;
   config: ProviderConfig;
@@ -116,9 +93,10 @@ function createLazyProvider(params: {
     adapterName: params.adapter,
     factory: () => LAZY_PROVIDER_FACTORIES[params.adapter](params),
     id: params.providerId,
+    normalizeTarget: getBuiltinTargetCodec(params.adapter).normalize,
     platform: params.config.platform,
     status: "ready",
-    supports: COMMON_PROVIDER_SUPPORT,
+    supports: params.config.capabilities,
   });
 }
 
@@ -130,26 +108,29 @@ class LazyProviderAdapter implements ProviderAdapter {
 
   readonly #adapterName: string;
   readonly #factory: ProviderFactory;
+  readonly #normalizeTarget: ProviderAdapter["normalizeTarget"];
   #providerPromise: Promise<ProviderAdapter> | null = null;
 
   constructor(params: {
     adapterName: string;
     factory: ProviderFactory;
     id: string;
+    normalizeTarget: ProviderAdapter["normalizeTarget"];
     platform: ProviderAdapter["platform"];
     status: ProviderSupportStatus;
     supports: ProviderAdapter["supports"];
   }) {
     this.#adapterName = params.adapterName;
     this.#factory = params.factory;
+    this.#normalizeTarget = params.normalizeTarget;
     this.id = params.id;
     this.platform = params.platform;
     this.status = params.status;
     this.supports = params.supports;
   }
 
-  normalizeTarget(target: ProviderContext["fixture"]["target"]): NormalizedTarget {
-    return normalizeTarget(target);
+  normalizeTarget(target: ProviderContext["fixture"]["target"]) {
+    return this.#normalizeTarget(target);
   }
 
   async probe(context: ProviderContext): Promise<ProbeResult> {
