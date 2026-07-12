@@ -55,12 +55,13 @@ export function matchesIMessageThread(
   const rawPayload = isRecord(raw) ? raw : undefined;
   const data = rawPayload ? (optionalRecord(rawPayload, "data") ?? rawPayload) : undefined;
   const recipientAlias = data ? optionalString(data, "chatIdentifier") : undefined;
+  if (expectedThreadId === undefined) {
+    return true;
+  }
+  const expectedIdentifiers = new Set([expectedThreadId, target.id]);
   return (
-    expectedThreadId === undefined ||
-    candidateThreadId === expectedThreadId ||
-    candidateThreadId === target.id ||
-    recipientAlias === expectedThreadId ||
-    recipientAlias === target.id
+    expectedIdentifiers.has(candidateThreadId) ||
+    (recipientAlias !== undefined && expectedIdentifiers.has(recipientAlias))
   );
 }
 
