@@ -125,6 +125,55 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("preserves a generation when pointer publication fails after the rename", async () => {
+    const outputDir = await createTempDir();
+    const lock = createLock();
+    const commitFailure = new Error("post-rename verification failed");
+    lock.commitFileAtomically.mockImplementation(
+      async ({ contents, destinationPath, stageFile }) => {
+        await stageFile(destinationPath, contents);
+        throw commitFailure;
+      },
+    );
+    try {
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParams(outputDir, lock), {
+          createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+        }),
+      ).rejects.toBe(commitFailure);
+
+      const pointer = await readOpenClawCrablineArtifactPointer(outputDir);
+      expect(pointer?.generation).toBe("generation-11111111-1111-4111-8111-111111111111");
+      await expect(fs.stat(path.join(outputDir, pointer!.manifestPath))).resolves.toBeDefined();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("retains the committed generation when the pointer disappears before pruning", async () => {
+    const outputDir = await createTempDir();
+    const lock = createLock();
+    lock.commitFileAtomically.mockImplementation(
+      async ({ contents, destinationPath, stageFile }) => {
+        await stageFile(destinationPath, contents);
+        await fs.rm(destinationPath);
+      },
+    );
+    try {
+      const result = await publishOpenClawCrablineArtifactGeneration(
+        publishParams(outputDir, lock),
+        { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
+      );
+
+      expect(result.warnings).toEqual([
+        "OpenClaw Crabline artifact retention cleanup failed: OpenClaw Crabline artifact pointer is missing after publication.",
+      ]);
+      await expect(fs.stat(path.join(outputDir, result.manifestPath))).resolves.toBeDefined();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("fences an expired owner without touching a successor's uncommitted generation", async () => {
     const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });

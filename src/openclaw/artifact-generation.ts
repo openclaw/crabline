@@ -306,9 +306,13 @@ export async function publishOpenClawCrablineArtifactGeneration(
     committed = true;
     let warnings: string[] | undefined;
     try {
+      const committedPointer = await readOpenClawCrablineArtifactPointer(outputDir);
+      if (!committedPointer) {
+        throw new Error("OpenClaw Crabline artifact pointer is missing after publication.");
+      }
       await pruneArtifactStore({
         lock: params.lock,
-        pointer: await readOpenClawCrablineArtifactPointer(outputDir),
+        pointer: committedPointer,
         store,
       });
     } catch (error) {
@@ -325,10 +329,21 @@ export async function publishOpenClawCrablineArtifactGeneration(
   } finally {
     if (!committed) {
       const unpublishedPath = installed ? generationPath : stagingPath;
-      await staging
-        .assertIdentityAt(unpublishedPath)
-        .then(() => fs.rm(unpublishedPath, { force: true, recursive: true }))
-        .catch(() => undefined);
+      let referencedByPointer = false;
+      if (installed) {
+        try {
+          referencedByPointer =
+            (await readOpenClawCrablineArtifactPointer(outputDir))?.generation === generation;
+        } catch {
+          referencedByPointer = true;
+        }
+      }
+      if (!referencedByPointer) {
+        await staging
+          .assertIdentityAt(unpublishedPath)
+          .then(() => fs.rm(unpublishedPath, { force: true, recursive: true }))
+          .catch(() => undefined);
+      }
     }
   }
 }
