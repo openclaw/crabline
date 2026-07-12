@@ -34,7 +34,7 @@ describe("Feishu webhook normalizer", () => {
 
   it("verifies plaintext callback tokens", async () => {
     const config = await createLocalMockConfig("feishu", "/feishu/webhook");
-    config.feishu!.verificationToken = "test-token-placeholder";
+    config.feishu!.verificationToken = "sample";
     const authenticate = createFeishuWebhookAuthenticator(config, {});
     const request = new Request("https://feishu.example.test/webhook");
 
@@ -43,7 +43,7 @@ describe("Feishu webhook normalizer", () => {
         request,
         JSON.stringify({
           challenge: "challenge-token",
-          token: "test-token-placeholder",
+          token: "sample",
           type: "url_verification",
         }),
       ),
@@ -53,7 +53,7 @@ describe("Feishu webhook normalizer", () => {
         request,
         JSON.stringify({
           challenge: "challenge-token",
-          token: "wrong-token",
+          token: "wrong",
           type: "url_verification",
         }),
       ),
@@ -64,7 +64,7 @@ describe("Feishu webhook normalizer", () => {
     const config = await createLocalMockConfig("feishu", "/feishu/webhook");
     const encryptKey = "encrypt-key";
     config.feishu!.encryptKey = encryptKey;
-    config.feishu!.verificationToken = "test-token-placeholder";
+    config.feishu!.verificationToken = "sample";
     const nativePayload = {
       event: {
         message: {
@@ -75,7 +75,7 @@ describe("Feishu webhook normalizer", () => {
         },
         sender: { sender_type: "bot" },
       },
-      header: { token: "test-token-placeholder" },
+      header: { token: "sample" },
       schema: "2.0",
     };
     const encryptedPayload = { encrypt: encryptFeishuPayload(nativePayload, encryptKey) };

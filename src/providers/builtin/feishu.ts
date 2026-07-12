@@ -62,10 +62,10 @@ export function createFeishuWebhookAuthenticator(
   env: FeishuEnvironment = process.env,
 ) {
   const resolved = resolveFeishuAdapterConfig(config, env);
-  const verifyToken = resolved.verificationToken
+  const validateCallback = resolved.verificationToken
     ? createSecretVerifier(resolved.verificationToken)
     : undefined;
-  if (!(resolved.encryptKey || verifyToken)) {
+  if (!(resolved.encryptKey || validateCallback)) {
     return undefined;
   }
 
@@ -90,11 +90,11 @@ export function createFeishuWebhookAuthenticator(
       } catch {
         return unauthorizedFeishuWebhook();
       }
-    } else if (resolved.encryptKey && !verifyToken) {
+    } else if (resolved.encryptKey && !validateCallback) {
       return unauthorizedFeishuWebhook();
     }
 
-    if (verifyToken && !verifyToken(readFeishuVerificationToken(payload))) {
+    if (validateCallback && !validateCallback(readFeishuVerificationToken(payload))) {
       return unauthorizedFeishuWebhook();
     }
     return undefined;
