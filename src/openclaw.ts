@@ -69,6 +69,8 @@ const OPENCLAW_CRABLINE_PROVIDER_BRIDGE_LIST = Object.values(
   OPENCLAW_CRABLINE_PROVIDER_BRIDGES,
 ) as readonly OpenClawCrablineProviderBridge[];
 
+const activeSmokeRuns = new Map<string, { channel: CrablineServerChannel }>();
+
 function createOpenClawCrablineProviderAdapter(
   manifest: CrablineServerManifest,
 ): OpenClawCrablineProviderAdapter {
@@ -177,44 +179,61 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
   outputDir: string;
   selection: OpenClawCrablineChannelDriverSelection;
 }): Promise<OpenClawCrablineChannelDriverSmokeResult> {
-  const manifestPath = path.join(params.outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
-  const recorderPath = path.join(
-    params.outputDir,
-    "artifacts",
-    "crabline",
-    `${params.selection.channel}-fake-provider.jsonl`,
-  );
-  await fs.mkdir(path.dirname(recorderPath), { recursive: true });
-  const adapter = await startOpenClawCrablineAdapter({
-    channel: params.selection.channel,
-    openclawConfig: {},
-    recorderPath,
-  });
+  const outputDir = path.resolve(params.outputDir);
+  const runKey = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
+  const activeRun = activeSmokeRuns.get(runKey);
+  if (activeRun) {
+    throw new Error(
+      `OpenClaw Crabline smoke is already running for channel "${activeRun.channel}" in "${outputDir}"; cannot start channel "${params.selection.channel}".`,
+    );
+  }
+  const run = { channel: params.selection.channel };
+  activeSmokeRuns.set(runKey, run);
+
   try {
-    await fs.writeFile(manifestPath, `${JSON.stringify(adapter.manifest, null, 2)}\n`, "utf8");
-    const probe = await adapter.probe();
-    return {
-      capabilityReport: {
-        result: {
-          driver: "crabline",
-          selectedChannel: params.selection.channel,
-          supportedChannels: [...CRABLINE_SERVER_CHANNELS],
+    const manifestPath = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
+    const recorderPath = path.join(
+      outputDir,
+      "artifacts",
+      "crabline",
+      `${params.selection.channel}-fake-provider.jsonl`,
+    );
+    await fs.mkdir(path.dirname(recorderPath), { recursive: true });
+    const adapter = await startOpenClawCrablineAdapter({
+      channel: params.selection.channel,
+      openclawConfig: {},
+      recorderPath,
+    });
+    try {
+      await fs.writeFile(manifestPath, `${JSON.stringify(adapter.manifest, null, 2)}\n`, "utf8");
+      const probe = await adapter.probe();
+      return {
+        capabilityReport: {
+          result: {
+            driver: "crabline",
+            selectedChannel: params.selection.channel,
+            supportedChannels: [...CRABLINE_SERVER_CHANNELS],
+          },
         },
-      },
-      manifestPath: path.basename(manifestPath),
-      smoke: {
         manifestPath: path.basename(manifestPath),
-        result: {
-          ok: true,
-          probe,
-          provider: adapter.manifest.provider,
-          endpoints: adapter.manifest.endpoints,
-          recorderPath: path.relative(params.outputDir, adapter.manifest.recorderPath),
+        smoke: {
+          manifestPath: path.basename(manifestPath),
+          result: {
+            ok: true,
+            probe,
+            provider: adapter.manifest.provider,
+            endpoints: adapter.manifest.endpoints,
+            recorderPath: path.relative(outputDir, adapter.manifest.recorderPath),
+          },
         },
-      },
-    };
+      };
+    } finally {
+      await adapter.close();
+    }
   } finally {
-    await adapter.close();
+    if (activeSmokeRuns.get(runKey) === run) {
+      activeSmokeRuns.delete(runKey);
+    }
   }
 }
 
