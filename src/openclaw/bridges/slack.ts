@@ -23,6 +23,19 @@ function requireSlackSendTargetId(value: string, label: string): string {
   return trimmed;
 }
 
+function requireSlackTargetKind(
+  parsed: { kind: "direct" | "group"; native: boolean },
+  targetId: string,
+): void {
+  if (parsed.native) {
+    return;
+  }
+  const nativeKind = /^[DUW]/u.test(targetId) ? "direct" : "group";
+  if (parsed.kind !== nativeKind) {
+    throw new Error("Slack target kind does not match the native conversation id.");
+  }
+}
+
 function requireSlackChannelId(value: string, label: string): string {
   const trimmed = value.trim();
   if (!SLACK_CHANNEL_ID_RULE.pattern.test(trimmed)) {
@@ -116,6 +129,7 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
       },
       createAgentDelivery(parsed) {
         const to = requireSlackSendTargetId(parsed.id, "Slack target");
+        requireSlackTargetKind(parsed, to);
         const threadTs = requireSlackThreadTs(parsed.threadId, "Slack target thread");
         return {
           channel: "slack",

@@ -430,8 +430,10 @@ as `telegram:`, `discord:`, or `slack:`.
 - Slack threads: `1700000000.000100`
 - Telegram chats: `-1001234567890` or `@channelusername`
 - Telegram topics: `42`
-- WhatsApp users: `15551234567@s.whatsapp.net`
-- WhatsApp groups: `120363001234567890@g.us`
+- Built-in WhatsApp Cloud API users: digits-only `wa_id` values such as
+  `15551234567`
+- OpenClaw WhatsApp bridge users: `15551234567@s.whatsapp.net`
+- OpenClaw WhatsApp bridge groups: `120363001234567890@g.us`
 - Discord channels and threads: Discord snowflake ids such as
   `123456789012345678`
 - Google Chat spaces: `spaces/AAAABbbbCCC`

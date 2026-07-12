@@ -22,6 +22,28 @@ describe("Zalo webhook normalizer", () => {
     });
   });
 
+  it("normalizes wrapped native updates with chat identity", () => {
+    const payload = {
+      ok: true,
+      result: {
+        event_name: "message.text.received",
+        message: {
+          chat: { chat_type: "GROUP", id: "987654321012" },
+          from: { display_name: "Alice", id: "123456789012", is_bot: false },
+          message_id: "zalo-msg-native",
+          text: "hello group",
+        },
+      },
+    };
+
+    expect(normalizeZaloWebhookPayload(payload)).toMatchObject({
+      author: "user",
+      id: "zalo-msg-native",
+      text: "hello group",
+      threadId: "987654321012",
+    });
+  });
+
   it.each([
     ["not-an-object", "Zalo webhook payload must be an object"],
     [{ sender: { id: "123456789012" }, message: {} }, "requires"],

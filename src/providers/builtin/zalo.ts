@@ -74,23 +74,31 @@ export function normalizeZaloWebhookPayload(payload: unknown) {
     });
   }
 
-  const sender = optionalRecord(payload, "sender");
-  const message = optionalRecord(payload, "message");
+  const wrapped = optionalRecord(payload, "result") ?? payload;
+  const message = optionalRecord(wrapped, "message");
+  const sender = optionalRecord(message ?? {}, "from") ?? optionalRecord(wrapped, "sender");
+  const chat = message ? optionalRecord(message, "chat") : undefined;
   const senderId = sender ? optionalString(sender, "id") : undefined;
+  const chatId = chat ? optionalString(chat, "id") : senderId;
   const text = message ? optionalString(message, "text") : undefined;
-  if (!senderId || !text) {
-    throw new CrablineError("Zalo webhook payload requires sender.id and message.text", {
-      kind: "inbound",
-    });
+  if (!senderId || !chatId || !text) {
+    throw new CrablineError(
+      "Zalo webhook payload requires sender identity, chat identity, and text",
+      {
+        kind: "inbound",
+      },
+    );
   }
 
   return {
-    author: authorFromBotFlag(false),
-    ...(message && optionalString(message, "msg_id")
-      ? { id: optionalString(message, "msg_id") }
-      : {}),
+    author: authorFromBotFlag(sender?.is_bot === true),
+    ...(optionalString(message ?? {}, "message_id")
+      ? { id: optionalString(message ?? {}, "message_id") }
+      : optionalString(message ?? {}, "msg_id")
+        ? { id: optionalString(message ?? {}, "msg_id") }
+        : {}),
     raw: payload,
     text,
-    threadId: requireNativeInboundId(senderId, ZALO_ID_RULE, "Zalo sender.id"),
+    threadId: requireNativeInboundId(chatId, ZALO_ID_RULE, "Zalo chat.id"),
   };
 }

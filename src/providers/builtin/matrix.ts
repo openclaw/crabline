@@ -35,7 +35,9 @@ export function resolveMatrixAdapterConfig(
 }
 
 export class MatrixProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
-  constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
+  constructor(id: string, config: ProviderConfig, userName: string, _runtime?: unknown) {
+    const resolvedConfig = resolveMatrixAdapterConfig(config, userName);
+    const botUserId = resolvedConfig.auth.userID;
     super({
       codec: getBuiltinTargetCodec("matrix"),
       config,
@@ -43,7 +45,8 @@ export class MatrixProviderAdapter extends LocalMockProviderAdapter implements P
       options: {
         defaultWebhook: { host: "127.0.0.1", path: "/matrix/webhook", port: 8797 },
         endpointLabel: "webhook endpoint",
-        normalizeWebhookPayload: normalizeMatrixWebhookPayload,
+        matchesThread: matchesMatrixThread,
+        normalizeWebhookPayload: (payload) => normalizeMatrixWebhookPayload(payload, botUserId),
         platform: "matrix",
         publicUrl: config.matrix?.webhook.publicUrl,
         recorderPath: config.matrix?.recorder.path
@@ -55,7 +58,31 @@ export class MatrixProviderAdapter extends LocalMockProviderAdapter implements P
   }
 }
 
-export function normalizeMatrixWebhookPayload(payload: unknown) {
+function matrixThreadKey(roomId: string, threadId: string): string {
+  return `${roomId}:thread:${threadId}`;
+}
+
+export function matchesMatrixThread(
+  candidateThreadId: string,
+  expectedThreadId: string | undefined,
+  target: { channelId?: string | undefined },
+): boolean {
+  if (!expectedThreadId) {
+    return true;
+  }
+  const scopedExpected =
+    target.channelId && MATRIX_EVENT_ID_RULE.pattern.test(expectedThreadId)
+      ? matrixThreadKey(target.channelId, expectedThreadId)
+      : expectedThreadId;
+  return (
+    candidateThreadId === expectedThreadId ||
+    candidateThreadId === scopedExpected ||
+    (MATRIX_ROOM_ID_RULE.pattern.test(scopedExpected) &&
+      candidateThreadId.startsWith(`${scopedExpected}:thread:`))
+  );
+}
+
+export function normalizeMatrixWebhookPayload(payload: unknown, botUserId?: string) {
   if (!isRecord(payload)) {
     throw new CrablineError("Matrix webhook payload must be an object", { kind: "inbound" });
   }
@@ -71,6 +98,7 @@ export function normalizeMatrixWebhookPayload(payload: unknown) {
   const content = optionalRecord(payload, "content");
   const roomId = optionalString(payload, "room_id");
   const eventId = optionalString(payload, "event_id");
+  const senderId = optionalString(payload, "sender");
   const text = content ? optionalString(content, "body") : undefined;
   if (!roomId || !text) {
     throw new CrablineError("Matrix event payload requires room_id and content.body", {
@@ -85,14 +113,17 @@ export function normalizeMatrixWebhookPayload(payload: unknown) {
       : undefined;
 
   return {
-    author: authorFromBotFlag(false),
+    author: authorFromBotFlag(senderId !== undefined && senderId === botUserId),
     ...(eventId
       ? { id: requireNativeInboundId(eventId, MATRIX_EVENT_ID_RULE, "Matrix event_id") }
       : {}),
     raw: payload,
     text,
     threadId: threadRootId
-      ? requireNativeInboundId(threadRootId, MATRIX_EVENT_ID_RULE, "Matrix thread root event_id")
+      ? matrixThreadKey(
+          requireNativeInboundId(roomId, MATRIX_ROOM_ID_RULE, "Matrix room_id"),
+          requireNativeInboundId(threadRootId, MATRIX_EVENT_ID_RULE, "Matrix thread root event_id"),
+        )
       : requireNativeInboundId(roomId, MATRIX_ROOM_ID_RULE, "Matrix room_id"),
   };
 }

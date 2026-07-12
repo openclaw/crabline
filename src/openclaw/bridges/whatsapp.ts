@@ -19,6 +19,19 @@ function requireWhatsAppJid(value: string, label: string): string {
   return trimmed;
 }
 
+function requireWhatsAppTargetKind(
+  parsed: { kind: "direct" | "group"; native: boolean },
+  targetId: string,
+): void {
+  if (parsed.native) {
+    return;
+  }
+  const nativeKind = targetId.endsWith("@g.us") ? "group" : "direct";
+  if (parsed.kind !== nativeKind) {
+    throw new Error("WhatsApp target kind does not match the native JID.");
+  }
+}
+
 export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
   provider: "whatsapp",
   createAdapter(whatsapp) {
@@ -83,6 +96,7 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           throw new Error("WhatsApp does not support thread targets.");
         }
         const to = requireWhatsAppJid(parsed.id, "WhatsApp target");
+        requireWhatsAppTargetKind(parsed, to);
         return {
           channel: "whatsapp",
           to,

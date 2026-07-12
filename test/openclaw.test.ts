@@ -777,6 +777,12 @@ describe("OpenClaw local provider bridge", () => {
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "group:-100123" }).to).toBe(
       "-100123",
     );
+    expect(
+      createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@channelusername" }).to,
+    ).toBe("@channelusername");
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "@channelusername" }).to).toBe(
+      "@channelusername",
+    );
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "-100123" }).to).toBe("-100123");
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "thread:-100123/42" }).to).toBe(
       "-100123:topic:42",
@@ -1084,7 +1090,7 @@ describe("OpenClaw local provider bridge", () => {
       target: "group:alice",
     }).to;
 
-    for (const threadId of ["0", "42", String(Number.MAX_SAFE_INTEGER)]) {
+    for (const threadId of ["42", String(Number.MAX_SAFE_INTEGER)]) {
       expect(
         createOpenClawCrablineAgentDelivery({
           manifest,
@@ -1094,6 +1100,7 @@ describe("OpenClaw local provider bridge", () => {
     }
 
     for (const threadId of [
+      "0",
       "not-a-number",
       "-1",
       String(Number.MAX_SAFE_INTEGER + 1),
@@ -1104,10 +1111,10 @@ describe("OpenClaw local provider bridge", () => {
           manifest,
           target: `thread:alice/${threadId}`,
         }),
-      ).toThrow("Telegram thread target must be a safe non-negative integer.");
+      ).toThrow("Telegram thread target must be a safe positive integer.");
     }
 
-    for (const threadId of ["-1", "not-a-number", String(Number.MAX_SAFE_INTEGER + 1)]) {
+    for (const threadId of ["0", "-1", "not-a-number", String(Number.MAX_SAFE_INTEGER + 1)]) {
       expect(() =>
         createOpenClawCrablineInbound({
           manifest,
@@ -1118,7 +1125,7 @@ describe("OpenClaw local provider bridge", () => {
             threadId,
           },
         }),
-      ).toThrow("Telegram thread target must be a safe non-negative integer.");
+      ).toThrow("Telegram thread target must be a safe positive integer.");
     }
   });
 
@@ -1143,6 +1150,18 @@ describe("OpenClaw local provider bridge", () => {
       to: "15551234567-1234567890@g.us",
       replyTo: "15551234567-1234567890@g.us",
     });
+    expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest: whatsappManifest,
+        target: "dm:120363001234567890@g.us",
+      }),
+    ).toThrow("WhatsApp target kind does not match the native JID.");
+    expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest: whatsappManifest,
+        target: "group:15551234567@s.whatsapp.net",
+      }),
+    ).toThrow("WhatsApp target kind does not match the native JID.");
     expect(() =>
       createOpenClawCrablineAgentDelivery({
         manifest: whatsappManifest,
@@ -1267,6 +1286,18 @@ describe("OpenClaw local provider bridge", () => {
       replyChannel: "slack",
       replyTo: "C1234567890:thread:1700000000.000100",
     });
+    expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest: slackManifest,
+        target: "dm:C1234567890",
+      }),
+    ).toThrow("Slack target kind does not match the native conversation id.");
+    expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest: slackManifest,
+        target: "group:D1234567890",
+      }),
+    ).toThrow("Slack target kind does not match the native conversation id.");
 
     const inbound = createOpenClawCrablineInbound({
       manifest: slackManifest,

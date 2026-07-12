@@ -33,6 +33,7 @@ export class IMessageProviderAdapter extends LocalMockProviderAdapter implements
       options: {
         defaultWebhook: { host: "127.0.0.1", path: "/imessage/webhook", port: 8796 },
         endpointLabel: "webhook endpoint",
+        matchesThread: matchesIMessageThread,
         normalizeWebhookPayload: normalizeIMessageWebhookPayload,
         platform: "imessage",
         publicUrl: config.imessage?.webhook.publicUrl,
@@ -43,6 +44,18 @@ export class IMessageProviderAdapter extends LocalMockProviderAdapter implements
       },
     });
   }
+}
+
+export function matchesIMessageThread(
+  candidateThreadId: string,
+  expectedThreadId: string | undefined,
+  target: { id: string },
+): boolean {
+  return (
+    expectedThreadId === undefined ||
+    candidateThreadId === expectedThreadId ||
+    candidateThreadId === target.id
+  );
 }
 
 function normalizeIMessageWebhookPayload(payload: unknown) {
@@ -59,7 +72,7 @@ function normalizeIMessageWebhookPayload(payload: unknown) {
   }
 
   const data = optionalRecord(payload, "data") ?? payload;
-  const threadId = optionalString(data, "chatGuid") ?? optionalString(data, "chatIdentifier");
+  const threadId = optionalString(data, "chatIdentifier") ?? optionalString(data, "chatGuid");
   const text = optionalString(data, "text") ?? optionalString(data, "message");
   if (!threadId || !text) {
     throw new CrablineError("iMessage webhook payload requires chatGuid and text", {

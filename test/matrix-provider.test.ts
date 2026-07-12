@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MatrixProviderAdapter,
+  matchesMatrixThread,
   normalizeMatrixWebhookPayload,
 } from "../src/providers/builtin/matrix.js";
 import { runLocalMockProviderContract } from "./local-mock-provider-helpers.js";
@@ -14,7 +15,8 @@ describe("Matrix webhook normalizer", () => {
       type: "m.room.message",
     };
 
-    expect(normalizeMatrixWebhookPayload(payload)).toMatchObject({
+    expect(normalizeMatrixWebhookPayload(payload, "@bot:matrix.org")).toMatchObject({
+      author: "user",
       id: "$event123:matrix.org",
       threadId: "!abc123:matrix.org",
     });
@@ -35,10 +37,33 @@ describe("Matrix webhook normalizer", () => {
       type: "m.room.message",
     };
 
-    expect(normalizeMatrixWebhookPayload(payload)).toMatchObject({
+    expect(normalizeMatrixWebhookPayload(payload, "@bot:matrix.org")).toMatchObject({
       id: "$reply123:matrix.org",
-      threadId: "$root123:matrix.org",
+      threadId: "!abc123:matrix.org:thread:$root123:matrix.org",
     });
+  });
+
+  it("attributes events from the configured Matrix user to the assistant", () => {
+    expect(
+      normalizeMatrixWebhookPayload(
+        {
+          content: { body: "bot reply", msgtype: "m.text" },
+          event_id: "$bot123:matrix.org",
+          room_id: "!abc123:matrix.org",
+          sender: "@bot:matrix.org",
+          type: "m.room.message",
+        },
+        "@bot:matrix.org",
+      ),
+    ).toMatchObject({ author: "assistant" });
+  });
+
+  it("matches local thread replies before native room scoping", () => {
+    expect(
+      matchesMatrixThread("$event123:matrix.org", "$event123:matrix.org", {
+        channelId: "!abc123:matrix.org",
+      }),
+    ).toBe(true);
   });
 });
 

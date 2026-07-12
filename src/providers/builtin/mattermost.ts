@@ -33,6 +33,7 @@ export class MattermostProviderAdapter extends LocalMockProviderAdapter implemen
       options: {
         defaultWebhook: { host: "127.0.0.1", path: "/mattermost/webhook", port: 8793 },
         endpointLabel: "webhook endpoint",
+        matchesThread: matchesMattermostThread,
         normalizeWebhookPayload: normalizeMattermostWebhookPayload,
         platform: "mattermost",
         publicUrl: config.mattermost?.webhook.publicUrl,
@@ -45,7 +46,33 @@ export class MattermostProviderAdapter extends LocalMockProviderAdapter implemen
   }
 }
 
-function normalizeMattermostWebhookPayload(payload: unknown) {
+function mattermostThreadKey(channelId: string, rootId: string): string {
+  return `${channelId}:thread:${rootId}`;
+}
+
+export function matchesMattermostThread(
+  candidateThreadId: string,
+  expectedThreadId: string | undefined,
+  target: { channelId?: string | undefined },
+): boolean {
+  if (!expectedThreadId) {
+    return true;
+  }
+  const scopedExpected =
+    target.channelId &&
+    MATTERMOST_ID_RULE.pattern.test(expectedThreadId) &&
+    expectedThreadId !== target.channelId
+      ? mattermostThreadKey(target.channelId, expectedThreadId)
+      : expectedThreadId;
+  return (
+    candidateThreadId === expectedThreadId ||
+    candidateThreadId === scopedExpected ||
+    (MATTERMOST_ID_RULE.pattern.test(scopedExpected) &&
+      candidateThreadId.startsWith(`${scopedExpected}:thread:`))
+  );
+}
+
+export function normalizeMattermostWebhookPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("Mattermost webhook payload must be an object", { kind: "inbound" });
   }
@@ -59,9 +86,9 @@ function normalizeMattermostWebhookPayload(payload: unknown) {
   }
 
   const channelId = optionalString(payload, "channel_id");
-  const threadId = optionalString(payload, "root_id") ?? channelId;
+  const rootId = optionalString(payload, "root_id");
   const text = optionalString(payload, "text");
-  if (!channelId || !threadId || !text) {
+  if (!channelId || !text) {
     throw new CrablineError("Mattermost webhook payload requires channel_id and text", {
       kind: "inbound",
     });
@@ -72,6 +99,11 @@ function normalizeMattermostWebhookPayload(payload: unknown) {
     ...(optionalString(payload, "post_id") ? { id: optionalString(payload, "post_id") } : {}),
     raw: payload,
     text,
-    threadId: requireNativeInboundId(threadId, MATTERMOST_ID_RULE, "Mattermost root_id"),
+    threadId: rootId
+      ? mattermostThreadKey(
+          requireNativeInboundId(channelId, MATTERMOST_ID_RULE, "Mattermost channel_id"),
+          requireNativeInboundId(rootId, MATTERMOST_ID_RULE, "Mattermost root_id"),
+        )
+      : requireNativeInboundId(channelId, MATTERMOST_ID_RULE, "Mattermost channel_id"),
   };
 }
