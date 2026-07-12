@@ -336,7 +336,8 @@ Manifest fields:
 - `endpoints.messagesUrl`: provider-native Cloud API message and status endpoint
 - `endpoints.statusUrl`: alias for the same provider-native status endpoint
 - `recorderPath`: JSONL provider traffic recorder for HTTP traffic and Baileys
-  WebSocket stanzas
+  WebSocket stanzas. Multi-message webhook deliveries use one versioned batch
+  line that Crabline's recorder APIs flatten into individual events.
 
 Pass `endpoints.baileysWebSocketUrl` to Baileys as `waWebSocketUrl` when a
 runtime needs to connect through the local provider. Cloud API-compatible

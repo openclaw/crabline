@@ -1,17 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import {
-  appendFile,
-  copyFile,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  realpath,
-  rename,
-  rm,
-} from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
+import { lock } from "proper-lockfile";
 import type { InboundEnvelope } from "./types.js";
 
 export type RecordableInboundEnvelope = InboundEnvelope & {
@@ -41,6 +30,9 @@ const pendingAppends = new Map<string, Promise<void>>();
 const recordIdentityIndexes = new Map<string, RecordIdentityIndex>();
 const MAX_RECORD_IDENTITY_INDEXES = 128;
 const MAX_RECENT_RECORD_KEYS = 4096;
+const RECORDER_BATCH_VERSION = 1;
+const RECORDER_LOCK_STALE_MS = 30_000;
+const RECORDER_LOCK_UPDATE_MS = 10_000;
 
 type IncrementalReadState = {
   caughtUp: boolean;
@@ -62,11 +54,14 @@ type RecordIdentityIndex = {
 };
 
 type RecorderFileIdentity = {
-  ctimeNs: bigint;
   dev: bigint;
   ino: bigint;
-  mtimeNs: bigint;
-  size: bigint;
+};
+
+type RecordedInboundBatchLine = {
+  events: RecordedInboundEnvelope[];
+  recordType: "crabline.recorder.batch";
+  recorderBatchVersion: typeof RECORDER_BATCH_VERSION;
 };
 
 export type RecordedInboundCursor = {
@@ -77,7 +72,7 @@ export type RecordedInboundCursor = {
 
 const CONTINUITY_BYTES = 4096;
 const MAX_INCREMENTAL_READ_BYTES = 256 * 1024;
-const MAX_PENDING_RECORD_BYTES = 1024 * 1024;
+const MAX_PENDING_RECORD_BYTES = 4 * 1024 * 1024;
 
 function createIncrementalReadState(): IncrementalReadState {
   return {
@@ -123,6 +118,24 @@ function rememberRecentRecord(seen: Set<string>, event: InboundEnvelope): boolea
     seen.delete(seen.values().next().value!);
   }
   return true;
+}
+
+function parseRecordedLine(line: string): RecordedInboundEnvelope[] {
+  const parsed = JSON.parse(line) as unknown;
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    !Array.isArray(parsed) &&
+    "recordType" in parsed &&
+    parsed.recordType === "crabline.recorder.batch" &&
+    "recorderBatchVersion" in parsed &&
+    parsed.recorderBatchVersion === RECORDER_BATCH_VERSION &&
+    "events" in parsed &&
+    Array.isArray(parsed.events)
+  ) {
+    return parsed.events as RecordedInboundEnvelope[];
+  }
+  return [parsed as RecordedInboundEnvelope];
 }
 
 function resetIncrementalReadState(state: IncrementalReadState): void {
@@ -188,14 +201,16 @@ function consumeRecordedChunk(
   const events: RecordedInboundEnvelope[] = [];
   for (const line of raw.subarray(0, lastNewline).toString("utf8").split("\n")) {
     if (line.trim()) {
-      events.push(JSON.parse(line) as RecordedInboundEnvelope);
+      events.push(...parseRecordedLine(line));
     }
   }
   return events;
 }
 
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
-  await serializeAppend(filePath, () => appendFile(filePath, line, "utf8"));
+  await serializeAppend(filePath, async (publicationPath) => {
+    await appendCommittedLine(publicationPath, line, false);
+  });
 }
 
 async function readRecorderFileIdentity(
@@ -207,11 +222,8 @@ async function readRecorderFileIdentity(
       throw new Error(`Recorder path is not a regular file: ${filePath}`);
     }
     return {
-      ctimeNs: stats.ctimeNs,
       dev: stats.dev,
       ino: stats.ino,
-      mtimeNs: stats.mtimeNs,
-      size: stats.size,
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -225,13 +237,7 @@ function sameRecorderFileIdentity(
   left: RecorderFileIdentity | undefined,
   right: RecorderFileIdentity | undefined,
 ): boolean {
-  return (
-    left?.ctimeNs === right?.ctimeNs &&
-    left?.dev === right?.dev &&
-    left?.ino === right?.ino &&
-    left?.mtimeNs === right?.mtimeNs &&
-    left?.size === right?.size
-  );
+  return left?.dev === right?.dev && left?.ino === right?.ino;
 }
 
 async function resolveRecorderPublicationPath(filePath: string): Promise<string> {
@@ -253,12 +259,13 @@ async function prepareRecorderTailForAppend(
     return;
   }
 
-  const windowSize = Math.min(stats.size, MAX_PENDING_RECORD_BYTES + 1);
-  const tailWindow = await readBufferAt(handle, windowSize, stats.size - windowSize);
-  if (tailWindow.at(-1) === 0x0a) {
+  const finalByte = await readBufferAt(handle, 1, stats.size - 1);
+  if (finalByte[0] === 0x0a) {
     return;
   }
 
+  const windowSize = Math.min(stats.size, MAX_PENDING_RECORD_BYTES + 1);
+  const tailWindow = await readBufferAt(handle, windowSize, stats.size - windowSize);
   const lastNewline = tailWindow.lastIndexOf(0x0a);
   if (lastNewline < 0 && stats.size > MAX_PENDING_RECORD_BYTES) {
     throw new Error(
@@ -279,72 +286,91 @@ async function prepareRecorderTailForAppend(
   }
 }
 
-async function syncRecorderParentDirectory(filePath: string): Promise<void> {
-  if (process.platform === "win32") {
-    return;
-  }
-  const handle = await open(path.dirname(filePath), "r");
+async function appendCommittedLine(
+  publicationPath: string,
+  line: string,
+  durable: boolean,
+): Promise<void> {
+  const handle = await open(publicationPath, "a+");
+  const identity = await handle.stat({ bigint: true });
   try {
-    await handle.sync();
+    await prepareRecorderTailForAppend(handle);
+    await handle.writeFile(line, "utf8");
+    if (durable) {
+      await handle.sync();
+    }
   } finally {
     await handle.close();
   }
-}
 
-async function appendJsonLinesAtomically(filePath: string, lines: string): Promise<void> {
-  const publicationPath = await resolveRecorderPublicationPath(filePath);
-  const temporaryPath = path.join(
-    path.dirname(publicationPath),
-    `.${path.basename(publicationPath)}.${process.pid}.${randomUUID()}.tmp`,
-  );
-  const expectedIdentity = await readRecorderFileIdentity(publicationPath);
-  let published = false;
-
-  try {
-    if (expectedIdentity) {
-      await copyFile(publicationPath, temporaryPath, constants.COPYFILE_EXCL);
-    } else {
-      const empty = await open(temporaryPath, "wx");
-      await empty.close();
-    }
-    if (
-      !sameRecorderFileIdentity(expectedIdentity, await readRecorderFileIdentity(publicationPath))
-    ) {
-      throw new Error("Recorder changed while preparing an atomic batch append.");
-    }
-
-    const handle = await open(temporaryPath, "a+");
-    try {
-      await prepareRecorderTailForAppend(handle);
-      await handle.writeFile(lines, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-
-    if (
-      !sameRecorderFileIdentity(expectedIdentity, await readRecorderFileIdentity(publicationPath))
-    ) {
-      throw new Error("Recorder changed before publishing an atomic batch append.");
-    }
-    await rename(temporaryPath, publicationPath);
-    published = true;
-    await syncRecorderParentDirectory(publicationPath);
-  } finally {
-    if (!published) {
-      await rm(temporaryPath, { force: true }).catch(() => undefined);
-    }
+  if (
+    !sameRecorderFileIdentity(
+      { dev: identity.dev, ino: identity.ino },
+      await readRecorderFileIdentity(publicationPath),
+    )
+  ) {
+    throw new Error("Recorder rotated while appending a committed line.");
   }
 }
 
-async function serializeAppend<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
-  const key = path.resolve(filePath);
+function recorderLockReleaseError(
+  filePath: string,
+  operationError: unknown,
+  releaseError: unknown,
+): AggregateError {
+  return new AggregateError(
+    [operationError, releaseError],
+    `Recorder append and lock release both failed for "${filePath}".`,
+    { cause: operationError },
+  );
+}
+
+async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+  const release = await lock(filePath, {
+    realpath: false,
+    retries: {
+      factor: 1,
+      maxTimeout: 10,
+      minTimeout: 10,
+      retries: 500,
+    },
+    stale: RECORDER_LOCK_STALE_MS,
+    update: RECORDER_LOCK_UPDATE_MS,
+  });
+  let operationFailed = false;
+  let operationError: unknown;
+  let result: T | undefined;
+  try {
+    result = await operation();
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+  try {
+    await release();
+  } catch (releaseError) {
+    if (operationFailed) {
+      throw recorderLockReleaseError(filePath, operationError, releaseError);
+    }
+    throw releaseError;
+  }
+  if (operationFailed) {
+    throw operationError;
+  }
+  return result as T;
+}
+
+async function serializeAppend<T>(
+  filePath: string,
+  operation: (publicationPath: string) => Promise<T>,
+): Promise<T> {
+  const key = await resolveRecorderPublicationPath(filePath);
   const previous = pendingAppends.get(key) ?? Promise.resolve();
   let result: T;
   const current = previous
     .catch(() => {})
     .then(async () => {
-      result = await operation();
+      result = await withRecorderLock(key, async () => await operation(key));
     });
   pendingAppends.set(key, current);
 
@@ -441,8 +467,8 @@ export async function appendRecordedInboundBatch(
   events: InboundEnvelope[],
 ): Promise<RecordedInboundEnvelope[]> {
   await mkdir(path.dirname(filePath), { recursive: true });
-  return await serializeAppend(filePath, async () => {
-    const seen = await syncRecordIdentityIndex(filePath);
+  return await serializeAppend(filePath, async (publicationPath) => {
+    const seen = await syncRecordIdentityIndex(publicationPath);
     const pendingIdentities = new Set<string>();
     const recorded: RecordedInboundEnvelope[] = [];
     for (const event of events) {
@@ -457,11 +483,13 @@ export async function appendRecordedInboundBatch(
       });
     }
     if (recorded.length > 0) {
-      await appendJsonLinesAtomically(
-        filePath,
-        recorded.map((event) => `${JSON.stringify(event)}\n`).join(""),
-      );
-      await syncRecordIdentityIndex(filePath);
+      const batch = {
+        events: recorded,
+        recordType: "crabline.recorder.batch",
+        recorderBatchVersion: RECORDER_BATCH_VERSION,
+      } satisfies RecordedInboundBatchLine;
+      await appendCommittedLine(publicationPath, `${JSON.stringify(batch)}\n`, true);
+      await syncRecordIdentityIndex(publicationPath);
     }
     return recorded;
   });
@@ -519,12 +547,12 @@ export async function readRecordedInbound(filePath: string): Promise<RecordedInb
 
   for (const line of completed.split("\n")) {
     if (line.trim()) {
-      events.push(JSON.parse(line) as RecordedInboundEnvelope);
+      events.push(...parseRecordedLine(line));
     }
   }
   if (tail.trim()) {
     try {
-      events.push(JSON.parse(tail) as RecordedInboundEnvelope);
+      events.push(...parseRecordedLine(tail));
     } catch {
       // Ignore a partial final append; completed lines remain strict.
     }

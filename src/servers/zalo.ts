@@ -162,7 +162,7 @@ function redactUrlCredentials(value: string): string {
   try {
     url = new URL(value);
   } catch {
-    return value.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#]*@/iu, "$1<redacted>@");
+    return value.replace(/^((?:[a-z][a-z0-9+.-]*:)?\/\/)[^/?#]*@/iu, "$1<redacted>@");
   }
   if (!url.username && !url.password) {
     return value;
@@ -655,6 +655,9 @@ async function handleZaloMethod(
     const target = await validateWebhookUrl(parsedUrl, state);
     if (target instanceof Response) {
       return target;
+    }
+    if (state.reservedUpdates > 0) {
+      return zaloError("Polling deliveries are still in progress", 409);
     }
     const webhook = { secretToken, updatedAt: Date.now(), url: parsedUrl.href };
     if (state.pendingRequest) {

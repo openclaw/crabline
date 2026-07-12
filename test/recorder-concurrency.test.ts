@@ -1,15 +1,29 @@
 import path from "node:path";
+import { rm } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { appendRecordedInbound } from "../src/providers/recorder.js";
 import { recordServerEvent } from "../src/servers/recorder.js";
 
 const fsMocks = vi.hoisted(() => ({
   appendFile: vi.fn<(filePath: string, data: string, encoding: string) => Promise<void>>(),
+  providerWrite: vi.fn<(filePath: string, data: string) => Promise<void>>(),
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, appendFile: fsMocks.appendFile };
+  return {
+    ...actual,
+    appendFile: fsMocks.appendFile,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      if (args[1] === "a+" && String(args[0]).includes("crabline-provider-recorder")) {
+        handle.writeFile = async (data) => {
+          await fsMocks.providerWrite(String(args[0]), String(data));
+        };
+      }
+      return handle;
+    },
+  };
 });
 
 type PendingWrite = {
@@ -22,7 +36,14 @@ let pendingWrites: PendingWrite[] = [];
 beforeEach(() => {
   pendingWrites = [];
   fsMocks.appendFile.mockReset();
+  fsMocks.providerWrite.mockReset();
   fsMocks.appendFile.mockImplementation(
+    async (_filePath, data) =>
+      await new Promise<void>((resolve) => {
+        pendingWrites.push({ data, resolve });
+      }),
+  );
+  fsMocks.providerWrite.mockImplementation(
     async (_filePath, data) =>
       await new Promise<void>((resolve) => {
         pendingWrites.push({ data, resolve });
@@ -30,12 +51,16 @@ beforeEach(() => {
   );
 });
 
-async function expectSerializedWrites(first: Promise<unknown>, second: Promise<unknown>) {
-  await vi.waitFor(() => expect(fsMocks.appendFile).toHaveBeenCalledTimes(1));
+async function expectSerializedWrites(
+  write: { mock: { calls: unknown[][] } },
+  first: Promise<unknown>,
+  second: Promise<unknown>,
+) {
+  await vi.waitFor(() => expect(write.mock.calls).toHaveLength(1));
   expect(pendingWrites).toHaveLength(1);
 
   pendingWrites[0]!.resolve();
-  await vi.waitFor(() => expect(fsMocks.appendFile).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(write.mock.calls).toHaveLength(2));
   expect(pendingWrites).toHaveLength(2);
 
   pendingWrites[1]!.resolve();
@@ -69,7 +94,7 @@ describe("recorder append serialization", () => {
       recorderPath,
     });
 
-    await expectSerializedWrites(first, second);
+    await expectSerializedWrites(fsMocks.appendFile, first, second);
     expect(pendingWrites.map((write) => write.data)).toEqual([
       `${JSON.stringify(firstEvent)}\n`,
       `${JSON.stringify(secondEvent)}\n`,
@@ -77,7 +102,10 @@ describe("recorder append serialization", () => {
   });
 
   it("serializes provider inbound appends to the same JSONL file", async () => {
-    const recorderPath = path.join("/tmp", "crabline-provider-recorder.jsonl");
+    const recorderPath = path.join(
+      "/tmp",
+      `crabline-provider-recorder-${process.pid}-${Date.now()}.jsonl`,
+    );
     const firstEvent = {
       author: "assistant" as const,
       id: "first",
@@ -93,13 +121,17 @@ describe("recorder append serialization", () => {
     };
 
     const first = appendRecordedInbound(recorderPath, firstEvent);
-    await vi.waitFor(() => expect(fsMocks.appendFile).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(fsMocks.providerWrite).toHaveBeenCalledTimes(1));
     const second = appendRecordedInbound(recorderPath, secondEvent);
 
-    await expectSerializedWrites(first, second);
-    expect(pendingWrites.map((write) => JSON.parse(write.data) as { id: string })).toEqual([
-      expect.objectContaining({ id: "first" }),
-      expect.objectContaining({ id: "second" }),
-    ]);
+    try {
+      await expectSerializedWrites(fsMocks.providerWrite, first, second);
+      expect(pendingWrites.map((write) => JSON.parse(write.data) as { id: string })).toEqual([
+        expect.objectContaining({ id: "first" }),
+        expect.objectContaining({ id: "second" }),
+      ]);
+    } finally {
+      await rm(recorderPath, { force: true });
+    }
   });
 });
