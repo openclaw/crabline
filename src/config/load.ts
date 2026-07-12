@@ -41,7 +41,9 @@ export async function loadManifest(
   const resolvedPath = await resolveConfigPath(configPath);
   try {
     const raw = await readFile(resolvedPath, "utf8");
-    const parsed = resolvedPath.endsWith(".json") ? JSON.parse(raw) : YAML.parse(raw, { merge: true });
+    const parsed = resolvedPath.endsWith(".json")
+      ? JSON.parse(raw)
+      : YAML.parse(raw, { merge: true });
     const manifest = ManifestSchema.parse(parsed);
     return { manifest, path: resolvedPath };
   } catch (error) {
