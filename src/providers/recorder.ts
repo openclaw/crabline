@@ -11,15 +11,31 @@ function sleep(ms: number): Promise<void> {
 }
 
 function toRecordKey(event: InboundEnvelope): string {
-  return `${event.provider}:${event.threadId}:${event.id}`;
+  return JSON.stringify([event.provider, event.threadId, event.id]);
 }
 
 const MAX_WATCH_SEEN_KEYS = 4096;
+const pendingAppends = new Map<string, Promise<void>>();
 
 type IncrementalReadState = {
   offset: number;
   pending: Buffer;
 };
+
+async function appendJsonLine(filePath: string, line: string): Promise<void> {
+  const key = path.resolve(filePath);
+  const previous = pendingAppends.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(() => appendFile(filePath, line, "utf8"));
+  pendingAppends.set(key, current);
+
+  try {
+    await current;
+  } finally {
+    if (pendingAppends.get(key) === current) {
+      pendingAppends.delete(key);
+    }
+  }
+}
 
 async function readRecordedInboundAppend(
   filePath: string,
@@ -93,7 +109,7 @@ export async function appendRecordedInbound(
     recordedAt: new Date().toISOString(),
   } satisfies RecordedInboundEnvelope;
 
-  await appendFile(filePath, `${JSON.stringify(recorded)}\n`, "utf8");
+  await appendJsonLine(filePath, `${JSON.stringify(recorded)}\n`);
   return recorded;
 }
 
