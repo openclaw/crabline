@@ -109,6 +109,8 @@ class LazyProviderAdapter implements ProviderAdapter {
   readonly #adapterName: string;
   readonly #factory: ProviderFactory;
   readonly #normalizeTarget: ProviderAdapter["normalizeTarget"];
+  #cleanedUp = false;
+  #cleanupPromise: Promise<void> | null = null;
   #providerPromise: Promise<ProviderAdapter> | null = null;
 
   constructor(params: {
@@ -130,6 +132,7 @@ class LazyProviderAdapter implements ProviderAdapter {
   }
 
   normalizeTarget(target: ProviderContext["fixture"]["target"]) {
+    this.#assertActive();
     return this.#normalizeTarget(target);
   }
 
@@ -150,13 +153,13 @@ class LazyProviderAdapter implements ProviderAdapter {
   }
 
   async cleanup(): Promise<void> {
-    if (!this.#providerPromise) {
-      return;
-    }
-    await (await this.#providerPromise).cleanup?.();
+    this.#cleanedUp = true;
+    this.#cleanupPromise ??= this.#cleanupProvider();
+    await this.#cleanupPromise;
   }
 
   async #provider(): Promise<ProviderAdapter> {
+    this.#assertActive();
     this.#providerPromise ??= this.#factory().catch((error: unknown) => {
       this.#providerPromise = null;
       throw new CrablineError(
@@ -164,7 +167,12 @@ class LazyProviderAdapter implements ProviderAdapter {
         { cause: error, kind: "config" },
       );
     });
-    return await this.#providerPromise;
+    const provider = await this.#providerPromise;
+    if (this.#cleanedUp) {
+      await this.#cleanupPromise;
+      throw this.#cleanedUpError();
+    }
+    return provider;
   }
 
   async *#watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
@@ -175,6 +183,24 @@ class LazyProviderAdapter implements ProviderAdapter {
       });
     }
     yield* provider.watch(context);
+  }
+
+  #assertActive(): void {
+    if (this.#cleanedUp) {
+      throw this.#cleanedUpError();
+    }
+  }
+
+  async #cleanupProvider(): Promise<void> {
+    const providerPromise = this.#providerPromise;
+    if (!providerPromise) {
+      return;
+    }
+    await (await providerPromise).cleanup?.();
+  }
+
+  #cleanedUpError(): CrablineError {
+    return new CrablineError(`Provider "${this.id}" has been cleaned up.`, { kind: "config" });
   }
 }
 
