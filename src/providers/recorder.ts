@@ -315,6 +315,9 @@ export async function waitForRecordedInbound(params: {
       }
     }
     if (!cursor.readState.caughtUp) {
+      if (Date.now() >= deadline) {
+        return null;
+      }
       continue;
     }
 

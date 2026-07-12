@@ -177,7 +177,15 @@ function mockReplyText(params: { platform: ProviderPlatform; text: string }) {
 }
 
 function isOutboundRecord(event: RecordedInboundEnvelope): boolean {
-  return event.recordedDirection === "outbound";
+  if (event.recordedDirection !== undefined) {
+    return event.recordedDirection === "outbound";
+  }
+  return (
+    event.raw !== null &&
+    typeof event.raw === "object" &&
+    "direction" in event.raw &&
+    event.raw.direction === "outbound"
+  );
 }
 
 export class LocalMockProviderAdapter implements ProviderAdapter {
@@ -286,6 +294,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
           mode: context.mode,
           platform: this.platform,
         },
+        recordedDirection: "inbound",
         sentAt: new Date().toISOString(),
         text: mockReplyText({ platform: this.platform, text: context.text }),
         threadId,
@@ -449,6 +458,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       id,
       provider: this.id,
       raw: payload.message?.raw ?? payload.raw ?? payload,
+      recordedDirection: "inbound",
       sentAt: new Date().toISOString(),
       text,
       threadId,
