@@ -594,6 +594,80 @@ describe("telegram local provider server", () => {
     }
   });
 
+  it("resets the retry budget when a lower update becomes head during delivery", async () => {
+    const attemptedUpdateIds: number[] = [];
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let observeFirst!: () => void;
+    const firstObserved = new Promise<void>((resolve) => {
+      observeFirst = resolve;
+    });
+    const webhook = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) {
+        chunks.push(Buffer.from(chunk));
+      }
+      const update = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+        update_id: number;
+      };
+      attemptedUpdateIds.push(update.update_id);
+      if (attemptedUpdateIds.length === 1) {
+        observeFirst();
+        await firstBlocked;
+      }
+      response.statusCode = 503;
+      response.end();
+    });
+    await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+    const address = webhook.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve Telegram webhook receiver.");
+    }
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    try {
+      expect(
+        (
+          await injectUpdate(server, {
+            chatId: 42,
+            text: "queued first",
+            updateId: 10,
+          })
+        ).status,
+      ).toBe(200);
+      await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`, {
+        body: JSON.stringify({ url: `http://127.0.0.1:${address.port}/telegram` }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      await firstObserved;
+
+      const lowerUpdate = injectUpdate(server, {
+        chatId: 42,
+        text: "lower update id",
+        updateId: 5,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      releaseFirst();
+
+      expect((await lowerUpdate).status).toBe(502);
+      await expect
+        .poll(() => attemptedUpdateIds.filter((updateId) => updateId === 5).length, {
+          timeout: 5_000,
+        })
+        .toBe(6);
+      expect(attemptedUpdateIds[0]).toBe(10);
+    } finally {
+      releaseFirst();
+      await new Promise<void>((resolve, reject) =>
+        webhook.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("reports webhook delivery failures without exposing observer errors", async () => {
     let attempts = 0;
     const webhook = createServer((_request, response) => {

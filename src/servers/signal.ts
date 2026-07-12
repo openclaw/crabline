@@ -138,7 +138,10 @@ function queueSignalClientEvent(
 ): SignalSseWriteResult {
   const buffer = state.clientBuffers.get(client);
   const eventBytes = Buffer.byteLength(event);
-  if (!buffer || buffer.bytes + eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES) {
+  if (
+    !buffer ||
+    state.pendingEventBytes + buffer.bytes + eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES
+  ) {
     evictSignalClient(state, client);
     return "rejected";
   }
@@ -179,11 +182,20 @@ function writeSignalSse(
   return "accepted";
 }
 
+function maxSignalClientBufferBytes(state: SignalServerState): number {
+  let maxBytes = 0;
+  for (const buffer of state.clientBuffers.values()) {
+    maxBytes = Math.max(maxBytes, buffer.bytes);
+  }
+  return maxBytes;
+}
+
 function queueSignalEvent(state: SignalServerState, event: string): boolean {
   const eventBytes = Buffer.byteLength(event);
   if (
     eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES ||
-    state.pendingEventBytes + eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES ||
+    state.pendingEventBytes + maxSignalClientBufferBytes(state) + eventBytes >
+      MAX_SIGNAL_SSE_BUFFER_BYTES ||
     state.pendingEvents.length >= state.maxPendingInboundEvents
   ) {
     return false;

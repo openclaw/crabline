@@ -382,6 +382,53 @@ describe("signal local provider server", () => {
     }
   });
 
+  it("bounds pending events together with reconnectable client buffers", async () => {
+    const server = await startSignalServer({
+      adminToken: "admin",
+      maxPendingInboundEvents: 10,
+    });
+    servers.push(server);
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ sourceNumber: "+15557654321", text }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+    expect((await sendInbound("first")).status).toBe(200);
+    expect((await sendInbound(`second-${"x".repeat(700_000)}`)).status).toBe(200);
+    expect((await sendInbound(`third-${"x".repeat(700_000)}`)).status).toBe(200);
+
+    const originalWrite = ServerResponse.prototype.write;
+    let backpressuredResponse: ServerResponse | undefined;
+    const write = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<typeof originalWrite>
+    ) {
+      const accepted = Reflect.apply(originalWrite, this, args) as boolean;
+      if (
+        backpressuredResponse === undefined &&
+        typeof args[0] === "string" &&
+        args[0].startsWith("event:receive")
+      ) {
+        backpressuredResponse = this;
+        return false;
+      }
+      return accepted;
+    });
+    const controller = new AbortController();
+    try {
+      await fetch(server.manifest.endpoints.eventsUrl, { signal: controller.signal });
+      await vi.waitFor(() => expect(backpressuredResponse).toBeDefined());
+      expect((await sendInbound(`fourth-${"x".repeat(700_000)}`)).status).toBe(503);
+    } finally {
+      controller.abort();
+      write.mockRestore();
+    }
+  });
+
   it("bounds concurrent event stream clients", async () => {
     const server = await startSignalServer({ maxSseClients: 1 });
     servers.push(server);
