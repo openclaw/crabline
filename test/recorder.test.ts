@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   appendRecordedInbound,
+  appendRecordedInboundBatch,
   createRecordedInboundCursor,
   readRecordedInbound,
   waitForRecordedInbound,
@@ -44,6 +45,39 @@ describe("recorder", () => {
     expect(events).toHaveLength(1);
     expect(events[0]?.recordedAt).toBeTypeOf("string");
     expect(events[0]?.text).toBe("hello");
+  });
+
+  it("appends retry-idempotent batches without partial duplicates", async () => {
+    const filePath = await createRecorderPath();
+    const sentAt = new Date().toISOString();
+    const batch = [
+      {
+        author: "user" as const,
+        id: "evt-batch-1",
+        provider: "whatsapp",
+        sentAt,
+        text: "first",
+        threadId: "15551234567",
+      },
+      {
+        author: "user" as const,
+        id: "evt-batch-2",
+        provider: "whatsapp",
+        sentAt,
+        text: "second",
+        threadId: "15551234567",
+      },
+    ];
+
+    const results = await Promise.all([
+      appendRecordedInboundBatch(filePath, batch),
+      appendRecordedInboundBatch(filePath, batch),
+    ]);
+    expect(results.map((result) => result.length).toSorted()).toEqual([0, 2]);
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: "evt-batch-1" }),
+      expect.objectContaining({ id: "evt-batch-2" }),
+    ]);
   });
 
   it("keeps valid events when the final record is truncated", async () => {

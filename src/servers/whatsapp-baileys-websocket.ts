@@ -25,6 +25,7 @@ import { KEY_BUNDLE_TYPE, xmppPreKey, xmppSignedPreKey } from "./whatsapp-wire/s
 import { WebSocket, WebSocketServer, type ServerOptions } from "ws";
 import type { ServerRequestEvent } from "./http.js";
 import { closeWebSocketServer } from "./websocket.js";
+import { canonicalizeWhatsAppUserJid } from "./whatsapp-jid.js";
 
 // Keep the local server independent from Baileys at runtime. Tests use Baileys
 // as a black-box client to verify this narrow WhatsApp Web wire subset.
@@ -41,7 +42,7 @@ const MAX_PENDING_WEBSOCKET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_WEBSOCKET_MESSAGES = 32;
 export const MAX_WHATSAPP_WEBSOCKET_FRAGMENTS = 1_024;
 export const MAX_WHATSAPP_SIGNAL_BUNDLES = 1_024;
-const SIGNAL_BUNDLE_JID_RE = /^\d{7,15}(?::\d+)?@(?:s\.whatsapp\.net|lid)$/iu;
+export const MAX_WHATSAPP_WEBSOCKET_CLOSE_REASON_BYTES = 123;
 type NodeBuffer = Buffer<ArrayBufferLike>;
 type WhatsAppWebSocketRawData = NodeBuffer | ArrayBuffer | NodeBuffer[];
 type WhatsAppWebSocketSendTarget = {
@@ -121,18 +122,21 @@ export class WhatsAppSignalBundleStore {
 
   resolveMany(jids: string[]): MockSignalBundle[] {
     const uniqueNewJids = new Set<string>();
+    const canonicalJids: string[] = [];
     for (const jid of jids) {
-      if (!SIGNAL_BUNDLE_JID_RE.test(jid)) {
+      const canonical = canonicalizeWhatsAppUserJid(jid);
+      if (!canonical) {
         throw new Error(`Invalid WhatsApp signal bundle JID: ${jid}.`);
       }
-      if (!this.#bundles.has(jid)) {
-        uniqueNewJids.add(jid);
+      canonicalJids.push(canonical);
+      if (!this.#bundles.has(canonical)) {
+        uniqueNewJids.add(canonical);
       }
     }
     if (this.#bundles.size + uniqueNewJids.size > this.maxBundles) {
       throw new Error(`WhatsApp signal bundle limit exceeded (${this.maxBundles}).`);
     }
-    return jids.map((jid) => this.#resolve(jid));
+    return canonicalJids.map((jid) => this.#resolve(jid));
   }
 
   #resolve(jid: string): MockSignalBundle {
@@ -464,7 +468,8 @@ class WhatsAppBaileysWebSocketSession {
     this.#handleSerializedMessage = createSerializedMessageHandler(
       (data) => this.#handleMessage(data),
       (error) => {
-        this.socket.close(1011, error instanceof Error ? error.message : String(error));
+        const close = resolveWhatsAppWebSocketClose(error);
+        this.socket.close(close.code, close.reason);
       },
       {
         sizeOf: rawDataByteLength,
@@ -778,6 +783,32 @@ export async function sendWhatsAppWebSocketPayload(
       finish(error instanceof Error ? error : new Error(String(error)));
     }
   });
+}
+
+export function resolveWhatsAppWebSocketClose(error: unknown): {
+  code: 1002 | 1009 | 1011;
+  reason: string;
+} {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = /(?:backlog|exceeds|limit|payload is too large|too many)/iu.test(message)
+    ? 1009
+    : /(?:baileys|binary node|handshake|noise|protocol|unexpected end|unsupported|invalid)/iu.test(
+          message,
+        )
+      ? 1002
+      : 1011;
+  return { code, reason: truncateWebSocketCloseReason(message) };
+}
+
+function truncateWebSocketCloseReason(reason: string): string {
+  let result = "";
+  for (const character of reason) {
+    if (Buffer.byteLength(result + character) > MAX_WHATSAPP_WEBSOCKET_CLOSE_REASON_BYTES) {
+      break;
+    }
+    result += character;
+  }
+  return result;
 }
 
 export function attachWhatsAppBaileysWebSocketServer(

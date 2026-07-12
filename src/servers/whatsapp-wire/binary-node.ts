@@ -415,7 +415,7 @@ function decodeDecompressedBinaryNode(
   if (listSize === 0 || !tag) {
     throw new Error("Invalid WhatsApp binary node header.");
   }
-  const attrs: Record<string, string> = {};
+  const attrs = Object.create(null) as Record<string, string>;
   for (let index = 0; index < (listSize - 1) >> 1; index += 1) {
     attrs[readString(readByte())] = readString(readByte());
   }

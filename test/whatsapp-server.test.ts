@@ -181,6 +181,12 @@ describe("whatsapp local provider server", () => {
     await expect(startWhatsAppServer({ accessToken: "" })).rejects.toThrow(
       "accessToken must not be empty",
     );
+    await expect(startWhatsAppServer({ adminToken: " \n\t" })).rejects.toThrow(
+      "adminToken must not be empty",
+    );
+    await expect(startWhatsAppServer({ selfJid: "not-a-whatsapp-jid" })).rejects.toThrow(
+      "selfJid must be a WhatsApp user JID",
+    );
     const port = await resolveFreePort();
     await expect(startWhatsAppServer({ maxPendingInboundMessages: 0, port })).rejects.toThrow(
       "must be a positive safe integer",
@@ -198,6 +204,7 @@ describe("whatsapp local provider server", () => {
       adminToken: "fake-whatsapp-admin-token",
       accessToken: "fake-whatsapp-token",
       recorderPath: path.join(directory, "whatsapp.jsonl"),
+      selfJid: "15550000000@C.US",
     });
     servers.push(server);
 
@@ -209,6 +216,7 @@ describe("whatsapp local provider server", () => {
     });
     expect(baileysWebSocketUrl.searchParams.get("access_token")).toBe("fake-whatsapp-token");
     expect(server.manifest.endpoints.messagesUrl).toMatch(/\/v25\.0\/100000000000000\/messages$/u);
+    expect(server.manifest.selfJid).toBe("15550000000@s.whatsapp.net");
     const phoneNumber = await fetch(server.manifest.endpoints.phoneNumberUrl, {
       headers: { authorization: "bearer fake-whatsapp-token" },
     });
@@ -422,6 +430,26 @@ describe("whatsapp local provider server", () => {
     const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
     expect(recorder).not.toContain("forged user nonce");
     expect(recorder).toContain('"path":"/_crabline/admin/whatsapp/inbound"');
+    const events = recorder
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { accepted?: boolean; path: string });
+    expect(
+      events.find(
+        (event) => event.path === new URL(server.manifest.endpoints.messagesUrl).pathname,
+      ),
+    ).toMatchObject({ accepted: true });
+    expect(
+      events.find(
+        (event) =>
+          event.accepted === false &&
+          (
+            event as {
+              body?: { messaging_product?: string };
+            }
+          ).body?.messaging_product === "messenger",
+      ),
+    ).toBeDefined();
   });
 
   it("enforces sender and chat JID roles for admin inbound messages", async () => {
@@ -472,7 +500,7 @@ describe("whatsapp local provider server", () => {
     expect(directBody).toMatchObject({
       message: {
         key: {
-          remoteJid: "15551234567@c.us",
+          remoteJid: "15551234567@s.whatsapp.net",
         },
       },
       webhook: {

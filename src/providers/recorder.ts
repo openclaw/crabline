@@ -157,13 +157,23 @@ function consumeRecordedChunk(
 }
 
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
+  await serializeAppend(filePath, () => appendFile(filePath, line, "utf8"));
+}
+
+async function serializeAppend<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
   const key = path.resolve(filePath);
   const previous = pendingAppends.get(key) ?? Promise.resolve();
-  const current = previous.catch(() => {}).then(() => appendFile(filePath, line, "utf8"));
+  let result: T;
+  const current = previous
+    .catch(() => {})
+    .then(async () => {
+      result = await operation();
+    });
   pendingAppends.set(key, current);
 
   try {
     await current;
+    return result!;
   } finally {
     if (pendingAppends.get(key) === current) {
       pendingAppends.delete(key);
@@ -247,6 +257,41 @@ export async function appendRecordedInbound(
 
   await appendJsonLine(filePath, `${JSON.stringify(recorded)}\n`);
   return recorded;
+}
+
+export async function appendRecordedInboundBatch(
+  filePath: string,
+  events: InboundEnvelope[],
+): Promise<RecordedInboundEnvelope[]> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  return await serializeAppend(filePath, async () => {
+    const existing = await readRecordedInbound(filePath);
+    const seen = new Set(existing.map(recordIdentity));
+    const recorded: RecordedInboundEnvelope[] = [];
+    for (const event of events) {
+      const identity = recordIdentity(event);
+      if (seen.has(identity)) {
+        continue;
+      }
+      seen.add(identity);
+      recorded.push({
+        ...event,
+        recordedAt: new Date().toISOString(),
+      });
+    }
+    if (recorded.length > 0) {
+      await appendFile(
+        filePath,
+        recorded.map((event) => `${JSON.stringify(event)}\n`).join(""),
+        "utf8",
+      );
+    }
+    return recorded;
+  });
+}
+
+function recordIdentity(event: Pick<InboundEnvelope, "id" | "provider" | "threadId">): string {
+  return JSON.stringify([event.provider, event.threadId, event.id]);
 }
 
 export async function readRecordedInbound(filePath: string): Promise<RecordedInboundEnvelope[]> {

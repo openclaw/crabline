@@ -5,7 +5,7 @@ import { matchesInbound } from "../../core/matcher.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter, type LocalMockWebhookConfig } from "../local-mock.js";
 import {
-  appendRecordedInbound,
+  appendRecordedInboundBatch,
   cloneRecordedInboundCursor,
   createRecordedInboundCursor,
   waitForRecordedInbound,
@@ -43,10 +43,12 @@ type NormalizedWhatsAppWebhookMessage = {
     authorIsBot?: boolean;
     id?: string;
     raw?: unknown;
+    sentAt?: string;
     text?: string;
     threadId?: string;
   };
   raw?: unknown;
+  sentAt?: string;
   text?: string;
   threadId?: string;
 };
@@ -98,6 +100,7 @@ function pruneInactiveWaitCursors(cursors: Map<string, WaitCursorState>): void {
 
 export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   readonly #config: ProviderConfig;
+  readonly #lifecycleAbort = new AbortController();
   readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
   readonly #webhook: LocalMockWebhookConfig | undefined;
@@ -158,7 +161,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   override async send(context: SendContext): Promise<SendResult> {
-    if (this.#cleanedUp) {
+    if (this.#cleanupBegun || this.#cleanedUp) {
       throw this.#cleanedUpError();
     }
     const sending = super.send(context);
@@ -198,7 +201,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
           isAddressInChannel(candidate.threadId, channelId) &&
           matchesInbound(candidate, context.fixture.inboundMatch, context.nonce),
         since: context.since,
-        signal: context.signal,
+        signal: this.#operationSignal(context.signal),
         timeoutMs: context.timeoutMs,
       });
       if (event && this.#waitCursors.get(cursorKey) === cursorState) {
@@ -226,7 +229,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
         entry.provider === this.id &&
         !isOutboundRecord(entry) &&
         isAddressInChannel(entry.threadId, target.threadId ?? target.channelId ?? target.id),
-      signal: context.signal,
+      signal: this.#operationSignal(context.signal),
       since: context.since,
     })) {
       yield event;
@@ -238,6 +241,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       return;
     }
     this.#cleanupBegun = true;
+    this.#lifecycleAbort.abort(this.#cleanedUpError());
     this.#serverClosing = this.#closeWebhookServer();
     void this.#serverClosing.catch(() => undefined);
   }
@@ -330,6 +334,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     }
 
     const ids: string[] = [];
+    const records: InboundEnvelope[] = [];
     for (const message of messages) {
       const id = message.message?.id ?? message.id ?? createMessageId();
       const threadId = message.message?.threadId ?? message.threadId;
@@ -338,17 +343,18 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
         return new Response("payload requires message.threadId and message.text", { status: 400 });
       }
 
-      await appendRecordedInbound(this.#recorderPath, {
+      records.push({
         author: authorFromPayload(message),
         id,
         provider: this.id,
         raw: message.message?.raw ?? message.raw ?? message,
-        sentAt: new Date().toISOString(),
+        sentAt: message.message?.sentAt ?? message.sentAt ?? new Date().toISOString(),
         text,
         threadId,
       });
       ids.push(id);
     }
+    await appendRecordedInboundBatch(this.#recorderPath, records);
 
     return new Response(
       JSON.stringify(ids.length === 1 ? { id: ids[0], ok: true } : { ids, ok: true }),
@@ -435,6 +441,12 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   #cleanedUpResponse(): Response {
     return new Response(`Provider "${this.id}" has been cleaned up.`, { status: 503 });
   }
+
+  #operationSignal(signal: AbortSignal | undefined): AbortSignal {
+    return signal
+      ? AbortSignal.any([signal, this.#lifecycleAbort.signal])
+      : this.#lifecycleAbort.signal;
+  }
 }
 
 export function normalizeWhatsAppWebhookPayload(
@@ -515,6 +527,10 @@ function normalizeWhatsAppFallback(
   if (threadId) {
     normalized.threadId = threadId;
   }
+  const sentAt = optionalString(fallback, "sentAt");
+  if (sentAt) {
+    normalized.sentAt = sentAt;
+  }
 
   const message = optionalRecord(fallback, "message");
   if (message) {
@@ -532,6 +548,10 @@ function normalizeWhatsAppFallback(
     }
     if (message.raw !== undefined) {
       normalizedMessage.raw = message.raw;
+    }
+    const messageSentAt = optionalString(message, "sentAt");
+    if (messageSentAt) {
+      normalizedMessage.sentAt = messageSentAt;
     }
     const messageText = optionalString(message, "text");
     if (messageText) {
@@ -565,13 +585,32 @@ function normalizeWhatsAppMessage(
   }
 
   const messageId = optionalString(message, "id");
+  const timestamp = optionalString(message, "timestamp");
   return {
     author: authorFromBotFlag(false),
     ...(messageId ? { id: messageId } : {}),
     raw: message,
+    ...(timestamp ? { sentAt: whatsAppTimestampToIso(timestamp) } : {}),
     text: body,
     threadId: requireNativeInboundId(from, WHATSAPP_WA_ID_RULE, "WhatsApp messages[].from"),
   };
+}
+
+function whatsAppTimestampToIso(timestamp: string): string {
+  if (!/^\d+$/u.test(timestamp)) {
+    throw new CrablineError("WhatsApp messages[].timestamp must be Unix seconds", {
+      kind: "inbound",
+    });
+  }
+  const milliseconds = Number(timestamp) * 1000;
+  if (!Number.isSafeInteger(milliseconds)) {
+    throw new CrablineError("WhatsApp messages[].timestamp is out of range", { kind: "inbound" });
+  }
+  const date = new Date(milliseconds);
+  if (Number.isNaN(date.getTime())) {
+    throw new CrablineError("WhatsApp messages[].timestamp is invalid", { kind: "inbound" });
+  }
+  return date.toISOString();
 }
 
 function authorFromPayload(payload: NormalizedWhatsAppWebhookMessage): InboundEnvelope["author"] {

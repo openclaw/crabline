@@ -25,7 +25,9 @@ import {
   MAX_WHATSAPP_NOISE_FRAME_BYTES,
   MAX_WHATSAPP_NOISE_FRAMES_PER_MESSAGE,
   MAX_WHATSAPP_WEBSOCKET_BUFFERED_BYTES,
+  MAX_WHATSAPP_WEBSOCKET_CLOSE_REASON_BYTES,
   parseWhatsAppWebSocketUpgradeUrl,
+  resolveWhatsAppWebSocketClose,
   sendWhatsAppWebSocketPayload,
   WHATSAPP_WEBSOCKET_SEND_TIMEOUT_MS,
   WhatsAppNoiseFrameDecoder,
@@ -330,6 +332,23 @@ describe("WhatsApp WebSocket message processing", () => {
       "/ws/chat",
     );
   });
+
+  it("maps bounded close reasons to protocol, capacity, and internal status codes", () => {
+    expect(resolveWhatsAppWebSocketClose(new Error("Invalid Baileys handshake"))).toMatchObject({
+      code: 1002,
+    });
+    expect(
+      resolveWhatsAppWebSocketClose(new Error("inbound backlog limit exceeded")),
+    ).toMatchObject({ code: 1009 });
+    expect(resolveWhatsAppWebSocketClose(new Error("recorder append failed"))).toMatchObject({
+      code: 1011,
+    });
+
+    const bounded = resolveWhatsAppWebSocketClose(new Error("x".repeat(200) + "🦊".repeat(50)));
+    expect(Buffer.byteLength(bounded.reason)).toBeLessThanOrEqual(
+      MAX_WHATSAPP_WEBSOCKET_CLOSE_REASON_BYTES,
+    );
+  });
 });
 
 describe("WhatsApp handshake protobufs", () => {
@@ -366,6 +385,11 @@ describe("WhatsApp handshake protobufs", () => {
     for (const message of oversizedUint32s) {
       expect(() => decodeHandshakeMessage(message)).toThrow("Invalid WhatsApp handshake varint.");
     }
+  });
+
+  it("rejects protobuf field number zero at every handshake level", () => {
+    expect(() => decodeHandshakeMessage(Buffer.from([0x00]))).toThrow("field number 0");
+    expect(() => decodeHandshakeMessage(Buffer.from([0x12, 0x01, 0x00]))).toThrow("field number 0");
   });
 });
 
@@ -437,6 +461,15 @@ describe("WhatsApp binary nodes", () => {
       `WhatsApp binary node count exceeds ${WHATSAPP_BINARY_NODE_MAX_NODES}.`,
     );
   });
+
+  it("decodes attributes into a null-prototype record", async () => {
+    const attrs = Object.fromEntries([["__proto__", "polluted"]]);
+    const decoded = await decodeBinaryNode(encodeBinaryNode({ attrs, tag: "message" }));
+
+    expect(Object.getPrototypeOf(decoded.attrs)).toBeNull();
+    expect(decoded.attrs["__proto__"]).toBe("polluted");
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
 });
 
 describe("WhatsApp signal bundle store", () => {
@@ -445,6 +478,7 @@ describe("WhatsApp signal bundle store", () => {
     const first = store.resolveMany(["15551234567@s.whatsapp.net"]);
     expect(first).toHaveLength(1);
     expect(store.resolveMany(["15551234567@s.whatsapp.net"])[0]).toBe(first[0]);
+    expect(store.resolveMany(["15551234567@c.us"])[0]).toBe(first[0]);
     expect(store.size).toBe(1);
     expect(() => store.resolveMany(["not-a-jid"])).toThrow(/Invalid WhatsApp signal bundle JID/u);
     expect(() => store.resolveMany(["15557654321@s.whatsapp.net"])).toThrow(
