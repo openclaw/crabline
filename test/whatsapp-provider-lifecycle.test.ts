@@ -7,6 +7,9 @@ import type { ProviderContext, SendContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 type AppendRecordedInbound = typeof import("../src/providers/recorder.js").appendRecordedInbound;
+type WebhookHandler = Parameters<
+  typeof import("../src/providers/webhook-server.js").startWebhookServer
+>[0]["handle"];
 
 const webhookMocks = vi.hoisted(() => ({
   startWebhookServer: vi.fn(),
@@ -213,6 +216,107 @@ describe("WhatsApp provider lifecycle", () => {
     } finally {
       releaseReply?.();
       await sending?.catch(() => undefined);
+      await cleanup?.catch(() => undefined);
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("closes ingress before draining admitted webhook work", async () => {
+    const directory = await createTempDir();
+    const recorderPath = path.join(directory, "whatsapp.jsonl");
+    let cleanup: Promise<void> | undefined;
+    let handle: WebhookHandler | undefined;
+    let releaseAppend: (() => void) | undefined;
+    let request: Promise<Response> | undefined;
+    const appendBlocked = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+    const close = vi.fn(async () => undefined);
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handle = params.handle;
+      return {
+        close,
+        endpointUrl: "http://127.0.0.1:43210/whatsapp/webhook",
+      };
+    });
+    recorderMocks.appendRecordedInbound.mockImplementationOnce(async (...args) => {
+      await appendBlocked;
+      return await recorderMocks.actualAppendRecordedInbound!(...args);
+    });
+
+    try {
+      const config = createConfig(recorderPath);
+      const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+      const context = createContext(config);
+      await provider.probe(context);
+
+      request = handle!(
+        new Request("http://127.0.0.1:43210/whatsapp/webhook", {
+          body: JSON.stringify({
+            entry: [
+              {
+                changes: [
+                  {
+                    value: {
+                      messages: [
+                        {
+                          from: "15551234567",
+                          id: "wa-cleanup-ingress-1",
+                          text: { body: "finish before cleanup" },
+                          type: "text",
+                        },
+                        {
+                          from: "15551234567",
+                          id: "wa-cleanup-ingress-2",
+                          text: { body: "finish the admitted batch" },
+                          type: "text",
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            ],
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      );
+      await vi.waitFor(() => expect(recorderMocks.appendRecordedInbound).toHaveBeenCalledTimes(1));
+
+      let cleanupResolved = false;
+      cleanup = provider.cleanup().then(() => {
+        cleanupResolved = true;
+      });
+      expect(close).toHaveBeenCalledTimes(1);
+      await Promise.resolve();
+      expect(cleanupResolved).toBe(false);
+
+      await expect(
+        handle!(
+          new Request("http://127.0.0.1:43210/whatsapp/webhook", {
+            body: JSON.stringify({
+              id: "wa-rejected-ingress",
+              text: "must not be recorded",
+              threadId: "15551234567",
+            }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          }),
+        ),
+      ).resolves.toMatchObject({ status: 503 });
+      expect(recorderMocks.appendRecordedInbound).toHaveBeenCalledTimes(1);
+
+      releaseAppend?.();
+      await expect(request).resolves.toMatchObject({ status: 200 });
+      await cleanup;
+      const contentsAfterCleanup = await readFile(recorderPath, "utf8");
+      expect(contentsAfterCleanup.trim().split("\n")).toHaveLength(2);
+      await Promise.resolve();
+      expect(await readFile(recorderPath, "utf8")).toBe(contentsAfterCleanup);
+    } finally {
+      releaseAppend?.();
+      await request?.catch(() => undefined);
       await cleanup?.catch(() => undefined);
       await disposeTempDir(directory);
     }

@@ -73,6 +73,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   #cleanedUp = false;
   #cleanupPromise: Promise<void> | null = null;
   readonly #inFlightSends = new Set<Promise<SendResult>>();
+  readonly #inFlightWebhookRequests = new Set<Promise<Response>>();
   #server: StartedWebhookServer | null = null;
   #serverStarting: Promise<StartedWebhookServer> | null = null;
 
@@ -159,6 +160,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       matches: (entry) =>
         entry.provider === this.id &&
         isAddressInChannel(entry.threadId, target.threadId ?? target.channelId ?? target.id),
+      signal: context.signal,
       since: context.since,
     })) {
       yield event;
@@ -168,11 +170,26 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   override async cleanup(): Promise<void> {
     this.#cleanedUp = true;
     this.#cleanupPromise ??= (async () => {
-      await Promise.allSettled(this.#inFlightSends);
-      await this.#closeWebhookServer();
+      const closingServer = this.#closeWebhookServer();
+      void closingServer.catch(() => undefined);
+      await Promise.allSettled([...this.#inFlightSends, ...this.#inFlightWebhookRequests]);
+      await closingServer;
       await super.cleanup();
     })();
     await this.#cleanupPromise;
+  }
+
+  #handleWebhookRequest(request: Request): Promise<Response> {
+    if (this.#cleanedUp) {
+      return Promise.resolve(this.#cleanedUpResponse());
+    }
+    const handling = this.#handleWebhook(request);
+    this.#inFlightWebhookRequests.add(handling);
+    void handling.then(
+      () => this.#inFlightWebhookRequests.delete(handling),
+      () => this.#inFlightWebhookRequests.delete(handling),
+    );
+    return handling;
   }
 
   async #handleWebhook(request: Request): Promise<Response> {
@@ -235,7 +252,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       let server: StartedWebhookServer;
       try {
         server = await startWebhookServer({
-          handle: (request) => this.#handleWebhook(request),
+          handle: (request) => this.#handleWebhookRequest(request),
           host,
           path: webhookPath,
           port,
@@ -286,6 +303,10 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
 
   #cleanedUpError(): CrablineError {
     return new CrablineError(`Provider "${this.id}" has been cleaned up.`, { kind: "config" });
+  }
+
+  #cleanedUpResponse(): Response {
+    return new Response(`Provider "${this.id}" has been cleaned up.`, { status: 503 });
   }
 }
 
