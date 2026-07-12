@@ -73,15 +73,8 @@ async function readRecordedInboundAppend(
       .split("\n")
       .filter((line) => line.trim().length > 0);
     const events: RecordedInboundEnvelope[] = [];
-    for (const [index, line] of lines.entries()) {
-      try {
-        events.push(JSON.parse(line) as RecordedInboundEnvelope);
-      } catch (error) {
-        if (index === lines.length - 1 && state.pending.length === 0) {
-          continue;
-        }
-        throw error;
-      }
+    for (const line of lines) {
+      events.push(JSON.parse(line) as RecordedInboundEnvelope);
     }
     return events;
   } finally {
@@ -119,12 +112,13 @@ export async function readRecordedInbound(filePath: string): Promise<RecordedInb
 
   const lines = raw.split("\n").filter((line) => line.trim().length > 0);
   const events: RecordedInboundEnvelope[] = [];
+  const hasUnterminatedTail = !raw.endsWith("\n");
 
   for (const [index, line] of lines.entries()) {
     try {
       events.push(JSON.parse(line) as RecordedInboundEnvelope);
     } catch (error) {
-      if (index === lines.length - 1) {
+      if (hasUnterminatedTail && index === lines.length - 1) {
         continue;
       }
       throw error;
@@ -162,7 +156,11 @@ export async function waitForRecordedInbound(params: {
       }
     }
 
-    await sleep(params.pollMs ?? 200);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      return null;
+    }
+    await sleep(Math.min(params.pollMs ?? 200, remainingMs));
   }
 
   return null;
