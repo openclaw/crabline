@@ -532,19 +532,21 @@ async function handleAdminInbound(params: {
   if (ts instanceof Response) {
     return ts;
   }
-  const message = createSlackMessage(params.state, {
-    channel,
-    text,
-    threadTs,
-    ts,
-    user,
-  });
+  const message = appendMessage(
+    params.state,
+    createSlackMessage(params.state, {
+      channel,
+      text,
+      threadTs,
+      ts,
+      user,
+    }),
+  );
   const event = asSlackEventCallback(message);
   const deliveryError = await deliverSlackEvent(params.state, event);
   if (deliveryError) {
     return deliveryError;
   }
-  appendMessage(params.state, message);
   return slackOk({ event, message });
 }
 
