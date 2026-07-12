@@ -446,6 +446,8 @@ async function handleTelegramAdminInbound(params: {
       update.message.message_id + 1,
     );
     params.state.nextUpdateId = Math.max(params.state.nextUpdateId, update.update_id + 1);
+    const reservedNextMessageId = params.state.nextMessageId;
+    const reservedNextUpdateId = params.state.nextUpdateId;
     try {
       await appendEvent(params.state, {
         at: new Date().toISOString(),
@@ -456,8 +458,12 @@ async function handleTelegramAdminInbound(params: {
         type: "admin",
       });
     } catch (error) {
-      params.state.nextMessageId = nextMessageId;
-      params.state.nextUpdateId = nextUpdateId;
+      if (params.state.nextMessageId === reservedNextMessageId) {
+        params.state.nextMessageId = nextMessageId;
+      }
+      if (params.state.nextUpdateId === reservedNextUpdateId) {
+        params.state.nextUpdateId = nextUpdateId;
+      }
       throw error;
     }
     params.state.updates.push(update);
@@ -475,6 +481,7 @@ async function handleTelegramAdminInbound(params: {
 
 async function flushTelegramWebhookUpdates(
   state: TelegramServerState,
+  onAttempt: (updateId: number) => void,
 ): Promise<Response | undefined> {
   if (!state.webhook) {
     return undefined;
@@ -483,6 +490,7 @@ async function flushTelegramWebhookUpdates(
     syncTelegramWebhookRetryHead(state);
     const webhook: TelegramWebhook = state.webhook;
     const update = state.updates[0]!;
+    onAttempt(update.update_id);
     const controller = new AbortController();
     state.activeWebhookDeliveries.add(controller);
     try {
@@ -577,7 +585,10 @@ async function deliverTelegramWebhookUpdates(
   ) {
     return telegramError("Bad Gateway: webhook delivery failed", 502);
   }
-  const delivery = flushTelegramWebhookUpdates(state);
+  let attemptedUpdateId: number | undefined;
+  const delivery = flushTelegramWebhookUpdates(state, (updateId) => {
+    attemptedUpdateId = updateId;
+  });
   state.webhookDelivery = delivery;
   let result: Response | undefined;
   try {
@@ -588,7 +599,10 @@ async function deliverTelegramWebhookUpdates(
       state.webhookDelivery = undefined;
     }
     if (state.webhook && state.updates.length > 0) {
-      if (result) {
+      if (state.updates[0]?.update_id !== attemptedUpdateId) {
+        syncTelegramWebhookRetryHead(state);
+        scheduleTelegramWebhookDelivery(state, 0);
+      } else if (result) {
         if (state.webhookRetryAttempts < TELEGRAM_WEBHOOK_MAX_RETRIES) {
           const delayMs = TELEGRAM_WEBHOOK_RETRY_BASE_MS * 2 ** state.webhookRetryAttempts;
           state.webhookRetryAttempts += 1;

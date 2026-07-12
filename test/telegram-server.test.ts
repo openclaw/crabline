@@ -414,6 +414,57 @@ describe("telegram local provider server", () => {
     });
   });
 
+  it("does not rewind message IDs when an inbound observer fails during an API send", async () => {
+    let releaseInbound!: () => void;
+    const inboundBlocked = new Promise<void>((resolve) => {
+      releaseInbound = resolve;
+    });
+    let observeInbound!: () => void;
+    const inboundObserved = new Promise<void>((resolve) => {
+      observeInbound = resolve;
+    });
+    const server = await startTelegramServer({
+      botToken: "test-token-placeholder",
+      async onEvent(event) {
+        if (event.type === "admin") {
+          observeInbound();
+          await inboundBlocked;
+          throw new Error("observer rejected inbound update");
+        }
+      },
+    });
+    servers.push(server);
+
+    const inbound = injectUpdate(server, { chatId: 42, text: "rejected inbound" });
+    await inboundObserved;
+    const firstSend = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body: JSON.stringify({ chat_id: 42, text: "first API send" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    const firstBody = (await firstSend.json()) as {
+      result: { message_id: number };
+    };
+    releaseInbound();
+    expect((await inbound).status).toBe(500);
+
+    const secondSend = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body: JSON.stringify({ chat_id: 42, text: "second API send" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    const secondBody = (await secondSend.json()) as {
+      result: { message_id: number };
+    };
+    expect(secondBody.result.message_id).toBeGreaterThan(firstBody.result.message_id);
+  });
+
   it("delivers webhook updates with secret headers and blocks polling", async () => {
     const delivered: Array<{ body: unknown; secret: string | undefined }> = [];
     const webhook = createServer(async (request, response) => {
@@ -596,13 +647,13 @@ describe("telegram local provider server", () => {
 
   it("resets the retry budget when a lower update becomes head during delivery", async () => {
     const attemptedUpdateIds: number[] = [];
-    let releaseFirst!: () => void;
-    const firstBlocked = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
+    let releaseFinal!: () => void;
+    const finalBlocked = new Promise<void>((resolve) => {
+      releaseFinal = resolve;
     });
-    let observeFirst!: () => void;
-    const firstObserved = new Promise<void>((resolve) => {
-      observeFirst = resolve;
+    let observeFinal!: () => void;
+    const finalObserved = new Promise<void>((resolve) => {
+      observeFinal = resolve;
     });
     const webhook = createServer(async (request, response) => {
       const chunks: Buffer[] = [];
@@ -613,9 +664,9 @@ describe("telegram local provider server", () => {
         update_id: number;
       };
       attemptedUpdateIds.push(update.update_id);
-      if (attemptedUpdateIds.length === 1) {
-        observeFirst();
-        await firstBlocked;
+      if (attemptedUpdateIds.filter((updateId) => updateId === 10).length === 6) {
+        observeFinal();
+        await finalBlocked;
       }
       response.statusCode = 503;
       response.end();
@@ -643,7 +694,7 @@ describe("telegram local provider server", () => {
         headers: { "content-type": "application/json" },
         method: "POST",
       });
-      await firstObserved;
+      await finalObserved;
 
       const lowerUpdate = injectUpdate(server, {
         chatId: 42,
@@ -651,7 +702,7 @@ describe("telegram local provider server", () => {
         updateId: 5,
       });
       await new Promise((resolve) => setTimeout(resolve, 25));
-      releaseFirst();
+      releaseFinal();
 
       expect((await lowerUpdate).status).toBe(502);
       await expect
@@ -659,14 +710,14 @@ describe("telegram local provider server", () => {
           timeout: 5_000,
         })
         .toBe(6);
-      expect(attemptedUpdateIds[0]).toBe(10);
+      expect(attemptedUpdateIds.filter((updateId) => updateId === 10)).toHaveLength(6);
     } finally {
-      releaseFirst();
+      releaseFinal();
       await new Promise<void>((resolve, reject) =>
         webhook.close((error) => (error ? reject(error) : resolve())),
       );
     }
-  });
+  }, 10_000);
 
   it("reports webhook delivery failures without exposing observer errors", async () => {
     let attempts = 0;
