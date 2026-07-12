@@ -25,6 +25,7 @@ type SetExitCode = (code: number) => void;
 
 type ProgramDependencies = {
   publishReadyFile?: (filePath: string, contents: string) => Promise<void>;
+  removeReadyFile?: (filePath: string, expectedContents: string) => Promise<void>;
   startServer?: (params: StartCrablineServerParams) => Promise<StartedCrablineServer>;
 };
 
@@ -46,6 +47,7 @@ type ServeCommandOptions = {
   readyFile?: string | undefined;
   recorder?: string | undefined;
   selfJid?: string | undefined;
+  showSecrets?: boolean | undefined;
   signingSecret?: string | undefined;
 };
 
@@ -123,6 +125,7 @@ export function createProgram(
 ): Command {
   const program = new Command();
   const publish = dependencies.publishReadyFile ?? publishReadyFile;
+  const removeReady = dependencies.removeReadyFile ?? removeReadyFile;
   const startServer = dependencies.startServer ?? startCrablineServer;
 
   program
@@ -286,6 +289,7 @@ export function createProgram(
     .option("--recorder <path>", "JSONL recorder path")
     .option("--ready-file <path>", "Write the server runtime manifest to this path")
     .option("--self-jid <jid>", "WhatsApp self JID")
+    .option("--show-secrets", "Print provider credentials in text output", false)
     .option("--signing-secret <secret>", "Slack signing secret")
     .option("--once", "Start, print the runtime manifest, and stop immediately", false)
     .action(async (provider, commandOptions: ServeCommandOptions) => {
@@ -321,17 +325,29 @@ export function createProgram(
         ),
       );
       const close = onceAsync(() => server.close());
+      let publishedReadyContents: string | undefined;
       try {
         const payload = formatJson(server.manifest);
         if (commandOptions.readyFile) {
-          await publish(commandOptions.readyFile, `${payload}\n`);
+          publishedReadyContents = `${payload}\n`;
+          await publish(commandOptions.readyFile, publishedReadyContents);
         }
-        print(options.json ? payload : renderServeText(server.manifest));
+        print(
+          options.json
+            ? payload
+            : renderServeText(server.manifest, commandOptions.showSecrets === true),
+        );
         if (!commandOptions.once) {
           await waitForShutdown(close);
         }
       } finally {
-        await close();
+        try {
+          await close();
+        } finally {
+          if (commandOptions.readyFile && publishedReadyContents !== undefined) {
+            await removeReady(commandOptions.readyFile, publishedReadyContents);
+          }
+        }
       }
     });
 
@@ -385,6 +401,19 @@ export async function publishReadyFile(filePath: string, contents: string): Prom
   }
 }
 
+export async function removeReadyFile(filePath: string, expectedContents: string): Promise<void> {
+  try {
+    if ((await fs.readFile(filePath, "utf8")) !== expectedContents) {
+      return;
+    }
+    await fs.rm(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
 export function waitForShutdown(
   close: () => Promise<void>,
   signalTarget: SignalTarget = process,
@@ -408,14 +437,14 @@ export function waitForShutdown(
   });
 }
 
-function renderServeText(manifest: CrablineServerManifest) {
+function renderServeText(manifest: CrablineServerManifest, showSecrets: boolean) {
   const lines = [
     `${manifest.provider} local server ready`,
     `  apiRoot: ${manifest.provider === "matrix" ? manifest.endpoints.clientApiRoot : manifest.endpoints.apiRoot}`,
     `  inbound: ${manifest.endpoints.adminInboundUrl}`,
     `  recorder: ${manifest.recorderPath}`,
   ];
-  const providerFields = renderServeProviderFields(manifest);
+  const providerFields = renderServeProviderFields(manifest, showSecrets);
   if (!providerFields) {
     throw new CrablineError(`Unsupported server manifest provider: ${String(manifest.provider)}`, {
       kind: "config",
@@ -425,39 +454,46 @@ function renderServeText(manifest: CrablineServerManifest) {
   return lines.join("\n");
 }
 
-function renderServeProviderFields(manifest: CrablineServerManifest): string[] | undefined {
+function renderServeProviderFields(
+  manifest: CrablineServerManifest,
+  showSecrets: boolean,
+): string[] | undefined {
+  const secret = (value: string) => (showSecrets ? value : "<redacted>");
   if (manifest.provider === "mattermost") {
     return [
-      `  adminToken: ${manifest.adminToken}`,
-      `  botToken: ${manifest.botToken}`,
+      `  adminToken: ${secret(manifest.adminToken)}`,
+      `  botToken: ${secret(manifest.botToken)}`,
       `  websocket: ${manifest.endpoints.websocketUrl}`,
     ];
   }
   if (manifest.provider === "matrix") {
     return [
-      `  adminToken: ${manifest.adminToken}`,
-      `  accessToken: ${manifest.accessToken}`,
+      `  adminToken: ${secret(manifest.adminToken)}`,
+      `  accessToken: ${secret(manifest.accessToken)}`,
       `  botUserId: ${manifest.botUserId}`,
       `  sync: ${manifest.endpoints.syncUrl}`,
     ];
   }
   if (manifest.provider === "signal") {
-    return [`  adminToken: ${manifest.adminToken}`, `  account: ${manifest.account}`];
+    return [`  adminToken: ${secret(manifest.adminToken)}`, `  account: ${manifest.account}`];
   }
   if (manifest.provider === "slack") {
     return [
-      `  adminToken: ${manifest.adminToken}`,
-      `  botToken: ${manifest.botToken}`,
-      `  signingSecret: ${manifest.signingSecret}`,
+      `  adminToken: ${secret(manifest.adminToken)}`,
+      `  botToken: ${secret(manifest.botToken)}`,
+      `  signingSecret: ${secret(manifest.signingSecret)}`,
     ];
   }
   if (manifest.provider === "telegram") {
-    return [`  adminToken: ${manifest.adminToken}`, `  botToken: ${manifest.botToken}`];
+    return [
+      `  adminToken: ${secret(manifest.adminToken)}`,
+      `  botToken: ${secret(manifest.botToken)}`,
+    ];
   }
   if (manifest.provider === "whatsapp") {
     return [
-      `  adminToken: ${manifest.adminToken}`,
-      `  accessToken: ${manifest.accessToken}`,
+      `  adminToken: ${secret(manifest.adminToken)}`,
+      `  accessToken: ${secret(manifest.accessToken)}`,
       `  baileysWebSocket: ${manifest.endpoints.baileysWebSocketUrl}`,
       `  messages: ${manifest.endpoints.messagesUrl}`,
       `  phoneNumber: ${manifest.endpoints.phoneNumberUrl}`,
@@ -467,8 +503,8 @@ function renderServeProviderFields(manifest: CrablineServerManifest): string[] |
   }
   if (manifest.provider === "zalo") {
     return [
-      `  adminToken: ${manifest.adminToken}`,
-      `  botToken: ${manifest.botToken}`,
+      `  adminToken: ${secret(manifest.adminToken)}`,
+      `  botToken: ${secret(manifest.botToken)}`,
       `  botId: ${manifest.botId}`,
     ];
   }

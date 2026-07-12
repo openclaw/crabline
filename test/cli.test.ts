@@ -445,6 +445,104 @@ describe("cli", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("does not remove a ready file replaced during server shutdown", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, "server.json");
+    const replacement = "replacement owner\n";
+    const server = {
+      async close() {
+        await fs.writeFile(readyFile, replacement);
+      },
+      manifest: {
+        adminToken: "admin",
+        baseUrl: "http://127.0.0.1:12345",
+        botToken: "424242:token",
+        endpoints: {
+          adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
+          apiRoot: "http://127.0.0.1:12345",
+        },
+        env: {
+          TELEGRAM_BOT_TOKEN: "424242:token",
+        },
+        provider: "telegram",
+        recorderPath: path.join(directory, "telegram.jsonl"),
+        version: 1,
+      },
+    } satisfies StartedCrablineServer;
+    const program = createProgram(() => undefined, {
+      startServer: async () => server,
+    });
+    const captured = captureWrites();
+
+    try {
+      await program.parseAsync([
+        "node",
+        "crabline",
+        "--json",
+        "serve",
+        "telegram",
+        "--once",
+        "--ready-file",
+        readyFile,
+      ]);
+    } finally {
+      captured.restore();
+    }
+
+    await expect(fs.readFile(readyFile, "utf8")).resolves.toBe(replacement);
+  });
+
+  it("redacts serve credentials from text output unless explicitly requested", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const captured = captureWrites();
+
+    try {
+      expect(
+        await runCli([
+          "node",
+          "crabline",
+          "serve",
+          "telegram",
+          "--once",
+          "--admin-token",
+          "admin-sentinel",
+          "--bot-token",
+          "424242:bot-sentinel",
+          "--recorder",
+          path.join(directory, "redacted.jsonl"),
+        ]),
+      ).toBe(0);
+      expect(
+        await runCli([
+          "node",
+          "crabline",
+          "serve",
+          "telegram",
+          "--once",
+          "--show-secrets",
+          "--admin-token",
+          "visible-admin",
+          "--bot-token",
+          "424242:visible-bot",
+          "--recorder",
+          path.join(directory, "visible.jsonl"),
+        ]),
+      ).toBe(0);
+    } finally {
+      captured.restore();
+    }
+
+    const stdout = captured.stdout.join("");
+    expect(stdout).not.toContain("admin-sentinel");
+    expect(stdout).not.toContain("bot-sentinel");
+    expect(stdout).toContain("adminToken: <redacted>");
+    expect(stdout).toContain("botToken: <redacted>");
+    expect(stdout).toContain("adminToken: visible-admin");
+    expect(stdout).toContain("botToken: 424242:visible-bot");
+  });
+
   it("prints a Telegram server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -487,9 +585,8 @@ describe("cli", () => {
       /^http:\/\/127\.0\.0\.1:\d+\/crabline\/telegram\/inbound$/u,
     );
     expect(manifest.botToken).toBe("424242:crabline-telegram-token");
-    await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "telegram"');
-    expect((await fs.stat(readyFile)).mode & 0o777).toBe(0o600);
-    expect(await fs.readdir(path.dirname(readyFile))).toEqual([path.basename(readyFile)]);
+    await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readdir(path.dirname(readyFile))).toEqual([]);
   });
 
   it("prints a Zalo server runtime manifest", async () => {
@@ -539,7 +636,7 @@ describe("cli", () => {
       ZALO_API_URL: manifest.endpoints?.apiRoot,
       ZALO_BOT_TOKEN: "test-zalo-token",
     });
-    await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "zalo"');
+    await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("prints a Slack server runtime manifest", async () => {
@@ -589,7 +686,7 @@ describe("cli", () => {
       /^http:\/\/127\.0\.0\.1:\d+\/crabline\/slack\/inbound$/u,
     );
     expect(manifest.endpoints?.eventsUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/slack\/events$/u);
-    await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "slack"');
+    await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("prints a WhatsApp server runtime manifest", async () => {
@@ -655,7 +752,7 @@ describe("cli", () => {
       CLOUD_API_VERSION: "v25.0",
       WA_PHONE_NUMBER_ID: "100000000000000",
     });
-    await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "whatsapp"');
+    await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("doctor accepts local mock slack without live env", async () => {
