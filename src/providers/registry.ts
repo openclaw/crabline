@@ -22,6 +22,10 @@ export type Registry = {
 
 type LazyAdapterId = BuiltinProviderAdapterId;
 type ProviderFactory = () => Promise<ProviderAdapter>;
+type ActiveWatch = {
+  abort(): void;
+  close(): Promise<void>;
+};
 type LazyProviderFactory = (params: {
   config: ProviderConfig;
   providerId: string;
@@ -109,6 +113,8 @@ class LazyProviderAdapter implements ProviderAdapter {
   readonly #adapterName: string;
   readonly #factory: ProviderFactory;
   readonly #normalizeTarget: ProviderAdapter["normalizeTarget"];
+  readonly #activeWatches = new Set<ActiveWatch>();
+  readonly #inFlightOperations = new Set<Promise<unknown>>();
   #cleanedUp = false;
   #cleanupPromise: Promise<void> | null = null;
   #providerPromise: Promise<ProviderAdapter> | null = null;
@@ -136,25 +142,111 @@ class LazyProviderAdapter implements ProviderAdapter {
     return this.#normalizeTarget(target);
   }
 
-  async probe(context: ProviderContext): Promise<ProbeResult> {
-    return await (await this.#provider()).probe(context);
+  probe(context: ProviderContext): Promise<ProbeResult> {
+    return this.#runOperation(async () => await (await this.#provider()).probe(context));
   }
 
-  async send(context: SendContext): Promise<SendResult> {
-    return await (await this.#provider()).send(context);
+  send(context: SendContext): Promise<SendResult> {
+    return this.#runOperation(async () => await (await this.#provider()).send(context));
   }
 
-  async waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
-    return await (await this.#provider()).waitForInbound(context);
+  waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
+    return this.#runOperation(async () => await (await this.#provider()).waitForInbound(context));
   }
 
   watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
-    return this.#watch(context);
+    if (this.#cleanedUp) {
+      const error = this.#cleanedUpError();
+      return {
+        [Symbol.asyncIterator](): AsyncIterator<InboundEnvelope> {
+          return {
+            next: () => Promise.reject(error),
+          };
+        },
+      };
+    }
+    const controller = new AbortController();
+    const abortFromContext = () => controller.abort(context.signal?.reason);
+    if (context.signal?.aborted) {
+      abortFromContext();
+    } else {
+      context.signal?.addEventListener("abort", abortFromContext, { once: true });
+    }
+    const source = this.#watch(context, controller.signal)[Symbol.asyncIterator]();
+    let activeWatch: ActiveWatch;
+    let closed = false;
+    let closePromise: Promise<IteratorResult<InboundEnvelope>> | null = null;
+    const finish = () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      context.signal?.removeEventListener("abort", abortFromContext);
+      this.#activeWatches.delete(activeWatch);
+    };
+    const close = () => {
+      closePromise ??= (async () => {
+        controller.abort();
+        try {
+          return source.return
+            ? await source.return()
+            : { done: true as const, value: undefined as never };
+        } finally {
+          finish();
+        }
+      })();
+      return closePromise;
+    };
+    const iterator: AsyncIterableIterator<InboundEnvelope> = {
+      async next() {
+        try {
+          const result = await source.next();
+          if (result.done) {
+            finish();
+          }
+          return result;
+        } catch (error) {
+          finish();
+          throw error;
+        }
+      },
+      return: close,
+      async throw(error?: unknown) {
+        controller.abort();
+        try {
+          if (source.throw) {
+            return await source.throw(error);
+          }
+          throw error;
+        } finally {
+          finish();
+        }
+      },
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    };
+    activeWatch = {
+      abort: () => controller.abort(),
+      close: async () => {
+        await close();
+      },
+    };
+    this.#activeWatches.add(activeWatch);
+    return iterator;
   }
 
   async cleanup(): Promise<void> {
     this.#cleanedUp = true;
-    this.#cleanupPromise ??= this.#cleanupProvider();
+    for (const watch of this.#activeWatches) {
+      watch.abort();
+    }
+    this.#cleanupPromise ??= (async () => {
+      const closingWatches = [...this.#activeWatches].map(async (watch) => await watch.close());
+      await Promise.allSettled(this.#inFlightOperations);
+      await Promise.allSettled(closingWatches);
+      await this.#cleanupProvider();
+    })();
     await this.#cleanupPromise;
   }
 
@@ -167,22 +259,17 @@ class LazyProviderAdapter implements ProviderAdapter {
         { cause: error, kind: "config" },
       );
     });
-    const provider = await this.#providerPromise;
-    if (this.#cleanedUp) {
-      await this.#cleanupPromise;
-      throw this.#cleanedUpError();
-    }
-    return provider;
+    return await this.#providerPromise;
   }
 
-  async *#watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
+  async *#watch(context: WatchContext, signal: AbortSignal): AsyncIterable<InboundEnvelope> {
     const provider = await this.#provider();
     if (!provider.watch) {
       throw new CrablineError(`Provider "${this.id}" does not implement watch.`, {
         kind: "config",
       });
     }
-    yield* provider.watch(context);
+    yield* provider.watch({ ...context, signal });
   }
 
   #assertActive(): void {
@@ -197,6 +284,19 @@ class LazyProviderAdapter implements ProviderAdapter {
       return;
     }
     await (await providerPromise).cleanup?.();
+  }
+
+  #runOperation<T>(run: () => Promise<T>): Promise<T> {
+    if (this.#cleanedUp) {
+      return Promise.reject(this.#cleanedUpError());
+    }
+    const operation = run();
+    this.#inFlightOperations.add(operation);
+    void operation.then(
+      () => this.#inFlightOperations.delete(operation),
+      () => this.#inFlightOperations.delete(operation),
+    );
+    return operation;
   }
 
   #cleanedUpError(): CrablineError {
