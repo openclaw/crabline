@@ -13,6 +13,7 @@ export type ServerRequestEvent = {
 
 export const ADMIN_TOKEN_HEADER = "x-crabline-admin-token";
 export const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+export const DEFAULT_SERVER_SHUTDOWN_GRACE_MS = 250;
 
 export class InvalidJsonBodyError extends Error {
   constructor(cause: unknown) {
@@ -179,12 +180,20 @@ export async function writeResponse(
   response.end(Buffer.from(await fetchResponse.arrayBuffer()));
 }
 
-export function closeServer(server: Server): Promise<void> {
+export function closeServer(
+  server: Server,
+  graceMs = DEFAULT_SERVER_SHUTDOWN_GRACE_MS,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const closeIdleInterval = setInterval(() => server.closeIdleConnections(), 25);
     closeIdleInterval.unref();
+    const forceCloseTimer = setTimeout(() => {
+      server.closeAllConnections();
+    }, graceMs);
+    forceCloseTimer.unref();
     server.close((error) => {
       clearInterval(closeIdleInterval);
+      clearTimeout(forceCloseTimer);
       if (error) {
         reject(error);
         return;

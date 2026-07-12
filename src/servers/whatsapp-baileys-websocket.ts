@@ -24,6 +24,7 @@ import { decodeHandshakeMessage, encodeHandshakeMessage } from "./whatsapp-wire/
 import { KEY_BUNDLE_TYPE, xmppPreKey, xmppSignedPreKey } from "./whatsapp-wire/signal.js";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type { ServerRequestEvent } from "./http.js";
+import { closeWebSocketServer } from "./websocket.js";
 
 // Keep the local server independent from Baileys at runtime. Tests use Baileys
 // as a black-box client to verify this narrow WhatsApp Web wire subset.
@@ -598,19 +599,8 @@ export function attachWhatsAppBaileysWebSocketServer(
   return {
     async close() {
       params.httpServer.off("upgrade", handleUpgrade);
-      for (const client of wss.clients) {
-        client.close();
-      }
       pendingMessages.length = 0;
-      await new Promise<void>((resolve, reject) => {
-        wss.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
-      });
+      await closeWebSocketServer(wss);
     },
     deliverInboundMessage(message) {
       let delivered = false;
