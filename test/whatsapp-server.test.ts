@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
 import path from "node:path";
 import {
   initAuthCreds,
@@ -151,6 +152,23 @@ async function expectWebSocketUpgradeRejected(url: string): Promise<void> {
   });
 }
 
+async function resolveFreePort(): Promise<number> {
+  const server = createNetServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("Unable to resolve free port.");
+  }
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+  return address.port;
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(servers.splice(0).map((server) => server.close()));
@@ -158,6 +176,17 @@ afterEach(async () => {
 });
 
 describe("whatsapp local provider server", () => {
+  it("validates inbound queue limits before binding the HTTP port", async () => {
+    const port = await resolveFreePort();
+    await expect(startWhatsAppServer({ maxPendingInboundMessages: 0, port })).rejects.toThrow(
+      "must be a positive safe integer",
+    );
+
+    const server = await startWhatsAppServer({ port });
+    servers.push(server);
+    expect(new URL(server.manifest.baseUrl).port).toBe(String(port));
+  });
+
   it("serves Cloud API sends and injected inbound webhook payloads", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -580,6 +609,23 @@ describe("whatsapp local provider server", () => {
           ),
         "Baileys connection open",
       );
+      const liveInbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          chatJid: "120363001234567890@g.us",
+          pushName: "Fake Sender",
+          senderJid: "15551234567@s.whatsapp.net",
+          text: "hello after reconnect",
+        }),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+      await expect(liveInbound.json()).resolves.toMatchObject({
+        delivery: "delivered",
+        ok: true,
+      });
       await socket.sendMessage("15551234567@s.whatsapp.net", {
         text: "hello through real baileys",
       });
@@ -600,23 +646,25 @@ describe("whatsapp local provider server", () => {
         () =>
           messageUpserts
             .flatMap((event) => event.messages)
-            .some(
+            .filter(
               (message) =>
                 message.key?.remoteJid === "120363001234567890@g.us" &&
-                message.key.participant === "15551234567@s.whatsapp.net" &&
-                message.message?.conversation === "hello from queued admin inbound",
-            ),
-        "queued Baileys inbound messages.upsert",
+                message.key.participant === "15551234567@s.whatsapp.net",
+            ).length >= 2,
+        "queued and live Baileys inbound messages.upsert",
       );
-      const queuedMessages = messageUpserts
+      const inboundMessages = messageUpserts
         .flatMap((event) => event.messages)
         .filter(
           (message) =>
             message.key?.remoteJid === "120363001234567890@g.us" &&
-            message.message?.conversation === "hello from queued admin inbound",
+            message.key.participant === "15551234567@s.whatsapp.net",
         );
-      expect(queuedMessages).toHaveLength(1);
-      expect(queuedMessages[0]).toMatchObject({
+      expect(inboundMessages.map((message) => message.message?.conversation)).toEqual([
+        "hello from queued admin inbound",
+        "hello after reconnect",
+      ]);
+      expect(inboundMessages[0]).toMatchObject({
         key: {
           fromMe: false,
           participant: "15551234567@s.whatsapp.net",

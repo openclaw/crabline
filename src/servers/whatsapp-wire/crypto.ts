@@ -8,13 +8,14 @@ import {
   diffieHellman,
   generateKeyPairSync,
   hkdfSync,
+  randomBytes,
 } from "node:crypto";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
 type Curve25519Module = {
-  generateKeyPair(seed?: Uint8Array): { private: Uint8Array; public: Uint8Array };
+  generateKeyPair(seed: Uint8Array): { private: Uint8Array; public: Uint8Array };
   sharedKey(privateKey: Uint8Array, publicKey: Uint8Array): Uint8Array;
   sign(privateKey: Uint8Array, message: Uint8Array): Uint8Array;
 };
@@ -42,34 +43,30 @@ export type SignedKeyPair = {
   signature: Buffer;
 };
 
-export const Curve = {
-  generateKeyPair(): KeyPair {
-    try {
-      const { privateKey, publicKey } = generateKeyPairSync("x25519", {
-        privateKeyEncoding: { format: "der", type: "pkcs8" },
-        publicKeyEncoding: { format: "der", type: "spki" },
-      });
-      return {
-        private: privateKey.subarray(
-          PRIVATE_KEY_DER_PREFIX.length,
-          PRIVATE_KEY_DER_PREFIX.length + 32,
-        ),
-        public: publicKey.subarray(PUBLIC_KEY_DER_PREFIX.length, PUBLIC_KEY_DER_PREFIX.length + 32),
-      };
-    } catch {
-      const keyPair = curve25519.generateKeyPair();
-      return {
-        private: Buffer.from(keyPair.private),
-        public: Buffer.from(keyPair.public),
-      };
-    }
-  },
+type NativeCurveBackend = {
+  generateKeyPair(): KeyPair;
+  sharedKey(privateKey: Uint8Array, publicKey: Uint8Array): Buffer;
+};
 
-  sharedKey(privateKey: Uint8Array, publicKey: Uint8Array): Buffer {
-    const rawPublicKey = scrubSignalPublicKey(publicKey);
-    if (typeof diffieHellman !== "function") {
-      return Buffer.from(curve25519.sharedKey(Buffer.from(privateKey), rawPublicKey));
-    }
+type CurveApi = NativeCurveBackend & {
+  sign(privateKey: Uint8Array, message: Uint8Array): Buffer;
+};
+
+const nativeCurveBackend: NativeCurveBackend = {
+  generateKeyPair() {
+    const { privateKey, publicKey } = generateKeyPairSync("x25519", {
+      privateKeyEncoding: { format: "der", type: "pkcs8" },
+      publicKeyEncoding: { format: "der", type: "spki" },
+    });
+    return {
+      private: privateKey.subarray(
+        PRIVATE_KEY_DER_PREFIX.length,
+        PRIVATE_KEY_DER_PREFIX.length + 32,
+      ),
+      public: publicKey.subarray(PUBLIC_KEY_DER_PREFIX.length, PUBLIC_KEY_DER_PREFIX.length + 32),
+    };
+  },
+  sharedKey(privateKey, publicKey) {
     const nodePrivateKey = createPrivateKey({
       format: "der",
       key: Buffer.concat([PRIVATE_KEY_DER_PREFIX, Buffer.from(privateKey)]),
@@ -77,16 +74,68 @@ export const Curve = {
     });
     const nodePublicKey = createPublicKey({
       format: "der",
-      key: Buffer.concat([PUBLIC_KEY_DER_PREFIX, rawPublicKey]),
+      key: Buffer.concat([PUBLIC_KEY_DER_PREFIX, Buffer.from(publicKey)]),
       type: "spki",
     });
     return diffieHellman({ privateKey: nodePrivateKey, publicKey: nodePublicKey });
   },
-
-  sign(privateKey: Uint8Array, message: Uint8Array): Buffer {
-    return Buffer.from(curve25519.sign(Buffer.from(privateKey), Buffer.from(message)));
-  },
 };
+
+function isUnsupportedNativeCurveError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return (
+    code === "ERR_OSSL_EVP_UNSUPPORTED" ||
+    code === "ERR_CRYPTO_UNSUPPORTED_OPERATION" ||
+    code === "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE"
+  );
+}
+
+export function createCurve(nativeBackend: NativeCurveBackend = nativeCurveBackend): CurveApi {
+  let nativeAvailable = true;
+  return {
+    generateKeyPair(): KeyPair {
+      if (nativeAvailable) {
+        try {
+          return nativeBackend.generateKeyPair();
+        } catch {
+          nativeAvailable = false;
+        }
+      }
+      const keyPair = curve25519.generateKeyPair(randomBytes(32));
+      return {
+        private: Buffer.from(keyPair.private),
+        public: Buffer.from(keyPair.public),
+      };
+    },
+
+    sharedKey(privateKey: Uint8Array, publicKey: Uint8Array): Buffer {
+      if (privateKey.byteLength !== 32) {
+        throw new Error(`Invalid Signal private key length: ${privateKey.byteLength}.`);
+      }
+      const rawPublicKey = scrubSignalPublicKey(publicKey);
+      if (rawPublicKey.every((byte) => byte === 0)) {
+        throw new Error("X25519 failed during derivation for an invalid peer key.");
+      }
+      if (nativeAvailable) {
+        try {
+          return nativeBackend.sharedKey(privateKey, rawPublicKey);
+        } catch (error) {
+          if (!isUnsupportedNativeCurveError(error)) {
+            throw error;
+          }
+          nativeAvailable = false;
+        }
+      }
+      return Buffer.from(curve25519.sharedKey(Buffer.from(privateKey), rawPublicKey));
+    },
+
+    sign(privateKey: Uint8Array, message: Uint8Array): Buffer {
+      return Buffer.from(curve25519.sign(Buffer.from(privateKey), Buffer.from(message)));
+    },
+  };
+}
+
+export const Curve = createCurve();
 
 export function aesEncryptGCM(
   plaintext: Uint8Array,
@@ -121,13 +170,22 @@ export function aesDecryptGCM(
 }
 
 export function encodeBigEndian(value: number, length = 4): Buffer {
-  let remaining = value;
-  const bytes = new Array<number>(length).fill(0);
-  for (let index = length - 1; index >= 0; index -= 1) {
-    bytes[index] = remaining & 0xff;
-    remaining >>>= 8;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error("Big-endian values must be non-negative safe integers.");
   }
-  return Buffer.from(bytes);
+  if (!Number.isSafeInteger(length) || length < 1 || length > 1024) {
+    throw new Error("Big-endian lengths must be safe integers between 1 and 1024.");
+  }
+  let remaining = BigInt(value);
+  if (remaining >= 1n << BigInt(length * 8)) {
+    throw new Error(`Big-endian value ${value} does not fit in ${length} bytes.`);
+  }
+  const bytes = Buffer.alloc(length);
+  for (let index = length - 1; index >= 0; index -= 1) {
+    bytes[index] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+  return bytes;
 }
 
 export function hkdf(

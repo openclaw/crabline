@@ -10,6 +10,13 @@ export type BinaryNode = {
 export const WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES = 1024 * 1024;
 export const WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES = 8 * 1024 * 1024;
 export const WHATSAPP_BINARY_NODE_MAX_DEPTH = 128;
+export const WHATSAPP_BINARY_NODE_MAX_NODES = 32_768;
+export const WHATSAPP_BINARY_NODE_MAX_LIST_ITEMS = 131_072;
+
+type DecodeBudget = {
+  listItems: number;
+  nodes: number;
+};
 
 function inflateWithInfo(
   buffer: Uint8Array,
@@ -140,7 +147,10 @@ export const S_WHATSAPP_NET = "@s.whatsapp.net";
 export async function decodeBinaryNode(frame: Buffer): Promise<BinaryNode> {
   const buffer = await decompressIfRequired(frame);
   const indexRef = { index: 0 };
-  const node = decodeDecompressedBinaryNode(buffer, indexRef);
+  const node = decodeDecompressedBinaryNode(buffer, indexRef, 1, {
+    listItems: 0,
+    nodes: 0,
+  });
   if (indexRef.index !== buffer.length) {
     throw new Error("WhatsApp binary node frame contains trailing data.");
   }
@@ -148,7 +158,7 @@ export async function decodeBinaryNode(frame: Buffer): Promise<BinaryNode> {
 }
 
 export function encodeBinaryNode(node: BinaryNode): Buffer {
-  return Buffer.from(encodeBinaryNodeInner(node, [0]));
+  return Buffer.from(encodeBinaryNodeInner(node, [0], 1));
 }
 
 async function decompressIfRequired(buffer: Buffer): Promise<Buffer> {
@@ -189,11 +199,16 @@ async function decompressIfRequired(buffer: Buffer): Promise<Buffer> {
 
 function decodeDecompressedBinaryNode(
   buffer: Buffer,
-  indexRef = { index: 0 },
-  depth = 1,
+  indexRef: { index: number },
+  depth: number,
+  budget: DecodeBudget,
 ): BinaryNode {
   if (depth > WHATSAPP_BINARY_NODE_MAX_DEPTH) {
     throw new Error(`WhatsApp binary node nesting exceeds ${WHATSAPP_BINARY_NODE_MAX_DEPTH}.`);
+  }
+  budget.nodes += 1;
+  if (budget.nodes > WHATSAPP_BINARY_NODE_MAX_NODES) {
+    throw new Error(`WhatsApp binary node count exceeds ${WHATSAPP_BINARY_NODE_MAX_NODES}.`);
   }
   const checkEOS = (length: number) => {
     if (!Number.isSafeInteger(length) || length < 0 || length > buffer.length - indexRef.index) {
@@ -273,16 +288,23 @@ function decodeDecompressedBinaryNode(
     return startByte >> 7 !== 0 ? value.slice(0, -1) : value;
   };
   const readListSize = (tag: number) => {
+    let size: number;
     if (tag === TAGS.LIST_EMPTY) {
-      return 0;
+      size = 0;
+    } else if (tag === TAGS.LIST_8) {
+      size = readByte();
+    } else if (tag === TAGS.LIST_16) {
+      size = readInt(2);
+    } else {
+      throw new Error(`Invalid WhatsApp list tag: ${tag}.`);
     }
-    if (tag === TAGS.LIST_8) {
-      return readByte();
+    budget.listItems += size;
+    if (budget.listItems > WHATSAPP_BINARY_NODE_MAX_LIST_ITEMS) {
+      throw new Error(
+        `WhatsApp binary node list items exceed ${WHATSAPP_BINARY_NODE_MAX_LIST_ITEMS}.`,
+      );
     }
-    if (tag === TAGS.LIST_16) {
-      return readInt(2);
-    }
-    throw new Error(`Invalid WhatsApp list tag: ${tag}.`);
+    return size;
   };
   const isListTag = (tag: number) =>
     tag === TAGS.LIST_EMPTY || tag === TAGS.LIST_8 || tag === TAGS.LIST_16;
@@ -335,7 +357,7 @@ function decodeDecompressedBinaryNode(
     const items: BinaryNode[] = [];
     const size = readListSize(tag);
     for (let index = 0; index < size; index += 1) {
-      items.push(decodeDecompressedBinaryNode(buffer, indexRef, depth + 1));
+      items.push(decodeDecompressedBinaryNode(buffer, indexRef, depth + 1, budget));
     }
     return items;
   };
@@ -415,7 +437,10 @@ function decodeDecompressedBinaryNode(
   return content === undefined ? { attrs, tag } : { attrs, content, tag };
 }
 
-function encodeBinaryNodeInner(node: BinaryNode, buffer: number[]): number[] {
+function encodeBinaryNodeInner(node: BinaryNode, buffer: number[], depth: number): number[] {
+  if (depth > WHATSAPP_BINARY_NODE_MAX_DEPTH) {
+    throw new Error(`WhatsApp binary node nesting exceeds ${WHATSAPP_BINARY_NODE_MAX_DEPTH}.`);
+  }
   if (!node.tag) {
     throw new Error("Invalid WhatsApp binary node: tag is required.");
   }
@@ -437,7 +462,7 @@ function encodeBinaryNodeInner(node: BinaryNode, buffer: number[]): number[] {
   } else if (Array.isArray(node.content)) {
     writeListStart(buffer, node.content.length);
     for (const child of node.content) {
-      encodeBinaryNodeInner(child, buffer);
+      encodeBinaryNodeInner(child, buffer, depth + 1);
     }
   } else if (node.content !== undefined) {
     throw new Error(`Invalid WhatsApp binary node content for <${node.tag}>.`);

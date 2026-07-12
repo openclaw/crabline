@@ -6,11 +6,21 @@ import {
   encodeBinaryNode,
   WHATSAPP_BINARY_NODE_MAX_DEPTH,
   WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES,
+  WHATSAPP_BINARY_NODE_MAX_NODES,
   type BinaryNode,
 } from "../src/servers/whatsapp-wire/binary-node.js";
-import { aesDecryptGCM, aesEncryptGCM, Curve } from "../src/servers/whatsapp-wire/crypto.js";
+import {
+  aesDecryptGCM,
+  aesEncryptGCM,
+  createCurve,
+  Curve,
+  encodeBigEndian,
+} from "../src/servers/whatsapp-wire/crypto.js";
 import { decodeHandshakeMessage } from "../src/servers/whatsapp-wire/handshake.js";
-import { createSerializedMessageHandler } from "../src/servers/whatsapp-baileys-websocket.js";
+import {
+  createSerializedMessageHandler,
+  WhatsAppSignalBundleStore,
+} from "../src/servers/whatsapp-baileys-websocket.js";
 
 const RFC_7748_ALICE_PRIVATE = Buffer.from(
   "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
@@ -48,6 +58,43 @@ describe("WhatsApp X25519 agreement", () => {
     expect(() => BaileysCurve.sharedKey(RFC_7748_ALICE_PRIVATE, Buffer.alloc(32))).toThrow(
       "failed during derivation",
     );
+  });
+
+  it("uses the JS backend coherently after native key generation fails", () => {
+    let nativeSharedKeyCalls = 0;
+    const curve = createCurve({
+      generateKeyPair() {
+        throw new Error("native X25519 unavailable");
+      },
+      sharedKey() {
+        nativeSharedKeyCalls += 1;
+        throw new Error("native shared key should not run");
+      },
+    });
+    const alice = curve.generateKeyPair();
+    const bob = curve.generateKeyPair();
+
+    expect(curve.sharedKey(alice.private, bob.public)).toEqual(
+      curve.sharedKey(bob.private, alice.public),
+    );
+    expect(nativeSharedKeyCalls).toBe(0);
+  });
+});
+
+describe("WhatsApp integer encoding", () => {
+  it("encodes values wider than 32 bits", () => {
+    expect(encodeBigEndian(2 ** 32, 5).toString("hex")).toBe("0100000000");
+    expect(encodeBigEndian(Number.MAX_SAFE_INTEGER, 7).toString("hex")).toBe("1fffffffffffff");
+  });
+
+  it.each([
+    [-1, 4],
+    [1.5, 4],
+    [Number.POSITIVE_INFINITY, 4],
+    [256, 1],
+    [1, 0],
+  ])("rejects invalid value or length: %s, %s", (value, length) => {
+    expect(() => encodeBigEndian(value, length)).toThrow(/Big-endian/u);
   });
 });
 
@@ -194,9 +241,37 @@ describe("WhatsApp binary nodes", () => {
   it("rejects nodes beyond the nesting limit", async () => {
     const node = nestedNode(WHATSAPP_BINARY_NODE_MAX_DEPTH + 1);
 
-    await expect(decodeBinaryNode(encodeBinaryNode(node))).rejects.toThrow(
+    expect(() => encodeBinaryNode(node)).toThrow(
       `WhatsApp binary node nesting exceeds ${WHATSAPP_BINARY_NODE_MAX_DEPTH}.`,
     );
+  });
+
+  it("rejects aggregate node counts beyond the structural budget", async () => {
+    const child: BinaryNode = { attrs: {}, tag: "x" };
+    const node: BinaryNode = {
+      attrs: {},
+      content: Array<BinaryNode>(WHATSAPP_BINARY_NODE_MAX_NODES).fill(child),
+      tag: "root",
+    };
+
+    await expect(decodeBinaryNode(encodeBinaryNode(node))).rejects.toThrow(
+      `WhatsApp binary node count exceeds ${WHATSAPP_BINARY_NODE_MAX_NODES}.`,
+    );
+  });
+});
+
+describe("WhatsApp signal bundle store", () => {
+  it("validates JIDs and bounds retained key material", () => {
+    const store = new WhatsAppSignalBundleStore(1);
+    const first = store.resolveMany(["15551234567@s.whatsapp.net"]);
+    expect(first).toHaveLength(1);
+    expect(store.resolveMany(["15551234567@s.whatsapp.net"])[0]).toBe(first[0]);
+    expect(store.size).toBe(1);
+    expect(() => store.resolveMany(["not-a-jid"])).toThrow(/Invalid WhatsApp signal bundle JID/u);
+    expect(() => store.resolveMany(["15557654321@s.whatsapp.net"])).toThrow(
+      /signal bundle limit exceeded/u,
+    );
+    expect(store.size).toBe(1);
   });
 });
 

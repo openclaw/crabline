@@ -1111,6 +1111,15 @@ describe("OpenClaw local provider bridge", () => {
       replyChannel: "whatsapp",
       replyTo: "15551234567@s.whatsapp.net",
     });
+    expect(
+      createOpenClawCrablineAgentDelivery({
+        manifest: whatsappManifest,
+        target: "group:15551234567-1234567890@g.us",
+      }),
+    ).toMatchObject({
+      to: "15551234567-1234567890@g.us",
+      replyTo: "15551234567-1234567890@g.us",
+    });
     expect(() =>
       createOpenClawCrablineAgentDelivery({
         manifest: whatsappManifest,
@@ -1157,6 +1166,33 @@ describe("OpenClaw local provider bridge", () => {
         kind: "group",
       },
     });
+    expect(
+      createOpenClawCrablineInbound({
+        manifest: whatsappManifest,
+        input: {
+          conversation: { id: "15551234567-1234567890@g.us", kind: "group" },
+          senderId: "15551234567@s.whatsapp.net",
+          text: "legacy group",
+        },
+      }),
+    ).toMatchObject({
+      providerBody: { chatJid: "15551234567-1234567890@g.us" },
+      providerTargetKey: "15551234567-1234567890@g.us",
+      stateConversation: { id: "15551234567-1234567890@g.us", kind: "group" },
+    });
+    for (const id of [
+      "1234-1234567890@g.us",
+      "1234567890-1234@g.us",
+      "1234567890--1234567890@g.us",
+      "1234567890-1234567890-extra@g.us",
+    ]) {
+      expect(() =>
+        createOpenClawCrablineAgentDelivery({
+          manifest: whatsappManifest,
+          target: `group:${id}`,
+        }),
+      ).toThrow("WhatsApp target must be a native WhatsApp JID.");
+    }
 
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({

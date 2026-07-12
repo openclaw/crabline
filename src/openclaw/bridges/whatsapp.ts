@@ -9,7 +9,7 @@ import {
 } from "../shared.js";
 
 const WHATSAPP_JID_RE =
-  /^(?:\d{7,15}(?::\d+)?@s\.whatsapp\.net|\d{7,15}@c\.us|\d{5,}@g\.us|\d{7,15}@lid)$/iu;
+  /^(?:\d{7,15}(?::\d+)?@s\.whatsapp\.net|\d{7,15}@c\.us|\d{5,20}(?:-\d{5,20})?@g\.us|\d{7,15}@lid)$/iu;
 
 function requireWhatsAppJid(value: string, label: string): string {
   const trimmed = value.trim();
