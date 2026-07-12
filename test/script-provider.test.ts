@@ -1,5 +1,7 @@
 import path from "node:path";
+import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { ensureErrorMessage } from "../src/core/errors.js";
 import { ScriptProviderAdapter } from "../src/providers/builtin/script.js";
 import type { ProviderContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir, writeText } from "./test-helpers.js";
@@ -381,10 +383,33 @@ describe("script provider", () => {
 
   it("reports watch subprocess spawn failures without crashing", async () => {
     const context = await createContext();
+    const sentinel = "redact-me";
+    const command = `CRABLINE_PRIVATE_VALUE=${sentinel} node watch.mjs`;
+    context.config.script!.commands.send = command;
+    context.config.script!.commands.watch = command;
     context.config.script!.shell = path.join(path.dirname(context.manifestPath), "missing-shell");
     const provider = new ScriptProviderAdapter(context);
 
-    await expect(provider.watch(context).next()).rejects.toThrow(/failed to start/u);
+    for (const operation of [
+      () =>
+        provider.send({
+          ...context,
+          mode: "send" as const,
+          nonce: "nonce",
+          text: "payload",
+        }),
+      () => provider.watch(context).next(),
+    ]) {
+      let failure: unknown;
+      try {
+        await operation();
+      } catch (error) {
+        failure = error;
+      }
+      expect(ensureErrorMessage(failure)).toMatch(/failed to start/u);
+      expect(inspect(failure, { depth: null })).not.toContain(command);
+      expect(inspect(failure, { depth: null })).not.toContain(sentinel);
+    }
   });
 
   it("validates watched JSON message contracts", async () => {
@@ -400,6 +425,48 @@ describe("script provider", () => {
     await expect(provider.watch(context).next()).rejects.toThrow(
       /returned invalid result.*author/isu,
     );
+  });
+
+  it("redacts configured command text from script errors", async () => {
+    const context = await createContext();
+    const sentinel = "redact-me";
+    const failingScript = path.join(path.dirname(context.manifestPath), "send-secret.mjs");
+    await writeText(failingScript, 'process.stderr.write("failed");process.exitCode=7;');
+    const command = `CRABLINE_PRIVATE_VALUE=${sentinel} node ${JSON.stringify(failingScript)}`;
+    context.config.script!.commands.send = command;
+    const provider = new ScriptProviderAdapter(context);
+
+    let sendError: unknown;
+    try {
+      await provider.send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      });
+    } catch (error) {
+      sendError = error;
+    }
+
+    expect(ensureErrorMessage(sendError)).toContain("Script command failed");
+    expect(ensureErrorMessage(sendError)).not.toContain(command);
+    expect(ensureErrorMessage(sendError)).not.toContain(sentinel);
+
+    const watchScript = path.join(path.dirname(context.manifestPath), "watch-secret.mjs");
+    await writeText(watchScript, 'process.stderr.write("watch failed");process.exitCode=8;');
+    const watchCommand = `CRABLINE_PRIVATE_VALUE=${sentinel} node ${JSON.stringify(watchScript)}`;
+    context.config.script!.commands.watch = watchCommand;
+
+    let watchError: unknown;
+    try {
+      await provider.watch(context).next();
+    } catch (error) {
+      watchError = error;
+    }
+
+    expect(ensureErrorMessage(watchError)).toContain("Script watch command failed");
+    expect(ensureErrorMessage(watchError)).not.toContain(watchCommand);
+    expect(ensureErrorMessage(watchError)).not.toContain(sentinel);
   });
 
   it("fails when required commands are missing", async () => {
