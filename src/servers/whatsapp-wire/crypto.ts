@@ -67,21 +67,20 @@ export const Curve = {
 
   sharedKey(privateKey: Uint8Array, publicKey: Uint8Array): Buffer {
     const rawPublicKey = scrubSignalPublicKey(publicKey);
-    try {
-      const nodePrivateKey = createPrivateKey({
-        format: "der",
-        key: Buffer.concat([PRIVATE_KEY_DER_PREFIX, Buffer.from(privateKey)]),
-        type: "pkcs8",
-      });
-      const nodePublicKey = createPublicKey({
-        format: "der",
-        key: Buffer.concat([PUBLIC_KEY_DER_PREFIX, rawPublicKey]),
-        type: "spki",
-      });
-      return diffieHellman({ privateKey: nodePrivateKey, publicKey: nodePublicKey });
-    } catch {
+    if (typeof diffieHellman !== "function") {
       return Buffer.from(curve25519.sharedKey(Buffer.from(privateKey), rawPublicKey));
     }
+    const nodePrivateKey = createPrivateKey({
+      format: "der",
+      key: Buffer.concat([PRIVATE_KEY_DER_PREFIX, Buffer.from(privateKey)]),
+      type: "pkcs8",
+    });
+    const nodePublicKey = createPublicKey({
+      format: "der",
+      key: Buffer.concat([PUBLIC_KEY_DER_PREFIX, rawPublicKey]),
+      type: "spki",
+    });
+    return diffieHellman({ privateKey: nodePrivateKey, publicKey: nodePublicKey });
   },
 
   sign(privateKey: Uint8Array, message: Uint8Array): Buffer {
