@@ -28,7 +28,16 @@ export const ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProv
         if (!response.ok) {
           throw new Error(`Crabline Zalo getMe probe failed with HTTP ${response.status}.`);
         }
-        return await response.json();
+        const result = await response.json();
+        const bot = isRecord(result) && isRecord(result.result) ? result.result : undefined;
+        if (!isRecord(result) || result.ok !== true || !readNonBlankString(bot?.id)) {
+          const detail =
+            (isRecord(result) ? readNonBlankString(result.description) : undefined) ??
+            (isRecord(result) ? readNonBlankString(result.error) : undefined) ??
+            "invalid response";
+          throw new Error(`Crabline Zalo getMe probe failed: ${detail}.`);
+        }
+        return result;
       },
       createBinding() {
         return {

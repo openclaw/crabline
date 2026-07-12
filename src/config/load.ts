@@ -79,13 +79,12 @@ export async function loadManifest(
     throw configLoadError(resolvedPath, error, ensureErrorMessage(error));
   }
 
+  const isJson = path.extname(resolvedPath).toLowerCase() === ".json";
   let parsed: unknown;
   try {
-    parsed = resolvedPath.endsWith(".json") ? JSON.parse(raw) : YAML.parse(raw, { merge: true });
+    parsed = isJson ? JSON.parse(raw) : YAML.parse(raw, { merge: true });
   } catch (error) {
-    const detail = resolvedPath.endsWith(".json")
-      ? formatJsonParseError(error)
-      : formatYamlParseError(error);
+    const detail = isJson ? formatJsonParseError(error) : formatYamlParseError(error);
     throw configLoadError(resolvedPath, new Error(detail), detail);
   }
 

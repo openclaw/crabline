@@ -639,7 +639,7 @@ const StrictManifestSchema = z
   .strictObject({
     configVersion: z.literal(1).default(1),
     fixtures: z.array(FixtureSchema).default([]),
-    providers: z.record(z.string(), ProviderConfigSchema).default({}),
+    providers: z.record(z.string().min(1), ProviderConfigSchema).default({}),
     userName: z.string().min(1).default("crabline"),
   })
   .superRefine((manifest, ctx) => {

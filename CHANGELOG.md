@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserve primary watch and adapter-start failures, retain shutdown handlers through cleanup, validate smoke-lock tokens, enforce Zalo probe envelopes, and reject ambiguous config names and formats.
 - Preserve provider-native WhatsApp message acknowledgements, legacy group JIDs, bounded inbound admission, WebSocket error isolation, and strict handshake varints.
 - Authenticate built-in Telegram, Slack, and Zalo webhooks, bound recorder wait state, accept Slack user send targets, preserve canonical Telegram topics, and complete WhatsApp cleanup after close failures.
 - Harden HTTP stream failure handling, bound Mattermost WebSocket delivery, move Slack rate-limit controls out of provider payloads, drain Slack callback bodies, and validate release dispatch and existing release state.

@@ -4,6 +4,7 @@ import {
   startCrablineServer,
   type CrablineServerChannel,
   type CrablineServerManifest,
+  type StartCrablineServerParams,
   type StartedCrablineServer,
 } from "./servers/index.js";
 import { SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/slack.js";
@@ -160,29 +161,50 @@ export function createOpenClawCrablineOutboundFromRecorderEvent(params: {
 
 export async function startOpenClawCrablineAdapter(
   params: StartOpenClawCrablineAdapterParams,
+  dependencies: {
+    createProviderAdapter?: typeof createOpenClawCrablineProviderAdapter;
+    startServer?: (params: StartCrablineServerParams) => Promise<StartedCrablineServer>;
+  } = {},
 ): Promise<StartedOpenClawCrablineAdapter> {
-  const server: StartedCrablineServer = await startCrablineServer({
+  const server: StartedCrablineServer = await (dependencies.startServer ?? startCrablineServer)({
     channel: params.channel,
     onEvent: params.onEvent,
     recorderPath: params.recorderPath,
   });
-  const providerAdapter = createOpenClawCrablineProviderAdapter(server.manifest);
-  const binding = providerAdapter.createBinding();
-  return {
-    ...binding,
-    close: server.close,
-    createGatewayConfig: (openclawConfig = params.openclawConfig ?? {}) =>
-      binding.createGatewayConfig(openclawConfig),
-    createAgentDelivery: ({ target }) => providerAdapter.createAgentDelivery(parseQaTarget(target)),
-    createInbound: ({ input }) => providerAdapter.createInbound(input),
-    createOutboundFromRecorderEvent: ({ event, targetByProviderTarget }) =>
-      providerAdapter.createOutboundFromRecorderEvent({
-        event,
-        targetByProviderTarget,
-      }),
-    manifest: server.manifest,
-    probe: () => providerAdapter.probe(),
-  };
+  try {
+    const providerAdapter = (
+      dependencies.createProviderAdapter ?? createOpenClawCrablineProviderAdapter
+    )(server.manifest);
+    const binding = providerAdapter.createBinding();
+    return {
+      ...binding,
+      close: server.close,
+      createGatewayConfig: (openclawConfig = params.openclawConfig ?? {}) =>
+        binding.createGatewayConfig(openclawConfig),
+      createAgentDelivery: ({ target }) =>
+        providerAdapter.createAgentDelivery(parseQaTarget(target)),
+      createInbound: ({ input }) => providerAdapter.createInbound(input),
+      createOutboundFromRecorderEvent: ({ event, targetByProviderTarget }) =>
+        providerAdapter.createOutboundFromRecorderEvent({
+          event,
+          targetByProviderTarget,
+        }),
+      manifest: server.manifest,
+      probe: () => providerAdapter.probe(),
+    };
+  } catch (error) {
+    try {
+      await server.close();
+    } catch (closeError) {
+      const aggregateError = new AggregateError(
+        [error, closeError],
+        "OpenClaw Crabline adapter startup failed.",
+      );
+      aggregateError.cause = error;
+      throw aggregateError;
+    }
+    throw error;
+  }
 }
 
 type SmokeRunDependencies = {

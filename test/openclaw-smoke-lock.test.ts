@@ -53,6 +53,40 @@ describe("OpenClaw smoke lock cleanup", () => {
     });
   });
 
+  it("rejects lock tokens that can escape token-specific filenames", async () => {
+    const outputDir = await createTempDir();
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    try {
+      await fs.mkdir(lockDirectory);
+      await fs.writeFile(
+        path.join(lockDirectory, "owner.json"),
+        `${JSON.stringify({
+          channel: "telegram",
+          pid: 4_242,
+          token: ["..", "..", "..", "..", "sentinel"].join("/"),
+        })}\n`,
+      );
+
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(
+          { channel: "telegram", outputDir },
+          {
+            isProcessAlive: () => true,
+            now: () => 1_000,
+            pid: 5_252,
+            processStartedAtMs: 200,
+            startHeartbeat: disableHeartbeat,
+          },
+        ),
+      ).rejects.toThrow("OpenClaw Crabline smoke lock owner metadata is malformed.");
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("secures an empty Windows lock directory before writing sensitive contents", async () => {
     const outputDir = await createTempDir();
     const destinationPath = path.join(outputDir, "current.json");

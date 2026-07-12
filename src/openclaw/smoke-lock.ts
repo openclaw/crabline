@@ -252,6 +252,8 @@ function isPositiveSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
+const LOCK_TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+
 function parseLockOwner(contents: string): SmokeLockOwner {
   let owner: Partial<RenewableSmokeLockOwner>;
   try {
@@ -266,7 +268,7 @@ function parseLockOwner(contents: string): SmokeLockOwner {
     !isCrablineServerChannel(owner.channel) ||
     !isPositiveSafeInteger(owner.pid) ||
     typeof owner.token !== "string" ||
-    owner.token.length === 0
+    !LOCK_TOKEN_PATTERN.test(owner.token)
   ) {
     throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.");
   }
