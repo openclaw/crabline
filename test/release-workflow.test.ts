@@ -14,6 +14,8 @@ type WorkflowStep = {
   id?: string;
   name?: string;
   run?: string;
+  uses?: string;
+  with?: Record<string, unknown>;
 };
 
 type ReleaseWorkflow = {
@@ -29,6 +31,21 @@ type ReleaseWorkflow = {
 };
 
 describe("release workflow", () => {
+  it("only accepts stable tags and checks out the exact tag ref", async () => {
+    const workflow = await readWorkflow();
+    const steps = workflow.jobs?.release?.steps ?? [];
+    const resolveStep = steps.find((step) => step.name === "Resolve release tag")?.run;
+    const checkoutStep = steps.find((step) => step.uses?.startsWith("actions/checkout@"));
+
+    await expect(runResolveTag(resolveStep, "v1.2.3")).resolves.toEqual({
+      tag: "v1.2.3",
+      version: "1.2.3",
+    });
+    await expect(runResolveTag(resolveStep, "v1.2.3-beta.1")).rejects.toThrow();
+    await expect(runResolveTag(resolveStep, "v1.2.3.preview")).rejects.toThrow();
+    expect(checkoutStep?.with?.ref).toBe("refs/tags/${{ steps.release.outputs.tag }}");
+  });
+
   it("pins tooling and makes package and GitHub publication retry-safe", async () => {
     const workflow = await readWorkflow();
     const steps = workflow.jobs?.release?.steps ?? [];
@@ -161,6 +178,35 @@ async function runMetadataCheck(script: string, changelog: string): Promise<void
         RELEASE_VERSION: "1.2.3",
       },
     });
+  } finally {
+    await fs.rm(tempDir, { force: true, recursive: true });
+  }
+}
+
+async function runResolveTag(
+  script: string | undefined,
+  tag: string,
+): Promise<Record<string, string>> {
+  if (!script) {
+    throw new Error("Release workflow is missing its tag resolution step.");
+  }
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-release-tag-"));
+  const outputPath = path.join(tempDir, "outputs");
+  try {
+    await execFileWithOutput("bash", ["-c", script], {
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputPath,
+        GITHUB_REF_NAME: tag,
+        INPUT_TAG: tag,
+      },
+    });
+    return Object.fromEntries(
+      (await fs.readFile(outputPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => line.split("=", 2)),
+    );
   } finally {
     await fs.rm(tempDir, { force: true, recursive: true });
   }
