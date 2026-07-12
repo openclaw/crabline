@@ -230,7 +230,7 @@ describe("Zalo local provider server", () => {
       );
       expect(invalidWebhook.status).toBe(400);
       const protocolRelativeCredential = [
-        "//protocol-user:",
+        " \t//protocol-user:",
         "protocol-relative-credential-placeholder",
         "@example.com/hook",
       ].join("");
@@ -249,7 +249,7 @@ describe("Zalo local provider server", () => {
       const recorder = await fs.readFile(recorderPath, "utf8");
       expect(recorder).toContain('"secret_token":"<redacted>"');
       expect(recorder).toContain(`http://<redacted>@127.0.0.1:${address.port}/zalo?mode=test`);
-      expect(recorder).toContain("//<redacted>@example.com/hook");
+      expect(recorder).toContain("<redacted>@example.com/hook");
       expect(recorder).not.toContain("test-auth-token");
       expect(recorder).not.toContain("alice");
       expect(recorder).not.toContain("sample");
