@@ -80,13 +80,22 @@ function formatValidationError(error: z.ZodError): string {
     .join("; ");
 }
 
+function formatScriptError(summary: string, detail: string, command: string): string {
+  const redacted = detail.split(command).join("[configured script command]").trim();
+  return redacted ? `${summary}\n${redacted}` : summary;
+}
+
 function parseScriptJson<T>(params: { command: string; output: string; schema: z.ZodType<T> }): T {
   let parsed: unknown;
   try {
     parsed = JSON.parse(params.output);
   } catch (error) {
     throw new CrablineError(
-      `Script command did not return valid JSON: ${params.command}\n${ensureErrorMessage(error)}`,
+      formatScriptError(
+        "Script command did not return valid JSON.",
+        ensureErrorMessage(error),
+        params.command,
+      ),
       { kind: "config" },
     );
   }
@@ -94,7 +103,7 @@ function parseScriptJson<T>(params: { command: string; output: string; schema: z
   const result = params.schema.safeParse(parsed);
   if (!result.success) {
     throw new CrablineError(
-      `Script command returned invalid result: ${params.command}\n${formatValidationError(result.error)}`,
+      `Script command returned invalid result.\n${formatValidationError(result.error)}`,
       { kind: "config" },
     );
   }
@@ -141,10 +150,9 @@ function runScript<T>(params: {
       finish(() => {
         terminateChild(child);
         reject(
-          new CrablineError(
-            `Script command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of output: ${params.command}`,
-            { kind: "connectivity" },
-          ),
+          new CrablineError(`Script command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of output.`, {
+            kind: "connectivity",
+          }),
         );
       });
     };
@@ -176,8 +184,12 @@ function runScript<T>(params: {
       finish(() => {
         reject(
           new CrablineError(
-            `Script command failed to start: ${params.command}\n${ensureErrorMessage(error)}`,
-            { cause: error, kind: "connectivity" },
+            formatScriptError(
+              "Script command failed to start.",
+              ensureErrorMessage(error),
+              params.command,
+            ),
+            { kind: "connectivity" },
           ),
         );
       });
@@ -189,9 +201,11 @@ function runScript<T>(params: {
         if (code !== 0) {
           reject(
             new CrablineError(
-              `Script command failed: ${params.command}${
-                signal ? ` (${signal})` : ""
-              }\n${stderrText.trim() || stdoutText.trim()}`,
+              formatScriptError(
+                `Script command failed${signal ? ` (${signal})` : ""}.`,
+                stderrText || stdoutText,
+                params.command,
+              ),
               { kind: "connectivity" },
             ),
           );
@@ -206,10 +220,9 @@ function runScript<T>(params: {
           });
           if (deadlineExceeded && !params.acceptResultDuringTimeoutGrace?.(result)) {
             reject(
-              new CrablineError(
-                `Script command timed out after ${params.timeoutMs}ms: ${params.command}`,
-                { kind: "timeout" },
-              ),
+              new CrablineError(`Script command timed out after ${params.timeoutMs}ms.`, {
+                kind: "timeout",
+              }),
             );
             return;
           }
@@ -224,10 +237,9 @@ function runScript<T>(params: {
       finish(() => {
         terminateChild(child);
         reject(
-          new CrablineError(
-            `Script command timed out after ${params.timeoutMs}ms: ${params.command}`,
-            { kind: "timeout" },
-          ),
+          new CrablineError(`Script command timed out after ${params.timeoutMs}ms.`, {
+            kind: "timeout",
+          }),
         );
       });
     };
@@ -397,7 +409,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       stderr += chunk;
       if (Buffer.byteLength(stderr) > MAX_SCRIPT_OUTPUT_BYTES) {
         outputLimitError = new CrablineError(
-          `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of stderr: ${command}`,
+          `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of stderr.`,
           { kind: "connectivity" },
         );
         terminateChild(child);
@@ -430,7 +442,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
         buffer += chunk;
         if (Buffer.byteLength(buffer) > MAX_SCRIPT_OUTPUT_BYTES && !buffer.includes("\n")) {
           throw new CrablineError(
-            `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes without a newline: ${command}`,
+            `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes without a newline.`,
             { kind: "config" },
           );
         }
@@ -442,7 +454,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
           }
           if (Buffer.byteLength(line) > MAX_SCRIPT_OUTPUT_BYTES) {
             throw new CrablineError(
-              `Script watch command emitted a JSON line larger than ${MAX_SCRIPT_OUTPUT_BYTES} bytes: ${command}`,
+              `Script watch command emitted a JSON line larger than ${MAX_SCRIPT_OUTPUT_BYTES} bytes.`,
               { kind: "config" },
             );
           }
@@ -476,15 +488,21 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       }
       if (childError) {
         throw new CrablineError(
-          `Script watch command failed to start: ${command}\n${ensureErrorMessage(childError)}`,
-          { cause: childError, kind: "connectivity" },
+          formatScriptError(
+            "Script watch command failed to start.",
+            ensureErrorMessage(childError),
+            command,
+          ),
+          { kind: "connectivity" },
         );
       }
       if (exit.code !== 0) {
         throw new CrablineError(
-          `Script watch command failed: ${command}${
-            exit.signal ? ` (${exit.signal})` : ""
-          }\n${stderr.trim()}`,
+          formatScriptError(
+            `Script watch command failed${exit.signal ? ` (${exit.signal})` : ""}.`,
+            stderr,
+            command,
+          ),
           { kind: "connectivity" },
         );
       }
@@ -494,8 +512,12 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       }
       if (childError) {
         throw new CrablineError(
-          `Script watch command failed to start: ${command}\n${ensureErrorMessage(childError)}`,
-          { cause: childError, kind: "connectivity" },
+          formatScriptError(
+            "Script watch command failed to start.",
+            ensureErrorMessage(childError),
+            command,
+          ),
+          { kind: "connectivity" },
         );
       }
       throw error;
