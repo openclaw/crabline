@@ -182,7 +182,7 @@ describe("Zalo local provider server", () => {
         {
           body: JSON.stringify({
             secret_token: "test-auth-token",
-            url: `http://127.0.0.1:${address.port}/zalo`,
+            url: `http://alice:sample@127.0.0.1:${address.port}/zalo?mode=test`,
           }),
           headers: { "content-type": "application/json" },
           method: "POST",
@@ -199,11 +199,8 @@ describe("Zalo local provider server", () => {
       expect(received).toHaveLength(1);
       expect(received[0]).toMatchObject({
         body: {
-          ok: true,
-          result: {
-            event_name: "message.text.received",
-            message: { text: "hello" },
-          },
+          event_name: "message.text.received",
+          message: { text: "hello" },
         },
         secret: "test-auth-token",
       });
@@ -216,7 +213,10 @@ describe("Zalo local provider server", () => {
 
       const recorder = await fs.readFile(recorderPath, "utf8");
       expect(recorder).toContain('"secret_token":"<redacted>"');
+      expect(recorder).toContain(`http://<redacted>@127.0.0.1:${address.port}/zalo?mode=test`);
       expect(recorder).not.toContain("test-auth-token");
+      expect(recorder).not.toContain("alice");
+      expect(recorder).not.toContain("sample");
     } finally {
       await new Promise<void>((resolve, reject) =>
         webhook.close((error) => (error ? reject(error) : resolve())),
@@ -275,20 +275,32 @@ describe("Zalo local provider server", () => {
     }
   });
 
-  it("does not deliver updates to disconnected long polls", async () => {
+  it("does not dequeue queued updates for disconnected long polls", async () => {
     let observePoll: (() => void) | undefined;
+    let releasePoll: (() => void) | undefined;
     const pollObserved = new Promise<void>((resolve) => {
       observePoll = resolve;
+    });
+    const pollBlocked = new Promise<void>((resolve) => {
+      releasePoll = resolve;
     });
     const server = await startZaloServer({
       botToken: "sample",
       onEvent: async (event) => {
         if (event.path === "/bot<redacted>/getUpdates") {
           observePoll?.();
+          await pollBlocked;
         }
       },
     });
     servers.push(server);
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "queued first" }),
+      headers: adminHeaders(server),
+      method: "POST",
+    });
+    expect(inbound.status).toBe(200);
+
     const controller = new AbortController();
     const pending = fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=30`, {
       signal: controller.signal,
@@ -296,20 +308,55 @@ describe("Zalo local provider server", () => {
     await pollObserved;
     controller.abort();
     await expect(pending).rejects.toThrow(/aborted/u);
-
-    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
-      body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "after disconnect" }),
-      headers: adminHeaders(server),
-      method: "POST",
-    });
-    expect(inbound.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    releasePoll?.();
 
     const updates = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`, {
       method: "POST",
     });
     await expect(updates.json()).resolves.toMatchObject({
       ok: true,
-      result: { message: { text: "after disconnect" } },
+      result: { message: { text: "queued first" } },
+    });
+  });
+
+  it("supersedes concurrent long polls and delivers to the current request", async () => {
+    let observeFirstPoll: (() => void) | undefined;
+    const firstPollReady = new Promise<void>((resolve) => {
+      observeFirstPoll = resolve;
+    });
+    let polls = 0;
+    const server = await startZaloServer({
+      botToken: "sample",
+      onEvent: (event) => {
+        if (event.path === "/bot<redacted>/getUpdates" && ++polls === 1) {
+          setImmediate(() => observeFirstPoll?.());
+        }
+      },
+    });
+    servers.push(server);
+
+    const first = fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=30`);
+    await firstPollReady;
+    const second = fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=30`);
+
+    const firstResponse = await first;
+    expect(firstResponse.status).toBe(409);
+    await expect(firstResponse.json()).resolves.toMatchObject({
+      description: "Conflict: terminated by other getUpdates request",
+      error_code: 409,
+      ok: false,
+    });
+
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "current poll" }),
+      headers: adminHeaders(server),
+      method: "POST",
+    });
+    expect(inbound.status).toBe(200);
+    await expect((await second).json()).resolves.toMatchObject({
+      ok: true,
+      result: { message: { text: "current poll" } },
     });
   });
 

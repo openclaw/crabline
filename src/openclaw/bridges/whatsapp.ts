@@ -7,16 +7,19 @@ import {
   readNonBlankString,
   readString,
 } from "../shared.js";
+import {
+  canonicalizeWhatsAppChatJid,
+  canonicalizeWhatsAppUserJid,
+} from "../../servers/whatsapp-jid.js";
 
-const WHATSAPP_JID_RE =
-  /^(?:\d{7,15}(?::\d+)?@s\.whatsapp\.net|\d{7,15}@c\.us|\d{5,20}(?:-\d{5,20})?@g\.us|\d{7,15}@lid)$/iu;
-
-function requireWhatsAppJid(value: string, label: string): string {
-  const trimmed = value.trim();
-  if (!WHATSAPP_JID_RE.test(trimmed)) {
+function requireWhatsAppJid(value: string, label: string, userOnly = false): string {
+  const canonical = userOnly
+    ? canonicalizeWhatsAppUserJid(value)
+    : canonicalizeWhatsAppChatJid(value);
+  if (!canonical) {
     throw new Error(`${label} must be a native WhatsApp JID.`);
   }
-  return trimmed;
+  return canonical;
 }
 
 function requireWhatsAppTargetKind(
@@ -109,7 +112,7 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           throw new Error("WhatsApp does not support thread targets.");
         }
         const chatJid = requireWhatsAppJid(input.conversation.id, "WhatsApp conversation");
-        const senderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender");
+        const senderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender", true);
         return {
           ...createAdminInboundRequest(whatsapp),
           providerBody: {
@@ -119,7 +122,10 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
             text: input.text,
           },
           providerTargetKey: chatJid,
-          qaTarget: qaTargetForInbound(input),
+          qaTarget: qaTargetForInbound({
+            ...input,
+            conversation: { ...input.conversation, id: chatJid },
+          }),
           stateConversation: {
             id: chatJid,
             kind: chatJid.endsWith("@g.us") ? "group" : "direct",
@@ -127,7 +133,12 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         };
       },
       createOutboundFromRecorderEvent({ event, targetByProviderTarget }) {
-        if (!isRecord(event) || event.type !== "api" || typeof event.path !== "string") {
+        if (
+          !isRecord(event) ||
+          event.type !== "api" ||
+          event.accepted !== true ||
+          typeof event.path !== "string"
+        ) {
           return null;
         }
         if (event.path !== messagesPath || !isRecord(event.body)) {

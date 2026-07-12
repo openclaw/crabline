@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { ClientRequest, IncomingMessage } from "node:http";
+import type { ClientRequest, IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import {
   adminAuthError,
@@ -43,11 +43,14 @@ type ZaloUpdate = {
   message: ZaloMessage;
 };
 
+type PendingUpdateResult = "conflict" | "disconnect" | "shutdown" | "timeout" | "update";
+
 type PendingUpdateRequest = {
   active: boolean;
   onDisconnect(): void;
   request: IncomingMessage;
-  resolve(response: Response): void;
+  response: ServerResponse;
+  resolve(result: PendingUpdateResult): void;
   timeout: NodeJS.Timeout | undefined;
 };
 
@@ -66,7 +69,7 @@ type ZaloServerState = {
   maxPendingInboundEvents: number;
   nextMessage: number;
   onEvent: ServerEventObserver | undefined;
-  pendingRequests: PendingUpdateRequest[];
+  pendingRequest: PendingUpdateRequest | undefined;
   recorderPath: string;
   restrictWebhookTargets: boolean;
   updates: ZaloUpdate[];
@@ -138,9 +141,26 @@ function redactParams(params: Record<string, unknown>): Record<string, unknown> 
   return Object.fromEntries(
     Object.entries(params).map(([key, value]) => [
       key,
-      key === "secret_token" ? "<redacted>" : value,
+      key === "secret_token"
+        ? "<redacted>"
+        : key === "url" && typeof value === "string"
+          ? redactUrlCredentials(value)
+          : value,
     ]),
   );
+}
+
+function redactUrlCredentials(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return value;
+  }
+  if (!url.username && !url.password) {
+    return value;
+  }
+  return `${url.protocol}//<redacted>@${url.host}${url.pathname}${url.search}${url.hash}`;
 }
 
 function requireParam(body: Record<string, unknown>, name: string): string | Response {
@@ -257,7 +277,14 @@ export async function postZaloWebhook(params: {
   throw lastError;
 }
 
-function nextUpdate(state: ZaloServerState): Response | undefined {
+function nextUpdate(
+  request: IncomingMessage,
+  response: ServerResponse,
+  state: ZaloServerState,
+): Response | undefined {
+  if (request.aborted || request.socket.destroyed || response.destroyed) {
+    return undefined;
+  }
   const update = state.updates.shift();
   return update ? zaloOk(update) : undefined;
 }
@@ -265,69 +292,98 @@ function nextUpdate(state: ZaloServerState): Response | undefined {
 function settlePendingUpdate(
   state: ZaloServerState,
   pending: PendingUpdateRequest,
-  response: Response,
+  result: PendingUpdateResult,
 ): boolean {
   if (!pending.active) {
     return false;
   }
   pending.active = false;
-  const index = state.pendingRequests.indexOf(pending);
-  if (index >= 0) {
-    state.pendingRequests.splice(index, 1);
+  if (state.pendingRequest === pending) {
+    state.pendingRequest = undefined;
   }
   if (pending.timeout) {
     clearTimeout(pending.timeout);
   }
   pending.request.socket.off("close", pending.onDisconnect);
-  pending.resolve(response);
+  pending.request.off("aborted", pending.onDisconnect);
+  pending.response.off("close", pending.onDisconnect);
+  pending.resolve(result);
   return true;
 }
 
-function waitForUpdate(
+async function waitForUpdate(
   request: IncomingMessage,
+  response: ServerResponse,
   state: ZaloServerState,
   timeoutSeconds: number,
 ): Promise<Response> {
-  const queued = nextUpdate(state);
+  const previous = state.pendingRequest;
+  if (previous) {
+    settlePendingUpdate(state, previous, "conflict");
+  }
+  if (request.aborted || request.socket.destroyed || response.destroyed) {
+    return zaloError("Client closed request", 499);
+  }
+  const queued = nextUpdate(request, response, state);
   if (queued) {
-    return Promise.resolve(queued);
+    return queued;
   }
   if (timeoutSeconds <= 0) {
-    return Promise.resolve(zaloError("Request timeout", 408));
+    return zaloError("Request timeout", 408);
   }
-  return new Promise((resolve) => {
+  const result = await new Promise<PendingUpdateResult>((resolve) => {
     const pending: PendingUpdateRequest = {
       active: true,
       onDisconnect: () => {
-        settlePendingUpdate(state, pending, zaloError("Client closed request", 499));
+        settlePendingUpdate(state, pending, "disconnect");
       },
       request,
+      response,
       resolve,
       timeout: undefined,
     };
-    state.pendingRequests.push(pending);
+    state.pendingRequest = pending;
+    request.once("aborted", pending.onDisconnect);
     request.socket.once("close", pending.onDisconnect);
+    response.once("close", pending.onDisconnect);
     pending.timeout = setTimeout(() => {
-      settlePendingUpdate(state, pending, zaloError("Request timeout", 408));
+      settlePendingUpdate(state, pending, "timeout");
     }, timeoutSeconds * 1000);
     pending.timeout.unref();
-    if (request.socket.destroyed) {
+    if (request.socket.destroyed || response.destroyed) {
       pending.onDisconnect();
     }
   });
+  if (result === "conflict") {
+    return zaloError("Conflict: terminated by other getUpdates request", 409);
+  }
+  if (result === "disconnect") {
+    return zaloError("Client closed request", 499);
+  }
+  if (result === "shutdown") {
+    return zaloError("Server shutting down", 503);
+  }
+  if (result === "timeout") {
+    return zaloError("Request timeout", 408);
+  }
+  return nextUpdate(request, response, state) ?? zaloError("Client closed request", 499);
 }
 
 function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boolean {
-  while (state.pendingRequests.length > 0) {
-    const pending = state.pendingRequests[0]!;
-    if (settlePendingUpdate(state, pending, zaloOk(update))) {
-      return true;
-    }
-  }
   if (state.updates.length >= state.maxPendingInboundEvents) {
     return false;
   }
   state.updates.push(update);
+  const pending = state.pendingRequest;
+  if (pending) {
+    settlePendingUpdate(
+      state,
+      pending,
+      pending.request.aborted || pending.request.socket.destroyed || pending.response.destroyed
+        ? "disconnect"
+        : "update",
+    );
+  }
   return true;
 }
 
@@ -362,7 +418,7 @@ async function deliverWebhookUpdate(
     const status = await postZaloWebhook({
       activeRequests: state.activeWebhookRequests,
       addresses: target.addresses,
-      body: JSON.stringify({ ok: true, result: update }),
+      body: JSON.stringify(update),
       shouldCancel: () => state.closing,
       timeoutMs: remainingMs,
       url,
@@ -417,11 +473,7 @@ async function handleAdminInbound(
       text,
     },
   };
-  if (
-    !state.webhook?.url &&
-    state.pendingRequests.length === 0 &&
-    state.updates.length >= state.maxPendingInboundEvents
-  ) {
+  if (!state.webhook?.url && state.updates.length >= state.maxPendingInboundEvents) {
     return zaloError(
       `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
       429,
@@ -453,6 +505,7 @@ async function handleAdminInbound(
 
 async function handleZaloMethod(
   request: IncomingMessage,
+  response: ServerResponse,
   state: ZaloServerState,
   url: URL,
   method: string,
@@ -485,7 +538,7 @@ async function handleZaloMethod(
     }
     const parsedTimeout = Number(readTrimmedString(body.timeout) ?? "30");
     const timeout = Number.isFinite(parsedTimeout) ? Math.max(0, Math.min(parsedTimeout, 50)) : 30;
-    return await waitForUpdate(request, state, timeout);
+    return await waitForUpdate(request, response, state, timeout);
   }
   if (method === "sendMessage" || method === "sendPhoto") {
     const chatId = requireParam(body, "chat_id");
@@ -529,6 +582,9 @@ async function handleZaloMethod(
       return target;
     }
     const webhook = { secretToken, updatedAt: Date.now(), url: parsedUrl.href };
+    if (state.pendingRequest) {
+      settlePendingUpdate(state, state.pendingRequest, "conflict");
+    }
     state.webhook = webhook;
     return zaloOk({ updated_at: webhook.updatedAt, url: webhook.url });
   }
@@ -562,7 +618,7 @@ export async function startZaloServer(
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessage: 1,
     onEvent: params.onEvent,
-    pendingRequests: [],
+    pendingRequest: undefined,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "zalo.jsonl"),
     restrictWebhookTargets: !isLoopbackHost(host),
     updates: [],
@@ -570,7 +626,7 @@ export async function startZaloServer(
     webhookDeliveryTimeoutMs: webhookDeliveryTimeoutMs(params.webhookDeliveryTimeoutMs),
   };
   const httpServer = await startHttpJsonServer({
-    handle: async (request) => {
+    handle: async (request, response) => {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? host}`);
       if (request.method === "POST" && url.pathname === "/crabline/zalo/inbound") {
         return await handleAdminInbound(request, state, url);
@@ -583,7 +639,7 @@ export async function startZaloServer(
         drainRequestBody(request);
         return zaloError("Unauthorized", 401);
       }
-      return await handleZaloMethod(request, state, url, match[2] ?? "");
+      return await handleZaloMethod(request, response, state, url, match[2] ?? "");
     },
     handleError: (error) => {
       if (error instanceof InvalidJsonBodyError) {
@@ -621,8 +677,8 @@ export async function startZaloServer(
       for (const request of state.activeWebhookRequests) {
         request.destroy(new Error("Zalo server is shutting down."));
       }
-      for (const pending of state.pendingRequests.splice(0)) {
-        settlePendingUpdate(state, pending, zaloError("Server shutting down", 503));
+      if (state.pendingRequest) {
+        settlePendingUpdate(state, state.pendingRequest, "shutdown");
       }
       await httpServer.close();
     },

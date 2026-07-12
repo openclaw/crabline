@@ -22,6 +22,7 @@ describe("WhatsApp webhook normalizer", () => {
       from: "15551234567",
       id: "wamid.abc123",
       text: { body: "hello" },
+      timestamp: "1700000000",
     };
     const payload = {
       entry: [
@@ -42,6 +43,7 @@ describe("WhatsApp webhook normalizer", () => {
         author: "user",
         id: "wamid.abc123",
         raw: message,
+        sentAt: "2023-11-14T22:13:20.000Z",
         text: "hello",
         threadId: "15551234567",
       },
@@ -213,6 +215,7 @@ describe("WhatsApp webhook normalizer", () => {
                       from: "15551234567",
                       id: "wamid.signed",
                       text: { body: "signed webhook" },
+                      timestamp: "1700000000",
                       type: "text",
                     },
                   ],
@@ -258,6 +261,25 @@ describe("WhatsApp webhook normalizer", () => {
         method: "POST",
       });
       expect(signed.status).toBe(200);
+      const retried = await fetch(endpoint!, {
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": whatsappSignature(body, signingKey),
+        },
+        method: "POST",
+      });
+      expect(retried.status).toBe(200);
+      const records = (await readFile(config.whatsapp!.recorder.path!, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { id: string; sentAt: string });
+      expect(records).toEqual([
+        expect.objectContaining({
+          id: "wamid.signed",
+          sentAt: "2023-11-14T22:13:20.000Z",
+        }),
+      ]);
     } finally {
       await provider.cleanup();
     }

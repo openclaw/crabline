@@ -9,6 +9,8 @@ import type { ProviderContext, SendContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 type AppendRecordedInbound = typeof import("../src/providers/recorder.js").appendRecordedInbound;
+type AppendRecordedInboundBatch =
+  typeof import("../src/providers/recorder.js").appendRecordedInboundBatch;
 type WebhookHandler = Parameters<
   typeof import("../src/providers/webhook-server.js").startWebhookServer
 >[0]["handle"];
@@ -18,7 +20,9 @@ const webhookMocks = vi.hoisted(() => ({
 }));
 const recorderMocks = vi.hoisted(() => ({
   actualAppendRecordedInbound: undefined as AppendRecordedInbound | undefined,
+  actualAppendRecordedInboundBatch: undefined as AppendRecordedInboundBatch | undefined,
   appendRecordedInbound: vi.fn<AppendRecordedInbound>(),
+  appendRecordedInboundBatch: vi.fn<AppendRecordedInboundBatch>(),
 }));
 
 vi.mock("../src/providers/webhook-server.js", () => ({
@@ -27,10 +31,13 @@ vi.mock("../src/providers/webhook-server.js", () => ({
 vi.mock("../src/providers/recorder.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/providers/recorder.js")>();
   recorderMocks.actualAppendRecordedInbound = actual.appendRecordedInbound;
+  recorderMocks.actualAppendRecordedInboundBatch = actual.appendRecordedInboundBatch;
   recorderMocks.appendRecordedInbound.mockImplementation(actual.appendRecordedInbound);
+  recorderMocks.appendRecordedInboundBatch.mockImplementation(actual.appendRecordedInboundBatch);
   return {
     ...actual,
     appendRecordedInbound: recorderMocks.appendRecordedInbound,
+    appendRecordedInboundBatch: recorderMocks.appendRecordedInboundBatch,
   };
 });
 
@@ -39,6 +46,10 @@ beforeEach(() => {
   recorderMocks.appendRecordedInbound.mockReset();
   recorderMocks.appendRecordedInbound.mockImplementation(
     recorderMocks.actualAppendRecordedInbound!,
+  );
+  recorderMocks.appendRecordedInboundBatch.mockReset();
+  recorderMocks.appendRecordedInboundBatch.mockImplementation(
+    recorderMocks.actualAppendRecordedInboundBatch!,
   );
 });
 
@@ -204,6 +215,46 @@ describe("WhatsApp provider lifecycle", () => {
     }
   });
 
+  it("aborts direct waits and watches and fences sends when cleanup begins", async () => {
+    const close = vi.fn(async () => undefined);
+    webhookMocks.startWebhookServer.mockResolvedValueOnce({
+      close,
+      endpointUrl: "http://127.0.0.1:43210/whatsapp/webhook",
+    });
+    const config = createConfig();
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createContext(config);
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "cleanup-abort",
+      since: new Date(0).toISOString(),
+      timeoutMs: 30_000,
+    });
+    const stream = provider.watch({
+      ...context,
+      since: new Date(0).toISOString(),
+    });
+    const watching = stream[Symbol.asyncIterator]();
+    const next = watching.next();
+    await vi.waitFor(() => expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1));
+
+    provider.beginCleanup();
+
+    await expect(waiting).resolves.toBeNull();
+    await expect(next).resolves.toEqual({ done: true, value: undefined });
+    await expect(
+      provider.send({
+        ...context,
+        mode: "send",
+        nonce: "cleanup-fenced",
+        text: "must not be sent",
+      }),
+    ).rejects.toThrow(/has been cleaned up/u);
+    await provider.cleanup();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(recorderMocks.appendRecordedInbound).not.toHaveBeenCalled();
+  });
+
   it("waits for an admitted send before cleanup resolves", async () => {
     const directory = await createTempDir();
     const recorderPath = path.join(directory, "whatsapp.jsonl");
@@ -275,9 +326,9 @@ describe("WhatsApp provider lifecycle", () => {
         endpointUrl: "http://127.0.0.1:43210/whatsapp/webhook",
       };
     });
-    recorderMocks.appendRecordedInbound.mockImplementationOnce(async (...args) => {
+    recorderMocks.appendRecordedInboundBatch.mockImplementationOnce(async (...args) => {
       await appendBlocked;
-      return await recorderMocks.actualAppendRecordedInbound!(...args);
+      return await recorderMocks.actualAppendRecordedInboundBatch!(...args);
     });
 
     try {
@@ -315,7 +366,9 @@ describe("WhatsApp provider lifecycle", () => {
           ],
         }),
       );
-      await vi.waitFor(() => expect(recorderMocks.appendRecordedInbound).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() =>
+        expect(recorderMocks.appendRecordedInboundBatch).toHaveBeenCalledTimes(1),
+      );
 
       let cleanupResolved = false;
       cleanup = provider.cleanup().then(() => {
@@ -338,7 +391,7 @@ describe("WhatsApp provider lifecycle", () => {
           }),
         ),
       ).resolves.toMatchObject({ status: 503 });
-      expect(recorderMocks.appendRecordedInbound).toHaveBeenCalledTimes(1);
+      expect(recorderMocks.appendRecordedInboundBatch).toHaveBeenCalledTimes(1);
 
       releaseAppend?.();
       await expect(request).resolves.toMatchObject({ status: 200 });

@@ -21,7 +21,7 @@ export function decodeHandshakeMessage(data: Uint8Array): HandshakeMessage {
   const reader = new ProtoReader(data);
   const message: HandshakeMessage = {};
   while (!reader.done()) {
-    const tag = reader.uint32();
+    const tag = reader.tag();
     const field = tag >>> 3;
     if (field === 2) {
       requireBytesWireType(tag, field);
@@ -48,7 +48,7 @@ function decodeClientHello(data: Uint8Array): NonNullable<HandshakeMessage["clie
   const reader = new ProtoReader(data);
   let ephemeral: BytesField;
   while (!reader.done()) {
-    const tag = reader.uint32();
+    const tag = reader.tag();
     if (tag >>> 3 === 1) {
       requireBytesWireType(tag, 1);
       ephemeral = reader.bytes();
@@ -64,7 +64,7 @@ function decodeClientFinish(data: Uint8Array): NonNullable<HandshakeMessage["cli
   let payload: BytesField;
   let staticKey: BytesField;
   while (!reader.done()) {
-    const tag = reader.uint32();
+    const tag = reader.tag();
     const field = tag >>> 3;
     if (field === 1) {
       requireBytesWireType(tag, field);
@@ -141,6 +141,14 @@ class ProtoReader {
       return;
     }
     throw new Error(`Unsupported WhatsApp handshake wire type: ${wireType}.`);
+  }
+
+  tag(): number {
+    const tag = this.uint32();
+    if (tag >>> 3 === 0) {
+      throw new Error("Invalid WhatsApp handshake protobuf field number 0.");
+    }
+    return tag;
   }
 
   uint32(): number {

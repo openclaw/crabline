@@ -22,17 +22,14 @@ describe("Zalo webhook normalizer", () => {
     });
   });
 
-  it("normalizes wrapped native updates with chat identity", () => {
+  it("normalizes direct native webhook updates with chat identity", () => {
     const payload = {
-      ok: true,
-      result: {
-        event_name: "message.text.received",
-        message: {
-          chat: { chat_type: "GROUP", id: "987654321012" },
-          from: { display_name: "Alice", id: "123456789012", is_bot: false },
-          message_id: "zalo-msg-native",
-          text: "hello group",
-        },
+      event_name: "message.text.received",
+      message: {
+        chat: { chat_type: "GROUP", id: "987654321012" },
+        from: { display_name: "Alice", id: "123456789012", is_bot: false },
+        message_id: "zalo-msg-native",
+        text: "hello group",
       },
     };
 

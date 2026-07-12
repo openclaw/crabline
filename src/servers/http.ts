@@ -205,7 +205,7 @@ export function closeServer(
 }
 
 export async function startHttpJsonServer(params: {
-  handle: (request: IncomingMessage) => Promise<Response>;
+  handle: (request: IncomingMessage, response: ServerResponse) => Promise<Response>;
   handleError?: (error: unknown, request: IncomingMessage) => Response | undefined;
   host: string;
   port: number;
@@ -213,7 +213,7 @@ export async function startHttpJsonServer(params: {
 }): Promise<{ baseUrl: string; close(): Promise<void>; server: Server }> {
   const handleRequest = async (request: IncomingMessage, response: ServerResponse) => {
     try {
-      await writeResponse(response, await params.handle(request));
+      await writeResponse(response, await params.handle(request, response));
     } catch (error) {
       let handled: Response | undefined;
       try {

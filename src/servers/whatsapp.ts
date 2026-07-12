@@ -22,11 +22,12 @@ import {
   type PreparedWhatsAppBaileysInboundDelivery,
   type WhatsAppBaileysInboundMessage,
 } from "./whatsapp-baileys-websocket.js";
+import {
+  canonicalizeWhatsAppChatJid,
+  canonicalizeWhatsAppUserJid,
+  isWhatsAppGroupJid,
+} from "./whatsapp-jid.js";
 
-const WHATSAPP_USER_JID_RE = /^\d{7,15}(?::\d+)?@s\.whatsapp\.net$/iu;
-const WHATSAPP_LEGACY_USER_JID_RE = /^\d{7,15}@c\.us$/iu;
-const WHATSAPP_GROUP_JID_RE = /^\d{5,}(?:-\d{5,})?@g\.us$/iu;
-const WHATSAPP_LID_RE = /^\d{7,15}@lid$/iu;
 const WHATSAPP_CLOUD_RECIPIENT_RE = /^\d{7,15}$/u;
 const WHATSAPP_GRAPH_VERSION_RE = /^v\d+\.\d+$/u;
 const DEFAULT_GRAPH_VERSION = "v25.0";
@@ -100,6 +101,7 @@ type WhatsAppAdminInboundResult = {
 };
 
 type WhatsAppRecorderEvent = ServerRequestEvent & {
+  accepted?: boolean | undefined;
   message?: WhatsAppBaileysMessage | undefined;
 };
 
@@ -151,37 +153,28 @@ async function appendEvent(state: WhatsAppServerState, event: ServerRequestEvent
   await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
-function isWhatsAppUserJid(value: string): boolean {
-  return (
-    WHATSAPP_USER_JID_RE.test(value) ||
-    WHATSAPP_LEGACY_USER_JID_RE.test(value) ||
-    WHATSAPP_LID_RE.test(value)
-  );
-}
-
 function requireWhatsAppChatJid(value: unknown): string | Response {
   const stringValue = readTrimmedString(value);
-  if (
-    !stringValue ||
-    (!isWhatsAppUserJid(stringValue) && !WHATSAPP_GROUP_JID_RE.test(stringValue))
-  ) {
+  const canonical = stringValue ? canonicalizeWhatsAppChatJid(stringValue) : undefined;
+  if (!canonical) {
     return graphParameterError(
       "(#100) Invalid parameter: chatJid",
       "chatJid must be a WhatsApp user or group JID.",
     );
   }
-  return stringValue;
+  return canonical;
 }
 
 function requireWhatsAppSenderJid(value: unknown): string | Response {
   const stringValue = readTrimmedString(value);
-  if (!stringValue || !isWhatsAppUserJid(stringValue)) {
+  const canonical = stringValue ? canonicalizeWhatsAppUserJid(stringValue) : undefined;
+  if (!canonical) {
     return graphParameterError(
       "(#100) Invalid parameter: senderJid",
       "senderJid must be a WhatsApp user JID.",
     );
   }
-  return stringValue;
+  return canonical;
 }
 
 function requireCloudRecipient(value: unknown): string | Response {
@@ -215,8 +208,7 @@ function waIdFromJid(jid: string): string {
 function directPeerIdentity(jid: string): string {
   const separator = jid.lastIndexOf("@");
   const user = jid.slice(0, separator).split(":", 1)[0] ?? jid;
-  const server = jid.slice(separator + 1);
-  return `${user}@${server === "c.us" ? "s.whatsapp.net" : server}`;
+  return `${user}@${jid.slice(separator + 1).toLowerCase()}`;
 }
 
 function requireMessagingProduct(body: Record<string, unknown>): Response | undefined {
@@ -354,7 +346,7 @@ async function handleAdminInbound(params: {
   if (senderJid instanceof Response) {
     return { response: senderJid };
   }
-  const isGroupChat = WHATSAPP_GROUP_JID_RE.test(chatJid);
+  const isGroupChat = isWhatsAppGroupJid(chatJid);
   if (!isGroupChat && directPeerIdentity(chatJid) !== directPeerIdentity(senderJid)) {
     return {
       response: graphParameterError(
@@ -505,24 +497,28 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       return new Response("not found", { status: 404 });
     }
     const body = await parseUnknownRequestBody(params.request);
-    await appendEvent(params.state, {
+    const event: WhatsAppRecorderEvent = {
       at: new Date().toISOString(),
       body,
       method: params.request.method,
       path: url.pathname,
       query: queryRecord(url),
       type: "api",
-    });
+    };
+    let response: Response;
     if (!isJsonObject(body)) {
-      return graphParameterError(
+      response = graphParameterError(
         "(#100) Invalid parameter: request body",
         "The request body must be a JSON object.",
       );
+    } else if ("status" in body || "message_id" in body) {
+      response = handleMessageStatus(body);
+    } else {
+      response = await handleSendMessage({ body, state: params.state });
     }
-    if ("status" in body || "message_id" in body) {
-      return handleMessageStatus(body);
-    }
-    return await handleSendMessage({ body, state: params.state });
+    event.accepted = response.ok;
+    await appendEvent(params.state, event);
+    return response;
   }
   return new Response("not found", { status: 404 });
 }
@@ -533,6 +529,9 @@ export async function startWhatsAppServer(
   const host = params.host ?? "127.0.0.1";
   if (params.accessToken !== undefined && !params.accessToken.trim()) {
     throw new Error("WhatsApp accessToken must not be empty.");
+  }
+  if (params.adminToken !== undefined && !params.adminToken.trim()) {
+    throw new Error("WhatsApp adminToken must not be empty.");
   }
   const graphVersion = params.graphVersion ?? DEFAULT_GRAPH_VERSION;
   if (!WHATSAPP_GRAPH_VERSION_RE.test(graphVersion)) {
@@ -545,6 +544,10 @@ export async function startWhatsAppServer(
   const maxPendingInboundMessages = resolveMaxPendingWhatsAppInboundMessages(
     params.maxPendingInboundMessages,
   );
+  const selfJid = canonicalizeWhatsAppUserJid(params.selfJid ?? "15550000000@s.whatsapp.net");
+  if (!selfJid) {
+    throw new Error("WhatsApp selfJid must be a WhatsApp user JID.");
+  }
   const state: WhatsAppServerState = {
     accessToken:
       params.accessToken ??
@@ -559,7 +562,7 @@ export async function startWhatsAppServer(
     onEvent: params.onEvent,
     phoneNumberId,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "whatsapp.jsonl"),
-    selfJid: params.selfJid ?? "15550000000@s.whatsapp.net",
+    selfJid,
   };
   const httpServer = await startHttpJsonServer({
     handle: (request) => handleRequest({ request, state }),

@@ -1133,7 +1133,7 @@ describe("OpenClaw local provider bridge", () => {
     expect(
       createOpenClawCrablineAgentDelivery({
         manifest: whatsappManifest,
-        target: "dm:15551234567@s.whatsapp.net",
+        target: "dm:15551234567@C.US",
       }),
     ).toEqual({
       channel: "whatsapp",
@@ -1183,8 +1183,8 @@ describe("OpenClaw local provider bridge", () => {
     const inbound = createOpenClawCrablineInbound({
       manifest: whatsappManifest,
       input: {
-        conversation: { id: "120363001234567890@g.us", kind: "group" },
-        senderId: "15551234567@s.whatsapp.net",
+        conversation: { id: "120363001234567890@G.US", kind: "group" },
+        senderId: "15551234567@C.US",
         senderName: "Alice",
         text: "hello",
       },
@@ -1241,6 +1241,7 @@ describe("OpenClaw local provider bridge", () => {
         manifest: whatsappManifest,
         targetByProviderTarget: new Map([["15551234567@s.whatsapp.net", "dm:alice"]]),
         event: {
+          accepted: true,
           type: "api",
           path: "/v25.0/100000000000000/messages",
           body: {
@@ -1256,6 +1257,21 @@ describe("OpenClaw local provider bridge", () => {
       text: "hello from openclaw",
       to: "dm:alice",
     });
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: whatsappManifest,
+        targetByProviderTarget: new Map(),
+        event: {
+          accepted: false,
+          type: "api",
+          path: "/v25.0/100000000000000/messages",
+          body: {
+            to: "15551234567",
+            text: { body: "rejected send" },
+          },
+        },
+      }),
+    ).toBeNull();
     for (const body of [
       { jid: "15551234567@s.whatsapp.net", text: "rejected legacy shape" },
       { text: "rejected flat text", to: "15551234567" },
@@ -1478,6 +1494,7 @@ describe("OpenClaw local provider bridge", () => {
         name: "WhatsApp",
         manifest: whatsappManifest,
         event: (text) => ({
+          accepted: true,
           body: { text: { body: text }, to: "15551234567@s.whatsapp.net" },
           path: new URL(whatsappManifest.endpoints.messagesUrl).pathname,
           type: "api",

@@ -272,7 +272,8 @@ The JSON manifest contains:
 - `accessToken`: bearer token for local provider requests
 - `adminToken`: send this as the `X-Crabline-Admin-Token` header when posting
   test user messages
-- `selfJid`: local authenticated WhatsApp user JID
+- `selfJid`: canonical local authenticated WhatsApp user JID; legacy `@c.us`
+  input is normalized to `@s.whatsapp.net`
 - `env.CLOUD_API_ACCESS_TOKEN`: same value as `accessToken`
 - `env.CLOUD_API_VERSION`: Graph API version used by the local server
 - `env.WA_BASE_URL`: local Graph API origin
@@ -319,7 +320,8 @@ single-update long polling through `getUpdates`, `sendMessage`, `sendPhoto`,
 `sendChatAction`, and webhook registration, inspection, and deletion. These Bot
 API methods accept GET query parameters or POST requests. Admin
 ingress injects a native Zalo update into the active polling or webhook
-transport. OpenClaw-specific endpoint, config, and target mapping remain in the
+transport. Webhook delivery posts the native `{ event_name, message }` update
+directly. OpenClaw-specific endpoint, config, and target mapping remain in the
 isolated bridge.
 
 The admin ingress accepts JSON like:

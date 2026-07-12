@@ -325,7 +325,8 @@ Manifest fields:
   `waWebSocketUrl`, including the local provider access token query parameter
 - `accessToken`: bearer token for local provider requests
 - `adminToken`: value for the `X-Crabline-Admin-Token` header on admin ingress
-- `selfJid`: local authenticated WhatsApp user JID
+- `selfJid`: canonical local authenticated WhatsApp user JID; legacy `@c.us`
+  input is normalized to `@s.whatsapp.net`
 - `env.CLOUD_API_ACCESS_TOKEN`: same value as `accessToken`
 - `env.CLOUD_API_VERSION`: Graph API version used by the local server
 - `env.WA_BASE_URL`: local Graph API origin
@@ -379,7 +380,7 @@ adapter.
 The server accepts the provider-native `/bot<TOKEN>/<METHOD>` API shape over
 GET or POST. It implements bot identity, single-update long polling, text and
 photo sends, chat actions, and webhook lifecycle calls. A configured webhook
-receives the native Zalo `{ ok, result }` event envelope with
+receives the native Zalo `{ event_name, message }` update directly with
 `X-Bot-Api-Secret-Token`;
 otherwise injected messages are returned by `getUpdates`. Provider errors use
 Zalo's `{ ok, error_code, description }` shape.
@@ -447,6 +448,7 @@ as `telegram:`, `discord:`, or `slack:`.
 - Built-in WhatsApp Cloud API users: digits-only `wa_id` values such as
   `15551234567`
 - OpenClaw WhatsApp bridge users: `15551234567@s.whatsapp.net`
+  (legacy `15551234567@c.us` inputs are accepted and canonicalized)
 - OpenClaw WhatsApp bridge groups: `120363001234567890@g.us`
 - Discord channels and threads: Discord snowflake ids such as
   `123456789012345678`
