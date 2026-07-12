@@ -41,7 +41,7 @@ describe("loopback chat adapter", () => {
     expect(latest.nextCursor).toBe("1");
 
     const previous = await adapter.fetchMessages(threadId, {
-      cursor: latest.nextCursor,
+      ...(latest.nextCursor ? { cursor: latest.nextCursor } : {}),
       limit: 2,
     });
     expect(previous.messages.map((message) => message.text)).toEqual(["first"]);
