@@ -391,6 +391,12 @@ as `telegram:`, `discord:`, or `slack:`.
 - Google Chat spaces: `spaces/AAAABbbbCCC`
 - Google Chat threads: `spaces/AAAABbbbCCC/threads/BBBBccccDDD`
 
+OpenClaw bridge QA targets reserve the exact forms `dm:<id>`, `group:<id>`,
+`channel:<id>`, and `thread:<id>/<thread-id>`. Reserved forms require non-blank
+components, and inbound thread IDs are trimmed before the matching QA target is
+emitted. Numeric Telegram DM IDs must be positive; group, channel, and thread
+chat IDs must be negative. Zero is invalid for every Telegram target kind.
+
 ## Smoke CI Guidance
 
 For deterministic CI, use Crabline through a mock channel driver:
