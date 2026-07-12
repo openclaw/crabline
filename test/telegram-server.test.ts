@@ -719,11 +719,11 @@ describe("telegram local provider server", () => {
     }
   }, 10_000);
 
-  it("reports webhook delivery failures without exposing observer errors", async () => {
+  it("continues bounded webhook retries and drains updates after recovery", async () => {
     let attempts = 0;
     const webhook = createServer((_request, response) => {
       attempts += 1;
-      response.statusCode = 503;
+      response.statusCode = attempts <= 6 ? 503 : 200;
       response.end();
     });
     await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
@@ -740,14 +740,9 @@ describe("telegram local provider server", () => {
         method: "POST",
       });
       expect((await injectUpdate(server, { chatId: 42, text: "retry me" })).status).toBe(502);
-      await expect.poll(() => attempts, { timeout: 5_000 }).toBe(6);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      expect(attempts).toBe(6);
-      expect((await injectUpdate(server, { chatId: 42, text: "do not retry head" })).status).toBe(
-        502,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      expect(attempts).toBe(6);
+      await expect.poll(() => attempts, { timeout: 8_000 }).toBe(7);
+      expect((await injectUpdate(server, { chatId: 42, text: "after recovery" })).status).toBe(200);
+      expect(attempts).toBe(8);
       const info = await fetch(
         `${server.manifest.baseUrl}/bottest-token-placeholder/getWebhookInfo`,
       );
@@ -755,7 +750,7 @@ describe("telegram local provider server", () => {
         result: {
           last_error_date: expect.any(Number),
           last_error_message: "Wrong response from the webhook: 503",
-          pending_update_count: 2,
+          pending_update_count: 0,
         },
       });
     } finally {
@@ -778,7 +773,7 @@ describe("telegram local provider server", () => {
       error: "internal server error",
       ok: false,
     });
-  });
+  }, 10_000);
 
   it("retains the most recent webhook error after a successful retry", async () => {
     let attempts = 0;

@@ -21,7 +21,7 @@ import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 
 const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
-const TELEGRAM_WEBHOOK_MAX_RETRIES = 5;
+const TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT = 5;
 const TELEGRAM_WEBHOOK_RETRY_BASE_MS = 100;
 
 type TelegramServerEvent = {
@@ -579,10 +579,7 @@ async function deliverTelegramWebhookUpdates(
     return await state.webhookDelivery;
   }
   syncTelegramWebhookRetryHead(state);
-  if (
-    !scheduledRetry &&
-    (state.webhookRetryTimer || state.webhookRetryAttempts >= TELEGRAM_WEBHOOK_MAX_RETRIES)
-  ) {
+  if (!scheduledRetry && state.webhookRetryTimer) {
     return telegramError("Bad Gateway: webhook delivery failed", 502);
   }
   let attemptedUpdateId: number | undefined;
@@ -603,11 +600,14 @@ async function deliverTelegramWebhookUpdates(
         syncTelegramWebhookRetryHead(state);
         scheduleTelegramWebhookDelivery(state, 0);
       } else if (result) {
-        if (state.webhookRetryAttempts < TELEGRAM_WEBHOOK_MAX_RETRIES) {
-          const delayMs = TELEGRAM_WEBHOOK_RETRY_BASE_MS * 2 ** state.webhookRetryAttempts;
-          state.webhookRetryAttempts += 1;
-          scheduleTelegramWebhookDelivery(state, delayMs);
-        }
+        const delayMs =
+          TELEGRAM_WEBHOOK_RETRY_BASE_MS *
+          2 ** Math.min(state.webhookRetryAttempts, TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT);
+        state.webhookRetryAttempts = Math.min(
+          state.webhookRetryAttempts + 1,
+          TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT,
+        );
+        scheduleTelegramWebhookDelivery(state, delayMs);
       } else {
         state.webhookRetryAttempts = 0;
         scheduleTelegramWebhookDelivery(state, 0);
