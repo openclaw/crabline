@@ -2,7 +2,7 @@ import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
-import { SLACK_CHANNEL_ID_RULE, SLACK_TS_RULE } from "../slack-ids.js";
+import { slackTargetKey, SLACK_CHANNEL_ID_RULE, SLACK_TS_RULE } from "../slack-ids.js";
 import { getBuiltinTargetCodec } from "../target-normalizers.js";
 import type { InboundEnvelope, ProviderAdapter } from "../types.js";
 import {
@@ -43,7 +43,10 @@ function normalizeSlackEventsPayload(payload: unknown) {
       text,
       threadId:
         typeof threadTs === "string"
-          ? requireNativeInboundId(threadTs, SLACK_TS_RULE, "Slack event.thread_ts")
+          ? slackTargetKey(
+              requireNativeInboundId(channel, SLACK_CHANNEL_ID_RULE, "Slack event.channel"),
+              requireNativeInboundId(threadTs, SLACK_TS_RULE, "Slack event.thread_ts"),
+            )
           : requireNativeInboundId(channel, SLACK_CHANNEL_ID_RULE, "Slack event.channel"),
     };
   }

@@ -45,6 +45,28 @@ function telegramTargetKey(chatId: string, threadId?: number) {
   return threadId === undefined ? chatId : `${chatId}:topic:${threadId}`;
 }
 
+function telegramBotCommandEntity(text: string, commandName: string) {
+  if (!/^[a-z0-9_]{1,32}$/u.test(commandName)) {
+    throw new Error(
+      "Telegram native command names must contain 1-32 lowercase letters, digits, or underscores.",
+    );
+  }
+  const commandPrefix = `/${commandName}`;
+  const token = text.match(/^\S+/u)?.[0];
+  if (
+    !token ||
+    (token !== commandPrefix &&
+      !new RegExp(`^/${commandName}@[A-Za-z][A-Za-z0-9_]{4,31}$`, "u").test(token))
+  ) {
+    throw new Error(`Telegram native command text must start with ${commandPrefix}.`);
+  }
+  return {
+    length: token.length,
+    offset: 0,
+    type: "bot_command",
+  } as const;
+}
+
 function parseTelegramThreadTargetId(value: unknown): number | undefined {
   if (value === undefined) {
     return undefined;
@@ -159,13 +181,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
             ...(threadId !== undefined ? { messageThreadId: threadId } : {}),
             ...(input.nativeCommand
               ? {
-                  entities: [
-                    {
-                      length: input.nativeCommand.name.length + 1,
-                      offset: 0,
-                      type: "bot_command",
-                    },
-                  ],
+                  entities: [telegramBotCommandEntity(input.text, input.nativeCommand.name)],
                 }
               : {}),
             text: input.text,

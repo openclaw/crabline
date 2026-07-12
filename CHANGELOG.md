@@ -4,6 +4,7 @@
 
 - Hold serve ready-file ownership across startup and shutdown, preserve live manifests on failed replacement, and retain compound cleanup failures.
 - Reject invalid matchers and provider/fixture mismatches before side effects, drain aborted provider work before cleanup, preserve frozen primary smoke failures, and recover stale smoke locks after PID reuse.
+- Preserve Slack thread scope and validate Telegram command entities.
 - Authenticate WhatsApp webhook verification and deliveries and reject malformed batches atomically.
 - Cancel silent script watches and redact configured payload secrets from subprocess diagnostics.
 - Randomize externally bound provider credentials, preserve Slack MPIM and Matrix sync errors, bound server shutdown, and enforce safe Zalo webhooks.

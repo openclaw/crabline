@@ -88,6 +88,23 @@ describe("slack provider", () => {
       channelId: "C1234567890",
       threadId: "1700000000.000100",
     });
+
+    const context = createContext(config, {
+      channelId: "C1234567890",
+      id: "reply-target",
+      metadata: {},
+      threadId: "1700000000.000100",
+    });
+    await expect(
+      provider.send({
+        ...context,
+        mode: "send",
+        nonce: "thread-scope",
+        text: "thread-scoped send",
+      }),
+    ).resolves.toMatchObject({
+      threadId: "C1234567890:thread:1700000000.000100",
+    });
   });
 
   it("rejects generic and Crabline-prefixed Slack ids", async () => {
@@ -160,11 +177,12 @@ describe("slack provider", () => {
     });
     context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
     const endpoint = endpointFromDetails((await provider.probe(context)).details);
+    const threadKey = "C1234567890:thread:1700000000.000100";
     const waitPromise = provider.waitForInbound({
       ...context,
       nonce: "nonce-2",
       since: new Date(Date.now() - 1000).toISOString(),
-      threadId: "1700000000.000100",
+      threadId: threadKey,
       timeoutMs: 500,
     });
 
@@ -190,7 +208,7 @@ describe("slack provider", () => {
       author: "user",
       id: "1700000001.000200",
       text: "ACK nonce-2",
-      threadId: "1700000000.000100",
+      threadId: threadKey,
     });
   });
 
