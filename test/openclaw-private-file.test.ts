@@ -3,7 +3,9 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   applyOwnerOnlyWindowsAcl,
+  applyOwnerOnlyWindowsDirectoryAcl,
   publishPrivateFileAtomically,
+  securePrivateDirectory,
   type WindowsAclRunner,
 } from "../src/openclaw/private-file.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
@@ -20,6 +22,67 @@ describe("OpenClaw private file publication", () => {
 
       expect(await fs.readFile(filePath, "utf8")).toBe("private\n");
       expect((await fs.stat(filePath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("secures POSIX generation directories with mode 0700", async () => {
+    const directory = await createTempDir();
+    try {
+      const generationPath = path.join(directory, "generation");
+      await fs.mkdir(generationPath, { mode: 0o777 });
+      await fs.chmod(generationPath, 0o777);
+
+      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+
+      await secured.assertIdentityAt();
+      expect((await fs.stat(generationPath)).mode & 0o777).toBe(0o700);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("secures an empty Windows generation directory before child creation", async () => {
+    const directory = await createTempDir();
+    try {
+      const generationPath = path.join(directory, "generation");
+      const secureWindowsDirectory = vi.fn(async (securedPath: string) => {
+        expect(securedPath).toBe(generationPath);
+        expect(await fs.readdir(securedPath)).toEqual([]);
+      });
+
+      const secured = await securePrivateDirectory(generationPath, {
+        platform: "win32",
+        secureWindowsDirectory,
+      });
+      await secured.assertIdentityAt();
+      await fs.writeFile(path.join(generationPath, "manifest.json"), "private\n");
+
+      expect(secureWindowsDirectory).toHaveBeenCalledTimes(1);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("rejects a Windows generation directory path substitution before child creation", async () => {
+    const directory = await createTempDir();
+    try {
+      const generationPath = path.join(directory, "generation");
+      const originalPath = `${generationPath}.original`;
+
+      await expect(
+        securePrivateDirectory(generationPath, {
+          platform: "win32",
+          secureWindowsDirectory: async (securedPath) => {
+            await fs.rename(securedPath, originalPath);
+            await fs.mkdir(securedPath);
+          },
+        }),
+      ).rejects.toThrow("Private directory path identity changed during publication.");
+
+      expect(await fs.readdir(originalPath)).toEqual([]);
+      expect(await fs.readdir(generationPath)).toEqual([]);
     } finally {
       await disposeTempDir(directory);
     }
@@ -174,6 +237,26 @@ describe("OpenClaw private file publication", () => {
     expect(script).toContain("$rules.Count -ne 1");
     expect(options.env.CRABLINE_PRIVATE_FILE_PATH).toBe(path.resolve(filePath));
     expect(options.windowsHide).toBe(true);
+  });
+
+  it("uses an inheritable protected Windows ACL for generation directories", async () => {
+    const calls: Parameters<WindowsAclRunner>[] = [];
+    const run: WindowsAclRunner = async (...args) => {
+      calls.push(args);
+    };
+    const directoryPath = String.raw`C:\Temp\crabline-generation`;
+
+    await applyOwnerOnlyWindowsDirectoryAcl(directoryPath, run, String.raw`C:\Windows`);
+
+    expect(calls).toHaveLength(1);
+    const [command, args, options] = calls[0]!;
+    expect(command).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
+    const script = args.at(-1);
+    expect(script).toContain("ContainerInherit");
+    expect(script).toContain("ObjectInherit");
+    expect(script).toContain("SetAccessRuleProtection($true, $false)");
+    expect(script).toContain("owner-only inheritable full control");
+    expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
   });
 
   it("reports Windows ACL tooling failures with their cause", async () => {

@@ -417,27 +417,36 @@ That means "run Telegram-shaped behavior through the mock Telegram backend."
 It does not mean "connect to live Telegram."
 
 OpenClaw smoke runs claim their output directory exclusively across processes.
-Crabline publishes the manifest, capability report, and smoke report as one
-rollback-capable generation and releases the lock internally. Setup, probe,
-cleanup, publication, or ownership failures leave the prior complete generation
-in place instead of exposing a mixed set. The files are atomically replaced with
-owner-only permissions, including when older files were more permissive. POSIX
-hosts use mode `0600`. Windows hosts require `powershell.exe` with `Set-Acl`;
-Crabline resolves it from the absolute local `SystemRoot`, creates an empty
-temporary file, applies and verifies a protected DACL containing only the
-current user SID with full control, keeps the creator handle open, verifies the
-file identity, and only then writes content. The identity is checked again
-before and after replacement. If `SystemRoot`, the ACL tooling, or verification
-is unavailable, publication aborts without replacing the prior generation.
+Crabline stages the manifest, capability report, and smoke report inside one
+owner-only generation directory under `.crabline-smoke-artifacts/`, atomically
+installs the complete directory, and then atomically switches the single
+`current.json` pointer. Readers therefore see either the prior complete
+generation or the next complete generation, never per-file mixtures. Setup,
+probe, cleanup, staging, or ownership failures leave the prior pointer
+unchanged. Abandoned staging directories and installed-but-uncommitted
+generations are claimed by rename and removed on a later locked run.
+
+POSIX generation directories use mode `0700` and files use mode `0600`. Windows
+hosts require `powershell.exe` with `Set-Acl`; Crabline resolves it from the
+absolute local `SystemRoot` and applies a protected, inheritable DACL containing
+only the current user SID to an empty generation directory before creating
+sensitive files. Directory and file identities are verified throughout
+publication. If `SystemRoot`, the ACL tooling, or identity verification is
+unavailable, publication aborts without switching the pointer. Smoke results
+retain the legacy `capabilityReport` and `smoke` payloads while their manifest,
+capability, and smoke paths identify the authoritative immutable generation.
 
 Lock owners record both PID and process-start identity. Dead owners, and stale
 locks whose PID was reused by the next Crabline process, are reclaimed on the
 next run. New lock owners renew a 10-minute lease while the smoke run remains
 active, so a live run retains exclusive ownership beyond the initial lease. A
 heartbeat failure or lost ownership aborts publication before the generation is
-committed. The lease also bounds stale locks when an unrelated live process has
-inherited the abandoned PID. Older owner records remain PID-protected for
-compatibility and are reclaimed only after their recorded process exits.
+committed. Recovery first atomically moves a stale candidate away from the
+heartbeat path, then revalidates its token-specific lease before deletion; a
+renewal that wins the rename race is restored rather than reclaimed. The lease
+also bounds stale locks when an unrelated live process has inherited the
+abandoned PID. Older owner records remain PID-protected for compatibility and
+are reclaimed only after their recorded process exits.
 
 For release or live verification, use OpenClaw's live driver:
 
