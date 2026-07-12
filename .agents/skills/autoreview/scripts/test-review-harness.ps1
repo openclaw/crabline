@@ -14,6 +14,11 @@ $ErrorActionPreference = 'Stop'
 
 $Harness = Join-Path $PSScriptRoot 'test-review-harness.py'
 $ForwardedArgs = @()
+$Candidates = @(
+    @{ Name = 'py'; Arguments = @('-3') },
+    @{ Name = 'python3'; Arguments = @() },
+    @{ Name = 'python'; Arguments = @() }
+)
 
 if ($Help) {
     $ForwardedArgs += '--help'
@@ -29,15 +34,25 @@ if ($PSBoundParameters.ContainsKey('Engine')) {
     }
 }
 
-$PyLauncher = Get-Command py -ErrorAction SilentlyContinue
-if ($null -ne $PyLauncher) {
-    & $PyLauncher.Source -3 $Harness @ForwardedArgs
-    exit $LASTEXITCODE
-}
+foreach ($Candidate in $Candidates) {
+    $Command = Get-Command $Candidate.Name -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $Command) {
+        continue
+    }
 
-$Python = Get-Command python -ErrorAction SilentlyContinue
-if ($null -ne $Python) {
-    & $Python.Source $Harness @ForwardedArgs
+    $LauncherArgs = $Candidate.Arguments
+    try {
+        & $Command.Source @LauncherArgs -c 'import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)' *> $null
+    }
+    catch {
+        continue
+    }
+    if ($LASTEXITCODE -ne 0) {
+        continue
+    }
+
+    & $Command.Source @LauncherArgs $Harness @ForwardedArgs
     exit $LASTEXITCODE
 }
 

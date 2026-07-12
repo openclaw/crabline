@@ -23,7 +23,10 @@ describe("CI workflow hardening", () => {
       (job) => job.steps?.map((step) => step.run).filter(Boolean) ?? [],
     );
 
-    expect(commands).toContain("go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7");
+    expect(commands).toContain(
+      "go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 " +
+        '-ignore \'unexpected key "queue" for "concurrency" section\'',
+    );
   });
 
   it("pins CodeQL actions to immutable revisions", async () => {

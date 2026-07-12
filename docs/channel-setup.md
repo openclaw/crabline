@@ -90,6 +90,8 @@ header before JSON parsing or recorder writes:
   tokens, including the activity channel and exact `serviceUrl`. An `appId` is
   required when the webhook host is non-loopback or `publicUrl` is set; an
   unauthenticated webhook remains available only on loopback.
+- Matrix webhook ingress currently has no provider-native authentication mode,
+  so it is restricted to loopback hosts and cannot set `publicUrl`.
 - Feishu `verificationToken` or `FEISHU_VERIFICATION_TOKEN` verifies plaintext
   callback tokens. `encryptKey` or `FEISHU_ENCRYPT_KEY` verifies
   `X-Lark-Signature` and decrypts encrypted event envelopes before challenge
@@ -112,6 +114,10 @@ Script providers use only the `script:` config block. Their required `platform`
 labels the OpenClaw channel represented by the bridge; it does not allow the
 matching built-in block such as `slack:` or `telegram:`. Move any behavior from
 those blocks into the commands or command environment when migrating:
+
+Treat manifests containing script providers as executable, trusted code.
+Crabline runs their declared commands with the configured environment, so load
+them only from sources you trust and review changes before use.
 
 ```yaml
 providers:

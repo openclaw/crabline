@@ -389,6 +389,26 @@ describe("production package", () => {
     }
   });
 
+  it("documents trusted script manifests and canonical WhatsApp Cloud targets", async () => {
+    const root = process.cwd();
+    const [readme, channelSetup] = await Promise.all([
+      fs.readFile(path.join(root, "README.md"), "utf8"),
+      fs.readFile(path.join(root, "docs/channel-setup.md"), "utf8"),
+    ]);
+
+    for (const document of [readme, channelSetup]) {
+      expect(document).toContain("executable, trusted code");
+      expect(document).toContain("only from sources you trust");
+    }
+    expect(channelSetup).toContain(
+      "Matrix webhook ingress currently has no provider-native authentication mode",
+    );
+    expect(readme).toContain(
+      "WhatsApp Cloud API users: digits-only `wa_id` values such as `15551234567`",
+    );
+    expect(readme).not.toContain("WhatsApp users: `+15551234567`");
+  });
+
   it("extracts pack metadata around lifecycle output", () => {
     const pack: NpmPackMetadata = {
       filename: "openclaw-crabline-0.1.9.tgz",

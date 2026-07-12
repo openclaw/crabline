@@ -121,26 +121,26 @@ On native Windows, choose the matching pair:
 
 ```powershell
 # Project-local skill in the current repo for Codex and other agents:
-$AUTOREVIEW = ".agents\skills\autoreview\scripts\autoreview"
+$AUTOREVIEW = ".agents\skills\autoreview\scripts\autoreview.ps1"
 $AUTOREVIEW_HARNESS = ".agents\skills\autoreview\scripts\test-review-harness.ps1"
 ```
 
 ```powershell
 # Claude Code project-local skill in the current repo:
-$AUTOREVIEW = ".claude\skills\autoreview\scripts\autoreview"
+$AUTOREVIEW = ".claude\skills\autoreview\scripts\autoreview.ps1"
 $AUTOREVIEW_HARNESS = ".claude\skills\autoreview\scripts\test-review-harness.ps1"
 ```
 
 ```powershell
 # Source checkout of openclaw/agent-skills:
-$AUTOREVIEW = "skills\autoreview\scripts\autoreview"
+$AUTOREVIEW = "skills\autoreview\scripts\autoreview.ps1"
 $AUTOREVIEW_HARNESS = "skills\autoreview\scripts\test-review-harness.ps1"
 ```
 
 ```powershell
 # Global skill:
 $AgentsHome = if ($env:AGENTS_HOME) { $env:AGENTS_HOME } else { Join-Path $HOME ".agents" }
-$AUTOREVIEW = Join-Path $AgentsHome "skills\autoreview\scripts\autoreview"
+$AUTOREVIEW = Join-Path $AgentsHome "skills\autoreview\scripts\autoreview.ps1"
 $AUTOREVIEW_HARNESS = Join-Path $AgentsHome "skills\autoreview\scripts\test-review-harness.ps1"
 ```
 
@@ -364,10 +364,10 @@ The smoke harness has thin shell wrappers over a shared Python implementation:
 "$AUTOREVIEW_HARNESS" --fixture benign --engine codex
 ```
 
-On native Windows, invoke the extensionless Python helper through Python:
+On native Windows, invoke the PowerShell wrapper:
 
 ```powershell
-python $AUTOREVIEW --help
+& $AUTOREVIEW --help
 ```
 
 and the smoke harness:

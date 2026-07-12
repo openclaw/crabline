@@ -127,6 +127,10 @@ The `script` adapter can bridge any OpenClaw channel represented by the
 configured `platform` enum by running local commands for `probe`, `send`,
 `waitForInbound`, or `watch`.
 
+Treat manifests that configure `adapter: script` as executable, trusted code:
+Crabline runs their declared commands with the configured environment. Load
+them only from sources you trust and review changes before use.
+
 ## Local Provider Servers
 
 `serve` starts provider-shaped HTTP APIs for OpenClaw live adapters. This is the
@@ -361,7 +365,7 @@ Examples:
 - Slack threads: `1700000000.000100`
 - Telegram chats: `-1001234567890` or `@channelusername`
 - Telegram topics: `42`
-- WhatsApp users: `+15551234567`
+- WhatsApp Cloud API users: digits-only `wa_id` values such as `15551234567`
 - WhatsApp groups: `120363001234567890@g.us`
 - Discord channels and threads: Discord snowflake ids such as
   `123456789012345678`
