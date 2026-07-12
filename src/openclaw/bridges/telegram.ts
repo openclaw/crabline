@@ -36,6 +36,21 @@ function telegramTargetKey(chatId: string, threadId?: number) {
   return threadId === undefined ? chatId : `${chatId}:topic:${threadId}`;
 }
 
+function parseTelegramThreadTargetId(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!/^\d+$/u.test(trimmed)) {
+    throw new Error("Telegram thread target must be a safe non-negative integer.");
+  }
+  const threadId = Number(trimmed);
+  if (!Number.isSafeInteger(threadId)) {
+    throw new Error("Telegram thread target must be a safe non-negative integer.");
+  }
+  return threadId;
+}
+
 export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
   provider: "telegram",
   createAdapter(telegram) {
@@ -100,7 +115,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
       },
       createAgentDelivery(parsed) {
         const chatId = normalizeTelegramChatId(parsed.kind, parsed.id);
-        const threadId = readInteger(parsed.threadId);
+        const threadId = parseTelegramThreadTargetId(parsed.threadId);
         const to = telegramTargetKey(chatId, threadId);
         return {
           channel: "telegram",
