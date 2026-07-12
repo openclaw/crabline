@@ -595,6 +595,47 @@ describe("whatsapp local provider server", () => {
     ]);
   });
 
+  it("records accepted sends before consuming their message IDs", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    let failAcceptedEvent = true;
+    const server = await startWhatsAppServer({
+      accessToken: "fake",
+      onEvent: (event) => {
+        if (
+          failAcceptedEvent &&
+          event.path === new URL(server.manifest.endpoints.messagesUrl).pathname
+        ) {
+          failAcceptedEvent = false;
+          throw new Error("simulated recorder observer failure");
+        }
+      },
+      recorderPath: path.join(directory, "whatsapp-send-order.jsonl"),
+    });
+    servers.push(server);
+    const send = () =>
+      fetch(server.manifest.endpoints.messagesUrl, {
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          text: { body: "send once" },
+          to: "15551234567",
+          type: "text",
+        }),
+        headers: {
+          authorization: "Bearer fake",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+
+    expect((await send()).status).toBe(500);
+    const retried = await send();
+    expect(retried.status).toBe(200);
+    await expect(retried.json()).resolves.toMatchObject({
+      messages: [{ id: "wamid.FAKE00000001" }],
+    });
+  });
+
   it("does not accept admin inbound messages when recorder append fails", async () => {
     const directory = await createTempDir();
     directories.push(directory);
