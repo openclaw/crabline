@@ -11,6 +11,7 @@ describe("manifest schema", () => {
       "^a*a*$",
       "^(a|aa){100}$",
       `^${"(a|aa)".repeat(80)}$`,
+      String.raw`^\(?a$`,
       String.raw`^(a)\1$`,
     ]) {
       expect(() =>

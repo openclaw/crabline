@@ -1,5 +1,6 @@
 import { Command, CommanderError } from "commander";
 import { randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import nodePath from "node:path";
 import { lock } from "proper-lockfile";
@@ -587,14 +588,7 @@ async function publishReadyFileUnlocked(
       flag: "wx",
       mode: 0o600,
     });
-    try {
-      await fs.link(filePath, backupPath);
-      destinationBackedUp = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-    }
+    destinationBackedUp = await backupReadyFile(filePath, backupPath);
     await fs.rename(temporaryPath, filePath);
     manifestPublished = true;
     const identity = await readReadyFileIdentity(filePath);
@@ -626,6 +620,31 @@ async function publishReadyFileUnlocked(
     throw error;
   } finally {
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function backupReadyFile(filePath: string, backupPath: string): Promise<boolean> {
+  try {
+    await fs.link(filePath, backupPath);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      return false;
+    }
+    if (!code || !["ENOTSUP", "EOPNOTSUPP", "EPERM", "EXDEV"].includes(code)) {
+      throw error;
+    }
+  }
+
+  try {
+    await fs.copyFile(filePath, backupPath, fsConstants.COPYFILE_EXCL);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
   }
 }
 

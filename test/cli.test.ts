@@ -442,6 +442,26 @@ describe("cli", () => {
     await expect(fs.readFile(readyFile, "utf8")).resolves.toBe("stale\n");
   });
 
+  it("replaces an existing ready file when hard links are unsupported", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, "server.json");
+    await writeText(readyFile, "stale\n");
+    const linkError = Object.assign(new Error("hard links unsupported"), {
+      code: "EOPNOTSUPP",
+    });
+    const linkSpy = vi.spyOn(fs, "link").mockRejectedValueOnce(linkError);
+
+    try {
+      await expect(publishReadyFile(readyFile, "replacement\n")).resolves.toBeDefined();
+    } finally {
+      linkSpy.mockRestore();
+    }
+
+    await expect(fs.readFile(readyFile, "utf8")).resolves.toBe("replacement\n");
+    expect(await fs.readdir(directory)).toEqual(["server.json"]);
+  });
+
   it("does not recursively remove a stale non-lock directory", async () => {
     const directory = await createTempDir();
     directories.push(directory);
