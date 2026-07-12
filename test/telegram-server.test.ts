@@ -1248,7 +1248,7 @@ describe("telegram local provider server", () => {
     });
   });
 
-  it("redacts the bot token from recorded API paths", async () => {
+  it("redacts the bot token and webhook secrets from recorded API requests", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const botToken = "987654:distinctive-secret-token";
@@ -1258,10 +1258,23 @@ describe("telegram local provider server", () => {
 
     const response = await fetch(`${server.manifest.baseUrl}/bot${botToken}/getMe`);
     await expect(response.json()).resolves.toMatchObject({ ok: true });
+    const webhookSecret = "test-auth-token";
+    const webhookUrl = new URL(`${server.manifest.baseUrl}/bot${botToken}/setWebhook`);
+    webhookUrl.searchParams.set("url", "https://example.invalid/telegram");
+    webhookUrl.searchParams.set("secret_token", webhookSecret);
+    const webhook = await fetch(webhookUrl);
+    await expect(webhook.json()).resolves.toMatchObject({ ok: true });
 
     const recordedEvents = await fs.readFile(recorderPath, "utf8");
     expect(recordedEvents).not.toContain(botToken);
+    expect(recordedEvents).not.toContain(webhookSecret);
     expect(recordedEvents).toContain('"path":"/bot<redacted>/getMe"');
+    const setWebhookEvent = recordedEvents
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { path?: string; query?: Record<string, string> })
+      .find((event) => event.path?.endsWith("/setWebhook"));
+    expect(setWebhookEvent?.query?.secret_token).toBe("<redacted>");
   });
 
   it("notifies observers after recording each event", async () => {

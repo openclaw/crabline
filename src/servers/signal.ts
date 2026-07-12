@@ -24,17 +24,28 @@ type SignalServerState = {
   account: string;
   adminToken: string;
   clients: Set<ServerResponse>;
-  clientBuffers: Map<ServerResponse, { bytes: number; draining: boolean; events: string[] }>;
+  clientBuffers: Map<ServerResponse, SignalClientBuffer>;
   maxPendingInboundEvents: number;
   maxSseClients: number;
+  nextEventSequence: number;
   nextTimestamp: number;
   onEvent: ServerEventObserver | undefined;
   pendingEventBytes: number;
-  pendingEvents: string[];
+  pendingEvents: SignalSseChunk[];
   pendingSseClients: number;
   recorderPath: string;
 };
 
+type SignalClientBuffer = {
+  bytes: number;
+  connectedAfterSequence: number;
+  draining: boolean;
+  events: SignalSseChunk[];
+};
+type SignalSseChunk = {
+  data: string;
+  sequence?: number | undefined;
+};
 const SIGNAL_CLI_SSE_KEEPALIVE_MS = 15_000;
 const DEFAULT_MAX_SIGNAL_SSE_CLIENTS = 32;
 const MAX_SIGNAL_SSE_BUFFER_BYTES = 2 * 1024 * 1024;
@@ -99,9 +110,27 @@ function removeSignalClient(
   const buffer = state.clientBuffers.get(client);
   state.clients.delete(client);
   state.clientBuffers.delete(client);
-  if (buffer && state.clients.size === 0 && buffer.events.length > 0) {
-    state.pendingEvents.unshift(...buffer.events);
-    state.pendingEventBytes += buffer.bytes;
+  if (buffer) {
+    const undeliveredEvents = buffer.events.filter((event) => {
+      const sequence = event.sequence;
+      return (
+        sequence !== undefined &&
+        [...state.clientBuffers.values()].every(
+          (otherBuffer) => otherBuffer.connectedAfterSequence >= sequence,
+        )
+      );
+    });
+    if (undeliveredEvents.length > 0) {
+      state.pendingEvents.unshift(...undeliveredEvents);
+      state.pendingEventBytes += undeliveredEvents.reduce(
+        (total, event) => total + Buffer.byteLength(event.data),
+        0,
+      );
+      const replacement = state.clients.values().next().value;
+      if (replacement) {
+        flushPendingSignalEvents(state, replacement);
+      }
+    }
   }
   if (destroy) {
     client.destroy();
@@ -134,10 +163,10 @@ function scheduleSignalDrain(state: SignalServerState, client: ServerResponse): 
 function queueSignalClientEvent(
   state: SignalServerState,
   client: ServerResponse,
-  event: string,
+  event: SignalSseChunk,
 ): SignalSseWriteResult {
   const buffer = state.clientBuffers.get(client);
-  const eventBytes = Buffer.byteLength(event);
+  const eventBytes = Buffer.byteLength(event.data);
   if (
     !buffer ||
     state.pendingEventBytes + buffer.bytes + eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES
@@ -154,17 +183,17 @@ function queueSignalClientEvent(
 function writeSignalSse(
   state: SignalServerState,
   client: ServerResponse,
-  event: string,
+  event: SignalSseChunk,
 ): SignalSseWriteResult {
   if (client.destroyed) {
-    state.clients.delete(client);
+    removeSignalClient(state, client, false);
     return "rejected";
   }
   if (client.writableEnded) {
     evictSignalClient(state, client);
     return "rejected";
   }
-  const eventBytes = Buffer.byteLength(event);
+  const eventBytes = Buffer.byteLength(event.data);
   if (eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES) {
     return "rejected";
   }
@@ -176,7 +205,7 @@ function writeSignalSse(
     evictSignalClient(state, client);
     return "rejected";
   }
-  if (!client.write(event)) {
+  if (!client.write(event.data)) {
     scheduleSignalDrain(state, client);
   }
   return "accepted";
@@ -190,8 +219,8 @@ function maxSignalClientBufferBytes(state: SignalServerState): number {
   return maxBytes;
 }
 
-function queueSignalEvent(state: SignalServerState, event: string): boolean {
-  const eventBytes = Buffer.byteLength(event);
+function queueSignalEvent(state: SignalServerState, event: SignalSseChunk): boolean {
+  const eventBytes = Buffer.byteLength(event.data);
   if (
     eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES ||
     state.pendingEventBytes + maxSignalClientBufferBytes(state) + eventBytes >
@@ -212,8 +241,8 @@ function flushSignalClientEvents(state: SignalServerState, client: ServerRespons
       break;
     }
     const event = buffer.events.shift()!;
-    buffer.bytes -= Buffer.byteLength(event);
-    if (!client.write(event)) {
+    buffer.bytes -= Buffer.byteLength(event.data);
+    if (!client.write(event.data)) {
       scheduleSignalDrain(state, client);
       break;
     }
@@ -225,7 +254,7 @@ function flushPendingSignalEvents(state: SignalServerState, client: ServerRespon
     const result = writeSignalSse(state, client, state.pendingEvents[0]!);
     if (result === "accepted" || result === "queued") {
       const event = state.pendingEvents.shift()!;
-      state.pendingEventBytes -= Buffer.byteLength(event);
+      state.pendingEventBytes -= Buffer.byteLength(event.data);
       if (result === "accepted") {
         continue;
       }
@@ -235,7 +264,10 @@ function flushPendingSignalEvents(state: SignalServerState, client: ServerRespon
 }
 
 function emitSignalEvent(state: SignalServerState, payload: unknown): boolean {
-  const event = `event:receive\ndata:${JSON.stringify(payload)}\n\n`;
+  const event: SignalSseChunk = {
+    data: `event:receive\ndata:${JSON.stringify(payload)}\n\n`,
+    sequence: state.nextEventSequence++,
+  };
   if (state.clients.size === 0 || state.pendingEvents.length > 0) {
     return queueSignalEvent(state, event);
   }
@@ -435,7 +467,12 @@ async function handleRequest(params: {
       removeSignalClient(params.state, params.response, false);
     });
     params.state.clients.add(params.response);
-    params.state.clientBuffers.set(params.response, { bytes: 0, draining: false, events: [] });
+    params.state.clientBuffers.set(params.response, {
+      bytes: 0,
+      connectedAfterSequence: params.state.nextEventSequence - 1,
+      draining: false,
+      events: [],
+    });
     flushPendingSignalEvents(params.state, params.response);
     return;
   }
@@ -508,6 +545,7 @@ export async function startSignalServer(
       Number.isSafeInteger(params.maxSseClients) && (params.maxSseClients ?? 0) > 0
         ? params.maxSseClients!
         : DEFAULT_MAX_SIGNAL_SSE_CLIENTS,
+    nextEventSequence: 1,
     nextTimestamp: Date.now(),
     onEvent: params.onEvent,
     pendingEventBytes: 0,
@@ -541,7 +579,7 @@ export async function startSignalServer(
   });
   const keepalive = setInterval(() => {
     for (const client of state.clients) {
-      writeSignalSse(state, client, ":\n");
+      writeSignalSse(state, client, { data: ":\n" });
     }
   }, SIGNAL_CLI_SSE_KEEPALIVE_MS);
   keepalive.unref();
