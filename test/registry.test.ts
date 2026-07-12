@@ -208,6 +208,27 @@ describe("registry", () => {
     expect(() => registry.resolve("missing", "fixture")).toThrow(/Unknown provider/);
   });
 
+  it("rejects resolving a fixture through a different provider", () => {
+    const mismatchedManifest: ManifestDefinition = {
+      ...manifest,
+      providers: {
+        ...manifest.providers,
+        other: {
+          adapter: "loopback",
+          capabilities: ["probe", "send"],
+          env: [],
+          platform: "loopback",
+          status: "active",
+        },
+      },
+    };
+    const registry = createRegistry(mismatchedManifest, "/tmp/crabline.yaml");
+
+    expect(() => registry.resolve("other", "fixture")).toThrow(
+      'Fixture "fixture" belongs to provider "local", not "other".',
+    );
+  });
+
   it("throws for disabled providers", () => {
     const localProvider = manifest.providers.local;
     expect(localProvider).toBeDefined();

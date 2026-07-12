@@ -114,6 +114,51 @@ describe("run behavior", () => {
     expect(missingEnv.failureKind).toBe("config");
   });
 
+  it("rejects an invalid inbound regex before sending", async () => {
+    let sendCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => {
+        sendCalls += 1;
+        return { accepted: true, messageId: "1", threadId: "1" };
+      },
+      waitForInbound: async () => null,
+    };
+    const invalidManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [
+        {
+          ...manifest.fixtures[0]!,
+          inboundMatch: {
+            author: "assistant",
+            nonce: "contains",
+            pattern: "[",
+            strategy: "regex",
+          },
+          retries: 2,
+        },
+      ],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: invalidManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.failureKind).toBe("config");
+    expect(result.diagnostics.join("\n")).toContain("Invalid inbound regex");
+    expect(sendCalls).toBe(0);
+  });
+
   it("uses one effective fixture for mode overrides in provider contexts", async () => {
     const contextFixtures: ManifestDefinition["fixtures"] = [];
     let outboundText = "";
@@ -397,7 +442,8 @@ describe("run behavior", () => {
       registry: buildRegistry(provider),
     });
 
-    expect(result.failureKind).toBe("timeout");
+    expect(result.failureKind).toBe("inbound");
+    expect(result.diagnostics.join("\n")).toContain("did not settle within 250ms after abort");
     rejectWait?.(new Error("late provider failure"));
     await Promise.resolve();
   });

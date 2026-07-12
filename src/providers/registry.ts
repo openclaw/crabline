@@ -337,6 +337,9 @@ class LazyProviderAdapter implements ProviderAdapter {
     if (this.#cleanedUp) {
       return Promise.reject(this.#cleanedUpError());
     }
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason ?? new Error("Provider operation aborted."));
+    }
     let markDispatched: (() => void) | undefined;
     const dispatched = new Promise<void>((resolve) => {
       markDispatched = resolve;
@@ -345,16 +348,24 @@ class LazyProviderAdapter implements ProviderAdapter {
       promise: dispatched,
       reached: false,
     };
-    const completion = (async () => {
+    const underlying = (async () => {
       try {
         const provider = await this.#provider();
+        if (signal?.aborted) {
+          throw signal.reason ?? new Error("Provider operation aborted.");
+        }
         const result = run(provider);
         dispatch.reached = true;
         markDispatched?.();
-        if (!signal) {
-          return await result;
-        }
-        return await new Promise<T>((resolve, reject) => {
+        return await result;
+      } catch (error) {
+        dispatch.reached = true;
+        markDispatched?.();
+        throw error;
+      }
+    })();
+    const completion = signal
+      ? new Promise<T>((resolve, reject) => {
           const finish = () => signal.removeEventListener("abort", abort);
           const abort = () => {
             finish();
@@ -362,11 +373,10 @@ class LazyProviderAdapter implements ProviderAdapter {
           };
           if (signal.aborted) {
             abort();
-            void result.catch(() => undefined);
-            return;
+          } else {
+            signal.addEventListener("abort", abort, { once: true });
           }
-          signal.addEventListener("abort", abort, { once: true });
-          void result.then(
+          void underlying.then(
             (value) => {
               finish();
               resolve(value);
@@ -376,16 +386,11 @@ class LazyProviderAdapter implements ProviderAdapter {
               reject(error);
             },
           );
-        });
-      } catch (error) {
-        dispatch.reached = true;
-        markDispatched?.();
-        throw error;
-      }
-    })();
-    const operation = { completion, dispatch };
+        })
+      : underlying;
+    const operation = { completion: underlying, dispatch };
     this.#inFlightOperations.add(operation);
-    void completion.then(
+    void underlying.then(
       () => this.#inFlightOperations.delete(operation),
       () => this.#inFlightOperations.delete(operation),
     );
@@ -405,10 +410,15 @@ export function createRegistry(manifest: ManifestDefinition, manifestPath: strin
       if (!fixture) {
         throw new CrablineError(`Unknown fixture: ${fixtureId}`, { kind: "config" });
       }
-
       const config = manifest.providers[providerId];
       if (!config) {
         throw new CrablineError(`Unknown provider: ${providerId}`, { kind: "config" });
+      }
+      if (fixture.provider !== providerId) {
+        throw new CrablineError(
+          `Fixture "${fixtureId}" belongs to provider "${fixture.provider}", not "${providerId}".`,
+          { kind: "config" },
+        );
       }
 
       if (config.status === "disabled") {
