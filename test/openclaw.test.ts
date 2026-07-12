@@ -657,6 +657,37 @@ describe("OpenClaw local provider bridge", () => {
     });
   });
 
+  it("validates explicit Telegram thread target ids", () => {
+    const symbolicGroup = createOpenClawCrablineAgentDelivery({
+      manifest,
+      target: "group:alice",
+    }).to;
+
+    for (const threadId of ["0", "42", String(Number.MAX_SAFE_INTEGER)]) {
+      expect(
+        createOpenClawCrablineAgentDelivery({
+          manifest,
+          target: `thread:alice/${threadId}`,
+        }).to,
+      ).toBe(`${symbolicGroup}:topic:${threadId}`);
+    }
+
+    for (const threadId of [
+      "",
+      "not-a-number",
+      "-1",
+      String(Number.MAX_SAFE_INTEGER + 1),
+      "9".repeat(400),
+    ]) {
+      expect(() =>
+        createOpenClawCrablineAgentDelivery({
+          manifest,
+          target: `thread:alice/${threadId}`,
+        }),
+      ).toThrow("Telegram thread target must be a safe non-negative integer.");
+    }
+  });
+
   it("maps WhatsApp QA targets, inbound messages, and recorder events", () => {
     expect(
       createOpenClawCrablineAgentDelivery({

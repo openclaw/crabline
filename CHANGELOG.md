@@ -16,6 +16,7 @@
 - Serve WhatsApp Cloud API requests on provider-native Graph routes, queue acknowledged Baileys inbound messages until a session opens, and bound binary frame decoding.
 - Accept uint64 unknown fields in WhatsApp handshakes and bound recursive binary-node decoding.
 - Harden OpenClaw bridges for provider-level probe failures, whitespace-preserving message capture, stable symbolic Telegram IDs, and unsupported thread targets.
+- Reject invalid Telegram topic IDs in explicit OpenClaw QA targets instead of silently dropping or coercing them.
 
 ## 0.1.9 - 2026-07-03
 
