@@ -149,6 +149,78 @@ function createTelegramManifest(recorderPath: string): {
 }
 
 describe("lazy provider lifecycle", () => {
+  it("does not dispatch an operation aborted during provider initialization", async () => {
+    let releaseFactory: (() => void) | undefined;
+    const factoryBlocked = new Promise<void>((resolve) => {
+      releaseFactory = resolve;
+    });
+    const waitForInbound = vi.fn<ProviderAdapter["waitForInbound"]>(async () => null);
+    const concrete: ProviderAdapter = {
+      id: "test",
+      platform: "loopback",
+      status: "ready",
+      supports: ["roundtrip"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      waitForInbound,
+    };
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory: async () => {
+        await factoryBlocked;
+        return concrete;
+      },
+      id: "test",
+      normalizeTarget: concrete.normalizeTarget.bind(concrete),
+      platform: "loopback",
+      status: "ready",
+      supports: ["roundtrip"],
+    });
+    const controller = new AbortController();
+    const abortReason = new Error("deadline reached during initialization");
+    const waiting = provider.waitForInbound({
+      config: {
+        adapter: "loopback",
+        capabilities: ["roundtrip"],
+        env: [],
+        platform: "loopback",
+        status: "active",
+      },
+      fixture: {
+        env: [],
+        id: "fixture",
+        inboundMatch: { author: "assistant", nonce: "contains", strategy: "contains" },
+        mode: "roundtrip",
+        provider: "test",
+        retries: 0,
+        tags: [],
+        target: { id: "target", metadata: {} },
+        timeoutMs: 10,
+      },
+      manifestPath: "/tmp/crabline.yaml",
+      nonce: "nonce",
+      providerId: "test",
+      signal: controller.signal,
+      since: new Date().toISOString(),
+      timeoutMs: 10,
+      userName: "crabline",
+    });
+
+    controller.abort(abortReason);
+    releaseFactory?.();
+
+    await expect(waiting).rejects.toBe(abortReason);
+    expect(waitForInbound).not.toHaveBeenCalled();
+    await provider.cleanup();
+  });
+
   it("starts concrete cleanup before waiting for a stuck operation", async () => {
     let releaseWait: (() => void) | undefined;
     let markCleanupStarted: (() => void) | undefined;
