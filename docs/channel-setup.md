@@ -428,8 +428,11 @@ the atomic replacement. If `SystemRoot`, the ACL tooling, or verification is
 unavailable, publication aborts without replacing the previous manifest. Lock
 owners record both PID and process-start identity. Dead owners, and stale locks
 whose PID was reused by the next Crabline process, are reclaimed on the next
-run. A 10-minute lease also bounds stale locks when an unrelated live process
-has inherited the abandoned PID.
+run. New lock owners renew a 10-minute lease while the smoke run remains active,
+so a live run retains exclusive ownership beyond the initial lease. The lease
+also bounds stale locks when an unrelated live process has inherited the
+abandoned PID. Older owner records remain PID-protected for compatibility and
+are reclaimed only after their recorded process exits.
 
 For release or live verification, use OpenClaw's live driver:
 
