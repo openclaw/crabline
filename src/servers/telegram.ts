@@ -29,6 +29,42 @@ const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 const TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT = 5;
 const TELEGRAM_WEBHOOK_RETRY_BASE_MS = 100;
 const TELEGRAM_WEBHOOK_DELIVERY_TIMEOUT_MS = 3_000;
+const TELEGRAM_CHAT_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{4,31}$/u;
+const TELEGRAM_MEDIA_FIELDS = [
+  "animation",
+  "audio",
+  "document",
+  "photo",
+  "sticker",
+  "story",
+  "video",
+  "video_note",
+  "voice",
+] as const;
+const TELEGRAM_UNSUPPORTED_UPDATE_FIELDS = [
+  "business_connection",
+  "business_message",
+  "callback_query",
+  "channel_post",
+  "chat_boost",
+  "chat_join_request",
+  "chat_member",
+  "chosen_inline_result",
+  "deleted_business_messages",
+  "edited_business_message",
+  "edited_channel_post",
+  "edited_message",
+  "inline_query",
+  "message_reaction",
+  "message_reaction_count",
+  "my_chat_member",
+  "poll",
+  "poll_answer",
+  "pre_checkout_query",
+  "purchased_paid_media",
+  "removed_chat_boost",
+  "shipping_query",
+] as const;
 
 type TelegramServerEvent = {
   at: string;
@@ -250,7 +286,8 @@ function toIntegerValue(value: unknown): number | undefined {
   if (!stringValue || !/^-?\d+$/u.test(stringValue)) {
     return undefined;
   }
-  return Number(stringValue);
+  const integerValue = Number(stringValue);
+  return Number.isSafeInteger(integerValue) ? integerValue : undefined;
 }
 
 function toBooleanValue(value: unknown): boolean {
@@ -262,7 +299,10 @@ function telegramChatId(value: unknown): number | string | undefined {
   if (!stringValue) {
     return undefined;
   }
-  return /^-?\d+$/u.test(stringValue) ? Number(stringValue) : stringValue;
+  if (/^-?\d+$/u.test(stringValue)) {
+    return toIntegerValue(stringValue);
+  }
+  return TELEGRAM_CHAT_USERNAME_PATTERN.test(stringValue) ? stringValue : undefined;
 }
 
 async function appendEvent(state: TelegramServerState, event: TelegramServerEvent) {
@@ -293,11 +333,13 @@ function createBotUser(state: TelegramServerState) {
 
 function createChat(chatId: number | string): TelegramMessage["chat"] {
   const type =
-    typeof chatId !== "number" || chatId >= 0
-      ? "private"
-      : String(chatId).startsWith("-100")
-        ? "supergroup"
-        : "group";
+    typeof chatId === "string"
+      ? "supergroup"
+      : chatId >= 0
+        ? "private"
+        : String(chatId).startsWith("-100")
+          ? "supergroup"
+          : "group";
   return {
     id: chatId,
     type,
@@ -314,6 +356,9 @@ function createOutboundMessage(
     return undefined;
   }
   const threadId = toIntegerValue(body.message_thread_id);
+  if (body.message_thread_id !== undefined && threadId === undefined) {
+    return undefined;
+  }
   return {
     chat: createChat(chatId),
     date: Math.floor(Date.now() / 1000),
@@ -335,6 +380,9 @@ function createOutboundMediaMessage(
     return undefined;
   }
   const threadId = toIntegerValue(body.message_thread_id);
+  if (body.message_thread_id !== undefined && threadId === undefined) {
+    return undefined;
+  }
   const caption = toStringValue(body.caption);
   const duration = Math.max(0, toIntegerValue(body.duration) ?? 0);
   const media = {
@@ -371,6 +419,9 @@ function createEditedMessage(
     return undefined;
   }
   const threadId = toIntegerValue(body.message_thread_id);
+  if (body.message_thread_id !== undefined && threadId === undefined) {
+    return undefined;
+  }
   return {
     chat: createChat(chatId),
     date: Math.floor(Date.now() / 1000),
@@ -390,11 +441,23 @@ function createInboundUpdate(
   if (chatId === undefined || !text) {
     return undefined;
   }
-  const fromId = toIntegerValue(body.fromId ?? body.from_id) ?? 100001;
-  const threadId = toIntegerValue(body.messageThreadId ?? body.message_thread_id);
+  const fromIdValue = body.fromId ?? body.from_id;
+  const threadIdValue = body.messageThreadId ?? body.message_thread_id;
+  const messageIdValue = body.messageId ?? body.message_id;
+  const updateIdValue = body.updateId ?? body.update_id;
+  const fromId = toIntegerValue(fromIdValue);
+  const threadId = toIntegerValue(threadIdValue);
   const fromUsername = toStringValue(body.fromUsername ?? body.from_username);
-  const messageId = toIntegerValue(body.messageId ?? body.message_id);
-  const updateId = toIntegerValue(body.updateId ?? body.update_id);
+  const messageId = toIntegerValue(messageIdValue);
+  const updateId = toIntegerValue(updateIdValue);
+  if (
+    (fromIdValue !== undefined && fromId === undefined) ||
+    (threadIdValue !== undefined && threadId === undefined) ||
+    (messageIdValue !== undefined && messageId === undefined) ||
+    (updateIdValue !== undefined && updateId === undefined)
+  ) {
+    return undefined;
+  }
   const entities = Array.isArray(body.entities)
     ? body.entities.filter(
         (entry): entry is { length: number; offset: number; type: string } =>
@@ -411,7 +474,7 @@ function createInboundUpdate(
       date: Math.floor(Date.now() / 1000),
       from: {
         first_name: toStringValue(body.fromName ?? body.from_name) ?? "QA User",
-        id: fromId,
+        id: fromId ?? 100001,
         is_bot: false,
         ...(fromUsername ? { username: fromUsername } : {}),
       },
@@ -422,6 +485,39 @@ function createInboundUpdate(
     },
     update_id: updateId ?? state.nextUpdateId,
   };
+}
+
+function hasTelegramMedia(value: Record<string, unknown>): boolean {
+  return TELEGRAM_MEDIA_FIELDS.some((field) => value[field] !== undefined);
+}
+
+function isValidIgnoredTelegramUpdate(body: Record<string, unknown>): boolean {
+  const updateIdValue = body.updateId ?? body.update_id;
+  const updateId = toIntegerValue(updateIdValue);
+
+  if (isJsonObject(body.message)) {
+    const message = body.message;
+    const chat = isJsonObject(message.chat) ? message.chat : undefined;
+    if (
+      updateId === undefined ||
+      !chat ||
+      telegramChatId(chat.id) === undefined ||
+      toIntegerValue(message.message_id) === undefined
+    ) {
+      return false;
+    }
+    return hasTelegramMedia(message) && toStringValue(message.text) === undefined;
+  }
+
+  const chatId = telegramChatId(body.chatId ?? body.chat_id);
+  if (chatId !== undefined && hasTelegramMedia(body) && toStringValue(body.text) === undefined) {
+    return true;
+  }
+
+  return (
+    updateId !== undefined &&
+    TELEGRAM_UNSUPPORTED_UPDATE_FIELDS.some((field) => isJsonObject(body[field]))
+  );
 }
 
 async function handleTelegramAdminInbound(params: {
@@ -443,6 +539,9 @@ async function handleTelegramAdminInbound(params: {
     params.state.nextMessageId = nextMessageId;
     params.state.nextUpdateId = nextUpdateId;
     if (!update) {
+      if (isValidIgnoredTelegramUpdate(params.body)) {
+        return jsonResponse({ ok: true });
+      }
       return telegramError("Bad Request: chatId and text are required");
     }
     if (params.state.updates.length >= params.state.maxPendingInboundEvents) {
@@ -920,6 +1019,15 @@ export async function handleTelegramGetUpdates(params: {
   const offset = toIntegerValue(params.body.offset);
   const limit = toIntegerValue(params.body.limit) ?? 100;
   const timeout = toIntegerValue(params.body.timeout) ?? 0;
+  if (params.body.offset !== undefined && offset === undefined) {
+    return telegramError("Bad Request: offset must be a safe integer");
+  }
+  if (params.body.limit !== undefined && toIntegerValue(params.body.limit) === undefined) {
+    return telegramError("Bad Request: limit must be a safe integer");
+  }
+  if (params.body.timeout !== undefined && toIntegerValue(params.body.timeout) === undefined) {
+    return telegramError("Bad Request: timeout must be a safe integer");
+  }
   if (limit < 1 || limit > 100) {
     return telegramError("Bad Request: limit must be between 1 and 100");
   }
@@ -1093,6 +1201,9 @@ export async function startTelegramServer(
 ): Promise<StartedTelegramServer> {
   const host = params.host ?? "127.0.0.1";
   const botId = params.botId ?? 424242;
+  if (!Number.isSafeInteger(botId) || botId < 1) {
+    throw new Error("botId must be a positive safe integer.");
+  }
   const state: TelegramServerState = {
     activeUpdatePoll: undefined,
     activeWebhookDeliveries: new Set(),

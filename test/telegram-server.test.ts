@@ -115,6 +115,25 @@ describe("telegram local provider server", () => {
     await expect(supergroup.json()).resolves.toMatchObject({
       result: { chat: { id: -1001234567890, type: "supergroup" } },
     });
+
+    const usernameTopic = await fetch(
+      `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
+      {
+        body: JSON.stringify({
+          chat_id: "@crabline_channel",
+          message_thread_id: 42,
+          text: "username topic",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    await expect(usernameTopic.json()).resolves.toMatchObject({
+      result: {
+        chat: { id: "@crabline_channel", type: "supergroup" },
+        message_thread_id: 42,
+      },
+    });
   });
 
   it("serves Telegram Bot API calls and queues injected inbound updates", async () => {
@@ -371,6 +390,54 @@ describe("telegram local provider server", () => {
       error_code: 429,
       ok: false,
     });
+  });
+
+  it("acknowledges unsupported and media-only updates without recording them", async () => {
+    const observed: unknown[] = [];
+    const server = await startTelegramServer({
+      botToken: "123:fake",
+      onEvent: (event) => {
+        observed.push(event);
+      },
+    });
+    servers.push(server);
+
+    for (const body of [
+      {
+        callback_query: {
+          chat_instance: "instance",
+          data: "ignored",
+          from: { first_name: "Alice", id: 100001, is_bot: false },
+          id: "callback-1",
+        },
+        update_id: 1,
+      },
+      {
+        message: {
+          chat: { id: -1001234567890, type: "supergroup" },
+          date: 1_700_000_000,
+          from: { first_name: "Alice", id: 100001, is_bot: false },
+          message_id: 2,
+          photo: [{ file_id: "photo", file_unique_id: "unique", height: 1, width: 1 }],
+        },
+        update_id: 2,
+      },
+    ]) {
+      const response = await injectUpdate(server, body);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ ok: true });
+    }
+
+    await expect((await getUpdates(server, {})).json()).resolves.toEqual({
+      ok: true,
+      result: [],
+    });
+    expect(observed).toEqual([
+      expect.objectContaining({
+        path: "/bot<redacted>/getUpdates",
+        type: "api",
+      }),
+    ]);
   });
 
   it("serializes concurrent inbound admission without consuming rejected IDs", async () => {
@@ -1159,6 +1226,45 @@ describe("telegram local provider server", () => {
         update_id: 101,
       },
     });
+  });
+
+  it("rejects unsafe integer identities without consuming generated IDs", async () => {
+    const server = await startTelegramServer({ botToken: "123:fake" });
+    servers.push(server);
+    const unsafe = String(Number.MAX_SAFE_INTEGER + 1);
+
+    for (const body of [
+      { chatId: unsafe, text: "unsafe chat" },
+      { chatId: 42, fromId: unsafe, text: "unsafe sender" },
+      { chatId: 42, messageId: unsafe, text: "unsafe message" },
+      { chatId: 42, messageThreadId: unsafe, text: "unsafe topic" },
+      { chatId: 42, text: "unsafe update", updateId: unsafe },
+    ]) {
+      const response = await injectUpdate(server, body);
+      expect(response.status).toBe(400);
+    }
+
+    const outbound = await fetch(`${server.manifest.baseUrl}/bot123:fake/sendMessage`, {
+      body: JSON.stringify({ chat_id: 42, message_thread_id: unsafe, text: "unsafe topic" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(outbound.status).toBe(400);
+
+    const polling = await getUpdates(server, { offset: unsafe });
+    expect(polling.status).toBe(400);
+    await expect(polling.json()).resolves.toMatchObject({
+      description: "Bad Request: offset must be a safe integer",
+    });
+
+    const accepted = await injectUpdate(server, { chatId: 42, text: "generated" });
+    await expect(accepted.json()).resolves.toMatchObject({
+      update: { message: { message_id: 1 }, update_id: 1 },
+    });
+
+    await expect(startTelegramServer({ botId: Number.MAX_SAFE_INTEGER + 1 })).rejects.toThrow(
+      "botId must be a positive safe integer.",
+    );
   });
 
   it("long-polls until an update arrives and returns empty on timeout", async () => {
