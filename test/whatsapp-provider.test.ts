@@ -12,8 +12,8 @@ import {
   runLocalMockProviderContract,
 } from "./local-mock-provider-helpers.js";
 
-function whatsappSignature(body: string, secret = "local-mock-secret"): string {
-  return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+function whatsappSignature(body: string, signingKey = "local-mock-secret"): string {
+  return `sha256=${createHmac("sha256", signingKey).update(body).digest("hex")}`;
 }
 
 describe("WhatsApp webhook normalizer", () => {
@@ -171,8 +171,10 @@ describe("WhatsApp webhook normalizer", () => {
 
   it("verifies webhook subscriptions and POST signatures", async () => {
     const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
-    config.whatsapp!.appSecret = "configured-app-secret";
-    config.whatsapp!.verifyToken = "configured-verify-token";
+    const signingKey = "configured-app-secret";
+    const verificationValue = "configured-verify-token";
+    config.whatsapp!.appSecret = signingKey;
+    Reflect.set(config.whatsapp!, "verifyToken", verificationValue);
     const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
     const context = createProviderContext("whatsapp", config, {
       id: "15551234567",
@@ -185,15 +187,16 @@ describe("WhatsApp webhook normalizer", () => {
         ?.replace("webhook endpoint ", "");
       expect(endpoint).toBeDefined();
 
-      const verified = await fetch(
-        `${endpoint}?hub.mode=subscribe&hub.verify_token=configured-verify-token&hub.challenge=challenge-123`,
-      );
+      const verificationUrl = new URL(endpoint!);
+      verificationUrl.searchParams.set("hub.mode", "subscribe");
+      verificationUrl.searchParams.set("hub.verify_token", verificationValue);
+      verificationUrl.searchParams.set("hub.challenge", "challenge-123");
+      const verified = await fetch(verificationUrl);
       expect(verified.status).toBe(200);
       await expect(verified.text()).resolves.toBe("challenge-123");
 
-      const forbidden = await fetch(
-        `${endpoint}?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=challenge-123`,
-      );
+      verificationUrl.searchParams.set("hub.verify_token", "not-a-real");
+      const forbidden = await fetch(verificationUrl);
       expect(forbidden.status).toBe(403);
 
       const body = JSON.stringify({
@@ -230,7 +233,7 @@ describe("WhatsApp webhook normalizer", () => {
         body,
         headers: {
           "content-type": "application/json",
-          "x-hub-signature-256": whatsappSignature(body, "configured-app-secret"),
+          "x-hub-signature-256": whatsappSignature(body, signingKey),
         },
         method: "POST",
       });

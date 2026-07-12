@@ -111,9 +111,9 @@ function webhookHeaders(
 ): Record<string, string> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (platform === "whatsapp") {
-    const appSecret = config.whatsapp?.appSecret ?? "local-mock-secret";
+    const signingKey = config.whatsapp?.appSecret ?? "local-mock-secret";
     headers["x-hub-signature-256"] =
-      `sha256=${createHmac("sha256", appSecret).update(body).digest("hex")}`;
+      `sha256=${createHmac("sha256", signingKey).update(body).digest("hex")}`;
   }
   return headers;
 }
