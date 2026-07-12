@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManifestDefinition, ProviderConfig } from "../src/config/schema.js";
@@ -381,6 +381,20 @@ describe("local mock provider", () => {
     context.fixture.inboundMatch.author = "user";
     await provider.probe(context);
     const since = new Date(Date.now() - 1000).toISOString();
+    await appendFile(
+      recorderPath,
+      `${JSON.stringify({
+        author: "user",
+        id: "legacy-outbound",
+        provider: "provider-a",
+        raw: { direction: "outbound" },
+        recordedAt: new Date().toISOString(),
+        sentAt: new Date().toISOString(),
+        text: "legacy outbound",
+        threadId: "slack:C1234567890",
+      })}\n`,
+      "utf8",
+    );
 
     const response = await handleRequest!(
       new Request("http://127.0.0.1:43210/slack/events", {
