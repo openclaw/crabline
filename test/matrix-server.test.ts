@@ -215,7 +215,7 @@ describe("Matrix local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startMatrixServer({
-      accessToken: "matrix-token",
+      accessToken: "test-auth-token",
       recorderPath: path.join(directory, "matrix-sync-token.jsonl"),
     });
     servers.push(server);
@@ -224,7 +224,7 @@ describe("Matrix local provider server", () => {
       const response = await fetch(
         `${server.manifest.endpoints.syncUrl}?since=${encodeURIComponent(since)}`,
         {
-          headers: auth("matrix-token"),
+          headers: auth("test-auth-token"),
         },
       );
       expect(response.status).toBe(400);
@@ -235,7 +235,7 @@ describe("Matrix local provider server", () => {
     }
 
     const initial = await fetch(server.manifest.endpoints.syncUrl, {
-      headers: auth("matrix-token"),
+      headers: auth("test-auth-token"),
     });
     expect(initial.status).toBe(200);
     await expect(initial.json()).resolves.toMatchObject({
