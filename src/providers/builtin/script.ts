@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { CrablineError, ensureErrorMessage } from "../../core/errors.js";
 import type {
+  InboundEnvelope,
   ProviderAdapter,
   ProviderContext,
   SendContext,
@@ -12,6 +13,12 @@ import type {
 
 const MAX_SCRIPT_OUTPUT_BYTES = 1024 * 1024;
 const SCRIPT_WAIT_EXIT_GRACE_MS = 250;
+
+type ScriptWatchIterator = AsyncIterableIterator<InboundEnvelope> & {
+  [Symbol.asyncIterator](): ScriptWatchIterator;
+  return(): Promise<IteratorResult<InboundEnvelope, undefined>>;
+  throw(error?: unknown): Promise<IteratorResult<InboundEnvelope, undefined>>;
+};
 
 type ScriptPayload = {
   fixture: ProviderContext["fixture"];
@@ -123,20 +130,74 @@ function redactSensitiveEnvironmentValues(detail: string): string {
   return redacted;
 }
 
-function formatScriptError(summary: string, detail: string, command: string): string {
+function collectSensitivePayloadValues(
+  value: unknown,
+  values: Set<string>,
+  seen: Set<object>,
+  sensitive = false,
+): void {
+  if (typeof value === "string") {
+    if (sensitive && value.length > 0) {
+      values.add(value);
+    }
+    return;
+  }
+  if (!value || typeof value !== "object" || seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectSensitivePayloadValues(entry, values, seen, sensitive);
+    }
+    return;
+  }
+  for (const [name, entry] of Object.entries(value)) {
+    collectSensitivePayloadValues(
+      entry,
+      values,
+      seen,
+      sensitive || isSensitiveEnvironmentName(name),
+    );
+  }
+}
+
+function redactSensitivePayloadValues(detail: string, payload: unknown): string {
+  const values = new Set<string>();
+  collectSensitivePayloadValues(payload, values, new Set());
+  let redacted = detail;
+  for (const value of [...values].sort((left, right) => right.length - left.length)) {
+    redacted = redacted.split(value).join("[redacted configured value]");
+  }
+  return redacted;
+}
+
+function formatScriptError(
+  summary: string,
+  detail: string,
+  command: string,
+  payload?: unknown,
+): string {
   if (!detail.trim()) {
     return summary;
   }
   if (commandContainsSensitiveValue(command)) {
     return `${summary}\n[script diagnostics redacted]`;
   }
-  const redacted = redactSensitiveEnvironmentValues(
-    detail.split(command).join("[configured script command]"),
+  const withoutCommand = detail.split(command).join("[configured script command]");
+  const redacted = redactSensitivePayloadValues(
+    redactSensitiveEnvironmentValues(withoutCommand),
+    payload,
   ).trim();
   return redacted ? `${summary}\n${redacted}` : summary;
 }
 
-function parseScriptJson<T>(params: { command: string; output: string; schema: z.ZodType<T> }): T {
+function parseScriptJson<T>(params: {
+  command: string;
+  output: string;
+  payload?: unknown;
+  schema: z.ZodType<T>;
+}): T {
   let parsed: unknown;
   try {
     parsed = JSON.parse(params.output);
@@ -146,6 +207,7 @@ function parseScriptJson<T>(params: { command: string; output: string; schema: z
         "Script command did not return valid JSON.",
         ensureErrorMessage(error),
         params.command,
+        params.payload,
       ),
       { kind: "config" },
     );
@@ -247,6 +309,7 @@ function runScript<T>(params: {
               "Script command failed to start.",
               ensureErrorMessage(error),
               params.command,
+              params.payload,
             ),
             { kind: "connectivity" },
           ),
@@ -264,6 +327,7 @@ function runScript<T>(params: {
                 `Script command failed${signal ? ` (${signal})` : ""}.`,
                 stderrText.trim() ? stderrText : stdoutText,
                 params.command,
+                params.payload,
               ),
               { kind: "connectivity" },
             ),
@@ -275,6 +339,7 @@ function runScript<T>(params: {
           const result = parseScriptJson({
             command: params.command,
             output: stdoutText,
+            payload: params.payload,
             schema: params.schema,
           });
           if (deadlineExceeded && !params.acceptResultDuringTimeoutGrace?.(result)) {
@@ -321,6 +386,200 @@ function runScript<T>(params: {
     params.signal?.addEventListener("abort", abort, { once: true });
     child.stdin.end(JSON.stringify(params.payload));
   });
+}
+
+function watchScript(params: {
+  cancelSignal: AbortSignal;
+  command: string;
+  context: WatchContext;
+  cwd?: string | undefined;
+  id: string;
+  normalizeTarget: ProviderAdapter["normalizeTarget"];
+  shell?: string | undefined;
+}): AsyncGenerator<InboundEnvelope> {
+  return (async function* () {
+    const payload = {
+      ...createPayload(params.context),
+      watch: {
+        since: params.context.since,
+        target: params.normalizeTarget(params.context.fixture.target),
+      },
+    };
+    const child = spawn(params.command, {
+      cwd: params.cwd ? path.resolve(params.cwd) : process.cwd(),
+      env: process.env,
+      shell: params.shell ?? true,
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let buffer = "";
+    let stderr = "";
+    let childError: unknown;
+    let outputLimitError: CrablineError | undefined;
+    const stopChild = () => terminateChild(child);
+    params.cancelSignal.addEventListener("abort", stopChild, { once: true });
+    params.context.signal?.addEventListener("abort", stopChild, { once: true });
+    if (params.cancelSignal.aborted || params.context.signal?.aborted) {
+      stopChild();
+    }
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdin.on("error", () => {
+      // Child closure is reported through the process error/close handlers.
+    });
+    child.stderr.on("data", (chunk) => {
+      if (outputLimitError) {
+        return;
+      }
+      stderr += chunk;
+      if (Buffer.byteLength(stderr) > MAX_SCRIPT_OUTPUT_BYTES) {
+        outputLimitError = new CrablineError(
+          `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of stderr.`,
+          { kind: "connectivity" },
+        );
+        terminateChild(child);
+      }
+    });
+    child.once("error", (error) => {
+      childError = error;
+    });
+    let childCloseObserved = false;
+    const childClosed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve) => {
+        child.once("close", (code, signal) => {
+          childCloseObserved = true;
+          resolve({ code, signal });
+        });
+      },
+    );
+    child.stdin.end(JSON.stringify(payload));
+
+    try {
+      for await (const chunk of child.stdout) {
+        buffer += chunk;
+        if (Buffer.byteLength(buffer) > MAX_SCRIPT_OUTPUT_BYTES && !buffer.includes("\n")) {
+          throw new CrablineError(
+            `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes without a newline.`,
+            { kind: "config" },
+          );
+        }
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) {
+            continue;
+          }
+          if (Buffer.byteLength(line) > MAX_SCRIPT_OUTPUT_BYTES) {
+            throw new CrablineError(
+              `Script watch command emitted a JSON line larger than ${MAX_SCRIPT_OUTPUT_BYTES} bytes.`,
+              { kind: "config" },
+            );
+          }
+          const parsed = parseScriptJson({
+            command: params.command,
+            output: line,
+            payload,
+            schema: ScriptMessageSchema,
+          });
+          yield {
+            ...parsed,
+            provider: params.id,
+          };
+        }
+      }
+
+      if (params.context.signal?.aborted) {
+        throw params.context.signal.reason ?? new Error("Script watch command aborted.");
+      }
+      if (params.cancelSignal.aborted) {
+        return;
+      }
+      if (buffer.trim()) {
+        const parsed = parseScriptJson({
+          command: params.command,
+          output: buffer,
+          payload,
+          schema: ScriptMessageSchema,
+        });
+        yield {
+          ...parsed,
+          provider: params.id,
+        };
+      }
+
+      const exit = await childClosed;
+      if (outputLimitError) {
+        throw outputLimitError;
+      }
+      if (childError) {
+        throw new CrablineError(
+          formatScriptError(
+            "Script watch command failed to start.",
+            ensureErrorMessage(childError),
+            params.command,
+            payload,
+          ),
+          { kind: "connectivity" },
+        );
+      }
+      if (exit.code !== 0) {
+        throw new CrablineError(
+          formatScriptError(
+            `Script watch command failed${exit.signal ? ` (${exit.signal})` : ""}.`,
+            stderr,
+            params.command,
+            payload,
+          ),
+          { kind: "connectivity" },
+        );
+      }
+    } catch (error) {
+      if (params.cancelSignal.aborted) {
+        return;
+      }
+      if (outputLimitError) {
+        throw outputLimitError;
+      }
+      if (childError) {
+        throw new CrablineError(
+          formatScriptError(
+            "Script watch command failed to start.",
+            ensureErrorMessage(childError),
+            params.command,
+            payload,
+          ),
+          { kind: "connectivity" },
+        );
+      }
+      throw error;
+    } finally {
+      params.cancelSignal.removeEventListener("abort", stopChild);
+      params.context.signal?.removeEventListener("abort", stopChild);
+      child.stdin.destroy();
+      if (!childCloseObserved) {
+        terminateChild(child);
+      }
+      await childClosed;
+    }
+  })();
+}
+
+function failedScriptWatch(error: unknown): ScriptWatchIterator {
+  return {
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    next() {
+      return Promise.reject(error);
+    },
+    return() {
+      return Promise.resolve({ done: true, value: undefined });
+    },
+    throw(thrown?: unknown) {
+      return Promise.reject(thrown);
+    },
+  };
 }
 
 export class ScriptProviderAdapter implements ProviderAdapter {
@@ -442,157 +701,49 @@ export class ScriptProviderAdapter implements ProviderAdapter {
     };
   }
 
-  async *watch(context: WatchContext) {
+  watch(context: WatchContext): ScriptWatchIterator {
     const command = this.#config.commands.watch;
     if (!command) {
-      throw new CrablineError(`Provider "${this.id}" is missing watch command.`, {
-        kind: "config",
-      });
+      return failedScriptWatch(
+        new CrablineError(`Provider "${this.id}" is missing watch command.`, {
+          kind: "config",
+        }),
+      );
     }
 
-    const child = spawn(command, {
-      cwd: this.#config.cwd ? path.resolve(this.#config.cwd) : process.cwd(),
-      env: process.env,
-      shell: this.#config.shell ?? true,
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
+    const controller = new AbortController();
+    const source = watchScript({
+      cancelSignal: controller.signal,
+      command,
+      context,
+      cwd: this.#config.cwd,
+      id: this.id,
+      normalizeTarget: (target) => this.normalizeTarget(target),
+      shell: this.#config.shell,
     });
-
-    let buffer = "";
-    let stderr = "";
-    let childError: unknown;
-    let outputLimitError: CrablineError | undefined;
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdin.on("error", () => {
-      // Child closure is reported through the process error/close handlers.
-    });
-    child.stderr.on("data", (chunk) => {
-      if (outputLimitError) {
-        return;
-      }
-      stderr += chunk;
-      if (Buffer.byteLength(stderr) > MAX_SCRIPT_OUTPUT_BYTES) {
-        outputLimitError = new CrablineError(
-          `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of stderr.`,
-          { kind: "connectivity" },
-        );
-        terminateChild(child);
-      }
-    });
-    child.once("error", (error) => {
-      childError = error;
-    });
-    let childCloseObserved = false;
-    const childClosed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-      (resolve) => {
-        child.once("close", (code, signal) => {
-          childCloseObserved = true;
-          resolve({ code, signal });
-        });
+    const iterator: ScriptWatchIterator = {
+      [Symbol.asyncIterator]() {
+        return this;
       },
-    );
-    child.stdin.end(
-      JSON.stringify({
-        ...createPayload(context),
-        watch: {
-          since: context.since,
-          target: this.normalizeTarget(context.fixture.target),
-        },
-      }),
-    );
-
-    try {
-      for await (const chunk of child.stdout) {
-        buffer += chunk;
-        if (Buffer.byteLength(buffer) > MAX_SCRIPT_OUTPUT_BYTES && !buffer.includes("\n")) {
-          throw new CrablineError(
-            `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes without a newline.`,
-            { kind: "config" },
-          );
+      next() {
+        return source.next();
+      },
+      async return() {
+        if (!controller.signal.aborted) {
+          controller.abort();
         }
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) {
-            continue;
-          }
-          if (Buffer.byteLength(line) > MAX_SCRIPT_OUTPUT_BYTES) {
-            throw new CrablineError(
-              `Script watch command emitted a JSON line larger than ${MAX_SCRIPT_OUTPUT_BYTES} bytes.`,
-              { kind: "config" },
-            );
-          }
-          const parsed = parseScriptJson({
-            command,
-            output: line,
-            schema: ScriptMessageSchema,
-          });
-          yield {
-            ...parsed,
-            provider: this.id,
-          };
+        await source.return(undefined);
+        return { done: true, value: undefined };
+      },
+      async throw(error?: unknown) {
+        if (!controller.signal.aborted) {
+          controller.abort();
         }
-      }
-
-      if (buffer.trim()) {
-        const parsed = parseScriptJson({
-          command,
-          output: buffer,
-          schema: ScriptMessageSchema,
-        });
-        yield {
-          ...parsed,
-          provider: this.id,
-        };
-      }
-
-      const exit = await childClosed;
-      if (outputLimitError) {
-        throw outputLimitError;
-      }
-      if (childError) {
-        throw new CrablineError(
-          formatScriptError(
-            "Script watch command failed to start.",
-            ensureErrorMessage(childError),
-            command,
-          ),
-          { kind: "connectivity" },
-        );
-      }
-      if (exit.code !== 0) {
-        throw new CrablineError(
-          formatScriptError(
-            `Script watch command failed${exit.signal ? ` (${exit.signal})` : ""}.`,
-            stderr,
-            command,
-          ),
-          { kind: "connectivity" },
-        );
-      }
-    } catch (error) {
-      if (outputLimitError) {
-        throw outputLimitError;
-      }
-      if (childError) {
-        throw new CrablineError(
-          formatScriptError(
-            "Script watch command failed to start.",
-            ensureErrorMessage(childError),
-            command,
-          ),
-          { kind: "connectivity" },
-        );
-      }
-      throw error;
-    } finally {
-      child.stdin.destroy();
-      if (!childCloseObserved) {
-        terminateChild(child);
-      }
-      await childClosed;
-    }
+        await source.return(undefined);
+        throw error;
+      },
+    };
+    return iterator;
   }
 }
 

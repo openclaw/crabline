@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -196,6 +197,37 @@ describe("script provider", () => {
     throw new Error(`watch subprocess ${pid} is still running`);
   });
 
+  it("cancels a silent watch while next is pending", async () => {
+    const context = await createContext();
+    const directory = path.dirname(context.manifestPath);
+    const pidPath = path.join(directory, "silent-watch.pid");
+    const watchScript = path.join(directory, "watch-silent.mjs");
+    await writeText(
+      watchScript,
+      `import {writeFileSync} from "node:fs";writeFileSync(${JSON.stringify(pidPath)},String(process.pid));setInterval(()=>{},1000);`,
+    );
+    context.config.script!.commands.watch = `node ${watchScript}`;
+    const provider = new ScriptProviderAdapter(context);
+    const iterator = provider.watch(context);
+    const pending = iterator.next();
+
+    let pid = 0;
+    await expect
+      .poll(async () => {
+        try {
+          pid = Number(await readFile(pidPath, "utf8"));
+          return Number.isInteger(pid) && pid > 0;
+        } catch {
+          return false;
+        }
+      })
+      .toBe(true);
+
+    await expect(iterator.return()).resolves.toMatchObject({ done: true });
+    await expect(pending).resolves.toMatchObject({ done: true });
+    await expect(waitForProcessExit(pid, 2000)).resolves.toBe(true);
+  });
+
   it.skipIf(process.platform === "win32")(
     "stops descendants that hold watch pipes after the leader exits",
     async () => {
@@ -207,7 +239,7 @@ describe("script provider", () => {
       );
       context.config.script!.commands.watch = `exec node ${JSON.stringify(watchScript)}`;
       const provider = new ScriptProviderAdapter(context);
-      const iterator = provider.watch(context)[Symbol.asyncIterator]();
+      const iterator = provider.watch(context);
       let descendantPid = 0;
       let descendantExited = false;
       try {
@@ -488,6 +520,34 @@ describe("script provider", () => {
 
     expect(ensureErrorMessage(powershellError)).toContain("[script diagnostics redacted]");
     expect(ensureErrorMessage(powershellError)).not.toContain(sentinel);
+  });
+
+  it("redacts secret values carried in the script payload", async () => {
+    const context = await createContext();
+    const sentinel = "configured-payload-secret";
+    context.fixture.target.metadata.accessToken = sentinel;
+    const failingScript = path.join(path.dirname(context.manifestPath), "send-payload-secret.mjs");
+    await writeText(
+      failingScript,
+      'let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{const input=JSON.parse(raw);process.stderr.write(input.fixture.target.metadata.accessToken);process.exitCode=7;});',
+    );
+    context.config.script!.commands.send = `node ${JSON.stringify(failingScript)}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    let failure: unknown;
+    try {
+      await provider.send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(ensureErrorMessage(failure)).toContain("[redacted configured value]");
+    expect(inspect(failure, { depth: null })).not.toContain(sentinel);
   });
 
   it("redacts inherited secret values from script diagnostics", async () => {
