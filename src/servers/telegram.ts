@@ -567,10 +567,10 @@ async function deliverTelegramWebhookUpdates(
   state: TelegramServerState,
   scheduledRetry = false,
 ): Promise<Response | undefined> {
-  syncTelegramWebhookRetryHead(state);
   if (state.webhookDelivery) {
     return await state.webhookDelivery;
   }
+  syncTelegramWebhookRetryHead(state);
   if (
     !scheduledRetry &&
     (state.webhookRetryTimer || state.webhookRetryAttempts >= TELEGRAM_WEBHOOK_MAX_RETRIES)
