@@ -6,6 +6,7 @@ import type { ProviderAdapter } from "../types.js";
 import { getBuiltinTargetCodec, ZALO_ID_RULE } from "../target-normalizers.js";
 import {
   authorFromBotFlag,
+  createSecretVerifier,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
@@ -26,16 +27,18 @@ export function resolveZaloAdapterConfig(
 export class ZaloProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     const resolvedConfig = resolveZaloAdapterConfig(config);
+    const authenticateWebhook = resolvedConfig.webhookSecret
+      ? createSecretVerifier(resolvedConfig.webhookSecret)
+      : undefined;
     super({
       codec: getBuiltinTargetCodec("zalo"),
       config,
       id,
       options: {
-        ...(resolvedConfig.webhookSecret
+        ...(authenticateWebhook
           ? {
               authenticateWebhookRequest(request: Request) {
-                return request.headers.get("x-bot-api-secret-token") ===
-                  resolvedConfig.webhookSecret
+                return authenticateWebhook(request.headers.get("x-bot-api-secret-token"))
                   ? undefined
                   : new Response("unauthorized", { status: 401 });
               },
