@@ -5,6 +5,7 @@
 - Randomize externally bound provider credentials, preserve Slack MPIM and Matrix sync errors, bound server shutdown, and enforce safe Zalo webhooks.
 - Order lazy cleanup after admitted dispatch, isolate loopback message state, and enforce effective modes and inbound deadlines.
 - Fence OpenClaw smoke artifact paths, clean abandoned generations safely, preserve primary probe failures and replacement files, and report post-commit lock cleanup failures.
+- Isolate verified release packaging from OIDC-enabled npm publication and inspect the generated tarball before upload.
 - Reject Telegram protocol errors returned with HTTP 200 and preserve numeric identities without unsafe integer coercion.
 - Retire serve ready files on shutdown, preserve replacement manifests, and redact text-mode credentials unless explicitly requested.
 - Pin privileged release workflow actions to immutable revisions.

@@ -23,17 +23,21 @@ type ReleaseWorkflow = {
     "cancel-in-progress"?: boolean;
     group?: string;
   };
-  jobs?: {
-    release?: {
+  jobs?: Record<
+    string,
+    {
+      needs?: string | string[];
+      outputs?: Record<string, string>;
+      permissions?: Record<string, string>;
       steps?: WorkflowStep[];
-    };
-  };
+    }
+  >;
 };
 
 describe("release workflow", () => {
   it("only accepts stable tags and checks out the exact tag ref", async () => {
     const workflow = await readWorkflow();
-    const steps = workflow.jobs?.release?.steps ?? [];
+    const steps = jobSteps(workflow, "verify");
     const resolveStep = steps.find((step) => step.name === "Resolve release tag")?.run;
     const checkoutStep = steps.find((step) => step.uses?.startsWith("actions/checkout@"));
 
@@ -48,13 +52,16 @@ describe("release workflow", () => {
 
   it("pins tooling and makes package and GitHub publication retry-safe", async () => {
     const workflow = await readWorkflow();
-    const steps = workflow.jobs?.release?.steps ?? [];
+    const verifySteps = jobSteps(workflow, "verify");
+    const publishSteps = jobSteps(workflow, "publish");
+    const releaseSteps = jobSteps(workflow, "github-release");
+    const steps = [...verifySteps, ...publishSteps, ...releaseSteps];
     const commands = steps.map((step) => step.run).filter((run): run is string => Boolean(run));
-    const packageStep = steps.find((step) => step.id === "package")?.run;
-    const publishStep = steps.find(
+    const packageStep = verifySteps.find((step) => step.id === "package")?.run;
+    const publishStep = publishSteps.find(
       (step) => step.name === "Publish package with npm provenance",
     )?.run;
-    const releaseStep = steps.find((step) => step.name === "Create GitHub release")?.run;
+    const releaseStep = releaseSteps.find((step) => step.name === "Create GitHub release")?.run;
 
     expect(workflow.concurrency).toEqual({
       "cancel-in-progress": false,
@@ -64,6 +71,7 @@ describe("release workflow", () => {
     expect(commands.some((command) => command.includes("npm@latest"))).toBe(false);
     expect(packageStep).toContain('npm pack --json --pack-destination "$RUNNER_TEMP"');
     expect(packageStep).toContain("Packed artifact is missing the crabline CLI");
+    expect(packageStep).toContain('execFileSync("tar", ["-xzf", tarballPath');
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity');
     expect(publishStep).toContain('npm publish "$PACKAGE_TARBALL" --access public --provenance');
     expect(releaseStep).toContain('gh release view "$RELEASE_TAG"');
@@ -72,7 +80,7 @@ describe("release workflow", () => {
 
   it("pins privileged release actions to immutable revisions", async () => {
     const workflow = await readWorkflow();
-    const steps = workflow.jobs?.release?.steps ?? [];
+    const steps = Object.values(workflow.jobs ?? {}).flatMap((job) => job.steps ?? []);
     const actionRefs = steps
       .map((step) => step.uses)
       .filter((uses): uses is string => uses !== undefined);
@@ -83,9 +91,33 @@ describe("release workflow", () => {
     }
   });
 
+  it("isolates package verification, OIDC publication, and GitHub release authority", async () => {
+    const workflow = await readWorkflow();
+    const verify = workflow.jobs?.verify;
+    const publish = workflow.jobs?.publish;
+    const githubRelease = workflow.jobs?.["github-release"];
+    const verifyCommands = jobSteps(workflow, "verify")
+      .map((step) => step.run)
+      .filter((run): run is string => Boolean(run));
+    const publishCommands = jobSteps(workflow, "publish")
+      .map((step) => step.run)
+      .filter((run): run is string => Boolean(run));
+
+    expect(verify?.permissions).toEqual({ contents: "read" });
+    expect(publish?.permissions).toEqual({ "id-token": "write" });
+    expect(githubRelease?.permissions).toEqual({ contents: "write" });
+    expect(publish?.needs).toBe("verify");
+    expect(githubRelease?.needs).toEqual(["verify", "publish"]);
+    expect(verifyCommands).toContain("pnpm install --frozen-lockfile");
+    expect(verifyCommands).toContain("pnpm verify");
+    expect(
+      publishCommands.some((command) => /\b(?:pnpm|install|build|test|pack)\b/u.test(command)),
+    ).toBe(false);
+  });
+
   it("requires an exact changelog version heading", async () => {
     const workflow = await readWorkflow();
-    const verifyStep = workflow.jobs?.release?.steps?.find(
+    const verifyStep = jobSteps(workflow, "verify").find(
       (step) => step.name === "Verify release metadata",
     )?.run;
     const script = extractNodeHeredoc(verifyStep);
@@ -104,7 +136,7 @@ describe("release workflow", () => {
 
   it("extracts pack metadata around lifecycle output", async () => {
     const workflow = await readWorkflow();
-    const packageStep = workflow.jobs?.release?.steps?.find((step) => step.id === "package")?.run;
+    const packageStep = jobSteps(workflow, "verify").find((step) => step.id === "package")?.run;
     const script = extractNodeHeredoc(packageStep);
     const pack = {
       filename: "openclaw-crabline-1.2.3.tgz",
@@ -125,11 +157,15 @@ describe("release workflow", () => {
         tarball: expect.stringMatching(/openclaw-crabline-1\.2\.3\.tgz$/u),
       });
     }
+
+    await expect(
+      runPackageMetadataCheck(script, JSON.stringify([pack]), "console.log('missing shebang');\n"),
+    ).rejects.toThrow("Packed CLI dist/src/bin/crabline.js is missing its Node shebang.");
   });
 
   it("skips matching packages, rejects drift, and recovers after publish races", async () => {
     const workflow = await readWorkflow();
-    const publishStep = workflow.jobs?.release?.steps?.find(
+    const publishStep = jobSteps(workflow, "publish").find(
       (step) => step.name === "Publish package with npm provenance",
     )?.run;
     if (!publishStep) {
@@ -155,7 +191,9 @@ describe("release workflow", () => {
     });
     expect(racedCalls).toEqual([
       "view @openclaw/crabline@1.2.3 dist.integrity",
-      "publish /tmp/crabline-1.2.3.tgz --access public --provenance",
+      expect.stringMatching(
+        /publish .*\/release\/crabline-1\.2\.3\.tgz --access public --provenance$/u,
+      ),
       "view @openclaw/crabline@1.2.3 dist.integrity",
     ]);
   });
@@ -167,6 +205,10 @@ async function readWorkflow(): Promise<ReleaseWorkflow> {
     "utf8",
   );
   return parse(contents) as ReleaseWorkflow;
+}
+
+function jobSteps(workflow: ReleaseWorkflow, name: string): WorkflowStep[] {
+  return workflow.jobs?.[name]?.steps ?? [];
 }
 
 function extractNodeHeredoc(run: string | undefined): string {
@@ -228,11 +270,16 @@ async function runResolveTag(
 async function runPackageMetadataCheck(
   script: string,
   packOutput: string,
+  packedCli = "#!/usr/bin/env node\nconsole.log('crabline');\n",
 ): Promise<Record<string, string>> {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-release-package-"));
   const outputPath = path.join(tempDir, "outputs");
+  const packageRoot = path.join(tempDir, "package");
   try {
-    await fs.mkdir(path.join(tempDir, "dist/src/bin"), { recursive: true });
+    await Promise.all([
+      fs.mkdir(path.join(tempDir, "dist/src/bin"), { recursive: true }),
+      fs.mkdir(path.join(packageRoot, "dist/src/bin"), { recursive: true }),
+    ]);
     await Promise.all([
       fs.writeFile(path.join(tempDir, "npm-pack.json"), packOutput),
       fs.writeFile(
@@ -246,7 +293,13 @@ async function runPackageMetadataCheck(
         path.join(tempDir, "dist/src/bin/crabline.js"),
         "#!/usr/bin/env node\nconsole.log('crabline');\n",
       ),
+      fs.writeFile(path.join(packageRoot, "dist/src/bin/crabline.js"), packedCli),
     ]);
+    await execFileAsync(
+      "tar",
+      ["-czf", path.join(tempDir, "openclaw-crabline-1.2.3.tgz"), "-C", tempDir, "package"],
+      { cwd: tempDir },
+    );
     await execFileWithOutput(process.execPath, ["--input-type=module", "--eval", script], {
       cwd: tempDir,
       env: {
@@ -274,10 +327,12 @@ async function runPublishStep(
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-release-publish-"));
   const binDir = path.join(tempDir, "bin");
   const logPath = path.join(tempDir, "npm.log");
+  const releaseDir = path.join(tempDir, "release");
   const viewCountPath = path.join(tempDir, "view-count");
 
   try {
-    await fs.mkdir(binDir);
+    await Promise.all([fs.mkdir(binDir), fs.mkdir(releaseDir)]);
+    await fs.writeFile(path.join(releaseDir, "crabline-1.2.3.tgz"), "package");
     await Promise.all([
       writeExecutable(
         path.join(binDir, "npm"),
@@ -319,9 +374,9 @@ esac
         MOCK_VIEW_COUNT: viewCountPath,
         PACKAGE_INTEGRITY: "sha512-expected",
         PACKAGE_NAME: "@openclaw/crabline",
-        PACKAGE_TARBALL: "/tmp/crabline-1.2.3.tgz",
         PATH: `${binDir}:${process.env.PATH}`,
         RELEASE_VERSION: "1.2.3",
+        RUNNER_TEMP: tempDir,
       },
     });
     return (await fs.readFile(logPath, "utf8")).trim().split("\n");
