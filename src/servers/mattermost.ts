@@ -4,6 +4,7 @@ import path from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import {
   adminAuthError,
+  drainRequestBody,
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
@@ -341,6 +342,7 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
   const method = request.method ?? "GET";
   if (url.pathname === "/crabline/mattermost/inbound" && method === "POST") {
     if (!hasAdminToken(request, state.adminToken)) {
+      drainRequestBody(request);
       return adminAuthError();
     }
     const body = await parseUnknownRequestBody(request);
@@ -361,6 +363,7 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
     return new Response("not found", { status: 404 });
   }
   if (!authorized(request, state.botToken)) {
+    drainRequestBody(request);
     return mattermostError("Invalid or missing token", 401);
   }
   const body =

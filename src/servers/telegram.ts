@@ -5,6 +5,7 @@ import { CrablineError } from "../core/errors.js";
 import {
   adminAuthError,
   closeServer,
+  drainRequestBody,
   formatUrlHost,
   hasAdminToken,
   InvalidJsonBodyError,
@@ -57,6 +58,13 @@ type TelegramMessage = {
   caption?: string;
   date: number;
   document?: {
+    file_id: string;
+    file_name?: string;
+    file_unique_id: string;
+    mime_type?: string;
+  };
+  audio?: {
+    duration: number;
     file_id: string;
     file_name?: string;
     file_unique_id: string;
@@ -274,18 +282,19 @@ function createOutboundMessage(
 function createOutboundMediaMessage(
   state: TelegramServerState,
   body: Record<string, unknown>,
-  mediaKind: "animation" | "document" | "photo" | "video",
+  mediaKind: "animation" | "audio" | "document" | "photo" | "video",
 ): TelegramMessage | undefined {
   const chatId = telegramChatId(body.chat_id);
-  if (chatId === undefined) {
+  const fileName = toStringValue(body[mediaKind]);
+  if (chatId === undefined || !fileName) {
     return undefined;
   }
   const threadId = toIntegerValue(body.message_thread_id);
   const caption = toStringValue(body.caption);
-  const fileName = toStringValue(body[mediaKind]);
+  const duration = Math.max(0, toIntegerValue(body.duration) ?? 0);
   const media = {
     file_id: `crabline-${mediaKind}-${state.nextMessageId}`,
-    ...(fileName ? { file_name: fileName } : {}),
+    file_name: fileName,
     file_unique_id: `crabline-${mediaKind}-unique-${state.nextMessageId}`,
   };
   return {
@@ -296,7 +305,11 @@ function createOutboundMediaMessage(
     [mediaKind]:
       mediaKind === "photo"
         ? [{ ...media, height: 1, width: 1 }]
-        : { ...media, mime_type: "application/octet-stream" },
+        : {
+            ...media,
+            ...(mediaKind === "audio" ? { duration } : {}),
+            mime_type: "application/octet-stream",
+          },
     message_id: state.nextMessageId++,
     ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
   };
@@ -412,16 +425,20 @@ async function handleTelegramApi(params: {
         : telegramError("Bad Request: chat_id and text are required");
     }
     case "sendAnimation":
+    case "sendAudio":
     case "sendDocument":
     case "sendPhoto":
     case "sendVideo": {
       const mediaKind = params.method.slice("send".length).toLowerCase() as
         | "animation"
+        | "audio"
         | "document"
         | "photo"
         | "video";
       const message = createOutboundMediaMessage(params.state, params.body, mediaKind);
-      return message ? telegramOk(message) : telegramError("Bad Request: chat_id is required");
+      return message
+        ? telegramOk(message)
+        : telegramError(`Bad Request: chat_id and ${mediaKind} are required`);
     }
     case "getUpdates": {
       const offset = toIntegerValue(params.body.offset);
@@ -520,6 +537,7 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
       return new Response("not found", { status: 404 });
     }
     if (!hasAdminToken(params.request, params.state.adminToken)) {
+      drainRequestBody(params.request);
       return adminAuthError();
     }
     const body = await parseRequestBody(params.request);
@@ -546,6 +564,7 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
 
   const botPath = requireTelegramBotPath(url.pathname);
   if (!botPath || botPath.token !== params.state.botToken) {
+    drainRequestBody(params.request);
     return new Response("not found", { status: 404 });
   }
   const body =

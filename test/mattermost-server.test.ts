@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { Agent } from "node:http";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { startMattermostServer, type StartedMattermostServer } from "../src/index.js";
@@ -238,5 +239,44 @@ describe("Mattermost local provider server", () => {
     const recorded = await fs.readFile(recorderPath, "utf8");
     expect(recorded).toContain('"path":"/crabline/mattermost/inbound"');
     expect(recorded).toContain('"path":"/api/v4/posts"');
+  });
+
+  it("drains request bodies rejected by REST and admin authentication", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "bot-secret",
+    });
+    servers.push(server);
+
+    for (const url of [
+      `${server.manifest.endpoints.apiRoot}/posts`,
+      server.manifest.endpoints.adminInboundUrl,
+    ]) {
+      const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+      try {
+        const body = JSON.stringify({ rejected: true });
+        const rejected = await requestHttp({
+          agent,
+          body,
+          headers: {
+            "content-length": String(Buffer.byteLength(body)),
+            "content-type": "application/json",
+          },
+          method: "POST",
+          url,
+        });
+        expect(rejected.status).toBe(401);
+
+        const accepted = await requestHttp({
+          agent,
+          headers: { authorization: "Bearer bot-secret" },
+          method: "GET",
+          url: `${server.manifest.endpoints.apiRoot}/users/me`,
+        });
+        expect(accepted.status).toBe(200);
+      } finally {
+        agent.destroy();
+      }
+    }
   });
 });

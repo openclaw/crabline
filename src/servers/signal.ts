@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   adminAuthError,
   closeServer,
+  drainRequestBody,
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
@@ -170,6 +171,7 @@ async function handleRequest(params: {
   let fetchResponse: Response;
   if (url.pathname === "/crabline/signal/inbound" && params.request.method === "POST") {
     if (!hasAdminToken(params.request, params.state.adminToken)) {
+      drainRequestBody(params.request);
       fetchResponse = adminAuthError();
     } else {
       const body = await parseUnknownRequestBody(params.request);

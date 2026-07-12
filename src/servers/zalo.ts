@@ -3,12 +3,15 @@ import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import {
   adminAuthError,
+  drainRequestBody,
   hasAdminToken,
   InvalidJsonBodyError,
+  isJsonObject,
   jsonResponse,
-  parseRequestBody,
+  parseUnknownRequestBody,
   queryRecord,
   readTrimmedString,
+  RequestBodyTooLargeError,
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
@@ -209,9 +212,14 @@ async function handleAdminInbound(
   url: URL,
 ): Promise<Response> {
   if (!hasAdminToken(request, state.adminToken)) {
+    drainRequestBody(request);
     return adminAuthError();
   }
-  const body = await parseRequestBody(request);
+  const parsedBody = await parseUnknownRequestBody(request);
+  if (!isJsonObject(parsedBody)) {
+    return zaloError("Bad Request: can't parse JSON object", 400);
+  }
+  const body = parsedBody;
   const chatId = requireParam(body, "chatId");
   const senderId = requireParam(body, "senderId");
   const text = requireParam(body, "text");
@@ -257,7 +265,11 @@ async function handleZaloMethod(
   url: URL,
   method: string,
 ): Promise<Response> {
-  const body = requestParams(url, await parseRequestBody(request));
+  const parsedBody = await parseUnknownRequestBody(request);
+  if (!isJsonObject(parsedBody)) {
+    return zaloError("Bad Request: can't parse JSON object", 400);
+  }
+  const body = requestParams(url, parsedBody);
   await appendEvent(state, {
     at: new Date().toISOString(),
     ...(Object.keys(body).length > 0 ? { body: redactParams(body) } : {}),
@@ -369,14 +381,20 @@ export async function startZaloServer(
         return zaloError("Not found", 404);
       }
       if (match[1] !== state.botToken) {
+        drainRequestBody(request);
         return zaloError("Unauthorized", 401);
       }
       return await handleZaloMethod(request, state, url, match[2] ?? "");
     },
-    handleError: (error) =>
-      error instanceof InvalidJsonBodyError
-        ? zaloError("Bad Request: can't parse JSON object", 400)
-        : undefined,
+    handleError: (error) => {
+      if (error instanceof InvalidJsonBodyError) {
+        return zaloError("Bad Request: can't parse JSON object", 400);
+      }
+      if (error instanceof RequestBodyTooLargeError) {
+        return zaloError("Request Entity Too Large", 413);
+      }
+      return undefined;
+    },
     host,
     port: params.port ?? 0,
     serverName: "Zalo",

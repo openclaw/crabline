@@ -6,6 +6,7 @@
 - Serialize recorder persistence and reject overlapping OpenClaw smoke artifact runs.
 - Make CLI failures machine-readable, preserve stage-specific failure contracts, validate fixture provider references, redact script commands, and verify production-only tarball installs.
 - Normalize provider bridge thread IDs and round-trip canonical Telegram topic targets.
+- Drain authentication-rejected provider bodies, bound Zalo parsing, and enforce Telegram media fields.
 - Implement Telegram `getUpdates` long polling with timeout wakeups, offset confirmation, negative offsets, and shutdown cleanup.
 - Restrict releases to stable version tags and resolve workflow-dispatch inputs through exact tag refs before publication.
 - Reject ambiguous fixture/config inputs and keep the published CLI, type dependencies, and README assets aligned with their public contract.

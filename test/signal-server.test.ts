@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { Agent } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startSignalServer, type StartedSignalServer } from "../src/index.js";
@@ -154,5 +155,34 @@ describe("signal local provider server", () => {
     const recorded = await fs.readFile(recorderPath, "utf8");
     expect(recorded).toContain('"method":"send"');
     expect(recorded).toContain('"path":"/crabline/signal/inbound"');
+  });
+
+  it("drains unauthenticated admin request bodies", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+    try {
+      const body = JSON.stringify({ sourceNumber: "+15557654321", text: "rejected" });
+      const rejected = await requestHttp({
+        agent,
+        body,
+        headers: {
+          "content-length": String(Buffer.byteLength(body)),
+          "content-type": "application/json",
+        },
+        method: "POST",
+        url: server.manifest.endpoints.adminInboundUrl,
+      });
+      expect(rejected.status).toBe(401);
+
+      const check = await requestHttp({
+        agent,
+        method: "GET",
+        url: `${server.manifest.baseUrl}/api/v1/check`,
+      });
+      expect(check.status).toBe(200);
+    } finally {
+      agent.destroy();
+    }
   });
 });
