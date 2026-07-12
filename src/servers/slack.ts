@@ -1,5 +1,5 @@
 import type { IncomingMessage } from "node:http";
-import { createHmac, randomBytes, randomInt } from "node:crypto";
+import { createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import {
   adminAuthError,
@@ -10,6 +10,7 @@ import {
   jsonResponse,
   parseUnknownRequestBody,
   queryRecord,
+  readBody,
   readInteger,
   readTrimmedString,
   RequestBodyTooLargeError,
@@ -23,6 +24,8 @@ import {
   SLACK_USER_ID_RULE,
 } from "../providers/slack-ids.js";
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+
+const SLACK_SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 
 type SlackMessage = {
   attachments?: unknown;
@@ -207,6 +210,10 @@ function readBoolean(value: unknown): boolean | undefined {
     return false;
   }
   return undefined;
+}
+
+function readSlackText(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 function readStructuredValue(value: unknown): unknown {
@@ -424,6 +431,32 @@ function slackRequestSignature(signingSecret: string, timestamp: string, body: s
   return `v0=${digest}`;
 }
 
+function authenticateSlackEventsRequest(
+  request: IncomingMessage,
+  state: SlackServerState,
+  rawBody: string,
+): Response | undefined {
+  const timestampHeader = request.headers["x-slack-request-timestamp"];
+  const signatureHeader = request.headers["x-slack-signature"];
+  const timestamp = Array.isArray(timestampHeader) ? timestampHeader[0] : timestampHeader;
+  const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+  const timestampSeconds = timestamp ? Number(timestamp) : Number.NaN;
+  if (
+    !timestamp ||
+    !signature ||
+    !Number.isSafeInteger(timestampSeconds) ||
+    Math.abs(Date.now() / 1000 - timestampSeconds) > SLACK_SIGNATURE_TOLERANCE_SECONDS
+  ) {
+    return new Response("unauthorized", { status: 401 });
+  }
+  const expected = Buffer.from(slackRequestSignature(state.signingSecret, timestamp, rawBody));
+  const actual = Buffer.from(signature);
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+    return new Response("unauthorized", { status: 401 });
+  }
+  return undefined;
+}
+
 async function deliverSlackEvent(
   state: SlackServerState,
   event: ReturnType<typeof asSlackEventCallback>,
@@ -490,7 +523,7 @@ async function handleSlackApi(params: {
       if (channel instanceof Response) {
         return channel;
       }
-      const text = readTrimmedString(params.body.text) ?? "";
+      const text = readSlackText(params.body.text) ?? "";
       const attachments = readStructuredArray(params.body.attachments, "invalid_attachments");
       if (attachments instanceof Response) {
         return attachments;
@@ -596,6 +629,9 @@ async function handleSlackApi(params: {
         return limit;
       }
       const messages = messagesForChannel(params.state, channel).filter((message) => {
+        if (message.thread_ts !== undefined && message.reply_broadcast !== true) {
+          return false;
+        }
         if (oldest && message.ts <= oldest) {
           return false;
         }
@@ -647,9 +683,14 @@ async function handleAdminInbound(params: {
   if (channel instanceof Response) {
     return channel;
   }
-  const text = readTrimmedString(params.body.text);
-  if (!text) {
-    return slackError("text is required", 400);
+  const text = readSlackText(params.body.text) ?? "";
+  const attachments = readStructuredArray(params.body.attachments, "invalid_attachments");
+  if (attachments instanceof Response) {
+    return attachments;
+  }
+  const blocks = readStructuredArray(params.body.blocks, "invalid_blocks");
+  if (blocks instanceof Response) {
+    return blocks;
   }
   const user = requireSlackUserId(params.body.user ?? "UCRABUSER");
   if (user instanceof Response) {
@@ -669,6 +710,8 @@ async function handleAdminInbound(params: {
   const message = appendMessage(
     params.state,
     createSlackMessage(params.state, {
+      attachments,
+      blocks,
       channel,
       text,
       threadTs,
@@ -711,28 +754,54 @@ async function handleRequest(params: { request: IncomingMessage; state: SlackSer
 
   const query = queryRecord(url);
   if (url.pathname === "/slack/events") {
-    const body =
-      params.request.method === "GET" ? query : await parseUnknownRequestBody(params.request);
+    if (params.request.method !== "POST") {
+      params.request.resume();
+      return new Response("method not allowed", {
+        headers: { allow: "POST" },
+        status: 405,
+      });
+    }
+    if (
+      !params.request.headers["x-slack-request-timestamp"] ||
+      !params.request.headers["x-slack-signature"]
+    ) {
+      params.request.resume();
+      return new Response("unauthorized", { status: 401 });
+    }
+    const rawBody = (await readBody(params.request)).toString("utf8");
+    const authError = authenticateSlackEventsRequest(params.request, params.state, rawBody);
+    if (authError) {
+      return authError;
+    }
+    let body: unknown;
+    try {
+      body = rawBody ? (JSON.parse(rawBody) as unknown) : {};
+    } catch (error) {
+      throw new InvalidJsonBodyError(error);
+    }
     if (!isJsonObject(body)) {
       return slackError("invalid_json", 400);
     }
-    await appendEvent(params.state, {
-      at: new Date().toISOString(),
-      body: redactSlackAuthFields(body),
-      method: params.request.method ?? "GET",
-      path: url.pathname,
-      query: redactSlackAuthQuery(query),
-      type: "api",
-    });
     if (body.type === "url_verification") {
       return jsonResponse({ challenge: readTrimmedString(body.challenge) ?? "" });
     }
-    return slackOk();
+    if (!readTrimmedString(body.type)) {
+      return slackError("invalid_payload", 400);
+    }
+    return new Response(null, { status: 200 });
   }
 
   const methodMatch = /^\/api\/([a-z]+(?:\.[a-zA-Z]+)*)$/u.exec(url.pathname);
   if (!methodMatch?.[1]) {
     return new Response("not found", { status: 404 });
+  }
+  const requestMethod = params.request.method ?? "GET";
+  if (requestMethod !== "GET" && requestMethod !== "POST") {
+    params.request.resume();
+    return new Response("method not allowed", {
+      headers: { allow: "GET, POST" },
+      status: 405,
+    });
   }
 
   if (params.request.headers.authorization) {
@@ -742,8 +811,7 @@ async function handleRequest(params: { request: IncomingMessage; state: SlackSer
       return headerAuthError;
     }
   }
-  const body =
-    params.request.method === "GET" ? query : await parseUnknownRequestBody(params.request);
+  const body = requestMethod === "GET" ? query : await parseUnknownRequestBody(params.request);
   if (!isJsonObject(body)) {
     return slackError("json_not_object", 400);
   }

@@ -59,6 +59,26 @@ async function postMessage(
   return payload;
 }
 
+async function postSignedSlackEvent(
+  server: StartedSlackServer,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  const rawBody = JSON.stringify(body);
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const signature = `v0=${createHmac("sha256", server.manifest.signingSecret)
+    .update(`v0:${timestamp}:${rawBody}`)
+    .digest("hex")}`;
+  return await fetch(server.manifest.endpoints.eventsUrl, {
+    body: rawBody,
+    headers: {
+      "content-type": "application/json",
+      "x-slack-request-timestamp": timestamp,
+      "x-slack-signature": signature,
+    },
+    method: "POST",
+  });
+}
+
 describe("slack local provider server", () => {
   it("serves Slack auth and conversation APIs", async () => {
     const server = await startTestSlackServer();
@@ -302,6 +322,12 @@ describe("slack local provider server", () => {
       },
       ok: true,
     });
+    const broadcastReply = await postMessage(server, {
+      channel: "C1234567890",
+      reply_broadcast: true,
+      text: "broadcast reply",
+      thread_ts: parent.ts,
+    });
     await expect(
       (
         await slackApi(server, "chat.postMessage", {
@@ -323,7 +349,11 @@ describe("slack local provider server", () => {
         })
       ).json(),
     ).resolves.toMatchObject({
-      messages: [{ text: "hello fake slack" }, { text: "thread reply" }],
+      messages: [
+        { text: "hello fake slack" },
+        { text: "thread reply" },
+        { text: "broadcast reply" },
+      ],
       ok: true,
     });
     await expect(
@@ -334,7 +364,11 @@ describe("slack local provider server", () => {
         })
       ).json(),
     ).resolves.toMatchObject({
-      messages: [{ text: "hello fake slack" }, { text: "thread reply" }],
+      messages: [
+        { text: "hello fake slack" },
+        { text: "thread reply" },
+        { text: "broadcast reply" },
+      ],
       ok: true,
     });
 
@@ -348,7 +382,7 @@ describe("slack local provider server", () => {
       ).json(),
     ).resolves.toMatchObject({
       has_more: false,
-      messages: [{ text: "thread reply" }],
+      messages: [{ text: "broadcast reply", ts: broadcastReply.ts }],
       ok: true,
     });
 
@@ -365,6 +399,75 @@ describe("slack local provider server", () => {
         ok: false,
       });
     }
+  });
+
+  it("preserves message whitespace and accepts blocks-only admin events", async () => {
+    const server = await startTestSlackServer();
+
+    const outbound = await slackApi(server, "chat.postMessage", {
+      channel: "C1234567890",
+      text: "  keep surrounding whitespace  ",
+    });
+    await expect(outbound.json()).resolves.toMatchObject({
+      message: { text: "  keep surrounding whitespace  " },
+      ok: true,
+    });
+
+    for (const body of [
+      {
+        blocks: [{ text: { text: "block only", type: "plain_text" }, type: "section" }],
+        channel: "C1234567890",
+        user: "U1234567890",
+      },
+      {
+        channel: "C1234567890",
+        text: "",
+        user: "U1234567890",
+      },
+      {
+        channel: "C1234567890",
+        text: "  inbound whitespace  ",
+        user: "U1234567890",
+      },
+    ]) {
+      const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify(body),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+    }
+
+    const history = await slackApi(server, "conversations.history", {
+      channel: "C1234567890",
+    });
+    await expect(history.json()).resolves.toMatchObject({
+      messages: [
+        { text: "  inbound whitespace  " },
+        { text: "" },
+        { blocks: expect.any(Array), text: "" },
+        { text: "  keep surrounding whitespace  " },
+      ],
+      ok: true,
+    });
+  });
+
+  it("rejects unsupported Web API and Events API methods", async () => {
+    const server = await startTestSlackServer();
+
+    const webApi = await fetch(`${server.manifest.endpoints.apiRoot}auth.test`, {
+      headers: { authorization: "Bearer xoxb-fake" },
+      method: "PUT",
+    });
+    expect(webApi.status).toBe(405);
+    expect(webApi.headers.get("allow")).toBe("GET, POST");
+
+    const events = await fetch(server.manifest.endpoints.eventsUrl);
+    expect(events.status).toBe(405);
+    expect(events.headers.get("allow")).toBe("POST");
   });
 
   it("rejects malformed blocks and attachments", async () => {
@@ -503,7 +606,7 @@ describe("slack local provider server", () => {
           .update(`v0:${callback.timestamp}:${callback.body}`)
           .digest("hex")}`,
       );
-      expect(callback.history).toContainEqual(
+      expect(callback.history).not.toContainEqual(
         expect.objectContaining({
           text: "user nonce-1",
         }),
@@ -732,17 +835,51 @@ describe("slack local provider server", () => {
     await expect(response.json()).resolves.toMatchObject({ ok: true });
   });
 
-  it("handles Slack Events API URL verification", async () => {
-    const server = await startTestSlackServer();
+  it("authenticates Slack Events API compatibility without recording callbacks", async () => {
+    const observed: unknown[] = [];
+    const server = await startTestSlackServer({
+      onEvent: (event) => {
+        observed.push(event);
+      },
+    });
 
-    const response = await fetch(server.manifest.endpoints.eventsUrl, {
-      body: JSON.stringify({
-        challenge: "challenge-token",
-        type: "url_verification",
-      }),
+    const unsigned = await fetch(server.manifest.endpoints.eventsUrl, {
+      body: JSON.stringify({ type: "event_callback" }),
       headers: { "content-type": "application/json" },
       method: "POST",
     });
-    await expect(response.json()).resolves.toEqual({ challenge: "challenge-token" });
+    expect(unsigned.status).toBe(401);
+
+    const verification = await postSignedSlackEvent(server, {
+      challenge: "challenge-token",
+      type: "url_verification",
+    });
+    await expect(verification.json()).resolves.toEqual({ challenge: "challenge-token" });
+
+    for (const body of [
+      {
+        event: {
+          blocks: [{ text: { text: "block only", type: "plain_text" }, type: "section" }],
+          channel: "C1234567890",
+          type: "message",
+        },
+        type: "event_callback",
+      },
+      {
+        event: { channel: "C1234567890", text: "", type: "message" },
+        type: "event_callback",
+      },
+      {
+        api_app_id: "ACRABLINE",
+        minute_rate_limited: 1_700_000_000,
+        team_id: "TCRABLINE",
+        type: "app_rate_limited",
+      },
+    ]) {
+      const response = await postSignedSlackEvent(server, body);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("");
+    }
+    expect(observed).toEqual([]);
   });
 });
