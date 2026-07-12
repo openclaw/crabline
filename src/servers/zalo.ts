@@ -69,6 +69,7 @@ type ZaloServerState = {
   botName: string;
   botToken: string;
   closing: boolean;
+  inboundAdmission: Promise<void>;
   maxPendingInboundEvents: number;
   nextMessage: number;
   onEvent: ServerEventObserver | undefined;
@@ -357,12 +358,12 @@ async function waitForUpdate(
   state: ZaloServerState,
   timeoutSeconds: number,
 ): Promise<HttpJsonHandlerResult> {
+  if (request.aborted || request.socket.destroyed || response.destroyed) {
+    return zaloError("Client closed request", 499);
+  }
   const previous = state.pendingRequest;
   if (previous) {
     settlePendingUpdate(state, previous, { kind: "conflict" });
-  }
-  if (request.aborted || request.socket.destroyed || response.destroyed) {
-    return zaloError("Client closed request", 499);
   }
   const queued = nextUpdate(request, response, state);
   if (queued) {
@@ -497,52 +498,59 @@ async function handleAdminInbound(
   if (chatId instanceof Response || senderId instanceof Response || text instanceof Response) {
     return [chatId, senderId, text].find((value) => value instanceof Response) as Response;
   }
-  const update: ZaloUpdate = {
-    event_name: "message.text.received",
-    message: {
-      chat: { chat_type: readChatType(body.chatType), id: chatId },
-      date: Date.now(),
-      from: {
-        display_name: readTrimmedString(body.senderName) ?? senderId,
-        id: senderId,
-        is_bot: false,
-      },
-      message_id: messageId(state),
-      text,
-    },
-  };
-  if (
-    !state.webhook?.url &&
-    !(state.pendingRequest && isPendingUpdateRequestLive(state.pendingRequest)) &&
-    state.updates.length + state.reservedUpdates >= state.maxPendingInboundEvents
-  ) {
-    return zaloError(
-      `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
-      429,
-    );
-  }
-  await appendEvent(state, {
-    at: new Date().toISOString(),
-    body,
-    method: request.method ?? "POST",
-    path: url.pathname,
-    query: queryRecord(url),
-    type: "admin",
+  let releaseAdmission!: () => void;
+  const previousAdmission = state.inboundAdmission;
+  state.inboundAdmission = new Promise<void>((resolve) => {
+    releaseAdmission = resolve;
   });
-  if (state.webhook?.url) {
-    const error = await deliverWebhookUpdate(state, state.webhook, update);
-    if (error) {
-      return error;
-    }
-  } else {
-    if (!deliverPollingUpdate(state, update)) {
+  await previousAdmission;
+  try {
+    if (
+      !state.webhook?.url &&
+      state.updates.length + state.reservedUpdates >= state.maxPendingInboundEvents
+    ) {
       return zaloError(
         `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
         429,
       );
     }
+    const update: ZaloUpdate = {
+      event_name: "message.text.received",
+      message: {
+        chat: { chat_type: readChatType(body.chatType), id: chatId },
+        date: Date.now(),
+        from: {
+          display_name: readTrimmedString(body.senderName) ?? senderId,
+          id: senderId,
+          is_bot: false,
+        },
+        message_id: messageId(state),
+        text,
+      },
+    };
+    await appendEvent(state, {
+      at: new Date().toISOString(),
+      body,
+      method: request.method ?? "POST",
+      path: url.pathname,
+      query: queryRecord(url),
+      type: "admin",
+    });
+    if (state.webhook?.url) {
+      const error = await deliverWebhookUpdate(state, state.webhook, update);
+      if (error) {
+        return error;
+      }
+    } else if (!deliverPollingUpdate(state, update)) {
+      return zaloError(
+        `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
+        429,
+      );
+    }
+    return zaloOk(update);
+  } finally {
+    releaseAdmission();
   }
-  return zaloOk(update);
 }
 
 async function handleZaloMethod(
@@ -657,6 +665,7 @@ export async function startZaloServer(
       params.botToken ??
       (isLoopbackHost(host) ? "crabline-zalo-bot-token" : randomBytes(32).toString("base64url")),
     closing: false,
+    inboundAdmission: Promise.resolve(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessage: 1,
     onEvent: params.onEvent,
