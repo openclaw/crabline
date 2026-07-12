@@ -216,6 +216,47 @@ describe("cli", () => {
     });
   });
 
+  it("reports a useful JSON error when no command is specified", async () => {
+    const captured = captureWrites();
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli(["node", "crabline", "--json"]);
+    } finally {
+      captured.restore();
+    }
+
+    expect(exitCode!).toBe(1);
+    expect(captured.stdout).toEqual([]);
+    expect(JSON.parse(captured.stderr.join(""))).toEqual({
+      error: {
+        code: "commander.help",
+        exitCode: 1,
+        message: "No command specified.",
+      },
+      ok: false,
+    });
+  });
+
+  it("does not treat --json option values or positional arguments as the global flag", async () => {
+    const configPath = await createConfig();
+    const captured = captureWrites();
+
+    try {
+      expect(await runCli(["node", "crabline", "--config", "--json", "doctor"])).toBe(10);
+      expect(
+        await runCli(["node", "crabline", "--config", configPath, "probe", "--", "--json"]),
+      ).toBe(10);
+    } finally {
+      captured.restore();
+    }
+
+    const stderr = captured.stderr.join("");
+    expect(stderr).toMatch(/Unable to load config file ".*\/--json"/u);
+    expect(stderr).toContain("Unknown fixture: --json");
+    expect(() => JSON.parse(stderr)).toThrow(SyntaxError);
+  });
+
   it("documents probe as a fixture-only command", () => {
     const probe = createProgram().commands.find((command) => command.name() === "probe");
 

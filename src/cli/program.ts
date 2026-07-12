@@ -569,16 +569,14 @@ export async function runCli(argv: string[]): Promise<number> {
   const program = createProgram((code) => {
     exitCode = code;
   });
-  const json = argv.slice(2).includes("--json");
-  if (json) {
-    const configureJsonOutput = (command: Command): void => {
-      command.configureOutput({ writeErr: () => undefined });
-      for (const child of command.commands) {
-        configureJsonOutput(child);
-      }
-    };
-    configureJsonOutput(program);
-  }
+  const parserErrors: string[] = [];
+  const bufferParserErrors = (command: Command): void => {
+    command.configureOutput({ writeErr: (message) => parserErrors.push(message) });
+    for (const child of command.commands) {
+      bufferParserErrors(child);
+    }
+  };
+  bufferParserErrors(program);
   try {
     await program.parseAsync(argv);
     return exitCode;
@@ -588,6 +586,7 @@ export async function runCli(argv: string[]): Promise<number> {
     if (error instanceof CommanderError && errorExitCode === 0) {
       return 0;
     }
+    const json = program.opts().json === true;
     if (json) {
       process.stderr.write(
         `${formatJson({
@@ -595,12 +594,17 @@ export async function runCli(argv: string[]): Promise<number> {
             ...(error instanceof CommanderError ? { code: error.code } : {}),
             exitCode: errorExitCode,
             ...(error instanceof CrablineError && error.kind ? { kind: error.kind } : {}),
-            message: ensureErrorMessage(error),
+            message:
+              error instanceof CommanderError && error.code === "commander.help"
+                ? "No command specified."
+                : ensureErrorMessage(error),
           },
           ok: false,
         })}\n`,
       );
-    } else if (!(error instanceof CommanderError)) {
+    } else if (error instanceof CommanderError) {
+      process.stderr.write(parserErrors.join(""));
+    } else {
       process.stderr.write(`${ensureErrorMessage(error)}\n`);
     }
     return errorExitCode;
