@@ -47,6 +47,7 @@ type SmokeRunTestDependencies = {
     release(): Promise<void>;
   }>;
   publishGeneration?: typeof publishOpenClawCrablineArtifactGeneration;
+  releaseLock?: (lock: { release(): Promise<void> }) => Promise<void>;
   startAdapter?: typeof startOpenClawCrablineAdapter;
 };
 
@@ -1750,6 +1751,43 @@ describe("OpenClaw local provider bridge", () => {
         capability: "slack",
         manifest: "slack",
         smoke: "slack",
+      });
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns the committed generation when post-commit lock cleanup fails", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-release-"));
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    const cleanupFailure = new Error("lock release retries exhausted");
+    let pointerAtCleanup: Awaited<ReturnType<typeof readOpenClawCrablineArtifactPointer>> = null;
+    const releaseLock = vi.fn(async () => {
+      pointerAtCleanup = await readOpenClawCrablineArtifactPointer(outputDir);
+      throw cleanupFailure;
+    });
+    try {
+      const result = await runSmokeWithDependencies(
+        { outputDir, selection },
+        {
+          releaseLock,
+        },
+      );
+
+      expect(releaseLock).toHaveBeenCalledTimes(1);
+      expect(pointerAtCleanup).toMatchObject({
+        capabilityMatrixPath: result.capabilityMatrixPath,
+        generation: result.generation,
+        manifestPath: result.manifestPath,
+        smokeArtifactPath: result.smokeArtifactPath,
+      });
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toEqual(
+        pointerAtCleanup,
+      );
+      await expect(readPublishedArtifactGeneration(outputDir, result)).resolves.toHaveLength(3);
+      expect(result.smoke).toMatchObject({
+        manifestPath: result.manifestPath,
+        result: { ok: true, provider: "telegram" },
       });
     } finally {
       await fs.rm(outputDir, { recursive: true, force: true });
