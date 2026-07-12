@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { request as requestHttp, type IncomingMessage } from "node:http";
+import { request as requestHttp, type ClientRequest, type IncomingMessage } from "node:http";
 import { request as requestHttps } from "node:https";
 import { BlockList, isIP } from "node:net";
 import path from "node:path";
@@ -60,6 +60,7 @@ type ValidatedWebhookTarget = {
 };
 
 type ZaloServerState = {
+  activeWebhookRequests: Set<ClientRequest>;
   adminToken: string;
   allowLoopbackHttpWebhook: boolean;
   botId: string;
@@ -257,6 +258,7 @@ async function postWebhook(
   secretToken: string,
   timeoutMs: number,
   address: WebhookAddress | undefined,
+  activeRequests: Set<ClientRequest>,
 ): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
     let settled = false;
@@ -268,6 +270,7 @@ async function postWebhook(
       }
       settled = true;
       clearTimeout(deadline);
+      activeRequests.delete(request);
       callback();
     };
     const send = url.protocol === "https:" ? requestHttps : requestHttp;
@@ -295,6 +298,7 @@ async function postWebhook(
         incoming.once("end", () => finish(() => resolve(incoming.statusCode ?? 0)));
       },
     );
+    activeRequests.add(request);
     deadline = setTimeout(() => {
       const error = new DOMException(
         `Webhook delivery timed out after ${timeoutMs}ms`,
@@ -307,6 +311,79 @@ async function postWebhook(
     request.once("error", (error) => finish(() => reject(error)));
     request.end(body);
   });
+}
+
+function webhookTimeoutError(timeoutMs: number): DOMException {
+  return new DOMException(`Webhook delivery timed out after ${timeoutMs}ms`, "TimeoutError");
+}
+
+async function withWebhookDeadline<T>(
+  promise: Promise<T>,
+  deadlineAt: number,
+  timeoutMs: number,
+): Promise<T> {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    throw webhookTimeoutError(timeoutMs);
+  }
+  return await new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(webhookTimeoutError(timeoutMs)), remainingMs);
+    timer.unref();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** @internal */
+export async function postZaloWebhook(params: {
+  activeRequests?: Set<ClientRequest>;
+  addresses?: WebhookAddress[] | undefined;
+  body: string;
+  secretToken: string;
+  timeoutMs: number;
+  url: URL;
+}): Promise<number> {
+  const activeRequests = params.activeRequests ?? new Set<ClientRequest>();
+  const deadlineAt = Date.now() + params.timeoutMs;
+  const addresses =
+    params.addresses && params.addresses.length > 0 ? params.addresses : [undefined];
+  let lastError: unknown;
+  for (const [index, address] of addresses.entries()) {
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      throw webhookTimeoutError(params.timeoutMs);
+    }
+    const attemptsRemaining = addresses.length - index;
+    const attemptTimeoutMs = Math.max(1, Math.floor(remainingMs / attemptsRemaining));
+    try {
+      return await postWebhook(
+        params.url,
+        params.body,
+        params.secretToken,
+        attemptTimeoutMs,
+        address,
+        activeRequests,
+      );
+    } catch (error) {
+      lastError = error;
+      if (
+        error instanceof DOMException &&
+        error.name === "TimeoutError" &&
+        attemptsRemaining === 1
+      ) {
+        throw webhookTimeoutError(params.timeoutMs);
+      }
+    }
+  }
+  throw lastError;
 }
 
 function nextUpdate(state: ZaloServerState): Response | undefined {
@@ -388,19 +465,37 @@ async function deliverWebhookUpdate(
   webhook: NonNullable<ZaloServerState["webhook"]>,
   update: ZaloUpdate,
 ): Promise<Response | undefined> {
+  const deadlineAt = Date.now() + state.webhookDeliveryTimeoutMs;
   const url = new URL(webhook.url);
-  const target = await validateWebhookUrl(url, state);
+  let target: Response | ValidatedWebhookTarget;
+  try {
+    target = await withWebhookDeadline(
+      validateWebhookUrl(url, state),
+      deadlineAt,
+      state.webhookDeliveryTimeoutMs,
+    );
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      return zaloError(`Webhook delivery timed out after ${state.webhookDeliveryTimeoutMs}ms`, 502);
+    }
+    throw error;
+  }
   if (target instanceof Response) {
     return target;
   }
   try {
-    const status = await postWebhook(
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      throw webhookTimeoutError(state.webhookDeliveryTimeoutMs);
+    }
+    const status = await postZaloWebhook({
+      activeRequests: state.activeWebhookRequests,
+      addresses: target.addresses,
+      body: JSON.stringify({ ok: true, result: update }),
+      secretToken: webhook.secretToken,
+      timeoutMs: remainingMs,
       url,
-      JSON.stringify({ ok: true, result: update }),
-      webhook.secretToken,
-      state.webhookDeliveryTimeoutMs,
-      target.addresses?.[0],
-    );
+    });
     if (status < 200 || status >= 300) {
       return zaloError(`Webhook delivery failed with HTTP ${status}`, 502);
     }
@@ -583,6 +678,7 @@ export async function startZaloServer(
 ): Promise<StartedZaloServer> {
   const host = params.host ?? "127.0.0.1";
   const state: ZaloServerState = {
+    activeWebhookRequests: new Set(),
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     allowLoopbackHttpWebhook: isLoopbackHost(host),
     botId: params.botId ?? "1459232241454765289",
@@ -648,6 +744,9 @@ export async function startZaloServer(
   };
   return {
     async close() {
+      for (const request of state.activeWebhookRequests) {
+        request.destroy(new Error("Zalo server is shutting down."));
+      }
       for (const pending of state.pendingRequests.splice(0)) {
         settlePendingUpdate(state, pending, zaloError("Server shutting down", 503));
       }
