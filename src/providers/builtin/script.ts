@@ -145,6 +145,10 @@ function collectSensitivePayloadValues(
     }
     return;
   }
+  if (sensitive && typeof value === "number" && Number.isFinite(value)) {
+    values.add(String(value));
+    return;
+  }
   if (!value || typeof value !== "object") {
     return;
   }
