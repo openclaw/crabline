@@ -44,7 +44,6 @@ describe("Google Chat webhook authentication", () => {
 
     const jwt = signedJwt(keys.privateKey, {
       aud: config.googlechat!.googleChatProjectNumber,
-      email: "chat@system.gserviceaccount.com",
       exp: Math.floor(now / 1000) + 60,
       iss: "chat@system.gserviceaccount.com",
     });

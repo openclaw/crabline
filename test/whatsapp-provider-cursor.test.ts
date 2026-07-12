@@ -119,4 +119,59 @@ describe("WhatsApp provider recorder cursors", () => {
     await expect(olderWait).resolves.toMatchObject({ id: "fifth" });
     await expect(provider.waitForInbound({ ...waitContext, timeoutMs: 30 })).resolves.toBeNull();
   });
+
+  it("does not evict cursor state while distinct waits are active", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    providers.push(provider);
+    const baseContext = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
+    const recorderPath = path.resolve(config.whatsapp!.recorder.path!);
+    const controllers = Array.from({ length: 65 }, () => new AbortController());
+    const contexts = controllers.map((controller, index) => ({
+      ...baseContext,
+      fixture: {
+        ...baseContext.fixture,
+        inboundMatch: {
+          author: "any" as const,
+          nonce: "ignore" as const,
+          pattern: `cursor-message-${index}`,
+          strategy: "contains" as const,
+        },
+      },
+      nonce: `cursor-${index}`,
+      signal: controller.signal,
+      since: new Date(0).toISOString(),
+      threadId: "15551234567",
+      timeoutMs: 2_000,
+    }));
+    const waits = contexts.map((context) => provider.waitForInbound(context));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await appendRecordedInbound(recorderPath, {
+      author: "user",
+      id: "first-cursor-event",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "cursor-message-0",
+      threadId: "15551234567",
+    });
+    await expect(waits[0]).resolves.toMatchObject({ id: "first-cursor-event" });
+
+    const repeatedWait = provider.waitForInbound(contexts[0]!);
+    await appendRecordedInbound(recorderPath, {
+      author: "user",
+      id: "second-cursor-event",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "cursor-message-0",
+      threadId: "15551234567",
+    });
+    await expect(repeatedWait).resolves.toMatchObject({ id: "second-cursor-event" });
+
+    controllers.slice(1).forEach((controller) => controller.abort());
+    await Promise.all(waits.slice(1));
+  });
 });
