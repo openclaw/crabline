@@ -99,7 +99,7 @@ export type StartedOpenClawCrablineAdapter = OpenClawCrablineGatewayBinding & {
     targetByProviderTarget: ReadonlyMap<string, string>;
   }): OpenClawCrablineOutboundMessage | null;
   manifest: CrablineServerManifest;
-  probe(signal?: AbortSignal): Promise<unknown>;
+  probe(): Promise<unknown>;
 };
 
 export type ParsedQaTarget = {
