@@ -54,6 +54,23 @@ describe("manifest schema", () => {
     ).toThrow(/duplicate fixture id: duplicate/u);
   });
 
+  it("rejects fixtures that reference unknown providers", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [
+          {
+            id: "missing-provider",
+            mode: "send",
+            provider: "missing",
+            target: { id: "sink" },
+          },
+        ],
+        providers: {},
+      }),
+    ).toThrow(/fixture missing-provider references unknown provider missing/u);
+  });
+
   it("parses a valid loopback fixture", () => {
     const manifest = ManifestSchema.parse({
       configVersion: 1,

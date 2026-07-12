@@ -627,6 +627,14 @@ const StrictManifestSchema = z
         });
       }
       seenFixtureIds.add(fixture.id);
+
+      if (!Object.hasOwn(manifest.providers, fixture.provider)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `fixture ${fixture.id} references unknown provider ${fixture.provider}`,
+          path: ["fixtures", index, "provider"],
+        });
+      }
     }
   });
 
