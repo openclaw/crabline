@@ -6,16 +6,35 @@ import { WhatsAppProviderAdapter } from "../src/providers/builtin/whatsapp.js";
 import type { ProviderContext, SendContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
+type AppendRecordedInbound = typeof import("../src/providers/recorder.js").appendRecordedInbound;
+
 const webhookMocks = vi.hoisted(() => ({
   startWebhookServer: vi.fn(),
+}));
+const recorderMocks = vi.hoisted(() => ({
+  actualAppendRecordedInbound: undefined as AppendRecordedInbound | undefined,
+  appendRecordedInbound: vi.fn<AppendRecordedInbound>(),
 }));
 
 vi.mock("../src/providers/webhook-server.js", () => ({
   startWebhookServer: webhookMocks.startWebhookServer,
 }));
+vi.mock("../src/providers/recorder.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/providers/recorder.js")>();
+  recorderMocks.actualAppendRecordedInbound = actual.appendRecordedInbound;
+  recorderMocks.appendRecordedInbound.mockImplementation(actual.appendRecordedInbound);
+  return {
+    ...actual,
+    appendRecordedInbound: recorderMocks.appendRecordedInbound,
+  };
+});
 
 beforeEach(() => {
   webhookMocks.startWebhookServer.mockReset();
+  recorderMocks.appendRecordedInbound.mockReset();
+  recorderMocks.appendRecordedInbound.mockImplementation(
+    recorderMocks.actualAppendRecordedInbound!,
+  );
 });
 
 function createConfig(recorderPath?: string): ProviderConfig {
@@ -142,6 +161,59 @@ describe("WhatsApp provider lifecycle", () => {
       await expect(readFile(recorderPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
       expect(webhookMocks.startWebhookServer).not.toHaveBeenCalled();
     } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("waits for an admitted send before cleanup resolves", async () => {
+    const directory = await createTempDir();
+    const recorderPath = path.join(directory, "whatsapp.jsonl");
+    let cleanup: Promise<void> | undefined;
+    let releaseReply: (() => void) | undefined;
+    let sending: Promise<unknown> | undefined;
+    const replyBlocked = new Promise<void>((resolve) => {
+      releaseReply = resolve;
+    });
+    let appendCount = 0;
+    recorderMocks.appendRecordedInbound.mockImplementation(async (...args) => {
+      appendCount += 1;
+      if (appendCount === 2) {
+        await replyBlocked;
+      }
+      return await recorderMocks.actualAppendRecordedInbound!(...args);
+    });
+
+    try {
+      const config = createConfig(recorderPath);
+      const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+      const context = createContext(config);
+      sending = provider.send({
+        ...context,
+        mode: "roundtrip",
+        nonce: "whatsapp-cleanup-race",
+        text: "finish before cleanup",
+      });
+      await vi.waitFor(() => expect(recorderMocks.appendRecordedInbound).toHaveBeenCalledTimes(2));
+
+      let cleanupResolved = false;
+      cleanup = provider.cleanup().then(() => {
+        cleanupResolved = true;
+      });
+      await Promise.resolve();
+      expect(cleanupResolved).toBe(false);
+      expect((await readFile(recorderPath, "utf8")).trim().split("\n")).toHaveLength(1);
+
+      releaseReply?.();
+      await cleanup;
+      await sending;
+      const contentsAfterCleanup = await readFile(recorderPath, "utf8");
+      expect(contentsAfterCleanup.trim().split("\n")).toHaveLength(2);
+      await Promise.resolve();
+      expect(await readFile(recorderPath, "utf8")).toBe(contentsAfterCleanup);
+    } finally {
+      releaseReply?.();
+      await sending?.catch(() => undefined);
+      await cleanup?.catch(() => undefined);
       await disposeTempDir(directory);
     }
   });
