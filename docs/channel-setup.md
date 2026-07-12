@@ -331,6 +331,11 @@ receives the native Zalo `{ ok, result }` event envelope with
 otherwise injected messages are returned by `getUpdates`. Provider errors use
 Zalo's `{ ok, error_code, description }` shape.
 
+`setWebhook` requires HTTPS, matching Zalo's public API. A loopback-bound
+Crabline server also accepts a loopback HTTP URL for independent local client
+tests. Non-loopback binds reject webhook destinations that resolve to private,
+loopback, or link-local addresses.
+
 The authenticated admin ingress is only a test control plane. Post a message
 such as:
 
