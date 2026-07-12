@@ -7,7 +7,12 @@ import { lock } from "proper-lockfile";
 import { loadManifest } from "../config/load.js";
 import { createRegistry } from "../providers/registry.js";
 import { formatJson, formatRunResultText, sanitizeTerminalText } from "../core/reporters.js";
-import { computeExitCode, runFixtureCommand, runSuite } from "../core/run.js";
+import {
+  assertScriptStdinPayloadSize,
+  computeExitCode,
+  runFixtureCommand,
+  runSuite,
+} from "../core/run.js";
 import { CrablineError, ensureErrorMessage } from "../core/errors.js";
 import {
   isCrablineServerChannel,
@@ -125,18 +130,19 @@ const SERVE_PARAM_FACTORIES = {
   }),
 } satisfies Record<CrablineServerChannel, ServeParamFactory>;
 
-function print(value: string): void {
-  process.stdout.write(`${value}\n`);
+function isClosedPipeError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
 }
 
-async function printWatchLine(value: string): Promise<boolean> {
+async function writeOutput(stream: NodeJS.WriteStream, value: string): Promise<boolean> {
   try {
     await new Promise<void>((resolve, reject) => {
       let drained = false;
       let written = false;
       const cleanup = () => {
-        process.stdout.off("drain", onDrain);
-        process.stdout.off("error", onError);
+        stream.off("drain", onDrain);
+        stream.off("error", onError);
       };
       const finish = () => {
         if (drained && written) {
@@ -152,31 +158,41 @@ async function printWatchLine(value: string): Promise<boolean> {
         cleanup();
         reject(error);
       };
-      process.stdout.once("error", onError);
-      const hasCapacity = process.stdout.write(`${value}\n`, (error) => {
-        if (error) {
-          process.stdout.once("error", () => undefined);
-          onError(error);
-          return;
-        }
-        written = true;
-        finish();
-      });
+      stream.once("error", onError);
+      let hasCapacity: boolean;
+      try {
+        hasCapacity = stream.write(value, (error) => {
+          if (error) {
+            stream.once("error", () => undefined);
+            onError(error);
+            return;
+          }
+          written = true;
+          finish();
+        });
+      } catch (error) {
+        cleanup();
+        reject(error);
+        return;
+      }
       if (hasCapacity) {
         drained = true;
         finish();
       } else {
-        process.stdout.once("drain", onDrain);
+        stream.once("drain", onDrain);
       }
     });
     return true;
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") {
+    if (isClosedPipeError(error)) {
       return false;
     }
     throw error;
   }
+}
+
+async function print(value: string): Promise<boolean> {
+  return await writeOutput(process.stdout, `${value}\n`);
 }
 
 async function withManifest<T>(
@@ -224,7 +240,7 @@ export function createProgram(
         })),
         support: registry.catalog,
       };
-      print(options.json ? formatJson(payload) : renderProvidersText(payload));
+      await print(options.json ? formatJson(payload) : renderProvidersText(payload));
     });
 
   program
@@ -233,13 +249,13 @@ export function createProgram(
     .action(async () => {
       const options = program.opts() as GlobalOptions;
       const { manifest } = await loadManifest(options.config);
-      print(
+      await print(
         options.json
           ? formatJson(manifest.fixtures)
           : manifest.fixtures
               .map(
                 (fixture) =>
-                  `${fixture.id} ${fixture.mode} provider=${fixture.provider} target=${fixture.target.id}`,
+                  `${sanitizeTerminalText(fixture.id, true)} ${sanitizeTerminalText(fixture.mode, true)} provider=${sanitizeTerminalText(fixture.provider, true)} target=${sanitizeTerminalText(fixture.target.id, true)}`,
               )
               .join("\n"),
       );
@@ -263,7 +279,7 @@ export function createProgram(
         modeOverride: "probe",
         registry,
       });
-      print(options.json ? formatJson(result) : formatRunResultText(result));
+      await print(options.json ? formatJson(result) : formatRunResultText(result));
       setExitCode(computeExitCode(result));
     });
 
@@ -282,7 +298,7 @@ export function createProgram(
           modeOverride: mode,
           registry,
         });
-        print(options.json ? formatJson(result) : formatRunResultText(result));
+        await print(options.json ? formatJson(result) : formatRunResultText(result));
         setExitCode(computeExitCode(result));
       });
   }
@@ -300,7 +316,7 @@ export function createProgram(
         manifestPath: path,
         registry,
       });
-      print(options.json ? formatJson(result) : formatRunResultText(result));
+      await print(options.json ? formatJson(result) : formatRunResultText(result));
       setExitCode(computeExitCode(result));
     });
 
@@ -324,29 +340,46 @@ export function createProgram(
         }
 
         const controller = new AbortController();
-        const watch = provider.watch({
-          config: manifest.providers[fixture.provider]!,
-          fixture,
-          manifestPath: path,
-          providerId: fixture.provider,
-          signal: controller.signal,
-          userName: manifest.userName,
-        });
-        const iterator = watch[Symbol.asyncIterator]();
+        let iterator:
+          | AsyncIterator<NonNullable<Awaited<ReturnType<typeof provider.waitForInbound>>>>
+          | undefined;
         const stopWatch = onceAsync(async () => {
           controller.abort();
-          await iterator.return?.();
+          await iterator?.return?.();
         });
         const shutdown = installShutdownHandler(stopWatch);
         const lifecycleErrors: unknown[] = [];
         try {
+          const watchContext = {
+            config: manifest.providers[fixture.provider]!,
+            fixture,
+            manifestPath: path,
+            providerId: fixture.provider,
+            signal: controller.signal,
+            userName: manifest.userName,
+          };
+          if (watchContext.config.adapter === "script") {
+            assertScriptStdinPayloadSize({
+              fixture,
+              provider: {
+                config: watchContext.config,
+                id: fixture.provider,
+                manifestPath: path,
+              },
+              watch: {
+                target: fixture.target,
+              },
+            });
+          }
+          const watch = provider.watch(watchContext);
+          iterator = watch[Symbol.asyncIterator]();
           while (true) {
             const result = await iterator.next();
             if (result.done) {
               break;
             }
             const message = result.value;
-            const written = await printWatchLine(
+            const written = await print(
               options.json
                 ? formatJson(message)
                 : `${sanitizeTerminalText(message.sentAt, true)} ${sanitizeTerminalText(message.author, true)} ${sanitizeTerminalText(message.text, true)}`,
@@ -488,7 +521,7 @@ export function createProgram(
                   identity: await publish(commandOptions.readyFile, readyContents),
                 };
               }
-              print(
+              await print(
                 options.json
                   ? payload
                   : renderServeText(server.manifest, commandOptions.showSecrets === true),
@@ -549,7 +582,7 @@ export function createProgram(
       const findings = diagnose(manifest);
       const ok = findings.length === 0;
       const payload = { findings, ok };
-      print(options.json ? formatJson(payload) : ok ? "doctor ok" : findings.join("\n"));
+      await print(options.json ? formatJson(payload) : ok ? "doctor ok" : findings.join("\n"));
       setExitCode(ok ? 0 : 10);
     });
 
@@ -1016,8 +1049,12 @@ export async function runCli(argv: string[]): Promise<number> {
     exitCode = code;
   });
   const parserErrors: string[] = [];
+  const parserOutput: string[] = [];
   const bufferParserErrors = (command: Command): void => {
-    command.configureOutput({ writeErr: (message) => parserErrors.push(message) });
+    command.configureOutput({
+      writeErr: (message) => parserErrors.push(message),
+      writeOut: (message) => parserOutput.push(message),
+    });
     for (const child of command.commands) {
       bufferParserErrors(child);
     }
@@ -1025,6 +1062,7 @@ export async function runCli(argv: string[]): Promise<number> {
   bufferParserErrors(program);
   try {
     await program.parseAsync(argv);
+    await writeOutput(process.stdout, parserOutput.join(""));
     return exitCode;
   } catch (error) {
     const errorExitCode =
@@ -1036,11 +1074,13 @@ export async function runCli(argv: string[]): Promise<number> {
           ? error.exitCode
           : 1;
     if (error instanceof CommanderError && errorExitCode === 0) {
+      await writeOutput(process.stdout, parserOutput.join(""));
       return 0;
     }
     const json = program.opts().json === true;
     if (json) {
-      process.stderr.write(
+      await writeOutput(
+        process.stderr,
         `${formatJson({
           error: {
             ...(error instanceof CommanderError ? { code: error.code } : {}),
@@ -1055,9 +1095,9 @@ export async function runCli(argv: string[]): Promise<number> {
         })}\n`,
       );
     } else if (error instanceof CommanderError) {
-      process.stderr.write(parserErrors.join(""));
+      await writeOutput(process.stderr, parserErrors.join(""));
     } else {
-      process.stderr.write(`${ensureErrorMessage(error)}\n`);
+      await writeOutput(process.stderr, `${ensureErrorMessage(error)}\n`);
     }
     return errorExitCode;
   }

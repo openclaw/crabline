@@ -313,6 +313,62 @@ describe("run behavior", () => {
     expect(roundtrip.failureKind).toBe("outbound");
   });
 
+  it("bounds hung probe and send operations by the fixture timeout", async () => {
+    let abortedOperations = 0;
+    const waitForAbort = async (signal: AbortSignal | undefined): Promise<never> =>
+      await new Promise((_, reject) => {
+        if (!signal) {
+          reject(new Error("missing provider cancellation signal"));
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => {
+            abortedOperations += 1;
+            reject(signal.reason);
+          },
+          { once: true },
+        );
+      });
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async (context) => await waitForAbort(context.signal),
+      send: async (context) => await waitForAbort(context.signal),
+      waitForInbound: async () => null,
+    };
+    const boundedManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, timeoutMs: 10 }],
+    });
+
+    const probe = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: boundedManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      modeOverride: "probe",
+      registry: buildRegistry(provider),
+    });
+    const send = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: boundedManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      modeOverride: "send",
+      registry: buildRegistry(provider),
+    });
+
+    expect(probe).toMatchObject({ failureKind: "timeout", ok: false });
+    expect(probe.diagnostics).toContain("Provider probe timed out after 10ms.");
+    expect(send).toMatchObject({ failureKind: "timeout", ok: false });
+    expect(send.diagnostics).toContain("Provider send timed out after 10ms.");
+    expect(abortedOperations).toBe(2);
+  });
+
   it("classifies plain provider failures by execution stage", async () => {
     let stage: "probe" | "send" | "wait" = "probe";
     const provider: ProviderAdapter = {
@@ -509,9 +565,130 @@ describe("run behavior", () => {
     expect(waitCalls).toBe(3);
   });
 
+  it("advances stateless inbound waits past unmatched envelopes", async () => {
+    let sendCalls = 0;
+    let unrelatedSentAt = "";
+    let matchedSentAt = "";
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => {
+        sendCalls += 1;
+        const base = Date.now() + 100;
+        unrelatedSentAt = new Date(base).toISOString();
+        matchedSentAt = new Date(base + 100).toISOString();
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      waitForInbound: async (context) => {
+        if (
+          Date.parse(context.since) <= Date.parse(unrelatedSentAt) &&
+          !context.excludeIds?.includes("unrelated")
+        ) {
+          return {
+            author: "assistant",
+            id: "unrelated",
+            provider: "mock",
+            sentAt: unrelatedSentAt,
+            text: "not the requested nonce",
+            threadId: "thread",
+          };
+        }
+        return {
+          author: "assistant",
+          id: "matched",
+          provider: "mock",
+          sentAt: matchedSentAt,
+          text: `ACK ${context.nonce}`,
+          threadId: "thread",
+        };
+      },
+    };
+    const boundedManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, timeoutMs: 100 }],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: boundedManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toContain("matched inbound matched");
+    expect(sendCalls).toBe(1);
+  });
+
+  it("preserves a later match that shares an unmatched envelope timestamp", async () => {
+    let waitCalls = 0;
+    let sharedSentAt = "";
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => {
+        sharedSentAt = new Date(Date.now() + 100).toISOString();
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      waitForInbound: async (context) => {
+        waitCalls += 1;
+        if (Date.parse(context.since) > Date.parse(sharedSentAt)) {
+          return null;
+        }
+        const messages = [
+          {
+            author: "assistant" as const,
+            id: "unrelated",
+            provider: "mock",
+            sentAt: sharedSentAt,
+            text: "not the requested nonce",
+            threadId: "thread",
+          },
+          {
+            author: "assistant" as const,
+            id: "matched",
+            provider: "mock",
+            sentAt: sharedSentAt,
+            text: `ACK ${context.nonce}`,
+            threadId: "thread",
+          },
+        ];
+        return messages.find((message) => !context.excludeIds?.includes(message.id)) ?? null;
+      },
+    };
+    const boundedManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, timeoutMs: 100 }],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: boundedManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toContain("matched inbound matched");
+    expect(waitCalls).toBe(2);
+  });
+
   it("bounds repeated inbound envelopes by the fixture deadline", async () => {
     let sendCalls = 0;
     let waitCalls = 0;
+    let maxExcludedIds = 0;
     const repeated = {
       author: "assistant" as const,
       id: "repeated",
@@ -533,8 +710,9 @@ describe("run behavior", () => {
         sendCalls += 1;
         return { accepted: true, messageId: "sent", threadId: "thread" };
       },
-      waitForInbound: async () => {
+      waitForInbound: async (context) => {
         waitCalls += 1;
+        maxExcludedIds = Math.max(maxExcludedIds, context.excludeIds?.length ?? 0);
         return repeated;
       },
     };
@@ -554,6 +732,50 @@ describe("run behavior", () => {
     expect(sendCalls).toBe(1);
     expect(waitCalls).toBeGreaterThan(1);
     expect(waitCalls).toBeLessThan(10);
+    expect(maxExcludedIds).toBe(1);
+  });
+
+  it("bounds unique unmatched inbound IDs", async () => {
+    let waitCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => ({ accepted: true, messageId: "sent", threadId: "thread" }),
+      waitForInbound: async () => {
+        waitCalls += 1;
+        return {
+          author: "assistant",
+          id: `unmatched-${waitCalls}`,
+          provider: "mock",
+          sentAt: new Date().toISOString(),
+          text: "not the requested nonce",
+          threadId: "thread",
+        };
+      },
+    };
+    const boundedManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, timeoutMs: 5_000 }],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: boundedManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.failureKind).toBe("inbound");
+    expect(result.diagnostics).toContain(
+      "Provider returned more than 1024 unmatched inbound message IDs.",
+    );
+    expect(waitCalls).toBe(1025);
   });
 
   it("bounds a hung inbound provider by the core deadline", async () => {
@@ -626,6 +848,82 @@ describe("run behavior", () => {
     expect(result.failureKind).toBe("assertion");
     expect(result.diagnostics).toContain("cleanup failed: cleanup exploded");
     expect(computeExitCode(result)).toBe(EXIT_CODES.ASSERTION);
+  });
+
+  it("bounds ordinary provider cleanup by the fixture timeout", async () => {
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => ({ accepted: true, messageId: "sent", threadId: "thread" }),
+      waitForInbound: async () => null,
+      cleanup: async () => await new Promise(() => undefined),
+    };
+    const boundedManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, timeoutMs: 10 }],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: boundedManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      modeOverride: "send",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result).toMatchObject({ failureKind: "assertion", ok: false });
+    expect(result.diagnostics).toContain("cleanup failed: Provider cleanup timed out after 10ms.");
+  });
+
+  it("rejects oversized script stdin payloads before provider dispatch", async () => {
+    let sendCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "slack",
+      status: "bridge",
+      supports: ["send"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => {
+        sendCalls += 1;
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      waitForInbound: async () => null,
+    };
+    const scriptManifest: ManifestDefinition = {
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, mode: "send", provider: "mock" }],
+      providers: {
+        mock: {
+          adapter: "script",
+          capabilities: ["send"],
+          env: [],
+          notes: "x".repeat(1024 * 1024),
+          platform: "slack",
+          script: { commands: { send: "send" } },
+          status: "active",
+        },
+      },
+    };
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: scriptManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result).toMatchObject({ failureKind: "config", ok: false });
+    expect(result.diagnostics).toContain("Script command input exceeded 1048576 bytes.");
+    expect(sendCalls).toBe(0);
   });
 
   it("preserves captured failures when cleanup fails", async () => {

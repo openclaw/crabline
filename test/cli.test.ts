@@ -94,6 +94,42 @@ describe("cli", () => {
     expect(captured.stdout.join("")).toContain("roundtrip-fixture");
   });
 
+  it("sanitizes user-controlled fixture fields in text output", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.json");
+    await writeText(
+      configPath,
+      JSON.stringify({
+        configVersion: 1,
+        fixtures: [
+          {
+            id: "fixture",
+            mode: "send",
+            provider: "local\u001b[2J",
+            target: { id: "sink\u0007\nnext" },
+          },
+        ],
+        providers: {
+          "local\u001b[2J": { adapter: "loopback", platform: "loopback" },
+        },
+      }),
+    );
+    const captured = captureWrites();
+
+    try {
+      expect(await runCli(["node", "crabline", "--config", configPath, "fixtures"])).toBe(0);
+    } finally {
+      captured.restore();
+    }
+
+    const output = captured.stdout.join("");
+    expect(output).toContain(String.raw`provider=local\x1b[2J`);
+    expect(output).toContain(String.raw`target=sink\x07\nnext`);
+    expect(output).not.toContain("\u001b");
+    expect(output).not.toContain("\u0007");
+  });
+
   it("runs doctor, probe, send, roundtrip, and suite commands", async () => {
     const configPath = await createConfig();
     const captured = captureWrites();
@@ -150,6 +186,32 @@ describe("cli", () => {
 
     expect(exitCode!).toBe(10);
     expect(captured.stderr.join("")).toContain("Unknown fixture");
+  });
+
+  it("treats closed ordinary stdout and stderr pipes as graceful", async () => {
+    const configPath = await createConfig();
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation((() => {
+      throw Object.assign(new Error("closed stdout"), { code: "EPIPE" });
+    }) as typeof process.stdout.write);
+
+    try {
+      await expect(runCli(["node", "crabline", "--config", configPath, "fixtures"])).resolves.toBe(
+        0,
+      );
+    } finally {
+      stdoutWrite.mockRestore();
+    }
+
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation((() => {
+      throw Object.assign(new Error("closed stderr"), { code: "ERR_STREAM_DESTROYED" });
+    }) as typeof process.stderr.write);
+    try {
+      await expect(
+        runCli(["node", "crabline", "--config", configPath, "probe", "missing"]),
+      ).resolves.toBe(10);
+    } finally {
+      stderrWrite.mockRestore();
+    }
   });
 
   it("reports JSON failures as one machine-readable document", async () => {
@@ -866,6 +928,46 @@ describe("cli", () => {
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors).toEqual([watchError, cleanupError]);
     expect((failure as AggregateError).cause).toBe(watchError);
+  });
+
+  it("cleans up when watch setup throws synchronously", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  local:",
+        "    adapter: loopback",
+        "fixtures:",
+        "  - id: watched",
+        "    provider: local",
+        "    mode: agent",
+        "    target:",
+        "      id: echo-bot",
+      ].join("\n"),
+    );
+    const setupError = new Error("watch setup exploded");
+    const cleanup = vi.fn(async () => undefined);
+    const provider = {
+      cleanup,
+      watch() {
+        throw setupError;
+      },
+    };
+    const program = createProgram(() => undefined, {
+      createRegistry: () =>
+        ({
+          resolve: () => provider,
+        }) as never,
+    });
+
+    await expect(
+      program.parseAsync(["node", "crabline", "--config", configPath, "watch", "watched"]),
+    ).rejects.toBe(setupError);
+    expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
   it("preserves an undefined watch failure", async () => {

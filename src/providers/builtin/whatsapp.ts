@@ -218,7 +218,9 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   override async probe(context: ProviderContext): Promise<ProbeResult> {
+    context.signal?.throwIfAborted();
     const server = await this.#ensureWebhookServer();
+    context.signal?.throwIfAborted();
     const target = this.normalizeTarget(context.fixture.target);
     const details = [
       "whatsapp local mock ready",

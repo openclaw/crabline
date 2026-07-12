@@ -145,9 +145,11 @@ The complete multi-channel script fixture is available in
 Each command receives one JSON document on stdin. Every payload contains the
 parsed `fixture` plus `provider.config`, `provider.id`, and
 `provider.manifestPath`. `send` adds `outbound` with `mode`, `nonce`, normalized
-`target`, and `text`; `waitForInbound` adds `wait` with `nonce`, `since`,
-normalized `target`, and `timeoutMs`; `watch` adds `watch` with optional `since`
-and normalized `target`.
+`target`, and `text`; `waitForInbound` adds `wait` with `excludeIds`, `nonce`,
+`since`, normalized `target`, and `timeoutMs`. A stateless wait bridge must
+exclude messages whose IDs are listed in `excludeIds` while retaining later
+messages with the same timestamp. Crabline retains at most 1024 unmatched IDs
+per wait. `watch` adds `watch` with optional `since` and normalized `target`.
 
 Non-watch commands must write exactly one JSON value to stdout:
 

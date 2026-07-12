@@ -764,6 +764,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       payload: createPayload(context),
       schema: ScriptProbeResultSchema,
       shell: this.#config.shell,
+      signal: context.signal,
       timeoutMs: context.fixture.timeoutMs,
     });
     return {
@@ -794,6 +795,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       },
       schema: ScriptSendResultSchema,
       shell: this.#config.shell,
+      signal: context.signal,
       timeoutMs: context.fixture.timeoutMs,
     });
   }
@@ -811,6 +813,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       payload: {
         ...createPayload(context),
         wait: {
+          excludeIds: context.excludeIds ?? [],
           nonce: context.nonce,
           since: context.since,
           target: this.normalizeTarget(context.fixture.target),

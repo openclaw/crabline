@@ -6,6 +6,8 @@ import { type ManifestDefinition, ManifestSchema } from "./schema.js";
 
 const DEFAULT_CONFIG_CANDIDATES = ["crabline.yaml", "crabline.yml", "crabline.json"] as const;
 
+class DuplicateJsonKeyError extends SyntaxError {}
+
 function configLoadError(resolvedPath: string, error: unknown, detail: string): CrablineError {
   return new CrablineError(`Unable to load config file "${resolvedPath}": ${detail}`, {
     cause: error,
@@ -31,11 +33,23 @@ function formatYamlParseError(error: unknown): string {
 }
 
 function formatJsonParseError(error: unknown): string {
+  if (error instanceof DuplicateJsonKeyError) {
+    return "JSON parse error: duplicate object key.";
+  }
   if (!(error instanceof SyntaxError)) {
     return "JSON parse failed.";
   }
   const position = /\bposition (\d+)\b/u.exec(error.message)?.[1];
   return position ? `JSON parse error at position ${position}.` : "JSON parse error.";
+}
+
+function parseJson(raw: string): unknown {
+  const parsed: unknown = JSON.parse(raw);
+  const document = YAML.parseDocument(raw, { schema: "json", uniqueKeys: true });
+  if (document.errors.some((error) => error.code === "DUPLICATE_KEY")) {
+    throw new DuplicateJsonKeyError("JSON contains a duplicate object key.");
+  }
+  return parsed;
 }
 
 export async function resolveConfigPath(explicitPath?: string): Promise<string> {
@@ -82,7 +96,7 @@ export async function loadManifest(
   const isJson = path.extname(resolvedPath).toLowerCase() === ".json";
   let parsed: unknown;
   try {
-    parsed = isJson ? JSON.parse(raw) : YAML.parse(raw, { merge: true });
+    parsed = isJson ? parseJson(raw) : YAML.parse(raw, { merge: true });
   } catch (error) {
     const detail = isJson ? formatJsonParseError(error) : formatYamlParseError(error);
     throw configLoadError(resolvedPath, new Error(detail), detail);

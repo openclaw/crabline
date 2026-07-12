@@ -3,6 +3,7 @@ import { inboundRegexSafetyError } from "../core/safe-regex.js";
 
 export const FIXTURE_MODES = ["probe", "send", "roundtrip", "agent"] as const;
 const FIXTURE_ID_PATTERN = /^[a-z0-9-]+$/i;
+const MAX_TIMER_MS = 2_147_483_647;
 export const INBOUND_AUTHORS = ["assistant", "user", "system", "any"] as const;
 export const INBOUND_STRATEGIES = ["contains", "exact", "regex"] as const;
 export const INBOUND_NONCE_MODES = ["contains", "exact", "ignore"] as const;
@@ -647,7 +648,7 @@ export const FixtureSchema = z.strictObject({
   retries: z.number().int().min(0).default(0),
   tags: z.array(z.string().min(1)).default([]),
   target: TargetSchema,
-  timeoutMs: z.number().int().min(100).default(30_000),
+  timeoutMs: z.number().int().min(100).max(MAX_TIMER_MS).default(30_000),
 });
 
 const MANIFEST_EXTENSION_KEY_PATTERN = /^x-[a-z0-9][a-z0-9._-]*$/u;
