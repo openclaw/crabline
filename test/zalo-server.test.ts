@@ -25,10 +25,10 @@ describe("Zalo local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const recorderPath = path.join(directory, "zalo.jsonl");
-    const server = await startZaloServer({ botToken: "zalo-token", recorderPath });
+    const server = await startZaloServer({ botToken: "test-token-placeholder", recorderPath });
     servers.push(server);
 
-    const getMe = await fetch(`${server.manifest.baseUrl}/botzalo-token/getMe`, {
+    const getMe = await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/getMe`, {
       method: "POST",
     });
     await expect(getMe.json()).resolves.toMatchObject({
@@ -41,11 +41,14 @@ describe("Zalo local provider server", () => {
       },
     });
 
-    const invalidJson = await fetch(`${server.manifest.baseUrl}/botzalo-token/sendMessage`, {
-      body: "{",
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    });
+    const invalidJson = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body: "{",
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
     expect(invalidJson.status).toBe(400);
     await expect(invalidJson.json()).resolves.toEqual({
       description: "Bad Request: can't parse JSON object",
@@ -54,11 +57,14 @@ describe("Zalo local provider server", () => {
     });
 
     for (const scalarBody of ["null", '"scalar"', "42", "true", "[]"]) {
-      const invalidBody = await fetch(`${server.manifest.baseUrl}/botzalo-token/sendMessage`, {
-        body: scalarBody,
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
+      const invalidBody = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+        {
+          body: scalarBody,
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
       expect(invalidBody.status).toBe(400);
       await expect(invalidBody.json()).resolves.toEqual({
         description: "Bad Request: can't parse JSON object",
@@ -73,7 +79,7 @@ describe("Zalo local provider server", () => {
         "content-type": "application/json",
       },
       method: "POST",
-      url: `${server.manifest.baseUrl}/botzalo-token/sendMessage`,
+      url: `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
     });
     expect(oversized.status).toBe(413);
     expect(JSON.parse(oversized.body)).toEqual({
@@ -107,7 +113,7 @@ describe("Zalo local provider server", () => {
     });
     expect(inbound.ok).toBe(true);
 
-    const updates = await fetch(`${server.manifest.baseUrl}/botzalo-token/getUpdates`, {
+    const updates = await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/getUpdates`, {
       body: JSON.stringify({ timeout: "0" }),
       headers: { "content-type": "application/json" },
       method: "POST",
@@ -124,12 +130,14 @@ describe("Zalo local provider server", () => {
       },
     });
 
-    const timeout = await fetch(`${server.manifest.baseUrl}/botzalo-token/getUpdates?timeout=0`);
+    const timeout = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/getUpdates?timeout=0`,
+    );
     expect(timeout.status).toBe(408);
     await expect(timeout.json()).resolves.toMatchObject({ error_code: 408, ok: false });
 
     const sendMessage = await fetch(
-      `${server.manifest.baseUrl}/botzalo-token/sendMessage?chat_id=group-1&text=hello`,
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage?chat_id=group-1&text=hello`,
     );
     await expect(sendMessage.json()).resolves.toMatchObject({
       ok: true,
@@ -138,7 +146,7 @@ describe("Zalo local provider server", () => {
 
     const recorder = await fs.readFile(recorderPath, "utf8");
     expect(recorder).toContain('"path":"/bot<redacted>/sendMessage"');
-    expect(recorder).not.toContain("zalo-token");
+    expect(recorder).not.toContain("test-token-placeholder");
   });
 
   it("delivers native webhook envelopes with the configured secret header", async () => {
@@ -165,17 +173,20 @@ describe("Zalo local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const recorderPath = path.join(directory, "zalo-webhook.jsonl");
-    const server = await startZaloServer({ botToken: "zalo-token", recorderPath });
+    const server = await startZaloServer({ botToken: "test-token-placeholder", recorderPath });
     servers.push(server);
     try {
-      const setWebhook = await fetch(`${server.manifest.baseUrl}/botzalo-token/setWebhook`, {
-        body: JSON.stringify({
-          secret_token: "webhook-secret",
-          url: `http://127.0.0.1:${address.port}/zalo`,
-        }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
+      const setWebhook = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
+        {
+          body: JSON.stringify({
+            secret_token: "test-auth-token",
+            url: `http://127.0.0.1:${address.port}/zalo`,
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
       expect(setWebhook.ok).toBe(true);
 
       const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
@@ -193,18 +204,18 @@ describe("Zalo local provider server", () => {
             message: { text: "hello" },
           },
         },
-        secret: "webhook-secret",
+        secret: "test-auth-token",
       });
 
       const blockedPolling = await fetch(
-        `${server.manifest.baseUrl}/botzalo-token/getUpdates?timeout=0`,
+        `${server.manifest.baseUrl}/bottest-token-placeholder/getUpdates?timeout=0`,
         { method: "POST" },
       );
       expect(blockedPolling.status).toBe(400);
 
       const recorder = await fs.readFile(recorderPath, "utf8");
       expect(recorder).toContain('"secret_token":"<redacted>"');
-      expect(recorder).not.toContain("webhook-secret");
+      expect(recorder).not.toContain("test-auth-token");
     } finally {
       await new Promise<void>((resolve, reject) =>
         webhook.close((error) => (error ? reject(error) : resolve())),
@@ -316,20 +327,23 @@ describe("Zalo local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startZaloServer({
-      botToken: "zalo-token",
+      botToken: "test-token-placeholder",
       recorderPath: path.join(directory, "zalo-webhook-timeout.jsonl"),
       webhookDeliveryTimeoutMs: 25,
     });
     servers.push(server);
     try {
-      const setWebhook = await fetch(`${server.manifest.baseUrl}/botzalo-token/setWebhook`, {
-        body: JSON.stringify({
-          secret_token: "webhook-secret",
-          url: `http://127.0.0.1:${address.port}/zalo`,
-        }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
+      const setWebhook = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
+        {
+          body: JSON.stringify({
+            secret_token: "test-auth-token",
+            url: `http://127.0.0.1:${address.port}/zalo`,
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
       expect(setWebhook.ok).toBe(true);
 
       const startedAt = Date.now();
@@ -453,7 +467,7 @@ describe("Zalo local provider server", () => {
   });
 
   it("rejects invalid bot tokens and unauthenticated admin ingress", async () => {
-    const server = await startZaloServer({ botToken: "zalo-token" });
+    const server = await startZaloServer({ botToken: "test-token-placeholder" });
     servers.push(server);
 
     const invalidToken = await fetch(`${server.manifest.baseUrl}/botwrong/getMe`);
@@ -471,7 +485,7 @@ describe("Zalo local provider server", () => {
   it("drains request bodies rejected by admin and bot authentication", async () => {
     const server = await startZaloServer({
       adminToken: "admin",
-      botToken: "zalo-token",
+      botToken: "test-token-placeholder",
     });
     servers.push(server);
 
@@ -497,7 +511,7 @@ describe("Zalo local provider server", () => {
         const accepted = await requestHttp({
           agent,
           method: "GET",
-          url: `${server.manifest.baseUrl}/botzalo-token/getMe`,
+          url: `${server.manifest.baseUrl}/bottest-token-placeholder/getMe`,
         });
         expect(accepted.status).toBe(200);
       } finally {

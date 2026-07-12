@@ -45,9 +45,9 @@ afterEach(async () => {
 
 describe("telegram local provider server", () => {
   it("accepts only GET and POST and resolves Bot API methods case-insensitively", async () => {
-    const server = await startTelegramServer({ botToken: "test-token" });
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
-    const apiRoot = `${server.manifest.baseUrl}/bottest-token`;
+    const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
 
     const getMe = await fetch(`${apiRoot}/gEtMe`);
     await expect(getMe.json()).resolves.toMatchObject({
@@ -328,7 +328,7 @@ describe("telegram local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startTelegramServer({
-      adminToken: "admin-secret",
+      adminToken: "test-auth-token",
       botToken: "123456:fake-token",
       recorderPath: path.join(directory, "telegram.jsonl"),
     });
@@ -436,7 +436,7 @@ describe("telegram local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startTelegramServer({
-      botToken: "test-token",
+      botToken: "test-token-placeholder",
       recorderPath: path.join(directory, "telegram-long-poll.jsonl"),
     });
     servers.push(server);
@@ -475,7 +475,7 @@ describe("telegram local provider server", () => {
   });
 
   it("supersedes an active long poll with a Telegram conflict response", async () => {
-    const server = await startTelegramServer({ botToken: "test-token" });
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
 
     const firstPoll = getUpdates(server, { offset: 100, timeout: 30 });
@@ -504,7 +504,7 @@ describe("telegram local provider server", () => {
   });
 
   it("supersedes an active long poll with a timeout-zero replacement", async () => {
-    const server = await startTelegramServer({ botToken: "test-token" });
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
 
     const firstPoll = getUpdates(server, { offset: 100, timeout: 30 });
@@ -561,7 +561,7 @@ describe("telegram local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startTelegramServer({
-      botToken: "test-token",
+      botToken: "test-token-placeholder",
       recorderPath: path.join(directory, "telegram-offsets.jsonl"),
     });
     servers.push(server);
@@ -610,7 +610,7 @@ describe("telegram local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startTelegramServer({
-      botToken: "test-token",
+      botToken: "test-token-placeholder",
       recorderPath: path.join(directory, "telegram-close.jsonl"),
     });
     servers.push(server);
@@ -633,7 +633,7 @@ describe("telegram local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startTelegramServer({
-      botToken: "test-token",
+      botToken: "test-token-placeholder",
       recorderPath: path.join(directory, "telegram-close-during-read.jsonl"),
     });
     servers.push(server);
