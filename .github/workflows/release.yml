@@ -50,6 +50,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: refs/tags/${{ steps.release.outputs.tag }}
+      - name: Verify checked out release tag
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" == "$(git rev-parse HEAD)" ]]
       - name: Verify release metadata
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}

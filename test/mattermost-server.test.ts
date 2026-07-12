@@ -340,8 +340,9 @@ describe("Mattermost local provider server", () => {
         method: "POST",
       });
 
-    expect((await sendInbound("x".repeat(2_000))).status).toBe(200);
+    expect((await sendInbound("x".repeat(2_000))).status).toBe(503);
     await expect(closed).resolves.toEqual({ code: 1013, reason: "client too slow" });
+    expect((await sendInbound("queued after oversized event")).status).toBe(200);
     expect((await sendInbound("queue is full")).status).toBe(503);
   });
 

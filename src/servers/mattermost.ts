@@ -199,6 +199,16 @@ function sendEvent(
 }
 
 function broadcast(state: MattermostServerState, event: MattermostWebSocketEvent): boolean {
+  if (
+    Buffer.byteLength(JSON.stringify({ ...event, seq: 0 }), "utf8") >
+    state.maxWebSocketBufferedBytes
+  ) {
+    for (const client of state.websocketClients.keys()) {
+      state.websocketClients.delete(client);
+      client.close(1013, "client too slow");
+    }
+    return false;
+  }
   let delivered = false;
   for (const client of state.websocketClients.keys()) {
     delivered = sendEvent(state, client, event) || delivered;
