@@ -72,6 +72,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   readonly #webhook: LocalMockWebhookConfig | undefined;
   #cleanedUp = false;
   #cleanupPromise: Promise<void> | null = null;
+  readonly #inFlightSends = new Set<Promise<SendResult>>();
   #server: StartedWebhookServer | null = null;
   #serverStarting: Promise<StartedWebhookServer> | null = null;
 
@@ -124,7 +125,13 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     if (this.#cleanedUp) {
       throw this.#cleanedUpError();
     }
-    return await super.send(context);
+    const sending = super.send(context);
+    this.#inFlightSends.add(sending);
+    try {
+      return await sending;
+    } finally {
+      this.#inFlightSends.delete(sending);
+    }
   }
 
   override async waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
@@ -161,6 +168,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   override async cleanup(): Promise<void> {
     this.#cleanedUp = true;
     this.#cleanupPromise ??= (async () => {
+      await Promise.allSettled(this.#inFlightSends);
       await this.#closeWebhookServer();
       await super.cleanup();
     })();
