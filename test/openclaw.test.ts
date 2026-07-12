@@ -701,6 +701,7 @@ describe("OpenClaw local provider bridge", () => {
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "group:-100123" }).to).toBe(
       "-100123",
     );
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "-100123" }).to).toBe("-100123");
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "thread:-100123/42" }).to).toBe(
       "-100123:topic:42",
     );
@@ -1345,6 +1346,18 @@ describe("OpenClaw local provider bridge", () => {
       },
     });
     expect(inbound.providerBody.senderId).toBe(delivery.to.slice("user:".length));
+    for (const conversationId of ["", " \n\t"]) {
+      expect(() =>
+        createOpenClawCrablineInbound({
+          manifest: mattermostManifest,
+          input: {
+            conversation: { id: conversationId, kind: "direct" },
+            senderId: "alice",
+            text: "hello",
+          },
+        }),
+      ).toThrow("Mattermost conversation id is required.");
+    }
 
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({

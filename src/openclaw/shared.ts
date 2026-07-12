@@ -111,6 +111,7 @@ export type StartedOpenClawCrablineAdapter = OpenClawCrablineGatewayBinding & {
 export type ParsedQaTarget = {
   kind: "direct" | "group";
   id: string;
+  native: boolean;
   threadId?: string;
 };
 
@@ -258,24 +259,24 @@ export function parseQaTarget(target: string): ParsedQaTarget {
     if (!id || !threadId) {
       return invalidTarget();
     }
-    return { kind: "group", id, threadId };
+    return { kind: "group", id, native: false, threadId };
   }
   if (trimmed.startsWith("channel:")) {
     const id = trimmed.slice("channel:".length).trim();
-    return id ? { kind: "group", id } : invalidTarget();
+    return id ? { kind: "group", id, native: false } : invalidTarget();
   }
   if (trimmed.startsWith("group:")) {
     const id = trimmed.slice("group:".length).trim();
-    return id ? { kind: "group", id } : invalidTarget();
+    return id ? { kind: "group", id, native: false } : invalidTarget();
   }
   if (trimmed.startsWith("dm:")) {
     const id = trimmed.slice("dm:".length).trim();
-    return id ? { kind: "direct", id } : invalidTarget();
+    return id ? { kind: "direct", id, native: false } : invalidTarget();
   }
   if (/^(?:dm|group|channel|thread)(?=\s*:|$)/iu.test(trimmed)) {
     return invalidTarget();
   }
-  return { kind: "direct", id: trimmed };
+  return { kind: "direct", id: trimmed, native: true };
 }
 
 export function canonicalConversationIdForInbound(input: OpenClawCrablineInboundInput) {

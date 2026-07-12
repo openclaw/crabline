@@ -82,6 +82,9 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
       createInbound(input) {
         const kind = input.conversation.kind === "direct" ? "direct" : "group";
         const conversationId = canonicalConversationIdForInbound(input);
+        if (!conversationId) {
+          throw new Error("Mattermost conversation id is required.");
+        }
         const senderId = nativeId(input.senderId);
         const channelId =
           kind === "direct"
