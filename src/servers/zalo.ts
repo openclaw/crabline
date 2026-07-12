@@ -51,7 +51,7 @@ type PendingUpdateRequest = {
   timeout: NodeJS.Timeout | undefined;
 };
 
-type ValidatedWebhookTarget = {
+type ZaloValidatedWebhookTarget = {
   addresses: WebhookAddress[] | undefined;
 };
 
@@ -161,7 +161,7 @@ function webhookDeliveryTimeoutMs(value: number | undefined): number {
 async function validateWebhookUrl(
   url: URL,
   state: Pick<ZaloServerState, "allowLoopbackHttpWebhook" | "restrictWebhookTargets">,
-): Promise<Response | ValidatedWebhookTarget> {
+): Promise<Response | ZaloValidatedWebhookTarget> {
   const target = await validateWebhookTarget({
     allowLoopbackHttp: state.allowLoopbackHttpWebhook,
     restrictPrivateAddresses: state.restrictWebhookTargets,
@@ -338,7 +338,7 @@ async function deliverWebhookUpdate(
 ): Promise<Response | undefined> {
   const deadlineAt = Date.now() + state.webhookDeliveryTimeoutMs;
   const url = new URL(webhook.url);
-  let target: Response | ValidatedWebhookTarget;
+  let target: Response | ZaloValidatedWebhookTarget;
   try {
     target = await withWebhookDeadline(
       validateWebhookUrl(url, state),
