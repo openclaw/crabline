@@ -120,8 +120,18 @@ describe("signal local provider server", () => {
       result: { timestamp: expect.any(Number) },
     });
     for (const [method, params] of [
-      ["send", { attachments: ["/tmp/test-attachment-placeholder"], recipient: ["+15551234567"] }],
+      ["send", { attachment: "/tmp/test-attachment-placeholder", recipients: ["+15551234567"] }],
       ["sendReceipt", { targetTimestamps: [1_700_000_000_000], usernames: ["alice"] }],
+      [
+        "sendReaction",
+        {
+          emoji: "👍",
+          recipients: ["+15551234567"],
+          targetAuthor: "+15557654321",
+          targetTimestamp: 1_700_000_000_000,
+        },
+      ],
+      ["sendTyping", { recipients: ["+15551234567"] }],
     ] as const) {
       const nativeAlternative = await fetch(server.manifest.endpoints.rpcUrl, {
         body: JSON.stringify({

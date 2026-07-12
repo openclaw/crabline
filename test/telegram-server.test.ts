@@ -690,6 +690,61 @@ describe("telegram local provider server", () => {
     }
   });
 
+  it("does not follow webhook redirects", async () => {
+    let redirectedRequests = 0;
+    const destination = createServer((_request, response) => {
+      redirectedRequests += 1;
+      response.statusCode = 200;
+      response.end();
+    });
+    await new Promise<void>((resolve) => destination.listen(0, "127.0.0.1", resolve));
+    const destinationAddress = destination.address();
+    if (!destinationAddress || typeof destinationAddress === "string") {
+      throw new Error("Unable to resolve Telegram redirect destination.");
+    }
+    const webhook = createServer((_request, response) => {
+      response.statusCode = 302;
+      response.setHeader("location", `http://127.0.0.1:${destinationAddress.port}/redirected`);
+      response.end();
+    });
+    await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+    const address = webhook.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve Telegram webhook receiver.");
+    }
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    try {
+      await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`, {
+        body: JSON.stringify({ url: `http://127.0.0.1:${address.port}/telegram` }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect((await injectUpdate(server, { chatId: 42, text: "do not redirect" })).status).toBe(
+        502,
+      );
+      expect(redirectedRequests).toBe(0);
+      const info = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/getWebhookInfo`,
+      );
+      await expect(info.json()).resolves.toMatchObject({
+        result: {
+          last_error_message: "Wrong response from the webhook: 302",
+          pending_update_count: 1,
+        },
+      });
+    } finally {
+      await Promise.all([
+        new Promise<void>((resolve, reject) =>
+          webhook.close((error) => (error ? reject(error) : resolve())),
+        ),
+        new Promise<void>((resolve, reject) =>
+          destination.close((error) => (error ? reject(error) : resolve())),
+        ),
+      ]);
+    }
+  });
+
   it("rejects unauthenticated inbound updates", async () => {
     const directory = await createTempDir();
     directories.push(directory);

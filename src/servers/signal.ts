@@ -299,7 +299,14 @@ async function handleRpc(params: {
 }
 
 function hasRecipients(params: Record<string, unknown>): boolean {
-  const values = [params.recipient, params.groupId, params.username];
+  const values = [
+    params.recipient,
+    params.recipients,
+    params.groupId,
+    params.groupIds,
+    params.username,
+    params.usernames,
+  ];
   return (
     params.noteToSelf === true ||
     values.some(
@@ -316,11 +323,12 @@ function hasTypingRecipients(params: Record<string, unknown>): boolean {
   if (
     params.noteToSelf !== undefined ||
     params.username !== undefined ||
+    params.usernames !== undefined ||
     (params.stop !== undefined && typeof params.stop !== "boolean")
   ) {
     return false;
   }
-  return [params.recipient, params.groupId].some(
+  return [params.recipient, params.recipients, params.groupId, params.groupIds].some(
     (value) =>
       (typeof value === "string" && value.trim().length > 0) ||
       (Array.isArray(value) &&
@@ -348,7 +356,9 @@ function validSignalRpcParams(method: string, value: unknown): boolean {
   if (method === "send") {
     return (
       hasRecipients(value) &&
-      (readTrimmedString(value.message) !== undefined || hasStringArray(value.attachments))
+      (readTrimmedString(value.message) !== undefined ||
+        readTrimmedString(value.attachment) !== undefined ||
+        hasStringArray(value.attachments))
     );
   }
   if (method === "sendReaction") {

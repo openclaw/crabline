@@ -265,10 +265,10 @@ function createPost(params: {
   return post;
 }
 
-async function handleAdminInbound(params: {
+function handleAdminInbound(params: {
   body: Record<string, unknown>;
   state: MattermostServerState;
-}): Promise<Response> {
+}): Response {
   const channelId = readTrimmedString(params.body.channelId ?? params.body.channel_id);
   const senderId = readTrimmedString(params.body.senderId ?? params.body.user_id);
   const text = readTrimmedString(params.body.text ?? params.body.message);
@@ -466,7 +466,7 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
       query: queryRecord(url),
       type: "admin",
     });
-    return await handleAdminInbound({ body, state });
+    return handleAdminInbound({ body, state });
   }
   if (!url.pathname.startsWith("/api/v4/")) {
     return new Response("not found", { status: 404 });

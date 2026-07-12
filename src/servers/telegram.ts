@@ -492,6 +492,7 @@ async function flushTelegramWebhookUpdates(
         body: JSON.stringify(update),
         headers,
         method: "POST",
+        redirect: "manual",
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3_000)]),
       });
       await response.body?.cancel();
