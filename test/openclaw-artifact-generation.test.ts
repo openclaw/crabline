@@ -124,6 +124,7 @@ describe("OpenClaw artifact generation publication", () => {
     });
     const disableHeartbeat = () => ({
       assertHealthy() {},
+      async settle() {},
       async stop() {},
     });
     let expiredLock: OpenClawCrablineSmokeRunLock | undefined;
@@ -220,6 +221,7 @@ describe("OpenClaw artifact generation publication", () => {
     });
     const disableHeartbeat = () => ({
       assertHealthy() {},
+      async settle() {},
       async stop() {},
     });
     let oldLock: OpenClawCrablineSmokeRunLock | undefined;

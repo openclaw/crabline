@@ -10,6 +10,7 @@ import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const disableHeartbeat = (_renew: () => Promise<void>, _intervalMs: number) => ({
   assertHealthy() {},
+  async settle() {},
   async stop() {},
 });
 
@@ -388,7 +389,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         startHeartbeat: (heartbeat, intervalMs) => {
           expect(intervalMs).toBe(333);
           renew = heartbeat;
-          return { assertHealthy() {}, stop };
+          return { assertHealthy() {}, settle: async () => undefined, stop };
         },
       });
 
@@ -542,6 +543,80 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("revokes an expired commit stage before a successor publishes", async () => {
+    const outputDir = await createTempDir();
+    const stageDirectory = path.join(outputDir, "artifacts");
+    const destinationPath = path.join(stageDirectory, "current.json");
+    let allowOldCommit: (() => void) | undefined;
+    let oldCommitReady: (() => void) | undefined;
+    const allowOldCommitPromise = new Promise<void>((resolve) => {
+      allowOldCommit = resolve;
+    });
+    const oldCommitReadyPromise = new Promise<void>((resolve) => {
+      oldCommitReady = resolve;
+    });
+    let now = 1_000;
+    let oldCommit: Promise<void> | undefined;
+    try {
+      await fs.mkdir(stageDirectory);
+      const oldLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          beforeCommitRename: async () => {
+            oldCommitReady?.();
+            await allowOldCommitPromise;
+          },
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 4_242,
+          processStartedAtMs: 100,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+      oldCommit = oldLock.commitFileAtomically({
+        contents: "old\n",
+        destinationPath,
+        stageDirectory,
+        stageFile: async (filePath, contents) => {
+          await fs.writeFile(filePath, contents);
+        },
+      });
+      await oldCommitReadyPromise;
+
+      now = 2_001;
+      const successorLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 5_252,
+          processStartedAtMs: 200,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+      await successorLock.commitFileAtomically({
+        contents: "successor\n",
+        destinationPath,
+        stageDirectory,
+        stageFile: async (filePath, contents) => {
+          await fs.writeFile(filePath, contents);
+        },
+      });
+
+      allowOldCommit?.();
+      await expect(oldCommit).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe("successor\n");
+      await oldLock.release();
+      await successorLock.release();
+    } finally {
+      allowOldCommit?.();
+      await oldCommit?.catch(() => undefined);
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("expires an old lock whose PID now belongs to another live process", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
@@ -677,7 +752,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("rejects a pointer commit when a pending final renewal fails during heartbeat stop", async () => {
+  it("rejects a pointer commit when a pending final renewal fails during heartbeat drain", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const destinationPath = path.join(outputDir, "current.json");
@@ -694,7 +769,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         startHeartbeat: (renew) => {
           let failure: unknown;
           let pending: Promise<void> | undefined;
-          let stopped = false;
+          let settled = false;
           startScheduledRenewal = () => {
             pending = scheduledRenewalGate.then(renew).catch((error: unknown) => {
               failure ??= error;
@@ -708,9 +783,9 @@ describe("OpenClaw smoke lock cleanup", () => {
                 });
               }
             },
-            async stop() {
-              if (!stopped) {
-                stopped = true;
+            async settle() {
+              if (!settled) {
+                settled = true;
                 const commitClaim = (await fs.readdir(outputDir)).find((entry) =>
                   entry.includes(".lock.commit."),
                 );
@@ -723,6 +798,9 @@ describe("OpenClaw smoke lock cleanup", () => {
                 );
                 allowScheduledRenewal?.();
               }
+              await pending;
+            },
+            async stop() {
               await pending;
             },
           };
