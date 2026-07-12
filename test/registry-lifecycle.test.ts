@@ -7,25 +7,46 @@ import type { ProviderContext, SendContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 type AppendRecordedInbound = typeof import("../src/providers/recorder.js").appendRecordedInbound;
+type StartWebhookServer = typeof import("../src/providers/webhook-server.js").startWebhookServer;
+type WaitForRecordedInbound = typeof import("../src/providers/recorder.js").waitForRecordedInbound;
 type WatchRecordedInbound = typeof import("../src/providers/recorder.js").watchRecordedInbound;
+type WebhookHandler = Parameters<StartWebhookServer>[0]["handle"];
 
 const recorderMocks = vi.hoisted(() => ({
   actualAppendRecordedInbound: undefined as AppendRecordedInbound | undefined,
+  actualWaitForRecordedInbound: undefined as WaitForRecordedInbound | undefined,
   actualWatchRecordedInbound: undefined as WatchRecordedInbound | undefined,
   appendRecordedInbound: vi.fn<AppendRecordedInbound>(),
+  waitForRecordedInbound: vi.fn<WaitForRecordedInbound>(),
   watchRecordedInbound: vi.fn<WatchRecordedInbound>(),
+}));
+const webhookMocks = vi.hoisted(() => ({
+  actualStartWebhookServer: undefined as StartWebhookServer | undefined,
+  startWebhookServer: vi.fn<StartWebhookServer>(),
 }));
 
 vi.mock("../src/providers/recorder.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/providers/recorder.js")>();
   recorderMocks.actualAppendRecordedInbound = actual.appendRecordedInbound;
+  recorderMocks.actualWaitForRecordedInbound = actual.waitForRecordedInbound;
   recorderMocks.actualWatchRecordedInbound = actual.watchRecordedInbound;
   recorderMocks.appendRecordedInbound.mockImplementation(actual.appendRecordedInbound);
+  recorderMocks.waitForRecordedInbound.mockImplementation(actual.waitForRecordedInbound);
   recorderMocks.watchRecordedInbound.mockImplementation(actual.watchRecordedInbound);
   return {
     ...actual,
     appendRecordedInbound: recorderMocks.appendRecordedInbound,
+    waitForRecordedInbound: recorderMocks.waitForRecordedInbound,
     watchRecordedInbound: recorderMocks.watchRecordedInbound,
+  };
+});
+vi.mock("../src/providers/webhook-server.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/providers/webhook-server.js")>();
+  webhookMocks.actualStartWebhookServer = actual.startWebhookServer;
+  webhookMocks.startWebhookServer.mockImplementation(actual.startWebhookServer);
+  return {
+    ...actual,
+    startWebhookServer: webhookMocks.startWebhookServer,
   };
 });
 
@@ -34,8 +55,14 @@ beforeEach(() => {
   recorderMocks.appendRecordedInbound.mockImplementation(
     recorderMocks.actualAppendRecordedInbound!,
   );
+  recorderMocks.waitForRecordedInbound.mockReset();
+  recorderMocks.waitForRecordedInbound.mockImplementation(
+    recorderMocks.actualWaitForRecordedInbound!,
+  );
   recorderMocks.watchRecordedInbound.mockReset();
   recorderMocks.watchRecordedInbound.mockImplementation(recorderMocks.actualWatchRecordedInbound!);
+  webhookMocks.startWebhookServer.mockReset();
+  webhookMocks.startWebhookServer.mockImplementation(webhookMocks.actualStartWebhookServer!);
 });
 
 function createTelegramManifest(recorderPath: string): {
@@ -94,6 +121,125 @@ function createTelegramManifest(recorderPath: string): {
 }
 
 describe("lazy provider lifecycle", () => {
+  it("starts concrete WhatsApp cleanup before draining admitted registry work", async () => {
+    const directory = await createTempDir();
+    const recorderPath = path.join(directory, "whatsapp.jsonl");
+    let cleanup: Promise<void> | undefined;
+    let handle: WebhookHandler | undefined;
+    let markWaitStarted: (() => void) | undefined;
+    let waiting: Promise<unknown> | undefined;
+    const waitStarted = new Promise<void>((resolve) => {
+      markWaitStarted = resolve;
+    });
+    const close = vi.fn(async () => undefined);
+    recorderMocks.waitForRecordedInbound.mockImplementationOnce(async (params) => {
+      markWaitStarted?.();
+      return await recorderMocks.actualWaitForRecordedInbound!(params);
+    });
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handle = params.handle;
+      return {
+        close,
+        endpointUrl: "http://127.0.0.1:43210/whatsapp/webhook",
+      };
+    });
+
+    try {
+      const config: ProviderConfig = {
+        adapter: "whatsapp",
+        capabilities: ["probe", "send", "roundtrip", "agent"],
+        env: [],
+        platform: "whatsapp",
+        status: "active",
+        whatsapp: {
+          recorder: { path: recorderPath },
+          webhook: {
+            host: "127.0.0.1",
+            path: "/whatsapp/webhook",
+            port: 0,
+          },
+        },
+      };
+      const fixture = {
+        env: [],
+        id: "whatsapp-roundtrip",
+        inboundMatch: {
+          author: "assistant" as const,
+          nonce: "contains" as const,
+          strategy: "contains" as const,
+        },
+        mode: "roundtrip" as const,
+        provider: "whatsapp",
+        retries: 0,
+        tags: [],
+        target: { id: "15551234567", metadata: {} },
+        timeoutMs: 500,
+      };
+      const manifest: ManifestDefinition = {
+        configVersion: 1,
+        fixtures: [fixture],
+        providers: { whatsapp: config },
+        userName: "crabline",
+      };
+      const context: ProviderContext = {
+        config,
+        fixture,
+        manifestPath: "/tmp/crabline.yaml",
+        providerId: "whatsapp",
+        userName: "crabline",
+      };
+      const provider = createRegistry(manifest, context.manifestPath).resolve(
+        "whatsapp",
+        fixture.id,
+      );
+      await provider.probe(context);
+      let waitResolved = false;
+      waiting = provider
+        .waitForInbound({
+          ...context,
+          nonce: "registry-cleanup-race",
+          since: new Date().toISOString(),
+          timeoutMs: 200,
+        })
+        .then((result) => {
+          waitResolved = true;
+          return result;
+        });
+      await waitStarted;
+
+      let cleanupResolved = false;
+      cleanup = provider.cleanup?.().then(() => {
+        cleanupResolved = true;
+      });
+
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(waitResolved).toBe(false);
+      expect(cleanupResolved).toBe(false);
+      await expect(
+        handle!(
+          new Request("http://127.0.0.1:43210/whatsapp/webhook", {
+            body: JSON.stringify({
+              id: "wa-rejected-after-registry-cleanup",
+              text: "must not be recorded",
+              threadId: "15551234567",
+            }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          }),
+        ),
+      ).resolves.toMatchObject({ status: 503 });
+      expect(recorderMocks.appendRecordedInbound).not.toHaveBeenCalled();
+
+      await expect(waiting).resolves.toBeNull();
+      await cleanup;
+      await expect(readFile(recorderPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await waiting?.catch(() => undefined);
+      await cleanup?.catch(() => undefined);
+      await disposeTempDir(directory);
+    }
+  });
+
   it("drains an operation admitted before provider materialization", async () => {
     const directory = await createTempDir();
     const recorderPath = path.join(directory, "telegram.jsonl");

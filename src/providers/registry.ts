@@ -26,6 +26,10 @@ type ActiveWatch = {
   abort(): void;
   close(): Promise<void>;
 };
+type AdmittedOperation = {
+  completion: Promise<unknown>;
+  dispatched: Promise<void>;
+};
 type LazyProviderFactory = (params: {
   config: ProviderConfig;
   providerId: string;
@@ -114,9 +118,10 @@ class LazyProviderAdapter implements ProviderAdapter {
   readonly #factory: ProviderFactory;
   readonly #normalizeTarget: ProviderAdapter["normalizeTarget"];
   readonly #activeWatches = new Set<ActiveWatch>();
-  readonly #inFlightOperations = new Set<Promise<unknown>>();
+  readonly #inFlightOperations = new Set<AdmittedOperation>();
   #cleanedUp = false;
   #cleanupPromise: Promise<void> | null = null;
+  #providerInstance: ProviderAdapter | null = null;
   #providerPromise: Promise<ProviderAdapter> | null = null;
 
   constructor(params: {
@@ -143,15 +148,15 @@ class LazyProviderAdapter implements ProviderAdapter {
   }
 
   probe(context: ProviderContext): Promise<ProbeResult> {
-    return this.#runOperation(async () => await (await this.#provider()).probe(context));
+    return this.#runOperation((provider) => provider.probe(context));
   }
 
   send(context: SendContext): Promise<SendResult> {
-    return this.#runOperation(async () => await (await this.#provider()).send(context));
+    return this.#runOperation((provider) => provider.send(context));
   }
 
   waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
-    return this.#runOperation(async () => await (await this.#provider()).waitForInbound(context));
+    return this.#runOperation((provider) => provider.waitForInbound(context));
   }
 
   watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
@@ -242,23 +247,36 @@ class LazyProviderAdapter implements ProviderAdapter {
       watch.abort();
     }
     this.#cleanupPromise ??= (async () => {
+      const operations = [...this.#inFlightOperations];
       const closingWatches = [...this.#activeWatches].map(async (watch) => await watch.close());
-      await Promise.allSettled(this.#inFlightOperations);
+      const providerCleanupBegun = this.#beginProviderCleanup();
+      void providerCleanupBegun.catch(() => undefined);
+      const providerCleanup = this.#cleanupProvider(
+        operations.map((operation) => operation.dispatched),
+        providerCleanupBegun,
+      );
+      void providerCleanup.catch(() => undefined);
+      await Promise.allSettled(operations.map((operation) => operation.completion));
       await Promise.allSettled(closingWatches);
-      await this.#cleanupProvider();
+      await providerCleanup;
     })();
     await this.#cleanupPromise;
   }
 
   async #provider(): Promise<ProviderAdapter> {
     this.#assertActive();
-    this.#providerPromise ??= this.#factory().catch((error: unknown) => {
-      this.#providerPromise = null;
-      throw new CrablineError(
-        `Provider adapter "${this.#adapterName}" could not load. Install its optional peer dependencies before using this adapter.`,
-        { cause: error, kind: "config" },
-      );
-    });
+    this.#providerPromise ??= this.#factory()
+      .then((provider) => {
+        this.#providerInstance = provider;
+        return provider;
+      })
+      .catch((error: unknown) => {
+        this.#providerPromise = null;
+        throw new CrablineError(
+          `Provider adapter "${this.#adapterName}" could not load. Install its optional peer dependencies before using this adapter.`,
+          { cause: error, kind: "config" },
+        );
+      });
     return await this.#providerPromise;
   }
 
@@ -278,25 +296,63 @@ class LazyProviderAdapter implements ProviderAdapter {
     }
   }
 
-  async #cleanupProvider(): Promise<void> {
+  #beginProviderCleanup(): Promise<ProviderAdapter | null> {
+    if (this.#providerInstance) {
+      try {
+        this.#providerInstance.beginCleanup?.();
+        return Promise.resolve(this.#providerInstance);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
     const providerPromise = this.#providerPromise;
     if (!providerPromise) {
-      return;
+      return Promise.resolve(null);
     }
-    await (await providerPromise).cleanup?.();
+    return providerPromise.then((provider) => {
+      provider.beginCleanup?.();
+      return provider;
+    });
   }
 
-  #runOperation<T>(run: () => Promise<T>): Promise<T> {
+  async #cleanupProvider(
+    dispatched: readonly Promise<void>[],
+    providerCleanupBegun: Promise<ProviderAdapter | null>,
+  ): Promise<void> {
+    await Promise.allSettled(dispatched);
+    const provider = await providerCleanupBegun;
+    if (!provider) {
+      return;
+    }
+    await provider.cleanup?.();
+  }
+
+  #runOperation<T>(run: (provider: ProviderAdapter) => Promise<T>): Promise<T> {
     if (this.#cleanedUp) {
       return Promise.reject(this.#cleanedUpError());
     }
-    const operation = run();
+    let markDispatched: (() => void) | undefined;
+    const dispatched = new Promise<void>((resolve) => {
+      markDispatched = resolve;
+    });
+    const completion = (async () => {
+      try {
+        const provider = await this.#provider();
+        const result = run(provider);
+        markDispatched?.();
+        return await result;
+      } catch (error) {
+        markDispatched?.();
+        throw error;
+      }
+    })();
+    const operation = { completion, dispatched };
     this.#inFlightOperations.add(operation);
-    void operation.then(
+    void completion.then(
       () => this.#inFlightOperations.delete(operation),
       () => this.#inFlightOperations.delete(operation),
     );
-    return operation;
+    return completion;
   }
 
   #cleanedUpError(): CrablineError {

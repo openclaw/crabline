@@ -71,10 +71,12 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   readonly #recorderPath: string;
   readonly #webhook: LocalMockWebhookConfig | undefined;
   #cleanedUp = false;
+  #cleanupBegun = false;
   #cleanupPromise: Promise<void> | null = null;
   readonly #inFlightSends = new Set<Promise<SendResult>>();
   readonly #inFlightWebhookRequests = new Set<Promise<Response>>();
   #server: StartedWebhookServer | null = null;
+  #serverClosing: Promise<void> | null = null;
   #serverStarting: Promise<StartedWebhookServer> | null = null;
 
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
@@ -167,20 +169,28 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     }
   }
 
+  beginCleanup(): void {
+    if (this.#cleanupBegun) {
+      return;
+    }
+    this.#cleanupBegun = true;
+    this.#serverClosing = this.#closeWebhookServer();
+    void this.#serverClosing.catch(() => undefined);
+  }
+
   override async cleanup(): Promise<void> {
+    this.beginCleanup();
     this.#cleanedUp = true;
     this.#cleanupPromise ??= (async () => {
-      const closingServer = this.#closeWebhookServer();
-      void closingServer.catch(() => undefined);
       await Promise.allSettled([...this.#inFlightSends, ...this.#inFlightWebhookRequests]);
-      await closingServer;
+      await this.#serverClosing;
       await super.cleanup();
     })();
     await this.#cleanupPromise;
   }
 
   #handleWebhookRequest(request: Request): Promise<Response> {
-    if (this.#cleanedUp) {
+    if (this.#cleanupBegun) {
       return Promise.resolve(this.#cleanedUpResponse());
     }
     const handling = this.#handleWebhook(request);
@@ -235,7 +245,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   async #ensureWebhookServer(): Promise<StartedWebhookServer> {
-    if (this.#cleanedUp) {
+    if (this.#cleanupBegun) {
       throw this.#cleanedUpError();
     }
     if (this.#server) {
@@ -265,7 +275,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       }
 
       this.#server = server;
-      if (this.#cleanedUp) {
+      if (this.#cleanupBegun) {
         throw this.#cleanedUpError();
       }
       return server;

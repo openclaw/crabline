@@ -79,6 +79,8 @@ export interface ProviderAdapter {
   send(context: SendContext): Promise<SendResult>;
   waitForInbound(context: WaitContext): Promise<InboundEnvelope | null>;
   watch?(context: WatchContext): AsyncIterable<InboundEnvelope>;
+  /** Stops external admission synchronously before cleanup drains accepted work. */
+  beginCleanup?(): void;
   cleanup?(): Promise<void>;
 }
 
