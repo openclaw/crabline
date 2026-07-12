@@ -644,6 +644,20 @@ describe("OpenClaw local provider bridge", () => {
       chatId: expect.stringMatching(/^-100\d+$/u),
       messageThreadId: 42,
     });
+    const normalizedTopicInbound = createOpenClawCrablineInbound({
+      manifest,
+      input: {
+        conversation: { id: "alice", kind: "group" },
+        senderId: "alice",
+        text: "normalized topic",
+        threadId: " 42 ",
+      },
+    });
+    expect(normalizedTopicInbound).toMatchObject({
+      providerBody: { messageThreadId: 42 },
+      providerTargetKey: `${symbolicGroupDelivery.to}:topic:42`,
+      threadId: "42",
+    });
 
     const paddedText = "  hello from qa\n";
     expect(
@@ -709,6 +723,25 @@ describe("OpenClaw local provider bridge", () => {
       text: "media caption",
       to: "dm:alice",
     });
+
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest,
+        targetByProviderTarget: new Map([["100001", "dm:alice"]]),
+        event: {
+          type: "api",
+          path: "/botTOKEN/sendAudio",
+          body: {
+            audio: "fixture.mp3",
+            caption: "audio caption",
+            chat_id: "100001",
+          },
+        },
+      }),
+    ).toMatchObject({
+      text: "audio caption",
+      to: "dm:alice",
+    });
   });
 
   it("validates explicit Telegram thread target ids", () => {
@@ -737,6 +770,20 @@ describe("OpenClaw local provider bridge", () => {
         createOpenClawCrablineAgentDelivery({
           manifest,
           target: `thread:alice/${threadId}`,
+        }),
+      ).toThrow("Telegram thread target must be a safe non-negative integer.");
+    }
+
+    for (const threadId of ["-1", "not-a-number", String(Number.MAX_SAFE_INTEGER + 1)]) {
+      expect(() =>
+        createOpenClawCrablineInbound({
+          manifest,
+          input: {
+            conversation: { id: "alice", kind: "group" },
+            senderId: "alice",
+            text: "invalid topic",
+            threadId,
+          },
         }),
       ).toThrow("Telegram thread target must be a safe non-negative integer.");
     }
@@ -1184,6 +1231,7 @@ describe("OpenClaw local provider bridge", () => {
       },
     });
     expect(threadInbound.providerTargetKey).toMatch(/:thread:[a-z0-9]{26}$/u);
+    expect(threadInbound.threadId).toBe(threadInbound.providerBody.rootId);
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
         manifest: mattermostManifest,

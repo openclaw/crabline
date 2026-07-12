@@ -99,7 +99,7 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
           providerTargetKey: targetKey(channelId, rootId),
           qaTarget: qaTargetForInbound(input),
           stateConversation: { id: input.conversation.id, kind },
-          ...(input.threadId ? { threadId: input.threadId } : {}),
+          ...(rootId ? { threadId: rootId } : {}),
         };
       },
       createOutboundFromRecorderEvent({ event, targetByProviderTarget }) {

@@ -70,15 +70,29 @@ const TELEGRAM_BASE_CODEC = createNativeTargetCodec({
 
 const TELEGRAM_CODEC = {
   normalize(target: Parameters<typeof TELEGRAM_BASE_CODEC.normalize>[0]) {
+    const canonicalTopic = target.threadId
+      ? parseCanonicalTelegramTopic(target.threadId)
+      : undefined;
+    const targetChatId = target.channelId ?? target.id;
+    if (
+      canonicalTopic &&
+      requireNativeId(targetChatId, TELEGRAM_CHAT_ID_RULE, "Telegram chat_id") !==
+        canonicalTopic.chatId
+    ) {
+      throw new CrablineError("Telegram canonical topic chat_id must match the target chat_id.", {
+        kind: "config",
+      });
+    }
     const normalized = TELEGRAM_BASE_CODEC.normalize({
       ...target,
+      ...(canonicalTopic ? { channelId: canonicalTopic.chatId } : {}),
       threadId: undefined,
     });
     if (!target.threadId) {
       return normalized;
     }
     const topicId = requireNativeId(
-      target.threadId,
+      canonicalTopic?.topicId ?? target.threadId,
       TELEGRAM_MESSAGE_THREAD_ID_RULE,
       "Telegram message_thread_id",
     );
@@ -93,6 +107,70 @@ const TELEGRAM_CODEC = {
   },
 };
 
+function parseCanonicalTelegramTopic(
+  value: string,
+): { chatId: string; topicId: string } | undefined {
+  const separator = value.lastIndexOf(":");
+  if (separator <= 0) {
+    return undefined;
+  }
+  const chatId = value.slice(0, separator);
+  const topicId = value.slice(separator + 1);
+  if (
+    !TELEGRAM_CHAT_ID_RULE.pattern.test(chatId) ||
+    !TELEGRAM_MESSAGE_THREAD_ID_RULE.pattern.test(topicId)
+  ) {
+    return undefined;
+  }
+  return { chatId, topicId };
+}
+
+function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {
+  const message = optionalRecord(payload, "message");
+  const threadId = message
+    ? optionalString(message, "threadId")
+    : optionalString(payload, "threadId");
+  const canonicalTopic = threadId ? parseCanonicalTelegramTopic(threadId) : undefined;
+  const genericPayload = canonicalTopic
+    ? message
+      ? {
+          ...payload,
+          message: {
+            ...message,
+            threadId: canonicalTopic.topicId,
+          },
+        }
+      : {
+          ...payload,
+          threadId: canonicalTopic.topicId,
+        }
+    : payload;
+  const normalized = genericMockPayloadWithNativeThread({
+    channelRule: TELEGRAM_CHAT_ID_RULE,
+    payload: genericPayload,
+    threadRule: TELEGRAM_MESSAGE_THREAD_ID_RULE,
+  });
+  if (!canonicalTopic) {
+    return normalized;
+  }
+  const normalizedRecord = normalized as Record<string, unknown>;
+  const raw = payload.raw ?? payload;
+  return message
+    ? {
+        ...normalizedRecord,
+        raw,
+        message: {
+          ...(isRecord(normalizedRecord.message) ? normalizedRecord.message : {}),
+          threadId: `${canonicalTopic.chatId}:${canonicalTopic.topicId}`,
+        },
+      }
+    : {
+        ...normalizedRecord,
+        raw,
+        threadId: `${canonicalTopic.chatId}:${canonicalTopic.topicId}`,
+      };
+}
+
 export function normalizeTelegramWebhookPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("Telegram webhook payload must be an object", { kind: "inbound" });
@@ -103,12 +181,8 @@ export function normalizeTelegramWebhookPayload(payload: unknown) {
     optionalRecord(payload, "edited_message") ??
     optionalRecord(payload, "channel_post") ??
     optionalRecord(payload, "edited_channel_post");
-  if (!message) {
-    return genericMockPayloadWithNativeThread({
-      channelRule: TELEGRAM_CHAT_ID_RULE,
-      payload,
-      threadRule: TELEGRAM_MESSAGE_THREAD_ID_RULE,
-    });
+  if (!message || optionalString(message, "threadId")) {
+    return normalizeGenericTelegramPayload(payload);
   }
 
   const chat = optionalRecord(message, "chat");

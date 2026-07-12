@@ -111,6 +111,32 @@ describe("telegram provider", () => {
       channelId: "-100123",
       threadId: "-100123:42",
     });
+    expect(() =>
+      provider.normalizeTarget({
+        channelId: "-100999",
+        id: "topic",
+        metadata: {},
+        threadId: "-100123:42",
+      }),
+    ).toThrow("Telegram canonical topic chat_id must match the target chat_id.");
+    expect(() =>
+      provider.normalizeTarget({
+        id: "-100999",
+        metadata: {},
+        threadId: "-100123:42",
+      }),
+    ).toThrow("Telegram canonical topic chat_id must match the target chat_id.");
+    expect(
+      provider.normalizeTarget({
+        channelId: "-100123",
+        id: "topic",
+        metadata: {},
+        threadId: "-100123:42",
+      }),
+    ).toMatchObject({
+      channelId: "-100123",
+      threadId: "-100123:42",
+    });
     expect(() => provider.normalizeTarget({ id: "telegram:-100123", metadata: {} })).toThrow(
       /Telegram chat_id/u,
     );
@@ -137,6 +163,38 @@ describe("telegram provider", () => {
     expect(firstThreadId).toBe("-1001:42");
     expect(secondThreadId).toBe("-1002:42");
     expect(firstThreadId).not.toBe(secondThreadId);
+  });
+
+  it("round-trips canonical topic ids through generic ingress", () => {
+    const topLevel = {
+      authorIsBot: true,
+      id: "generic-1",
+      text: "generic topic reply",
+      threadId: "-100123:42",
+    };
+    expect(normalizeTelegramWebhookPayload(topLevel)).toMatchObject({
+      id: "generic-1",
+      raw: topLevel,
+      text: "generic topic reply",
+      threadId: "-100123:42",
+    });
+
+    const nested = {
+      message: {
+        authorIsBot: true,
+        id: "generic-2",
+        text: "nested topic reply",
+        threadId: "-100123:42",
+      },
+    };
+    expect(normalizeTelegramWebhookPayload(nested)).toMatchObject({
+      raw: nested,
+      message: {
+        id: "generic-2",
+        text: "nested topic reply",
+        threadId: "-100123:42",
+      },
+    });
   });
 
   it("normalizes edited channel posts", () => {

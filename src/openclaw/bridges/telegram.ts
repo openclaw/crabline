@@ -5,7 +5,6 @@ import {
   DEFAULT_ACCOUNT_ID,
   isRecord,
   qaTargetForInbound,
-  readInteger,
   readNonBlankString,
   readString,
 } from "../shared.js";
@@ -15,7 +14,7 @@ const TELEGRAM_SYMBOLIC_DIRECT_ID_MASK = TELEGRAM_SYMBOLIC_DIRECT_ID_BASE - 1n;
 const TELEGRAM_SYMBOLIC_GROUP_ID_BASE = 1_000_000_000_000n;
 const TELEGRAM_SYMBOLIC_GROUP_ID_RANGE = 10_000_000_000n;
 const TELEGRAM_OUTBOUND_METHOD_RE =
-  /\/(sendAnimation|sendDocument|sendMessage|sendPhoto|sendVideo)$/u;
+  /\/(sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/u;
 
 function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
   const value = id.trim();
@@ -36,12 +35,12 @@ function telegramTargetKey(chatId: string, threadId?: number) {
   return threadId === undefined ? chatId : `${chatId}:topic:${threadId}`;
 }
 
-function parseTelegramThreadTargetId(value: string | undefined): number | undefined {
+function parseTelegramThreadTargetId(value: unknown): number | undefined {
   if (value === undefined) {
     return undefined;
   }
-  const trimmed = value.trim();
-  if (!/^\d+$/u.test(trimmed)) {
+  const trimmed = readString(value);
+  if (!trimmed || !/^\d+$/u.test(trimmed)) {
     throw new Error("Telegram thread target must be a safe non-negative integer.");
   }
   const threadId = Number(trimmed);
@@ -130,7 +129,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
       createInbound(input) {
         const kind = input.conversation.kind === "direct" ? "direct" : "group";
         const chatId = normalizeTelegramChatId(kind, input.conversation.id);
-        const threadId = readInteger(input.threadId);
+        const threadId = parseTelegramThreadTargetId(input.threadId);
         return {
           ...createAdminInboundRequest(telegram),
           providerBody: {
@@ -176,7 +175,12 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (!chatId || !text) {
           return null;
         }
-        const threadId = readInteger(event.body.message_thread_id);
+        let threadId: number | undefined;
+        try {
+          threadId = parseTelegramThreadTargetId(event.body.message_thread_id);
+        } catch {
+          return null;
+        }
         const providerTargetKey = telegramTargetKey(chatId, threadId);
         return {
           accountId: DEFAULT_ACCOUNT_ID,
