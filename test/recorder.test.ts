@@ -123,6 +123,34 @@ describe("recorder", () => {
     });
   });
 
+  it("does not collapse distinct records whose fields contain delimiters", async () => {
+    const filePath = await createRecorderPath();
+    await appendRecordedInbound(filePath, {
+      author: "assistant",
+      id: "c",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "first",
+      threadId: "a:b",
+    });
+    const expected = await appendRecordedInbound(filePath, {
+      author: "assistant",
+      id: "b:c",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "second",
+      threadId: "a",
+    });
+
+    await expect(
+      waitForRecordedInbound({
+        filePath,
+        matches: (event) => event.text === "second",
+        timeoutMs: 30,
+      }),
+    ).resolves.toEqual(expected);
+  });
+
   it("times out when no matching event arrives", async () => {
     const filePath = await createRecorderPath();
 
