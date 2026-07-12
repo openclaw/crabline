@@ -55,6 +55,20 @@ describe("config load", () => {
     expect(loaded.path).toBe(configPath);
   });
 
+  it("rejects duplicate keys in JSON manifests", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.json");
+    await writeText(
+      configPath,
+      '{"configVersion":1,"providers":{"local":{"adapter":"loopback","adapter":"script"}},"fixtures":[]}',
+    );
+
+    await expect(loadManifest(configPath)).rejects.toThrow(
+      /JSON parse error: duplicate object key/u,
+    );
+  });
+
   it("parses explicit JSON paths case-insensitively", async () => {
     const directory = await createTempDir();
     directories.push(directory);

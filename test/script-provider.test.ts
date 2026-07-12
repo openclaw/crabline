@@ -351,6 +351,27 @@ describe("script provider", () => {
     ).resolves.toBeNull();
   });
 
+  it("passes excluded inbound IDs to stateless wait commands", async () => {
+    const context = await createContext();
+    const waitScript = path.join(path.dirname(context.manifestPath), "wait-exclusions.mjs");
+    await writeText(
+      waitScript,
+      'let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{const input=JSON.parse(raw);process.stdout.write(JSON.stringify({message:{author:"assistant",id:"inbound-after-exclusions",sentAt:new Date().toISOString(),text:JSON.stringify(input.wait.excludeIds),threadId:"thread-1"}}));});',
+    );
+    context.config.script!.commands.waitForInbound = `node ${waitScript}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        excludeIds: ["seen-1", "seen-2"],
+        nonce: "nonce",
+        since: new Date().toISOString(),
+        timeoutMs: 1000,
+      }),
+    ).resolves.toMatchObject({ text: '["seen-1","seen-2"]' });
+  });
+
   it("rejects inbound messages returned during the wait exit grace", async () => {
     const context = await createContext();
     const waitScript = path.join(path.dirname(context.manifestPath), "wait-late-message.mjs");

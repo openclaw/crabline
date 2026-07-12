@@ -114,8 +114,27 @@ type MockWebhookPayload = {
   threadId?: string;
 };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => signal?.removeEventListener("abort", abort);
+    const abort = () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      cleanup();
+      reject(signal?.reason ?? new Error("Provider operation aborted."));
+    };
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function isAddressInChannel(threadId: string, channelId?: string): boolean {
@@ -237,7 +256,9 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async probe(context: ProviderContext): Promise<ProbeResult> {
+    context.signal?.throwIfAborted();
     const server = await this.#ensureWebhookServer();
+    context.signal?.throwIfAborted();
     const target = this.normalizeTarget(context.fixture.target);
     const details = [
       `${this.platform} local mock ready`,
@@ -273,9 +294,10 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async #send(context: SendContext): Promise<SendResult> {
+    const { signal } = context;
     const threadId = this.#codec.resolveThreadId(context.fixture.target);
     const messageId = createMessageId(this.platform);
-    this.#assertActive();
+    signal?.throwIfAborted();
     await appendRecordedInbound(this.#recorderPath, {
       author: "user",
       id: messageId,
@@ -292,7 +314,8 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     });
 
     if (context.mode !== "send" && context.fixture.target.behavior !== "sink") {
-      await sleep(this.#config.loopback?.delayMs ?? 25);
+      await sleep(this.#config.loopback?.delayMs ?? 25, signal);
+      signal?.throwIfAborted();
       await appendRecordedInbound(this.#recorderPath, {
         author: "assistant",
         id: `${messageId}-reply`,

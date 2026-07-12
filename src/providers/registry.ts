@@ -170,11 +170,11 @@ export class LazyProviderAdapter implements ProviderAdapter {
   }
 
   probe(context: ProviderContext): Promise<ProbeResult> {
-    return this.#runOperation((provider) => provider.probe(context));
+    return this.#runOperation((provider) => provider.probe(context), context.signal);
   }
 
   send(context: SendContext): Promise<SendResult> {
-    return this.#runOperation((provider) => provider.send(context));
+    return this.#runOperation((provider) => provider.send(context), context.signal);
   }
 
   waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {

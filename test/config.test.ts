@@ -238,6 +238,24 @@ describe("manifest schema", () => {
     expect(manifest.fixtures[0]?.inboundMatch.author).toBe("assistant");
   });
 
+  it("rejects fixture timeouts above Node's timer ceiling", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [
+          {
+            id: "oversized-timeout",
+            mode: "send",
+            provider: "local",
+            target: { id: "sink-bot" },
+            timeoutMs: 2_147_483_648,
+          },
+        ],
+        providers: { local: { adapter: "loopback" } },
+      }),
+    ).toThrow(/2147483647/u);
+  });
+
   it("rejects unknown keys throughout user-authored config", () => {
     const base = {
       configVersion: 1,

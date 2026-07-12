@@ -48,6 +48,7 @@ export type ProviderContext = {
   fixture: FixtureDefinition;
   manifestPath: string;
   providerId: string;
+  signal?: AbortSignal | undefined;
   userName: string;
 };
 
@@ -58,8 +59,8 @@ export type SendContext = ProviderContext & {
 };
 
 export type WaitContext = ProviderContext & {
+  excludeIds?: readonly string[] | undefined;
   nonce: string;
-  signal?: AbortSignal | undefined;
   since: string;
   threadId?: string | undefined;
   timeoutMs: number;
