@@ -390,6 +390,44 @@ describe("lazy provider lifecycle", () => {
     }
   });
 
+  it("does not let an aborted lazy inbound wait block cleanup", async () => {
+    const directory = await createTempDir();
+    const recorderPath = path.join(directory, "telegram.jsonl");
+    let markWaitStarted: (() => void) | undefined;
+    const waitStarted = new Promise<void>((resolve) => {
+      markWaitStarted = resolve;
+    });
+    recorderMocks.waitForRecordedInbound.mockImplementationOnce(async () => {
+      markWaitStarted?.();
+      return await new Promise<never>(() => undefined);
+    });
+
+    try {
+      const { context, manifest } = createTelegramManifest(recorderPath);
+      const provider = createRegistry(manifest, context.manifestPath).resolve(
+        "telegram",
+        context.fixture.id,
+      );
+      const controller = new AbortController();
+      const waiting = provider.waitForInbound({
+        ...context,
+        nonce: "aborted-lazy-wait",
+        signal: controller.signal,
+        since: new Date().toISOString(),
+        timeoutMs: 100,
+      });
+      await waitStarted;
+      const abortReason = new Error("inbound deadline reached");
+
+      controller.abort(abortReason);
+
+      await expect(waiting).rejects.toBe(abortReason);
+      await expect(provider.cleanup?.()).resolves.toBeUndefined();
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
   it("cancels and drains an admitted watch before cleanup resolves", async () => {
     const directory = await createTempDir();
     const recorderPath = path.join(directory, "telegram.jsonl");

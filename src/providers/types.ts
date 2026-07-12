@@ -59,6 +59,7 @@ export type SendContext = ProviderContext & {
 
 export type WaitContext = ProviderContext & {
   nonce: string;
+  signal?: AbortSignal | undefined;
   since: string;
   threadId?: string | undefined;
   timeoutMs: number;

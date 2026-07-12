@@ -233,13 +233,14 @@ export async function waitForRecordedInbound(params: {
   filePath: string;
   matches: (event: RecordedInboundEnvelope) => boolean;
   pollMs?: number;
+  signal?: AbortSignal | undefined;
   since?: string | undefined;
   timeoutMs: number;
 }): Promise<RecordedInboundEnvelope | null> {
   const deadline = Date.now() + params.timeoutMs;
   const cursor = params.cursor ?? createRecordedInboundCursor();
 
-  while (Date.now() <= deadline) {
+  while (!params.signal?.aborted && Date.now() <= deadline) {
     const events =
       cursor.buffered.length > 0
         ? cursor.buffered.splice(0)
@@ -265,7 +266,7 @@ export async function waitForRecordedInbound(params: {
     if (remainingMs <= 0) {
       return null;
     }
-    await sleep(Math.min(params.pollMs ?? 200, remainingMs));
+    await sleep(Math.min(params.pollMs ?? 200, remainingMs), params.signal);
   }
 
   return null;

@@ -218,6 +218,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
           (expectedAuthor === "any" || candidate.author === expectedAuthor) &&
           isAddressInChannel(candidate.threadId, channelId),
         since: context.since,
+        signal: context.signal,
         timeoutMs: context.timeoutMs,
       });
       if (!event) {
