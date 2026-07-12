@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   acquireOpenClawCrablineSmokeRunLock,
+  processIdentityFromDarwin,
   processIdentityFromLinuxStat,
   releaseOpenClawCrablineSmokeRunLock,
 } from "../src/openclaw/smoke-lock.js";
@@ -20,9 +21,20 @@ describe("OpenClaw smoke lock cleanup", () => {
     expect(
       processIdentityFromLinuxStat(
         "4242 (command with spaces) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 123456",
+        "01234567-89ab-cdef-0123-456789abcdef",
       ),
-    ).toBe("linux:123456");
-    expect(processIdentityFromLinuxStat("malformed")).toBeNull();
+    ).toBe("linux:01234567-89ab-cdef-0123-456789abcdef:123456");
+    expect(processIdentityFromLinuxStat("malformed", "not-a-boot-id")).toBeNull();
+  });
+
+  it("combines Darwin boot and process start identities", () => {
+    expect(
+      processIdentityFromDarwin(
+        "Sun Jul 12 16:04:00 2026",
+        "{ sec = 1783864000, usec = 123456 } Sun Jul 12 15:46:40 2026",
+      ),
+    ).toBe("darwin:1783864000.123456:Sun Jul 12 16:04:00 2026");
+    expect(processIdentityFromDarwin("", "{ sec = 1, usec = 2 }")).toBeNull();
   });
 
   it("secures an empty Windows lock directory before writing sensitive contents", async () => {
