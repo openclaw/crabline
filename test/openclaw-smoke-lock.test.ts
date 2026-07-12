@@ -407,7 +407,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("reclaims an expired legacy lock even when its PID was reused", async () => {
+  it("keeps an expired legacy lock while its PID is still alive", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
@@ -428,16 +428,15 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
       await fs.utimes(ownerPath, new Date(1_000), new Date(1_000));
 
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
-        isProcessAlive: () => true,
-        leaseMs: 1_000,
-        now: () => 3_001,
-        pid: 5_252,
-        processStartedAtMs: 200,
-      });
-
-      await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
-      await replacementLock.release();
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(params, {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => 3_001,
+          pid: 5_252,
+          processStartedAtMs: 200,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
     } finally {
       await disposeTempDir(outputDir);
     }

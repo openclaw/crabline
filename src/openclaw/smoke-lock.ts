@@ -415,16 +415,11 @@ function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): 
       return false;
     }
     if (!isRenewableOwner(owner) && actualProcessStartedAtMs === null) {
-      const ageMs = runtime.now() - Math.max(owner.createdAtMs, record.renewedAtMs);
-      return ageMs <= runtime.leaseMs * 2;
+      return true;
     }
   }
   if (!isRenewableOwner(owner)) {
-    if (hasProcessIdentity(owner)) {
-      return true;
-    }
-    const ageMs = runtime.now() - record.renewedAtMs;
-    return ageMs <= runtime.leaseMs * 2;
+    return true;
   }
   const ageMs = runtime.now() - Math.max(owner.createdAtMs, record.renewedAtMs);
   return ageMs >= -runtime.leaseMs && ageMs <= runtime.leaseMs;

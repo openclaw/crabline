@@ -75,7 +75,7 @@ export async function runFixtureCommand(params: {
     mode === configuredFixture.mode ? configuredFixture : { ...configuredFixture, mode };
   const provider = params.registry.resolve(fixture.provider, fixture.id);
   const diagnostics: string[] = [];
-  let deferredCleanupOperation: Promise<unknown> | null = null;
+  let abortDrainFailed = false;
 
   if (!provider.supports.includes(mode)) {
     return {
@@ -201,7 +201,7 @@ export async function runFixtureCommand(params: {
             const candidate = await raceInboundDeadline(wait, timeoutMs);
             if (candidate === INBOUND_DEADLINE_REACHED) {
               if (!(await abortAndDrainInboundWait(wait, controller))) {
-                deferredCleanupOperation = wait;
+                abortDrainFailed = true;
                 throw new CrablineError(
                   `Provider inbound wait did not settle within ${INBOUND_ABORT_GRACE_MS}ms after abort.`,
                   { kind: "inbound" },
@@ -227,7 +227,7 @@ export async function runFixtureCommand(params: {
           }
         } catch (error) {
           lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "inbound", nonce);
-          if (deferredCleanupOperation) {
+          if (abortDrainFailed) {
             break;
           }
           continue;
@@ -271,34 +271,27 @@ export async function runFixtureCommand(params: {
       providerId: fixture.provider,
     });
   } finally {
-    if (deferredCleanupOperation) {
-      void deferredCleanupOperation
-        .catch(() => undefined)
-        .then(async () => await provider.cleanup?.())
-        .catch(() => undefined);
-    } else {
-      try {
-        await provider.cleanup?.();
-      } catch (error) {
-        const diagnostic = `cleanup failed: ${ensureErrorMessage(error)}`;
-        if (result) {
-          result.diagnostics.push(diagnostic);
-          if (result.ok) {
-            result.exitCode = EXIT_CODES.ASSERTION;
-            result.failureKind = "assertion";
-            result.ok = false;
-          }
-        } else {
-          result = {
-            diagnostics: [...diagnostics, diagnostic],
-            exitCode: EXIT_CODES.ASSERTION,
-            failureKind: "assertion",
-            fixtureId: fixture.id,
-            mode,
-            ok: false,
-            providerId: fixture.provider,
-          };
+    try {
+      await provider.cleanup?.();
+    } catch (error) {
+      const diagnostic = `cleanup failed: ${ensureErrorMessage(error)}`;
+      if (result) {
+        result.diagnostics.push(diagnostic);
+        if (result.ok) {
+          result.exitCode = EXIT_CODES.ASSERTION;
+          result.failureKind = "assertion";
+          result.ok = false;
         }
+      } else {
+        result = {
+          diagnostics: [...diagnostics, diagnostic],
+          exitCode: EXIT_CODES.ASSERTION,
+          failureKind: "assertion",
+          fixtureId: fixture.id,
+          mode,
+          ok: false,
+          providerId: fixture.provider,
+        };
       }
     }
   }

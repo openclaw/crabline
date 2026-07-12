@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { runFixtureCommand } from "../src/core/run.js";
 import type { ManifestDefinition } from "../src/config/schema.js";
 import { OPENCLAW_SUPPORT_CATALOG } from "../src/providers/catalog.js";
@@ -155,8 +155,9 @@ describe("runFixtureCommand retries", () => {
     expect(maxActiveWaits).toBe(1);
   });
 
-  it("stops retrying and defers cleanup when an aborted wait does not settle", async () => {
+  it("stops retrying and lets cleanup cancel an aborted wait that does not settle", async () => {
     let cleanupCalls = 0;
+    let keepAlive: ReturnType<typeof setInterval> | undefined;
     let releaseWait: (() => void) | undefined;
     let sendCalls = 0;
     let waitCalls = 0;
@@ -178,11 +179,14 @@ describe("runFixtureCommand retries", () => {
       async waitForInbound() {
         waitCalls += 1;
         return await new Promise<null>((resolve) => {
+          keepAlive = setInterval(() => undefined, 1_000);
           releaseWait = () => resolve(null);
         });
       },
       async cleanup() {
         cleanupCalls += 1;
+        clearInterval(keepAlive);
+        releaseWait?.();
       },
     };
     const registry: Registry = {
@@ -205,9 +209,6 @@ describe("runFixtureCommand retries", () => {
     );
     expect(sendCalls).toBe(1);
     expect(waitCalls).toBe(1);
-    expect(cleanupCalls).toBe(0);
-
-    releaseWait?.();
-    await vi.waitFor(() => expect(cleanupCalls).toBe(1));
+    expect(cleanupCalls).toBe(1);
   });
 });
