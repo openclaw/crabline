@@ -49,7 +49,9 @@ function createConfig(recorderPath?: string): ProviderConfig {
     platform: "whatsapp",
     status: "active",
     whatsapp: {
+      appSecret: "test-token-placeholder",
       recorder: recorderPath ? { path: recorderPath } : {},
+      verifyToken: "test-token-placeholder",
       webhook: {
         host: "127.0.0.1",
         path: "/whatsapp/webhook",
@@ -85,7 +87,7 @@ function signedWhatsAppRequest(body: unknown): Request {
     body: rawBody,
     headers: {
       "content-type": "application/json",
-      "x-hub-signature-256": `sha256=${createHmac("sha256", "local-mock-secret").update(rawBody).digest("hex")}`,
+      "x-hub-signature-256": `sha256=${createHmac("sha256", "test-token-placeholder").update(rawBody).digest("hex")}`,
     },
     method: "POST",
   });

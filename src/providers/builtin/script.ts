@@ -139,6 +139,9 @@ function collectSensitivePayloadValues(
   if (typeof value === "string") {
     if (sensitive && value.length > 0) {
       values.add(value);
+      const serialized = JSON.stringify(value);
+      values.add(serialized);
+      values.add(serialized.slice(1, -1));
     }
     return;
   }

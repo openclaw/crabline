@@ -78,7 +78,7 @@ execution.
 The built-in `whatsapp` adapter implements Meta's GET verification challenge
 and requires `X-Hub-Signature-256` on POST requests. Set `whatsapp.appSecret`
 and `whatsapp.verifyToken` (or `WHATSAPP_APP_SECRET` and
-`WHATSAPP_VERIFY_TOKEN`) to override the local mock defaults.
+`WHATSAPP_VERIFY_TOKEN`) before starting its webhook.
 
 ## Script Bridge Config
 

@@ -12,7 +12,7 @@ import {
   runLocalMockProviderContract,
 } from "./local-mock-provider-helpers.js";
 
-function whatsappSignature(body: string, signingKey = "local-mock-secret"): string {
+function whatsappSignature(body: string, signingKey = "test-token-placeholder"): string {
   return `sha256=${createHmac("sha256", signingKey).update(body).digest("hex")}`;
 }
 
@@ -171,10 +171,10 @@ describe("WhatsApp webhook normalizer", () => {
 
   it("verifies webhook subscriptions and POST signatures", async () => {
     const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
-    const signingKey = "configured-app-secret";
-    const verificationValue = "configured-verify-token";
-    config.whatsapp!.appSecret = signingKey;
-    Reflect.set(config.whatsapp!, "verifyToken", verificationValue);
+    const signingKey = "test-token-placeholder";
+    const verificationValue = "test-token-placeholder";
+    config.whatsapp!.appSecret = "test-token-placeholder";
+    config.whatsapp!.verifyToken = "test-token-placeholder";
     const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
     const context = createProviderContext("whatsapp", config, {
       id: "15551234567",
@@ -241,6 +241,16 @@ describe("WhatsApp webhook normalizer", () => {
     } finally {
       await provider.cleanup();
     }
+  });
+
+  it("requires explicit webhook authentication configuration", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    delete config.whatsapp!.appSecret;
+    delete config.whatsapp!.verifyToken;
+
+    expect(() => new WhatsAppProviderAdapter("whatsapp", config, "crabline")).toThrow(
+      "requires appSecret and verifyToken",
+    );
   });
 
   it("rejects a secondary probe when the webhook listener is occupied", async () => {
