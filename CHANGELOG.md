@@ -6,6 +6,7 @@
 - Redact inherited secret-named environment values from script diagnostics.
 - Verify production tarballs through their installed npm command shims.
 - Enforce Telegram method and long-poll contracts, hide shared server exception details, and return native Matrix filter and internal errors.
+- Preserve recorder continuity across file replacement, keep fixture waits on one outbound until a match, and require canonical nonce tokens.
 - Serialize WhatsApp Noise frames per session and reject invalid X25519 peer keys.
 - Serialize recorder persistence and reject overlapping OpenClaw smoke artifact runs.
 - Make CLI failures machine-readable, preserve stage-specific failure contracts, validate fixture provider references, redact script commands, and verify production-only tarball installs.
