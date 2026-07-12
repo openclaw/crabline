@@ -225,16 +225,23 @@ function syncRoom(room: MatrixRoom, since: number | undefined) {
   };
 }
 
-function parseSyncToken(value: string | null): number | undefined {
-  if (!value) {
+function parseSyncToken(value: string | null): number | null | undefined {
+  if (value === null) {
     return undefined;
   }
   const match = /^s(\d+)$/u.exec(value);
-  return match ? Number(match[1]) : undefined;
+  if (!match) {
+    return null;
+  }
+  const sequence = Number(match[1]);
+  return Number.isSafeInteger(sequence) ? sequence : null;
 }
 
 async function handleSync(url: URL, state: MatrixServerState): Promise<Response> {
   const since = parseSyncToken(url.searchParams.get("since"));
+  if (since === null) {
+    return matrixError("M_UNKNOWN_POS", "Unknown position", 400);
+  }
   const timeout = Math.min(readInteger(url.searchParams.get("timeout")) ?? 0, 1_000);
   const hasNewEvents = [...state.rooms.values()].some((room) =>
     room.timeline.some((entry) => since === undefined || entry.sequence > since),

@@ -211,6 +211,39 @@ describe("Matrix local provider server", () => {
     });
   });
 
+  it("returns M_UNKNOWN_POS for malformed sync tokens instead of initial sync", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startMatrixServer({
+      accessToken: "matrix-token",
+      recorderPath: path.join(directory, "matrix-sync-token.jsonl"),
+    });
+    servers.push(server);
+
+    for (const since of ["", "0", "s-1", "snot-a-sequence", `s${"9".repeat(32)}`]) {
+      const response = await fetch(
+        `${server.manifest.endpoints.syncUrl}?since=${encodeURIComponent(since)}`,
+        {
+          headers: auth("matrix-token"),
+        },
+      );
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        errcode: "M_UNKNOWN_POS",
+        error: "Unknown position",
+      });
+    }
+
+    const initial = await fetch(server.manifest.endpoints.syncUrl, {
+      headers: auth("matrix-token"),
+    });
+    expect(initial.status).toBe(200);
+    await expect(initial.json()).resolves.toMatchObject({
+      next_batch: expect.stringMatching(/^s\d+$/u),
+      rooms: { join: expect.any(Object) },
+    });
+  });
+
   it("returns provider-native internal errors without exception details", async () => {
     const directory = await createTempDir();
     directories.push(directory);
