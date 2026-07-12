@@ -24,8 +24,10 @@ export function decodeHandshakeMessage(data: Uint8Array): HandshakeMessage {
     const tag = reader.uint32();
     const field = tag >>> 3;
     if (field === 2) {
+      requireBytesWireType(tag, field);
       message.clientHello = decodeClientHello(reader.bytes());
     } else if (field === 4) {
+      requireBytesWireType(tag, field);
       message.clientFinish = decodeClientFinish(reader.bytes());
     } else {
       reader.skip(tag & 7);
@@ -48,6 +50,7 @@ function decodeClientHello(data: Uint8Array): NonNullable<HandshakeMessage["clie
   while (!reader.done()) {
     const tag = reader.uint32();
     if (tag >>> 3 === 1) {
+      requireBytesWireType(tag, 1);
       ephemeral = reader.bytes();
     } else {
       reader.skip(tag & 7);
@@ -64,8 +67,10 @@ function decodeClientFinish(data: Uint8Array): NonNullable<HandshakeMessage["cli
     const tag = reader.uint32();
     const field = tag >>> 3;
     if (field === 1) {
+      requireBytesWireType(tag, field);
       staticKey = reader.bytes();
     } else if (field === 2) {
+      requireBytesWireType(tag, field);
       payload = reader.bytes();
     } else {
       reader.skip(tag & 7);
@@ -75,6 +80,15 @@ function decodeClientFinish(data: Uint8Array): NonNullable<HandshakeMessage["cli
     ...(payload === undefined ? {} : { payload }),
     ...(staticKey === undefined ? {} : { staticKey }),
   };
+}
+
+function requireBytesWireType(tag: number, field: number): void {
+  const wireType = tag & 7;
+  if (wireType !== 2) {
+    throw new Error(
+      `Invalid WhatsApp handshake wire type ${wireType} for length-delimited field ${field}.`,
+    );
+  }
 }
 
 function encodeServerHello(serverHello: NonNullable<HandshakeMessage["serverHello"]>): Buffer {

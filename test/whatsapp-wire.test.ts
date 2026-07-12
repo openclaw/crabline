@@ -8,7 +8,7 @@ import {
   WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES,
   type BinaryNode,
 } from "../src/servers/whatsapp-wire/binary-node.js";
-import { Curve } from "../src/servers/whatsapp-wire/crypto.js";
+import { aesDecryptGCM, aesEncryptGCM, Curve } from "../src/servers/whatsapp-wire/crypto.js";
 import { decodeHandshakeMessage } from "../src/servers/whatsapp-wire/handshake.js";
 import { createSerializedMessageHandler } from "../src/servers/whatsapp-baileys-websocket.js";
 
@@ -47,6 +47,20 @@ describe("WhatsApp X25519 agreement", () => {
     );
     expect(() => BaileysCurve.sharedKey(RFC_7748_ALICE_PRIVATE, Buffer.alloc(32))).toThrow(
       "failed during derivation",
+    );
+  });
+});
+
+describe("WhatsApp AES-GCM framing", () => {
+  it("requires a complete authentication tag", () => {
+    const key = Buffer.alloc(32, 1);
+    const iv = Buffer.alloc(12, 2);
+    const additionalData = Buffer.from("noise");
+    const encrypted = aesEncryptGCM(Buffer.from("payload"), key, iv, additionalData);
+
+    expect(aesDecryptGCM(encrypted, key, iv, additionalData)).toEqual(Buffer.from("payload"));
+    expect(() => aesDecryptGCM(Buffer.alloc(15), key, iv, additionalData)).toThrow(
+      "must include a 16-byte authentication tag",
     );
   });
 });
@@ -104,10 +118,16 @@ describe("WhatsApp handshake protobufs", () => {
     expect(message.clientHello?.ephemeral).toEqual(Buffer.from([0x2a]));
   });
 
-  it("keeps Baileys field-number dispatch for known fields", () => {
-    expect(decodeHandshakeMessage(Buffer.from([0x10, 0x00]))).toEqual({
-      clientHello: {},
-    });
+  it("rejects known fields encoded with non-length-delimited wire types", () => {
+    for (const message of [
+      Buffer.from([0x10, 0x00]),
+      Buffer.from([0x11, 0, 0, 0, 0, 0, 0, 0, 0]),
+      Buffer.from([0x15, 0, 0, 0, 0]),
+      Buffer.from([0x12, 0x02, 0x08, 0x00]),
+      Buffer.from([0x22, 0x02, 0x10, 0x00]),
+    ]) {
+      expect(() => decodeHandshakeMessage(message)).toThrow("Invalid WhatsApp handshake wire type");
+    }
   });
 
   it("keeps handshake tags and lengths bounded to uint32 varints", () => {
@@ -150,11 +170,16 @@ describe("WhatsApp binary nodes", () => {
     expect(() => encodeBinaryNode(node)).toThrow("WhatsApp binary node list is too large: 65536.");
   });
 
-  it("decodes nodes at the nesting limit while ignoring trailing bytes", async () => {
+  it("decodes nodes at the nesting limit and rejects trailing bytes", async () => {
     const node = nestedNode(WHATSAPP_BINARY_NODE_MAX_DEPTH);
-    const frame = Buffer.concat([encodeBinaryNode(node), Buffer.from([0xff])]);
 
-    await expect(decodeBinaryNode(frame)).resolves.toEqual(node);
+    await expect(decodeBinaryNode(encodeBinaryNode(node))).resolves.toEqual(node);
+    await expect(
+      decodeBinaryNode(Buffer.concat([encodeBinaryNode(node), Buffer.from([0xff])])),
+    ).rejects.toThrow("frame contains trailing data");
+    await expect(
+      decodeBinaryNode(Buffer.concat([encodeBinaryNode(node), encodeBinaryNode(node)])),
+    ).rejects.toThrow("frame contains trailing data");
   });
 
   it("rejects nodes beyond the nesting limit", async () => {
