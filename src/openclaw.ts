@@ -17,6 +17,8 @@ import {
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
+  OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
+  OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
   parseQaTarget,
   runOpenClawCrablineProviderProbe,
@@ -33,17 +35,17 @@ import {
   type StartedOpenClawCrablineAdapter,
   type StartOpenClawCrablineAdapterParams,
 } from "./openclaw/shared.js";
-import { publishPrivateFileAtomically } from "./openclaw/private-file.js";
+import { publishOpenClawCrablineArtifactGeneration } from "./openclaw/artifact-generation.js";
 import {
   acquireOpenClawCrablineSmokeRunLock,
   releaseOpenClawCrablineSmokeRunLock,
-  type OpenClawCrablineSmokeRunLock,
 } from "./openclaw/smoke-lock.js";
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
 export {
+  OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
+  OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
   OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
@@ -180,88 +182,12 @@ export async function startOpenClawCrablineAdapter(
   };
 }
 
-type SmokeArtifact = {
-  contents: string;
-  filePath: string;
-};
-
 type SmokeRunDependencies = {
   acquireLock?: typeof acquireOpenClawCrablineSmokeRunLock;
-  publishFile?: typeof publishPrivateFileAtomically;
+  publishGeneration?: typeof publishOpenClawCrablineArtifactGeneration;
   releaseLock?: typeof releaseOpenClawCrablineSmokeRunLock;
   startAdapter?: typeof startOpenClawCrablineAdapter;
 };
-
-function isMissingPathError(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException).code === "ENOENT";
-}
-
-async function publishSmokeArtifactSet(params: {
-  artifacts: readonly SmokeArtifact[];
-  lock: OpenClawCrablineSmokeRunLock;
-  publishFile: typeof publishPrivateFileAtomically;
-  releaseLock: typeof releaseOpenClawCrablineSmokeRunLock;
-}): Promise<void> {
-  const transactionId = randomUUID();
-  const backups = params.artifacts.map(({ filePath }) => ({
-    backupPath: path.join(
-      path.dirname(filePath),
-      `.${path.basename(filePath)}.${process.pid}.${transactionId}.backup`,
-    ),
-    filePath,
-    moved: false,
-  }));
-  let generationInstalled = false;
-
-  try {
-    await params.lock.assertOwned();
-    for (const backup of backups) {
-      try {
-        await fs.rename(backup.filePath, backup.backupPath);
-        backup.moved = true;
-      } catch (error) {
-        if (!isMissingPathError(error)) {
-          throw error;
-        }
-      }
-    }
-    for (const artifact of params.artifacts) {
-      await params.publishFile(artifact.filePath, artifact.contents);
-    }
-    await params.lock.prepareForRelease();
-    await params.releaseLock(params.lock);
-    generationInstalled = true;
-  } catch (error) {
-    const rollbackErrors: unknown[] = [];
-    for (const artifact of params.artifacts) {
-      await fs.rm(artifact.filePath, { force: true }).catch((rollbackError: unknown) => {
-        rollbackErrors.push(rollbackError);
-      });
-    }
-    for (const backup of backups) {
-      if (!backup.moved) {
-        continue;
-      }
-      await fs.rename(backup.backupPath, backup.filePath).catch((rollbackError: unknown) => {
-        rollbackErrors.push(rollbackError);
-      });
-    }
-    if (rollbackErrors.length > 0) {
-      const rollbackFailure = new Error("OpenClaw Crabline smoke artifact rollback failed.", {
-        cause: error,
-      });
-      Object.assign(rollbackFailure, { rollbackErrors });
-      throw rollbackFailure;
-    }
-    throw error;
-  } finally {
-    if (generationInstalled) {
-      await Promise.all(
-        backups.map(({ backupPath }) => fs.rm(backupPath, { force: true }).catch(() => undefined)),
-      );
-    }
-  }
-}
 
 export function runOpenClawCrablineChannelDriverSmoke(params: {
   outputDir: string;
@@ -283,9 +209,6 @@ export async function runOpenClawCrablineChannelDriverSmoke(
   let lockReleased = false;
 
   try {
-    const manifestPath = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
-    const capabilityMatrixPath = path.join(outputDir, params.selection.capabilityMatrixPath);
-    const smokeArtifactPath = path.join(outputDir, params.selection.smokeArtifactPath);
     const recorderPath = path.join(
       outputDir,
       "artifacts",
@@ -305,7 +228,6 @@ export async function runOpenClawCrablineChannelDriverSmoke(
       await adapter.close();
     }
 
-    const manifestName = path.basename(manifestPath);
     const capabilityReport = {
       result: {
         driver: "crabline",
@@ -314,7 +236,6 @@ export async function runOpenClawCrablineChannelDriverSmoke(
       },
     };
     const smoke = {
-      manifestPath: manifestName,
       result: {
         ok: true,
         probe,
@@ -323,52 +244,26 @@ export async function runOpenClawCrablineChannelDriverSmoke(
         recorderPath: path.relative(outputDir, adapter.manifest.recorderPath),
       },
     };
-    await publishSmokeArtifactSet({
-      artifacts: [
-        {
-          contents: `${JSON.stringify(adapter.manifest, null, 2)}\n`,
-          filePath: manifestPath,
-        },
-        {
-          contents: `${JSON.stringify(
-            {
-              version: 1,
-              source: "openclaw/crabline",
-              channelDriver: params.selection.channelDriver,
-              selectedChannel: params.selection.channel,
-              manifestPath: manifestName,
-              report: capabilityReport,
-            },
-            null,
-            2,
-          )}\n`,
-          filePath: capabilityMatrixPath,
-        },
-        {
-          contents: `${JSON.stringify(
-            {
-              version: 1,
-              source: "openclaw/crabline",
-              channelDriver: params.selection.channelDriver,
-              selectedChannel: params.selection.channel,
-              manifestPath: manifestName,
-              smoke,
-            },
-            null,
-            2,
-          )}\n`,
-          filePath: smokeArtifactPath,
-        },
-      ],
+    const generation = await (
+      dependencies.publishGeneration ?? publishOpenClawCrablineArtifactGeneration
+    )({
+      capabilityReport,
       lock: smokeLock,
-      publishFile: dependencies.publishFile ?? publishPrivateFileAtomically,
-      releaseLock,
+      manifest: adapter.manifest,
+      outputDir,
+      selection: params.selection,
+      smoke,
     });
+    await releaseLock(smokeLock);
     lockReleased = true;
     return {
-      capabilityMatrixPath: path.basename(capabilityMatrixPath),
-      manifestPath: manifestName,
-      smokeArtifactPath: path.basename(smokeArtifactPath),
+      artifactPointerPath: generation.pointerPath,
+      capabilityReport,
+      capabilityMatrixPath: generation.capabilityMatrixPath,
+      generation: generation.generation,
+      manifestPath: generation.manifestPath,
+      smoke: generation.smoke,
+      smokeArtifactPath: generation.smokeArtifactPath,
     };
   } finally {
     if (!lockReleased) {
@@ -386,8 +281,9 @@ export function createOpenClawCrablineChannelReportNotes(
 
   return [
     `Channel driver: ${selection.channelDriver} local provider for ${selection.channel}.`,
-    `Channel capability report: ${selection.capabilityMatrixPath}.`,
-    `Channel driver smoke: ${selection.smokeArtifactPath}.`,
+    `Channel artifact pointer: ${OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH}.`,
+    `Generation capability filename: ${selection.capabilityMatrixPath}.`,
+    `Generation smoke filename: ${selection.smokeArtifactPath}.`,
     "Crabline starts local provider-shaped servers; OpenClaw uses its normal channel adapter against those endpoints.",
   ];
 }

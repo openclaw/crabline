@@ -7,6 +7,8 @@ export const OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH =
   "crabline-fake-provider-capabilities.json";
 export const OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH = "crabline-fake-provider-smoke.json";
 export const OPENCLAW_CRABLINE_MANIFEST_PATH = "crabline-fake-provider-server.json";
+export const OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY = ".crabline-smoke-artifacts";
+export const OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH = `${OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY}/current.json`;
 export const OPENCLAW_CRABLINE_DEFAULT_CHANNEL = "telegram";
 
 const OPENCLAW_CRABLINE_PROVIDER_PROBE_TIMEOUT_MS = 5_000;
@@ -28,8 +30,12 @@ export type OpenClawCrablineChannelDriverSelection = {
 };
 
 export type OpenClawCrablineChannelDriverSmokeResult = {
+  artifactPointerPath: string;
+  capabilityReport: unknown;
   capabilityMatrixPath: string;
+  generation: string;
   manifestPath: string;
+  smoke: unknown;
   smokeArtifactPath: string;
 };
 
