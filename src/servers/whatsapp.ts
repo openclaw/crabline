@@ -6,6 +6,7 @@ import {
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
+  isLoopbackHost,
   jsonResponse,
   parseUnknownRequestBody,
   queryRecord,
@@ -470,6 +471,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
 export async function startWhatsAppServer(
   params: StartWhatsAppServerParams = {},
 ): Promise<StartedWhatsAppServer> {
+  const host = params.host ?? "127.0.0.1";
   const graphVersion = params.graphVersion ?? DEFAULT_GRAPH_VERSION;
   if (!WHATSAPP_GRAPH_VERSION_RE.test(graphVersion)) {
     throw new Error(`Invalid WhatsApp Graph API version: ${graphVersion}.`);
@@ -479,7 +481,11 @@ export async function startWhatsAppServer(
     throw new Error("WhatsApp phoneNumberId must contain only digits.");
   }
   const state: WhatsAppServerState = {
-    accessToken: params.accessToken ?? "crabline-whatsapp-access-token",
+    accessToken:
+      params.accessToken ??
+      (isLoopbackHost(host)
+        ? "crabline-whatsapp-access-token"
+        : `EAA${randomBytes(24).toString("base64url")}`),
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     deliverInboundMessage: () => "queued",
     displayPhoneNumber: params.displayPhoneNumber ?? "15550000000",
@@ -490,7 +496,6 @@ export async function startWhatsAppServer(
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "whatsapp.jsonl"),
     selfJid: params.selfJid ?? "15550000000@s.whatsapp.net",
   };
-  const host = params.host ?? "127.0.0.1";
   const httpServer = await startHttpJsonServer({
     handle: (request) => handleRequest({ request, state }),
     handleError: (error) => {

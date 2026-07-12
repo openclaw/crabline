@@ -8,6 +8,7 @@ import {
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
+  isLoopbackHost,
   jsonResponse,
   parseUnknownRequestBody,
   queryRecord,
@@ -484,11 +485,14 @@ function attachWebSocketServer(params: {
 export async function startMattermostServer(
   params: StartMattermostServerParams = {},
 ): Promise<StartedMattermostServer> {
+  const host = params.host ?? "127.0.0.1";
   const botUserId = params.botUserId ?? mattermostId("crabline-mattermost-bot");
   const botUsername = params.botUsername ?? "crabline_bot";
   const state: MattermostServerState = {
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
-    botToken: params.botToken ?? "crabline-mattermost-token",
+    botToken:
+      params.botToken ??
+      (isLoopbackHost(host) ? "crabline-mattermost-token" : randomBytes(13).toString("hex")),
     botUserId,
     botUsername,
     channels: new Map(),
@@ -511,7 +515,7 @@ export async function startMattermostServer(
       }
       return undefined;
     },
-    host: params.host ?? "127.0.0.1",
+    host,
     port: params.port ?? 0,
     serverName: "Mattermost",
   });
