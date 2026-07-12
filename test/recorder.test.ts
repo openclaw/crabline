@@ -384,6 +384,55 @@ describe("recorder", () => {
     }
   });
 
+  it("bounds unread recorder batches before returning an early match", async () => {
+    const filePath = await createRecorderPath();
+    const now = new Date().toISOString();
+    const contents = Array.from(
+      { length: 20_000 },
+      (_, index) =>
+        `${JSON.stringify({
+          author: "assistant",
+          id: `event-${index}`,
+          provider: "slack",
+          recordedAt: now,
+          sentAt: now,
+          text: "x".repeat(64),
+          threadId: "slack:C123",
+        })}\n`,
+    ).join("");
+    await writeFile(filePath, contents, "utf8");
+
+    const probeHandle = await open(filePath, "r");
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle);
+    await probeHandle.close();
+    const originalRead = fileHandlePrototype.read;
+    let bytesRead = 0;
+    fileHandlePrototype.read = async function (
+      this: FileHandle,
+      buffer: Uint8Array,
+      offset?: number | null,
+      length?: number | null,
+      position?: number | null,
+    ) {
+      const result = await originalRead.call(this, buffer, offset, length, position);
+      bytesRead += result.bytesRead;
+      return result;
+    };
+
+    try {
+      await expect(
+        waitForRecordedInbound({
+          filePath,
+          matches: (event) => event.id === "event-0",
+          timeoutMs: 30,
+        }),
+      ).resolves.toMatchObject({ id: "event-0" });
+      expect(bytesRead).toBeLessThan(Buffer.byteLength(contents) / 2);
+    } finally {
+      fileHandlePrototype.read = originalRead;
+    }
+  });
+
   it("bounds unterminated recorder records", async () => {
     const filePath = await createRecorderPath();
     await writeFile(filePath, "x".repeat(1024 * 1024 + 1), "utf8");

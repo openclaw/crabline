@@ -9,7 +9,12 @@ const pendingAppends = new Map<string, Promise<void>>();
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
   const key = path.resolve(filePath);
   const previous = pendingAppends.get(key) ?? Promise.resolve();
-  const current = previous.catch(() => {}).then(() => appendFile(filePath, line, "utf8"));
+  const current = previous
+    .catch(() => {})
+    .then(async () => {
+      await mkdir(path.dirname(filePath), { recursive: true });
+      await appendFile(filePath, line, "utf8");
+    });
   pendingAppends.set(key, current);
 
   try {
@@ -26,7 +31,6 @@ export async function recordServerEvent(params: {
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
 }): Promise<void> {
-  await mkdir(path.dirname(params.recorderPath), { recursive: true });
   await appendJsonLine(params.recorderPath, `${JSON.stringify(params.event)}\n`);
   await params.onEvent?.(params.event);
 }

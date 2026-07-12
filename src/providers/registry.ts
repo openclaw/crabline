@@ -329,6 +329,9 @@ export class LazyProviderAdapter implements ProviderAdapter {
     dispatch: DispatchBarrier,
   ): AsyncIterable<InboundEnvelope> {
     try {
+      if (signal.aborted) {
+        return;
+      }
       const provider = await this.#provider();
       if (signal.aborted) {
         return;

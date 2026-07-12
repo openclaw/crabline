@@ -7,6 +7,7 @@ import {
   createRecordedInboundCursor,
   waitForRecordedInbound,
   watchRecordedInbound,
+  type RecordedInboundEnvelope,
   type RecordedInboundCursor,
 } from "./recorder.js";
 import type {
@@ -43,6 +44,7 @@ export type LocalMockAdapterOptions = {
     candidateThreadId: string,
     expectedThreadId: string | undefined,
     target: NormalizedTarget,
+    raw?: unknown,
   ) => boolean;
   handleWebhookPayload?: (payload: unknown) => Promise<Response | undefined> | Response | undefined;
   normalizeWebhookPayload?: (payload: unknown) => unknown;
@@ -122,9 +124,51 @@ function authorFromPayload(payload: MockWebhookPayload): InboundEnvelope["author
 }
 
 function normalizeWebhookPayload(payload: unknown): MockWebhookPayload {
-  if (!payload || typeof payload !== "object") {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new CrablineError("mock webhook payload must be an object", { kind: "inbound" });
   }
+
+  const record = payload as Record<string, unknown>;
+  const messageValue = record.message;
+  if (
+    messageValue !== undefined &&
+    (!messageValue || typeof messageValue !== "object" || Array.isArray(messageValue))
+  ) {
+    throw new CrablineError("mock webhook payload message must be an object", {
+      kind: "inbound",
+    });
+  }
+
+  for (const [label, envelope] of [
+    ["payload", record],
+    ["payload.message", messageValue as Record<string, unknown> | undefined],
+  ] as const) {
+    if (!envelope) {
+      continue;
+    }
+    if (
+      envelope.author !== undefined &&
+      envelope.author !== "assistant" &&
+      envelope.author !== "system" &&
+      envelope.author !== "user"
+    ) {
+      throw new CrablineError(`${label}.author must be assistant, system, or user`, {
+        kind: "inbound",
+      });
+    }
+    if (envelope.authorIsBot !== undefined && typeof envelope.authorIsBot !== "boolean") {
+      throw new CrablineError(`${label}.authorIsBot must be a boolean`, { kind: "inbound" });
+    }
+    for (const field of ["id", "text", "threadId"] as const) {
+      const value = envelope[field];
+      if (value !== undefined && (typeof value !== "string" || value.length === 0)) {
+        throw new CrablineError(`${label}.${field} must be a non-empty string`, {
+          kind: "inbound",
+        });
+      }
+    }
+  }
+
   return payload as MockWebhookPayload;
 }
 
@@ -132,13 +176,8 @@ function mockReplyText(params: { platform: ProviderPlatform; text: string }) {
   return `[${params.platform} mock] ${params.text}`;
 }
 
-function isOutboundRecord(event: InboundEnvelope): boolean {
-  return (
-    event.raw !== null &&
-    typeof event.raw === "object" &&
-    "direction" in event.raw &&
-    event.raw.direction === "outbound"
-  );
+function isOutboundRecord(event: RecordedInboundEnvelope): boolean {
+  return event.recordedDirection === "outbound";
 }
 
 export class LocalMockProviderAdapter implements ProviderAdapter {
@@ -152,6 +191,8 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   readonly #options: LocalMockAdapterOptions;
   readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
+  readonly #activeSends = new Set<Promise<SendResult>>();
+  readonly #cleanupController = new AbortController();
   readonly #waitCursors = new Map<string, WaitCursorState>();
   #cleanupBegun = false;
   #cleanupPromise: Promise<void> | null = null;
@@ -175,6 +216,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   normalizeTarget(target: ProviderContext["fixture"]["target"]): NormalizedTarget {
+    this.#assertActive();
     return this.#codec.normalize(target);
   }
 
@@ -199,9 +241,25 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     return { details, healthy: true };
   }
 
-  async send(context: SendContext): Promise<SendResult> {
+  send(context: SendContext): Promise<SendResult> {
+    try {
+      this.#assertActive();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const sending = this.#send(context);
+    this.#activeSends.add(sending);
+    void sending.then(
+      () => this.#activeSends.delete(sending),
+      () => this.#activeSends.delete(sending),
+    );
+    return sending;
+  }
+
+  async #send(context: SendContext): Promise<SendResult> {
     const threadId = this.#codec.resolveThreadId(context.fixture.target);
     const messageId = createMessageId(this.platform);
+    this.#assertActive();
     await appendRecordedInbound(this.#recorderPath, {
       author: "user",
       id: messageId,
@@ -211,6 +269,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         mode: context.mode,
         platform: this.platform,
       },
+      recordedDirection: "outbound",
       sentAt: new Date().toISOString(),
       text: context.text,
       threadId,
@@ -241,6 +300,8 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
+    this.#assertActive();
+    const signal = this.#signalFor(context.signal);
     await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
     const expectedAuthor = context.fixture.inboundMatch.author;
@@ -267,9 +328,10 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
             candidate.threadId,
             channelId,
             target,
+            candidate.raw,
           ),
         since: context.since,
-        signal: context.signal,
+        signal,
         timeoutMs: context.timeoutMs,
       });
       if (event && this.#waitCursors.get(cursorKey) === cursorState) {
@@ -289,6 +351,8 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async *watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
+    this.#assertActive();
+    const signal = this.#signalFor(context.signal);
     await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
     for await (const event of watchRecordedInbound({
@@ -300,24 +364,40 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
           entry.threadId,
           target.threadId ?? target.channelId,
           target,
+          entry.raw,
         ),
-      signal: context.signal,
+      signal,
       since: context.since,
     })) {
       yield event;
     }
   }
 
-  async cleanup(): Promise<void> {
-    if (!this.#cleanupBegun) {
-      this.#cleanupBegun = true;
-      this.#waitCursors.clear();
+  #beginCleanup(): void {
+    if (this.#cleanupBegun) {
+      return;
     }
-    this.#cleanupPromise ??= this.#closeWebhookServer();
+    this.#cleanupBegun = true;
+    this.#cleanupController.abort(this.#cleanedUpError());
+    this.#waitCursors.clear();
+  }
+
+  async cleanup(): Promise<void> {
+    this.#beginCleanup();
+    this.#cleanupPromise ??= (async () => {
+      const sends = [...this.#activeSends];
+      const [serverResult] = await Promise.allSettled([this.#closeWebhookServer(), ...sends]);
+      if (serverResult?.status === "rejected") {
+        throw serverResult.reason;
+      }
+    })();
     await this.#cleanupPromise;
   }
 
   async #handleWebhook(request: Request): Promise<Response> {
+    if (this.#cleanupBegun) {
+      return new Response("provider is shutting down", { status: 503 });
+    }
     const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
     if (mediaType !== "application/json") {
       return new Response("expected application/json", { status: 415 });
@@ -359,6 +439,9 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     const text = payload.message?.text ?? payload.text;
     if (!threadId || !text) {
       return new Response("payload requires message.threadId and message.text", { status: 400 });
+    }
+    if (this.#cleanupBegun) {
+      return new Response("provider is shutting down", { status: 503 });
     }
 
     await appendRecordedInbound(this.#recorderPath, {
@@ -446,5 +529,17 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
 
   #cleanedUpError(): CrablineError {
     return new CrablineError(`Provider "${this.id}" has been cleaned up.`, { kind: "config" });
+  }
+
+  #assertActive(): void {
+    if (this.#cleanupBegun) {
+      throw this.#cleanedUpError();
+    }
+  }
+
+  #signalFor(signal?: AbortSignal): AbortSignal {
+    return signal
+      ? AbortSignal.any([signal, this.#cleanupController.signal])
+      : this.#cleanupController.signal;
   }
 }

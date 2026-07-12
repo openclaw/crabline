@@ -5,11 +5,12 @@ import { recordServerEvent } from "../src/servers/recorder.js";
 
 const fsMocks = vi.hoisted(() => ({
   appendFile: vi.fn<(filePath: string, data: string, encoding: string) => Promise<void>>(),
+  mkdir: vi.fn<(filePath: string, options: { recursive: true }) => Promise<string | undefined>>(),
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, appendFile: fsMocks.appendFile };
+  return { ...actual, appendFile: fsMocks.appendFile, mkdir: fsMocks.mkdir };
 });
 
 function serverEvent(pathname: string): ServerRequestEvent {
@@ -25,9 +26,49 @@ function serverEvent(pathname: string): ServerRequestEvent {
 beforeEach(() => {
   fsMocks.appendFile.mockReset();
   fsMocks.appendFile.mockResolvedValue();
+  fsMocks.mkdir.mockReset();
+  fsMocks.mkdir.mockResolvedValue(undefined);
 });
 
 describe("server recorder", () => {
+  it("admits directory creation and append into one serialized queue", async () => {
+    let releaseFirstMkdir: (() => void) | undefined;
+    fsMocks.mkdir
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          releaseFirstMkdir = () => resolve(undefined);
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    const recorderPath = path.join("/tmp", "crabline-server-recorder-admission.jsonl");
+
+    const first = recordServerEvent({
+      event: serverEvent("/first"),
+      onEvent: undefined,
+      recorderPath,
+    });
+    const second = recordServerEvent({
+      event: serverEvent("/second"),
+      onEvent: undefined,
+      recorderPath,
+    });
+
+    await vi.waitFor(() => expect(fsMocks.mkdir).toHaveBeenCalledTimes(1));
+    expect(fsMocks.appendFile).not.toHaveBeenCalled();
+
+    releaseFirstMkdir?.();
+    await Promise.all([first, second]);
+
+    expect(fsMocks.mkdir).toHaveBeenCalledTimes(2);
+    expect(fsMocks.appendFile.mock.calls.map(([, line]) => JSON.parse(line).path)).toEqual([
+      "/first",
+      "/second",
+    ]);
+    expect(fsMocks.mkdir.mock.invocationCallOrder[1]).toBeGreaterThan(
+      fsMocks.appendFile.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it("recovers serialization after an append failure", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-recovery.jsonl");
     const appendFailure = new Error("disk unavailable");

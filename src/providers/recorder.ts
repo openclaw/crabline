@@ -2,7 +2,11 @@ import { appendFile, mkdir, open, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { InboundEnvelope } from "./types.js";
 
-export type RecordedInboundEnvelope = InboundEnvelope & {
+export type RecordableInboundEnvelope = InboundEnvelope & {
+  recordedDirection?: "inbound" | "outbound";
+};
+
+export type RecordedInboundEnvelope = RecordableInboundEnvelope & {
   recordedAt: string;
 };
 
@@ -25,6 +29,7 @@ const pendingAppends = new Map<string, Promise<void>>();
 const MAX_RECENT_RECORD_KEYS = 4096;
 
 type IncrementalReadState = {
+  caughtUp: boolean;
   continuity: Buffer;
   identity:
     | {
@@ -43,10 +48,12 @@ export type RecordedInboundCursor = {
 };
 
 const CONTINUITY_BYTES = 4096;
+const MAX_INCREMENTAL_READ_BYTES = 256 * 1024;
 const MAX_PENDING_RECORD_BYTES = 1024 * 1024;
 
 function createIncrementalReadState(): IncrementalReadState {
   return {
+    caughtUp: true,
     continuity: Buffer.alloc(0),
     identity: undefined,
     offset: 0,
@@ -66,6 +73,7 @@ export function cloneRecordedInboundCursor(cursor: RecordedInboundCursor): Recor
   return {
     buffered: [...cursor.buffered],
     readState: {
+      caughtUp: cursor.readState.caughtUp,
       continuity: Buffer.from(cursor.readState.continuity),
       identity: cursor.readState.identity ? { ...cursor.readState.identity } : undefined,
       offset: cursor.readState.offset,
@@ -88,6 +96,7 @@ function rememberRecentRecord(seen: Set<string>, event: InboundEnvelope): boolea
 }
 
 function resetIncrementalReadState(state: IncrementalReadState): void {
+  state.caughtUp = true;
   state.continuity = Buffer.alloc(0);
   state.offset = 0;
   state.pending = Buffer.alloc(0);
@@ -110,6 +119,41 @@ async function readBufferAt(
   }
 
   return buffer.subarray(0, bytesRead);
+}
+
+function consumeRecordedChunk(
+  state: IncrementalReadState,
+  chunk: Buffer,
+): RecordedInboundEnvelope[] {
+  const continuity = Buffer.concat([state.continuity, chunk]);
+  state.continuity = Buffer.from(continuity.subarray(-CONTINUITY_BYTES));
+
+  const raw = state.pending.length > 0 ? Buffer.concat([state.pending, chunk]) : chunk;
+  const lastNewline = raw.lastIndexOf(0x0a);
+  if (lastNewline < 0) {
+    if (raw.length > MAX_PENDING_RECORD_BYTES) {
+      throw new Error(
+        `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
+      );
+    }
+    state.pending = Buffer.from(raw);
+    return [];
+  }
+
+  state.pending = Buffer.from(raw.subarray(lastNewline + 1));
+  if (state.pending.length > MAX_PENDING_RECORD_BYTES) {
+    throw new Error(
+      `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
+    );
+  }
+
+  const events: RecordedInboundEnvelope[] = [];
+  for (const line of raw.subarray(0, lastNewline).toString("utf8").split("\n")) {
+    if (line.trim()) {
+      events.push(JSON.parse(line) as RecordedInboundEnvelope);
+    }
+  }
+  return events;
 }
 
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
@@ -167,50 +211,23 @@ async function readRecordedInboundAppend(
     }
     state.identity = identity;
 
-    const chunks: Buffer[] = [];
+    const events: RecordedInboundEnvelope[] = [];
     let position = state.offset;
-    while (position < stats.size) {
-      const chunk = Buffer.alloc(Math.min(64 * 1024, stats.size - position));
+    let remainingBatchBytes = MAX_INCREMENTAL_READ_BYTES;
+    let reachedUnexpectedEof = false;
+    while (position < stats.size && remainingBatchBytes > 0) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, stats.size - position, remainingBatchBytes));
       const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
       if (bytesRead === 0) {
+        reachedUnexpectedEof = true;
         break;
       }
-      chunks.push(chunk.subarray(0, bytesRead));
       position += bytesRead;
+      state.offset = position;
+      remainingBatchBytes -= bytesRead;
+      events.push(...consumeRecordedChunk(state, chunk.subarray(0, bytesRead)));
     }
-    state.offset = position;
-    state.continuity = Buffer.concat([state.continuity, ...chunks]).subarray(-CONTINUITY_BYTES);
-
-    if (chunks.length === 0) {
-      return [];
-    }
-    const raw = Buffer.concat([state.pending, ...chunks]);
-    const lastNewline = raw.lastIndexOf(0x0a);
-    if (lastNewline < 0) {
-      if (raw.length > MAX_PENDING_RECORD_BYTES) {
-        throw new Error(
-          `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
-        );
-      }
-      state.pending = raw;
-      return [];
-    }
-
-    state.pending = raw.subarray(lastNewline + 1);
-    if (state.pending.length > MAX_PENDING_RECORD_BYTES) {
-      throw new Error(
-        `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
-      );
-    }
-    const lines = raw
-      .subarray(0, lastNewline)
-      .toString("utf8")
-      .split("\n")
-      .filter((line) => line.trim().length > 0);
-    const events: RecordedInboundEnvelope[] = [];
-    for (const line of lines) {
-      events.push(JSON.parse(line) as RecordedInboundEnvelope);
-    }
+    state.caughtUp = reachedUnexpectedEof || position >= stats.size;
     return events;
   } finally {
     await handle.close();
@@ -219,7 +236,7 @@ async function readRecordedInboundAppend(
 
 export async function appendRecordedInbound(
   filePath: string,
-  event: InboundEnvelope,
+  event: RecordableInboundEnvelope,
 ): Promise<RecordedInboundEnvelope> {
   await mkdir(path.dirname(filePath), { recursive: true });
 
@@ -297,6 +314,9 @@ export async function waitForRecordedInbound(params: {
         return event;
       }
     }
+    if (!cursor.readState.caughtUp) {
+      continue;
+    }
 
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
@@ -337,6 +357,9 @@ export async function* watchRecordedInbound(params: {
       if (params.matches(event)) {
         yield event;
       }
+    }
+    if (!state.caughtUp) {
+      continue;
     }
 
     await sleep(params.pollMs ?? 250, params.signal);

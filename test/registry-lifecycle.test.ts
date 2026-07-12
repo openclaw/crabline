@@ -633,6 +633,33 @@ describe("lazy provider lifecycle", () => {
     }
   });
 
+  it("does not materialize a lazy provider for a pre-aborted watch", async () => {
+    const factory = vi.fn<() => Promise<ProviderAdapter>>();
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory,
+      id: "test",
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+    });
+    const { context } = createTelegramManifest("/tmp/unused.jsonl");
+    const controller = new AbortController();
+    controller.abort(new Error("already aborted"));
+
+    const watch = provider.watch({ ...context, signal: controller.signal });
+    await expect(watch[Symbol.asyncIterator]().next()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    expect(factory).not.toHaveBeenCalled();
+    await provider.cleanup();
+    expect(factory).not.toHaveBeenCalled();
+  });
+
   it("cancels and drains an admitted watch before cleanup resolves", async () => {
     const directory = await createTempDir();
     const recorderPath = path.join(directory, "telegram.jsonl");

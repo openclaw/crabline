@@ -1,7 +1,9 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManifestDefinition, ProviderConfig } from "../src/config/schema.js";
 import { runFixtureCommand } from "../src/core/run.js";
+import { genericMockPayloadWithNativeThread } from "../src/providers/builtin/native-local-mock.js";
 import { SlackProviderAdapter } from "../src/providers/builtin/slack.js";
 import { LoopbackProviderAdapter } from "../src/providers/builtin/loopback.js";
 import { OPENCLAW_SUPPORT_CATALOG } from "../src/providers/catalog.js";
@@ -81,6 +83,39 @@ function createContext(config: ProviderConfig): ProviderContext {
 }
 
 describe("local mock provider", () => {
+  it("keeps nested thread precedence with a top-level fallback", () => {
+    const threadRule = {
+      example: "thread-1",
+      name: "test thread",
+      pattern: /^thread-[a-z0-9]+$/u,
+    };
+
+    expect(
+      genericMockPayloadWithNativeThread({
+        payload: {
+          message: { text: "fallback" },
+          threadId: "thread-top",
+        },
+        threadRule,
+      }),
+    ).toMatchObject({
+      message: { text: "fallback", threadId: "thread-top" },
+      threadId: "thread-top",
+    });
+    expect(
+      genericMockPayloadWithNativeThread({
+        payload: {
+          message: { text: "nested", threadId: "thread-nested" },
+          threadId: "thread-top",
+        },
+        threadRule,
+      }),
+    ).toMatchObject({
+      message: { text: "nested", threadId: "thread-nested" },
+      threadId: "thread-nested",
+    });
+  });
+
   it("does not treat an occupied webhook port as a healthy server", async () => {
     const addressInUse = Object.assign(new Error("listen EADDRINUSE: address already in use"), {
       code: "EADDRINUSE",
@@ -278,6 +313,155 @@ describe("local mock provider", () => {
       ).rejects.toThrow(/sensitive/u);
     },
   );
+
+  it("rejects malformed normalized webhook envelopes", async () => {
+    let handleRequest: ((request: Request) => Promise<Response>) | undefined;
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handleRequest = params.handle;
+      return {
+        async close() {},
+        endpointUrl: "http://127.0.0.1:43210/slack/events",
+      };
+    });
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        normalizeWebhookPayload: () => ({
+          message: { text: 42, threadId: "slack:C1234567890" },
+        }),
+        platform: "slack",
+      },
+    });
+    providers.push(provider);
+    await provider.probe(createContext(config));
+
+    const response = await handleRequest!(
+      new Request("http://127.0.0.1:43210/slack/events", {
+        body: "{}",
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.text()).resolves.toContain("payload.message.text");
+  });
+
+  it("does not let client raw.direction hide inbound events", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "client-direction.jsonl");
+    let handleRequest: ((request: Request) => Promise<Response>) | undefined;
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handleRequest = params.handle;
+      return {
+        async close() {},
+        endpointUrl: "http://127.0.0.1:43210/slack/events",
+      };
+    });
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+        recorderPath,
+      },
+    });
+    providers.push(provider);
+    const context = createContext(config);
+    context.fixture.inboundMatch.author = "user";
+    await provider.probe(context);
+    const since = new Date(Date.now() - 1000).toISOString();
+
+    const response = await handleRequest!(
+      new Request("http://127.0.0.1:43210/slack/events", {
+        body: JSON.stringify({
+          author: "user",
+          raw: { direction: "outbound" },
+          text: "client-controlled direction",
+          threadId: "slack:C1234567890",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        nonce: "client-direction",
+        since,
+        timeoutMs: 100,
+      }),
+    ).resolves.toMatchObject({
+      raw: { direction: "outbound" },
+      text: "client-controlled direction",
+    });
+  });
+
+  it("aborts active reads and drains an admitted send behind the cleanup fence", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "cleanup.jsonl");
+    const config = createConfig();
+    config.loopback = { delayMs: 50 };
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+        recorderPath,
+      },
+    });
+    providers.push(provider);
+    const context = createContext(config);
+    context.fixture.mode = "roundtrip";
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "cleanup",
+      since: new Date().toISOString(),
+      timeoutMs: 10_000,
+    });
+    const watch = provider.watch({
+      ...context,
+      since: new Date().toISOString(),
+    });
+    const iterator = watch[Symbol.asyncIterator]();
+    const watching = iterator.next();
+    const sending = provider.send({
+      ...context,
+      mode: "roundtrip",
+      nonce: "cleanup",
+      text: "cleanup",
+    });
+    await vi.waitFor(async () => {
+      expect((await readFile(recorderPath, "utf8")).trim().split("\n")).toHaveLength(1);
+    });
+
+    const cleanup = provider.cleanup();
+
+    await expect(waiting).resolves.toBeNull();
+    await expect(watching).resolves.toEqual({ done: true, value: undefined });
+    await expect(
+      provider.send({ ...context, mode: "send", nonce: "later", text: "later" }),
+    ).rejects.toThrow(/cleaned up/u);
+    await expect(sending).resolves.toMatchObject({ accepted: true });
+    await expect(cleanup).resolves.toBeUndefined();
+    expect((await readFile(recorderPath, "utf8")).trim().split("\n")).toHaveLength(2);
+  });
 
   it("does not watch events from another provider sharing its recorder", async () => {
     const directory = await createTempDir();
