@@ -127,7 +127,12 @@ export const S_WHATSAPP_NET = "@s.whatsapp.net";
 
 export async function decodeBinaryNode(frame: Buffer): Promise<BinaryNode> {
   const buffer = await decompressIfRequired(frame);
-  return decodeDecompressedBinaryNode(buffer);
+  const indexRef = { index: 0 };
+  const node = decodeDecompressedBinaryNode(buffer, indexRef);
+  if (indexRef.index !== buffer.length) {
+    throw new Error("WhatsApp binary node frame contains trailing data.");
+  }
+  return node;
 }
 
 export function encodeBinaryNode(node: BinaryNode): Buffer {

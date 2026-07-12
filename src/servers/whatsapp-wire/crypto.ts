@@ -105,7 +105,14 @@ export function aesDecryptGCM(
   iv: Uint8Array,
   additionalData: Uint8Array,
 ): Buffer {
-  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  if (ciphertext.byteLength < AES_GCM_TAG_LENGTH) {
+    throw new Error(
+      `AES-GCM ciphertext must include a ${AES_GCM_TAG_LENGTH}-byte authentication tag.`,
+    );
+  }
+  const decipher = createDecipheriv("aes-256-gcm", key, iv, {
+    authTagLength: AES_GCM_TAG_LENGTH,
+  });
   const encrypted = ciphertext.subarray(0, ciphertext.byteLength - AES_GCM_TAG_LENGTH);
   const tag = ciphertext.subarray(ciphertext.byteLength - AES_GCM_TAG_LENGTH);
   decipher.setAAD(additionalData);
