@@ -29,11 +29,12 @@ const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 const TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT = 5;
 const TELEGRAM_WEBHOOK_RETRY_BASE_MS = 100;
 const TELEGRAM_WEBHOOK_DELIVERY_TIMEOUT_MS = 3_000;
-const TELEGRAM_CHAT_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{0,31}$/u;
+const TELEGRAM_CHAT_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{3,31}$/u;
 const TELEGRAM_MEDIA_FIELDS = [
   "animation",
   "audio",
   "document",
+  "paid_media",
   "photo",
   "sticker",
   "story",

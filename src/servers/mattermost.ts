@@ -370,6 +370,9 @@ async function handleApi(params: {
     if (!state.users.has(firstUserId) || !state.users.has(secondUserId)) {
       return mattermostError("User not found", 404);
     }
+    if (firstUserId !== state.botUserId && secondUserId !== state.botUserId) {
+      return mattermostError("Authenticated user must belong to the direct channel", 403);
+    }
     const channelId = mattermostId(`dm:${userIds.sort().join(":")}`);
     const channel = { display_name: "", id: channelId, name: channelId, type: "D" };
     state.channels.set(channelId, channel);

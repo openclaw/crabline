@@ -429,6 +429,7 @@ describe("Mattermost local provider server", () => {
     for (const [userIds, status, message] of [
       [["user-1", "user-1"], 400, "Direct channel users must be distinct"],
       [[server.manifest.botUserId, "missing"], 404, "User not found"],
+      [["user-1", "user-2"], 403, "Authenticated user must belong to the direct channel"],
       [[server.manifest.botUserId, "user-1"], 201, undefined],
     ] as const) {
       const response = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {

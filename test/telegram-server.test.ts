@@ -151,6 +151,19 @@ describe("telegram local provider server", () => {
         chat: { id: "@tiny", type: "supergroup" },
       },
     });
+
+    const shortUsername = await fetch(
+      `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
+      {
+        body: JSON.stringify({
+          chat_id: "@abc",
+          text: "invalid short username",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(shortUsername.status).toBe(400);
   });
 
   it("serves Telegram Bot API calls and queues injected inbound updates", async () => {
@@ -438,6 +451,16 @@ describe("telegram local provider server", () => {
           photo: [{ file_id: "photo", file_unique_id: "unique", height: 1, width: 1 }],
         },
         update_id: 2,
+      },
+      {
+        message: {
+          chat: { id: -1001234567890, type: "supergroup" },
+          date: 1_700_000_000,
+          from: { first_name: "Alice", id: 100001, is_bot: false },
+          message_id: 3,
+          paid_media: { paid_media: [], star_count: 1 },
+        },
+        update_id: 3,
       },
     ]) {
       const response = await injectUpdate(server, body);
