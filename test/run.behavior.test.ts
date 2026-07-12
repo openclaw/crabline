@@ -114,6 +114,64 @@ describe("run behavior", () => {
     expect(missingEnv.failureKind).toBe("config");
   });
 
+  it("uses one effective fixture for mode overrides in provider contexts", async () => {
+    const contextFixtures: ManifestDefinition["fixtures"] = [];
+    let outboundText = "";
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async (context) => {
+        contextFixtures.push(context.fixture);
+        return { details: [], healthy: true };
+      },
+      send: async (context) => {
+        contextFixtures.push(context.fixture);
+        outboundText = context.text;
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      waitForInbound: async (context) => {
+        contextFixtures.push(context.fixture);
+        return {
+          author: "assistant",
+          id: "inbound",
+          provider: "mock",
+          sentAt: new Date().toISOString(),
+          text: `ACK ${context.nonce}`,
+          threadId: "thread",
+        };
+      },
+    };
+    const capableManifest = withAllCapabilities(manifest);
+
+    const agent = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: capableManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      modeOverride: "agent",
+      registry: buildRegistry(provider),
+    });
+    const probe = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: capableManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      modeOverride: "probe",
+      registry: buildRegistry(provider),
+    });
+
+    expect(agent.ok).toBe(true);
+    expect(probe.ok).toBe(true);
+    expect(contextFixtures[0]).toBe(contextFixtures[1]);
+    expect(contextFixtures[0]?.mode).toBe("agent");
+    expect(contextFixtures[2]?.mode).toBe("probe");
+    expect(capableManifest.fixtures[0]?.mode).toBe("roundtrip");
+    expect(outboundText).toContain("crabline agent fixture");
+  });
+
   it("classifies probe and send failures", async () => {
     const provider: ProviderAdapter = {
       id: "mock",
@@ -308,6 +366,40 @@ describe("run behavior", () => {
     expect(sendCalls).toBe(1);
     expect(waitCalls).toBeGreaterThan(1);
     expect(waitCalls).toBeLessThan(10);
+  });
+
+  it("bounds a hung inbound provider by the core deadline", async () => {
+    let rejectWait: ((error: Error) => void) | undefined;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => ({ accepted: true, messageId: "sent", threadId: "thread" }),
+      waitForInbound: async () =>
+        await new Promise<never>((_resolve, reject) => {
+          rejectWait = reject;
+        }),
+    };
+    const boundedManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, timeoutMs: 20 }],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: boundedManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.failureKind).toBe("timeout");
+    rejectWait?.(new Error("late provider failure"));
+    await Promise.resolve();
   });
 
   it("fails an otherwise successful fixture when cleanup fails", async () => {

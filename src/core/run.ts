@@ -22,8 +22,27 @@ export type SuiteRunResult = {
   totalPassed: number;
 };
 
+const INBOUND_DEADLINE_REACHED = Symbol("inbound deadline reached");
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function raceInboundDeadline<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+): Promise<T | typeof INBOUND_DEADLINE_REACHED> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof INBOUND_DEADLINE_REACHED>((resolve) => {
+    timer = setTimeout(() => resolve(INBOUND_DEADLINE_REACHED), timeoutMs);
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 export async function runFixtureCommand(params: {
@@ -33,13 +52,15 @@ export async function runFixtureCommand(params: {
   modeOverride?: "agent" | "probe" | "roundtrip" | "send";
   registry: Registry;
 }): Promise<CommandRunResult> {
-  const fixture = params.manifest.fixtures.find((entry) => entry.id === params.fixtureId);
-  if (!fixture) {
+  const configuredFixture = params.manifest.fixtures.find((entry) => entry.id === params.fixtureId);
+  if (!configuredFixture) {
     throw new CrablineError(`Unknown fixture: ${params.fixtureId}`, { kind: "config" });
   }
 
+  const mode = params.modeOverride ?? configuredFixture.mode;
+  const fixture =
+    mode === configuredFixture.mode ? configuredFixture : { ...configuredFixture, mode };
   const provider = params.registry.resolve(fixture.provider, fixture.id);
-  const mode = params.modeOverride ?? fixture.mode;
   const diagnostics: string[] = [];
 
   if (!provider.supports.includes(mode)) {
@@ -137,13 +158,19 @@ export async function runFixtureCommand(params: {
         try {
           while (Date.now() < inboundDeadline) {
             const timeoutMs = inboundDeadline - Date.now();
-            const candidate = await provider.waitForInbound({
-              ...contextBase,
-              nonce,
-              since,
-              threadId: accepted.threadId,
+            const candidate = await raceInboundDeadline(
+              provider.waitForInbound({
+                ...contextBase,
+                nonce,
+                since,
+                threadId: accepted.threadId,
+                timeoutMs,
+              }),
               timeoutMs,
-            });
+            );
+            if (candidate === INBOUND_DEADLINE_REACHED) {
+              break;
+            }
             if (!candidate) {
               break;
             }
