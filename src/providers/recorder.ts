@@ -1,4 +1,16 @@
-import { appendFile, mkdir, open, readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import {
+  appendFile,
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rename,
+  rm,
+} from "node:fs/promises";
 import path from "node:path";
 import type { InboundEnvelope } from "./types.js";
 
@@ -27,6 +39,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 const pendingAppends = new Map<string, Promise<void>>();
 const recordIdentityIndexes = new Map<string, RecordIdentityIndex>();
+const MAX_RECORD_IDENTITY_INDEXES = 128;
 const MAX_RECENT_RECORD_KEYS = 4096;
 
 type IncrementalReadState = {
@@ -46,6 +59,14 @@ type IncrementalReadState = {
 type RecordIdentityIndex = {
   readState: IncrementalReadState;
   seen: Set<string>;
+};
+
+type RecorderFileIdentity = {
+  ctimeNs: bigint;
+  dev: bigint;
+  ino: bigint;
+  mtimeNs: bigint;
+  size: bigint;
 };
 
 export type RecordedInboundCursor = {
@@ -177,30 +198,142 @@ async function appendJsonLine(filePath: string, line: string): Promise<void> {
   await serializeAppend(filePath, () => appendFile(filePath, line, "utf8"));
 }
 
-function recorderBatchRollbackError(writeError: unknown, rollbackError: unknown): AggregateError {
-  return new AggregateError(
-    [writeError, rollbackError],
-    "Recorder batch append and rollback both failed.",
-    { cause: rollbackError },
+async function readRecorderFileIdentity(
+  filePath: string,
+): Promise<RecorderFileIdentity | undefined> {
+  try {
+    const stats = await lstat(filePath, { bigint: true });
+    if (!stats.isFile()) {
+      throw new Error(`Recorder path is not a regular file: ${filePath}`);
+    }
+    return {
+      ctimeNs: stats.ctimeNs,
+      dev: stats.dev,
+      ino: stats.ino,
+      mtimeNs: stats.mtimeNs,
+      size: stats.size,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function sameRecorderFileIdentity(
+  left: RecorderFileIdentity | undefined,
+  right: RecorderFileIdentity | undefined,
+): boolean {
+  return (
+    left?.ctimeNs === right?.ctimeNs &&
+    left?.dev === right?.dev &&
+    left?.ino === right?.ino &&
+    left?.mtimeNs === right?.mtimeNs &&
+    left?.size === right?.size
   );
 }
 
-async function appendJsonLinesTransactional(filePath: string, lines: string): Promise<void> {
-  const handle = await open(filePath, "a+");
-  const originalSize = (await handle.stat()).size;
+async function resolveRecorderPublicationPath(filePath: string): Promise<string> {
   try {
-    try {
-      await handle.writeFile(lines, "utf8");
-    } catch (writeError) {
-      try {
-        await handle.truncate(originalSize);
-      } catch (rollbackError) {
-        throw recorderBatchRollbackError(writeError, rollbackError);
-      }
-      throw writeError;
+    return await realpath(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
     }
+    return path.join(await realpath(path.dirname(filePath)), path.basename(filePath));
+  }
+}
+
+async function prepareRecorderTailForAppend(
+  handle: Awaited<ReturnType<typeof open>>,
+): Promise<void> {
+  const stats = await handle.stat();
+  if (stats.size === 0) {
+    return;
+  }
+
+  const windowSize = Math.min(stats.size, MAX_PENDING_RECORD_BYTES + 1);
+  const tailWindow = await readBufferAt(handle, windowSize, stats.size - windowSize);
+  if (tailWindow.at(-1) === 0x0a) {
+    return;
+  }
+
+  const lastNewline = tailWindow.lastIndexOf(0x0a);
+  if (lastNewline < 0 && stats.size > MAX_PENDING_RECORD_BYTES) {
+    throw new Error(
+      `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
+    );
+  }
+
+  const tailStart = stats.size - windowSize + lastNewline + 1;
+  const tail = tailWindow.subarray(lastNewline + 1).toString("utf8");
+  try {
+    JSON.parse(tail);
+    await handle.writeFile("\n", "utf8");
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+    await handle.truncate(tailStart);
+  }
+}
+
+async function syncRecorderParentDirectory(filePath: string): Promise<void> {
+  if (process.platform === "win32") {
+    return;
+  }
+  const handle = await open(path.dirname(filePath), "r");
+  try {
+    await handle.sync();
   } finally {
     await handle.close();
+  }
+}
+
+async function appendJsonLinesAtomically(filePath: string, lines: string): Promise<void> {
+  const publicationPath = await resolveRecorderPublicationPath(filePath);
+  const temporaryPath = path.join(
+    path.dirname(publicationPath),
+    `.${path.basename(publicationPath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  const expectedIdentity = await readRecorderFileIdentity(publicationPath);
+  let published = false;
+
+  try {
+    if (expectedIdentity) {
+      await copyFile(publicationPath, temporaryPath, constants.COPYFILE_EXCL);
+    } else {
+      const empty = await open(temporaryPath, "wx");
+      await empty.close();
+    }
+    if (
+      !sameRecorderFileIdentity(expectedIdentity, await readRecorderFileIdentity(publicationPath))
+    ) {
+      throw new Error("Recorder changed while preparing an atomic batch append.");
+    }
+
+    const handle = await open(temporaryPath, "a+");
+    try {
+      await prepareRecorderTailForAppend(handle);
+      await handle.writeFile(lines, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+
+    if (
+      !sameRecorderFileIdentity(expectedIdentity, await readRecorderFileIdentity(publicationPath))
+    ) {
+      throw new Error("Recorder changed before publishing an atomic batch append.");
+    }
+    await rename(temporaryPath, publicationPath);
+    published = true;
+    await syncRecorderParentDirectory(publicationPath);
+  } finally {
+    if (!published) {
+      await rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
   }
 }
 
@@ -324,7 +457,7 @@ export async function appendRecordedInboundBatch(
       });
     }
     if (recorded.length > 0) {
-      await appendJsonLinesTransactional(
+      await appendJsonLinesAtomically(
         filePath,
         recorded.map((event) => `${JSON.stringify(event)}\n`).join(""),
       );
@@ -344,16 +477,25 @@ async function syncRecordIdentityIndex(filePath: string): Promise<Set<string>> {
   if (!index) {
     index = { readState: createIncrementalReadState(), seen: new Set() };
     recordIdentityIndexes.set(key, index);
+    if (recordIdentityIndexes.size > MAX_RECORD_IDENTITY_INDEXES) {
+      recordIdentityIndexes.delete(recordIdentityIndexes.keys().next().value!);
+    }
+  } else {
+    recordIdentityIndexes.delete(key);
+    recordIdentityIndexes.set(key, index);
   }
 
-  const generation = index.readState.generation;
-  const appended = await readRecordedInboundAppend(filePath, index.readState);
-  if (index.readState.generation !== generation) {
-    index.seen.clear();
-  }
-  for (const event of appended) {
-    index.seen.add(recordIdentity(event));
-  }
+  let generation = index.readState.generation;
+  do {
+    const appended = await readRecordedInboundAppend(filePath, index.readState);
+    if (index.readState.generation !== generation) {
+      index.seen.clear();
+      generation = index.readState.generation;
+    }
+    for (const event of appended) {
+      rememberRecentRecord(index.seen, event);
+    }
+  } while (!index.readState.caughtUp);
   return index.seen;
 }
 

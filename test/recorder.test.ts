@@ -100,6 +100,14 @@ describe("recorder", () => {
     await probeHandle.close();
     const originalWriteFile = fileHandlePrototype.writeFile;
     let failNextWrite = true;
+    let releasePartialWrite!: () => void;
+    let reportPartialWrite!: () => void;
+    const partialWriteReported = new Promise<void>((resolve) => {
+      reportPartialWrite = resolve;
+    });
+    const partialWriteReleased = new Promise<void>((resolve) => {
+      releasePartialWrite = resolve;
+    });
     fileHandlePrototype.writeFile = async function (
       this: FileHandle,
       data: string,
@@ -108,17 +116,24 @@ describe("recorder", () => {
       if (failNextWrite) {
         failNextWrite = false;
         await originalWriteFile.call(this, data.slice(0, Math.ceil(data.length / 2)), encoding);
+        reportPartialWrite();
+        await partialWriteReleased;
         throw Object.assign(new Error("simulated partial append"), { code: "ENOSPC" });
       }
       await originalWriteFile.call(this, data, encoding);
     };
 
     const batch = [event("retry-1"), event("retry-2")];
+    const failedAppend = appendRecordedInboundBatch(filePath, batch);
     try {
-      await expect(appendRecordedInboundBatch(filePath, batch)).rejects.toThrow(
-        "simulated partial append",
-      );
+      await partialWriteReported;
+      await expect(readRecordedInbound(filePath)).resolves.toEqual([
+        expect.objectContaining({ id: "existing" }),
+      ]);
+      releasePartialWrite();
+      await expect(failedAppend).rejects.toThrow("simulated partial append");
     } finally {
+      releasePartialWrite();
       fileHandlePrototype.writeFile = originalWriteFile;
     }
 
@@ -131,6 +146,48 @@ describe("recorder", () => {
       expect.objectContaining({ id: "retry-1" }),
       expect.objectContaining({ id: "retry-2" }),
     ]);
+  });
+
+  it("repairs an interrupted recorder tail before publishing a batch", async () => {
+    const filePath = await createRecorderPath();
+    const sentAt = new Date().toISOString();
+    const event = (id: string) => ({
+      author: "user" as const,
+      id,
+      provider: "whatsapp",
+      sentAt,
+      text: id,
+      threadId: "15551234567",
+    });
+    await appendRecordedInboundBatch(filePath, [event("existing")]);
+    await appendFile(filePath, '{"id":"interrupted"', "utf8");
+
+    await appendRecordedInboundBatch(filePath, [event("after-recovery")]);
+
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: "existing" }),
+      expect.objectContaining({ id: "after-recovery" }),
+    ]);
+  });
+
+  it("bounds batch identity memory to a recent retry window", async () => {
+    const filePath = await createRecorderPath();
+    const sentAt = new Date().toISOString();
+    const event = (id: string) => ({
+      author: "user" as const,
+      id,
+      provider: "whatsapp",
+      sentAt,
+      text: id,
+      threadId: "15551234567",
+    });
+    const history = Array.from({ length: 4097 }, (_, index) => event(`history-${index}`));
+
+    await expect(appendRecordedInboundBatch(filePath, history)).resolves.toHaveLength(
+      history.length,
+    );
+    await expect(appendRecordedInboundBatch(filePath, [history[0]!])).resolves.toHaveLength(1);
+    await expect(appendRecordedInboundBatch(filePath, [history.at(-1)!])).resolves.toEqual([]);
   });
 
   it("indexes batch identities without rescanning completed recorder history", async () => {
