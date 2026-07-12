@@ -212,6 +212,55 @@ describe("slack provider", () => {
     });
   });
 
+  it("matches channel-aware and legacy generic thread webhooks", async () => {
+    const config = await createSlackConfig(0);
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+    const context = createContext(config, {
+      channelId: "C1234567890",
+      id: "reply-target",
+      metadata: {},
+      threadId: "1700000000.000100",
+    });
+    const endpoint = endpointFromDetails((await provider.probe(context)).details);
+    const threadKey = "C1234567890:thread:1700000000.000100";
+    const since = new Date(Date.now() - 1_000).toISOString();
+
+    for (const [index, payload] of [
+      {
+        channelId: "C1234567890",
+        id: "generic-scoped",
+        text: "ACK scoped",
+        threadId: "1700000000.000100",
+      },
+      {
+        id: "generic-legacy",
+        text: "ACK legacy",
+        threadId: "1700000000.000100",
+      },
+    ].entries()) {
+      const waiting = provider.waitForInbound({
+        ...context,
+        nonce: "generic-thread",
+        since,
+        threadId: threadKey,
+        timeoutMs: 500,
+      });
+      const response = await fetch(endpoint, {
+        body: JSON.stringify(payload),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(waiting).resolves.toMatchObject({
+        id: payload.id,
+        text: payload.text,
+        threadId: index === 0 ? threadKey : "1700000000.000100",
+      });
+    }
+  });
+
   it("rejects mock webhook thread ids that are not Slack-shaped", async () => {
     const config = await createSlackConfig(0);
     const provider = new SlackProviderAdapter("slack", config, "crabline");

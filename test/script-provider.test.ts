@@ -525,11 +525,14 @@ describe("script provider", () => {
   it("redacts secret values carried in the script payload", async () => {
     const context = await createContext();
     const sentinel = "configured-payload-secret";
-    context.fixture.target.metadata.accessToken = sentinel;
+    const shared = { value: sentinel };
+    const malformedMetadata = context.fixture.target.metadata as unknown as Record<string, unknown>;
+    malformedMetadata.public = shared;
+    malformedMetadata.accessToken = shared;
     const failingScript = path.join(path.dirname(context.manifestPath), "send-payload-secret.mjs");
     await writeText(
       failingScript,
-      'let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{const input=JSON.parse(raw);process.stderr.write(input.fixture.target.metadata.accessToken);process.exitCode=7;});',
+      'let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{const input=JSON.parse(raw);process.stderr.write(input.fixture.target.metadata.public.value);process.exitCode=7;});',
     );
     context.config.script!.commands.send = `node ${JSON.stringify(failingScript)}`;
     const provider = new ScriptProviderAdapter(context);
