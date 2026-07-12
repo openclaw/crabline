@@ -28,6 +28,7 @@ import {
 const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 const TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT = 5;
 const TELEGRAM_WEBHOOK_RETRY_BASE_MS = 100;
+const TELEGRAM_WEBHOOK_DELIVERY_TIMEOUT_MS = 3_000;
 
 type TelegramServerEvent = {
   at: string;
@@ -48,6 +49,7 @@ type TelegramWebhook = {
 type TelegramServerState = {
   activeUpdatePoll: TelegramUpdatePoll | undefined;
   activeWebhookDeliveries: Set<AbortController>;
+  activeWebhookValidations: Set<AbortController>;
   adminToken: string;
   allowLoopbackHttpWebhook: boolean;
   botId: number;
@@ -63,6 +65,7 @@ type TelegramServerState = {
   restrictWebhookTargets: boolean;
   updates: TelegramUpdate[];
   webhook: TelegramWebhook | undefined;
+  webhookAdmission: Promise<void>;
   webhookDelivery: Promise<Response | undefined> | undefined;
   webhookRetryAttempts: number;
   webhookRetryTimer: NodeJS.Timeout | undefined;
@@ -514,6 +517,9 @@ async function flushTelegramWebhookUpdates(
         }
         return telegramError("Bad Gateway: webhook delivery failed", 502);
       }
+      if (state.webhook !== webhook) {
+        return undefined;
+      }
       const deliveredIndex = state.updates.indexOf(update);
       if (deliveredIndex >= 0) {
         state.updates.splice(deliveredIndex, 1);
@@ -535,12 +541,23 @@ async function flushTelegramWebhookUpdates(
 async function validateTelegramWebhookUrl(
   state: Pick<TelegramServerState, "allowLoopbackHttpWebhook" | "restrictWebhookTargets">,
   url: URL,
+  deadlineAt: number,
+  signal: AbortSignal,
 ): Promise<Response | { addresses: WebhookAddress[] | undefined }> {
-  const target = await validateWebhookTarget({
-    allowLoopbackHttp: state.allowLoopbackHttpWebhook,
-    restrictPrivateAddresses: state.restrictWebhookTargets,
-    url,
-  });
+  let target;
+  try {
+    target = await withTelegramWebhookDeadline(
+      validateWebhookTarget({
+        allowLoopbackHttp: state.allowLoopbackHttpWebhook,
+        restrictPrivateAddresses: state.restrictWebhookTargets,
+        url,
+      }),
+      deadlineAt,
+      signal,
+    );
+  } catch {
+    return telegramError("Bad Request: webhook host could not be resolved");
+  }
   if (!("error" in target)) {
     return target;
   }
@@ -551,53 +568,132 @@ async function validateTelegramWebhookUrl(
       : telegramError("Bad Request: webhook URL must use HTTPS");
 }
 
+/** @internal */
+export async function withTelegramWebhookDeadline<T>(
+  promise: Promise<T>,
+  deadlineAt: number,
+  signal: AbortSignal,
+): Promise<T> {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    throw new DOMException("Webhook delivery timed out", "TimeoutError");
+  }
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () =>
+      finish(() =>
+        reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new DOMException("Webhook delivery aborted", "AbortError"),
+        ),
+      );
+    const timer = setTimeout(
+      () => finish(() => reject(new DOMException("Webhook delivery timed out", "TimeoutError"))),
+      remainingMs,
+    );
+    timer.unref();
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
+
 async function postTelegramWebhook(
   state: TelegramServerState,
   webhook: TelegramWebhook,
   update: TelegramUpdate,
 ): Promise<{ error: string } | { status: number }> {
   const url = new URL(webhook.url);
-  const target = await validateTelegramWebhookUrl(state, url);
-  if (target instanceof Response) {
-    return { error: "Webhook target is no longer allowed" };
-  }
-  const addresses: Array<WebhookAddress | undefined> =
-    target.addresses && target.addresses.length > 0 ? target.addresses : [undefined];
-  const deadlineAt = Date.now() + 3_000;
-  let lastError: unknown;
-  for (const [index, address] of addresses.entries()) {
-    if (state.closing) {
-      throw new Error("Telegram server is shutting down.");
+  const deadlineAt = Date.now() + TELEGRAM_WEBHOOK_DELIVERY_TIMEOUT_MS;
+  const controller = new AbortController();
+  state.activeWebhookDeliveries.add(controller);
+  try {
+    const target = await validateTelegramWebhookUrl(state, url, deadlineAt, controller.signal);
+    if (target instanceof Response) {
+      return { error: "Webhook target is no longer allowed" };
     }
-    const remainingMs = deadlineAt - Date.now();
-    if (remainingMs <= 0) {
-      throw new DOMException("Webhook delivery timed out after 3000ms", "TimeoutError");
-    }
-    const controller = new AbortController();
-    state.activeWebhookDeliveries.add(controller);
-    try {
-      const attemptsRemaining = addresses.length - index;
-      const status = await postWebhookRequest({
-        address,
-        body: JSON.stringify(update),
-        headerEntries: webhook.secretToken
-          ? [["x-telegram-bot-api-secret-token", webhook.secretToken]]
-          : undefined,
-        signal: controller.signal,
-        timeoutMs: Math.max(1, Math.floor(remainingMs / attemptsRemaining)),
-        url,
-      });
-      return { status };
-    } catch (error) {
-      lastError = error;
+    const addresses: Array<WebhookAddress | undefined> =
+      target.addresses && target.addresses.length > 0 ? target.addresses : [undefined];
+    let lastError: unknown;
+    for (const [index, address] of addresses.entries()) {
       if (state.closing) {
-        throw error;
+        throw new Error("Telegram server is shutting down.");
       }
-    } finally {
-      state.activeWebhookDeliveries.delete(controller);
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs <= 0) {
+        throw new DOMException("Webhook delivery timed out", "TimeoutError");
+      }
+      try {
+        const attemptsRemaining = addresses.length - index;
+        const status = await postWebhookRequest({
+          address,
+          body: JSON.stringify(update),
+          headerEntries: webhook.secretToken
+            ? [["x-telegram-bot-api-secret-token", webhook.secretToken]]
+            : undefined,
+          signal: controller.signal,
+          timeoutMs: Math.max(1, Math.floor(remainingMs / attemptsRemaining)),
+          url,
+        });
+        return { status };
+      } catch (error) {
+        lastError = error;
+        if (state.closing || controller.signal.aborted) {
+          throw error;
+        }
+      }
     }
+    throw lastError;
+  } finally {
+    state.activeWebhookDeliveries.delete(controller);
   }
-  throw lastError;
+}
+
+async function replaceTelegramWebhook(
+  state: TelegramServerState,
+  webhook: TelegramWebhook | undefined,
+  dropPendingUpdates: boolean,
+): Promise<void> {
+  let releaseAdmission!: () => void;
+  const previousAdmission = state.webhookAdmission;
+  state.webhookAdmission = new Promise<void>((resolve) => {
+    releaseAdmission = resolve;
+  });
+  await previousAdmission;
+  try {
+    state.webhook = undefined;
+    clearTelegramWebhookRetry(state, true);
+    for (const controller of state.activeWebhookDeliveries) {
+      controller.abort();
+    }
+    await state.webhookDelivery;
+    if (dropPendingUpdates) {
+      state.updates.length = 0;
+    }
+    state.webhook = webhook;
+    if (webhook) {
+      finishTelegramUpdatePoll(state, "conflict");
+      scheduleTelegramWebhookDelivery(state, 0);
+    }
+  } finally {
+    releaseAdmission();
+  }
 }
 
 function clearTelegramWebhookRetry(state: TelegramServerState, resetAttempts = false): void {
@@ -705,11 +801,11 @@ async function handleTelegramApi(params: {
       return telegramOk(true);
     case "setwebhook": {
       if (params.body.url === "") {
-        if (toBooleanValue(params.body.drop_pending_updates)) {
-          params.state.updates.length = 0;
-        }
-        clearTelegramWebhookRetry(params.state, true);
-        params.state.webhook = undefined;
+        await replaceTelegramWebhook(
+          params.state,
+          undefined,
+          toBooleanValue(params.body.drop_pending_updates),
+        );
         return telegramOk(true);
       }
       const webhookUrl = toStringValue(params.body.url);
@@ -725,7 +821,16 @@ async function handleTelegramApi(params: {
       if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
         return telegramError("Bad Request: bad webhook URL");
       }
-      const target = await validateTelegramWebhookUrl(params.state, parsedUrl);
+      const validation = new AbortController();
+      params.state.activeWebhookValidations.add(validation);
+      const target = await validateTelegramWebhookUrl(
+        params.state,
+        parsedUrl,
+        Date.now() + TELEGRAM_WEBHOOK_DELIVERY_TIMEOUT_MS,
+        validation.signal,
+      ).finally(() => {
+        params.state.activeWebhookValidations.delete(validation);
+      });
       if (target instanceof Response) {
         return target;
       }
@@ -733,24 +838,22 @@ async function handleTelegramApi(params: {
       if (secretToken && !/^[A-Za-z0-9_-]{1,256}$/u.test(secretToken)) {
         return telegramError("Bad Request: invalid secret token");
       }
-      if (toBooleanValue(params.body.drop_pending_updates)) {
-        params.state.updates.length = 0;
-      }
-      params.state.webhook = {
-        ...(secretToken ? { secretToken } : {}),
-        url: parsedUrl.href,
-      };
-      finishTelegramUpdatePoll(params.state, "conflict");
-      clearTelegramWebhookRetry(params.state, true);
-      scheduleTelegramWebhookDelivery(params.state, 0);
+      await replaceTelegramWebhook(
+        params.state,
+        {
+          ...(secretToken ? { secretToken } : {}),
+          url: parsedUrl.href,
+        },
+        toBooleanValue(params.body.drop_pending_updates),
+      );
       return telegramOk(true);
     }
     case "deletewebhook":
-      if (toBooleanValue(params.body.drop_pending_updates)) {
-        params.state.updates.length = 0;
-      }
-      clearTelegramWebhookRetry(params.state, true);
-      params.state.webhook = undefined;
+      await replaceTelegramWebhook(
+        params.state,
+        undefined,
+        toBooleanValue(params.body.drop_pending_updates),
+      );
       return telegramOk(true);
     case "getwebhookinfo":
       return telegramOk({
@@ -993,6 +1096,7 @@ export async function startTelegramServer(
   const state: TelegramServerState = {
     activeUpdatePoll: undefined,
     activeWebhookDeliveries: new Set(),
+    activeWebhookValidations: new Set(),
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     allowLoopbackHttpWebhook: isLoopbackHost(host),
     botId,
@@ -1012,6 +1116,7 @@ export async function startTelegramServer(
     closing: false,
     updates: [],
     webhook: undefined,
+    webhookAdmission: Promise.resolve(),
     webhookDelivery: undefined,
     webhookRetryAttempts: 0,
     webhookRetryTimer: undefined,
@@ -1054,7 +1159,11 @@ export async function startTelegramServer(
       for (const controller of state.activeWebhookDeliveries) {
         controller.abort();
       }
+      for (const controller of state.activeWebhookValidations) {
+        controller.abort();
+      }
       await state.webhookDelivery;
+      await state.webhookAdmission;
       await state.inboundAdmission;
       await closeServer(server);
     },

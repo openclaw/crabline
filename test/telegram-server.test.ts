@@ -3,7 +3,7 @@ import { Agent, createServer, request as httpRequest, type IncomingMessage } fro
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startTelegramServer, type StartedTelegramServer } from "../src/index.js";
-import { handleTelegramGetUpdates } from "../src/servers/telegram.js";
+import { handleTelegramGetUpdates, withTelegramWebhookDeadline } from "../src/servers/telegram.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedTelegramServer[] = [];
@@ -570,6 +570,122 @@ describe("telegram local provider server", () => {
         result: [],
       });
     } finally {
+      await new Promise<void>((resolve, reject) =>
+        webhook.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("revokes an in-flight webhook before delivering queued updates to its replacement", async () => {
+    let observeOldRequest!: () => void;
+    const oldRequestObserved = new Promise<void>((resolve) => {
+      observeOldRequest = resolve;
+    });
+    const oldWebhook = createServer(() => {
+      observeOldRequest();
+    });
+    const delivered: number[] = [];
+    const newWebhook = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) {
+        chunks.push(Buffer.from(chunk));
+      }
+      const update = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+        update_id: number;
+      };
+      delivered.push(update.update_id);
+      response.statusCode = 200;
+      response.end();
+    });
+    await Promise.all([
+      new Promise<void>((resolve) => oldWebhook.listen(0, "127.0.0.1", resolve)),
+      new Promise<void>((resolve) => newWebhook.listen(0, "127.0.0.1", resolve)),
+    ]);
+    const oldAddress = oldWebhook.address();
+    const newAddress = newWebhook.address();
+    if (
+      !oldAddress ||
+      typeof oldAddress === "string" ||
+      !newAddress ||
+      typeof newAddress === "string"
+    ) {
+      throw new Error("Unable to resolve Telegram webhook receivers.");
+    }
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    try {
+      await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`, {
+        body: JSON.stringify({ url: `http://127.0.0.1:${oldAddress.port}/telegram` }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      const inbound = injectUpdate(server, { chatId: 42, text: "replace delivery" });
+      await oldRequestObserved;
+      const replaced = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
+        {
+          body: JSON.stringify({ url: `http://127.0.0.1:${newAddress.port}/telegram` }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(replaced.status).toBe(200);
+      expect((await inbound).status).toBe(502);
+      await expect.poll(() => delivered).toEqual([1]);
+    } finally {
+      oldWebhook.closeAllConnections();
+      newWebhook.closeAllConnections();
+      await Promise.all([
+        new Promise<void>((resolve, reject) =>
+          oldWebhook.close((error) => (error ? reject(error) : resolve())),
+        ),
+        new Promise<void>((resolve, reject) =>
+          newWebhook.close((error) => (error ? reject(error) : resolve())),
+        ),
+      ]);
+    }
+  });
+
+  it("revokes an in-flight webhook without dropping its update on deletion", async () => {
+    let observeRequest!: () => void;
+    const requestObserved = new Promise<void>((resolve) => {
+      observeRequest = resolve;
+    });
+    const webhook = createServer(() => {
+      observeRequest();
+    });
+    await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+    const address = webhook.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve Telegram webhook receiver.");
+    }
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    try {
+      await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`, {
+        body: JSON.stringify({ url: `http://127.0.0.1:${address.port}/telegram` }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      const inbound = injectUpdate(server, { chatId: 42, text: "delete delivery" });
+      await requestObserved;
+      const deleted = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/deleteWebhook`,
+        {
+          body: "{}",
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(deleted.status).toBe(200);
+      expect((await inbound).status).toBe(502);
+      await expect((await getUpdates(server, {})).json()).resolves.toMatchObject({
+        result: [{ message: { text: "delete delivery" }, update_id: 1 }],
+      });
+    } finally {
+      webhook.closeAllConnections();
       await new Promise<void>((resolve, reject) =>
         webhook.close((error) => (error ? reject(error) : resolve())),
       );
@@ -1361,5 +1477,16 @@ describe("telegram local provider server", () => {
     expect(observedEvents).toEqual([
       expect.objectContaining({ method: "GET", path: "/bot<redacted>/getMe", type: "api" }),
     ]);
+  });
+
+  it("bounds webhook DNS validation with the delivery deadline", async () => {
+    const controller = new AbortController();
+    await expect(
+      withTelegramWebhookDeadline(
+        new Promise<never>(() => undefined),
+        Date.now() + 25,
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ name: "TimeoutError" });
   });
 });
