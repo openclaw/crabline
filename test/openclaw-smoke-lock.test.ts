@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   acquireOpenClawCrablineSmokeRunLock,
   darwinProcessIdentityEnvironment,
+  isProcessAlive,
   processIdentityFromDarwin,
   processIdentityFromLinuxStat,
   releaseOpenClawCrablineSmokeRunLock,
@@ -51,6 +52,21 @@ describe("OpenClaw smoke lock cleanup", () => {
       TZ: "Europe/Paris",
       UNRELATED: "preserved",
     });
+  });
+
+  it("rejects oversized PIDs and non-liveness process errors", () => {
+    const kill = vi.spyOn(process, "kill");
+    kill.mockImplementationOnce(() => {
+      throw Object.assign(new Error("invalid pid"), { code: "EINVAL" });
+    });
+    kill.mockImplementationOnce(() => {
+      throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+    });
+
+    expect(isProcessAlive(Number.MAX_SAFE_INTEGER)).toBe(false);
+    expect(isProcessAlive(4_242)).toBe(false);
+    expect(isProcessAlive(4_242)).toBe(true);
+    kill.mockRestore();
   });
 
   it("rejects lock tokens that can escape token-specific filenames", async () => {
@@ -453,7 +469,7 @@ describe("OpenClaw smoke lock cleanup", () => {
           pid: 4_242,
           processIdentity: "test:prior",
           processStartedAtMs: 100,
-          token: "prior",
+          token: "placeholder",
         })}\n`,
         { mode: 0o600 },
       );
@@ -582,6 +598,74 @@ describe("OpenClaw smoke lock cleanup", () => {
 
       await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
       await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("reclaims a same-second Darwin identity after current PID reuse", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    const darwinIdentity = "darwin:1783864000.123456:Sun Jul 12 16:04:00 2026";
+    try {
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(lockDirectory, "owner.json"),
+        `${JSON.stringify({
+          channel: "telegram",
+          createdAtMs: 1_000,
+          pid: 4_242,
+          processIdentity: darwinIdentity,
+          processStartedAtMs: 100,
+          token: "prior",
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        getProcessIdentity: () => darwinIdentity,
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 1_100,
+        pid: 4_242,
+        processIdentity: darwinIdentity,
+        processStartedAtMs: 200,
+      });
+
+      await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
+      await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("rejects lock metadata with a PID outside the supported process range", async () => {
+    const outputDir = await createTempDir();
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    try {
+      await fs.mkdir(lockDirectory);
+      await fs.writeFile(
+        path.join(lockDirectory, "owner.json"),
+        `${JSON.stringify({
+          channel: "telegram",
+          pid: 2_147_483_648,
+          token: "token-oversized",
+        })}\n`,
+      );
+
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(
+          { channel: "telegram", outputDir },
+          { isProcessAlive: () => true, now: () => 1_000, pid: 5_252 },
+        ),
+      ).rejects.toThrow("OpenClaw Crabline smoke lock owner metadata is malformed.");
     } finally {
       await disposeTempDir(outputDir);
     }

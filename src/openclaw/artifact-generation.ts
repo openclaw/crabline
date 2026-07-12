@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { CrablineServerManifest } from "../servers/index.js";
-import { publishPrivateFileAtomically, securePrivateDirectory } from "./private-file.js";
+import {
+  publishPrivateFileAtomically,
+  removeSecuredPrivateDirectory,
+  securePrivateDirectory,
+  syncParentDirectory,
+} from "./private-file.js";
 import {
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
@@ -37,6 +42,7 @@ type PublishGenerationDependencies = {
   publishPrivateFile?: typeof publishPrivateFileAtomically;
   secureWindowsDirectory?: (directoryPath: string) => Promise<void>;
   secureWindowsFile?: (filePath: string) => Promise<void>;
+  syncParent?: typeof syncParentDirectory;
 };
 
 function assertCanonicalSelectionPaths(selection: OpenClawCrablineChannelDriverSelection): void {
@@ -149,6 +155,7 @@ async function pruneArtifactStore(params: {
   lock: OpenClawCrablineSmokeRunLock;
   pointer: OpenClawCrablineArtifactPointer | null;
   store: Awaited<ReturnType<typeof securePrivateDirectory>>;
+  directoryOptions?: Parameters<typeof securePrivateDirectory>[1];
 }): Promise<void> {
   const retainedGenerations = new Set(
     params.pointer
@@ -168,10 +175,11 @@ async function pruneArtifactStore(params: {
     }
     await params.lock.assertOwned();
     await params.store.assertIdentityAt();
-    await fs.rm(path.join(params.store.directoryPath, entry.name), {
-      force: true,
-      recursive: true,
-    });
+    const obsolete = await securePrivateDirectory(
+      path.join(params.store.directoryPath, entry.name),
+      params.directoryOptions,
+    );
+    await removeSecuredPrivateDirectory(obsolete);
     await params.store.assertIdentityAt();
   }
 }
@@ -204,6 +212,7 @@ export async function publishOpenClawCrablineArtifactGeneration(
     await assertCurrentGenerationExists(outputDir, currentPointer);
   }
   await pruneArtifactStore({
+    directoryOptions,
     lock: params.lock,
     pointer: currentPointer,
     store,
@@ -223,9 +232,12 @@ export async function publishOpenClawCrablineArtifactGeneration(
     ...(dependencies.secureWindowsFile
       ? { secureWindowsFile: dependencies.secureWindowsFile }
       : {}),
+    ...(dependencies.syncParent ? { syncParent: dependencies.syncParent } : {}),
   };
   let installed = false;
   let committed = false;
+  let primaryError: unknown;
+  let published: PublishedOpenClawCrablineArtifactGeneration | undefined;
   try {
     const pointer: OpenClawCrablineArtifactPointer = {
       capabilityMatrixPath: generationArtifactPath(
@@ -291,6 +303,7 @@ export async function publishOpenClawCrablineArtifactGeneration(
     }
     await params.lock.assertOwned();
     await fs.rename(stagingPath, generationPath);
+    await (dependencies.syncParent ?? syncParentDirectory)(generationPath, dependencies.platform);
     installed = true;
     await staging.assertIdentityAt(generationPath);
     await store.assertIdentityAt();
@@ -314,6 +327,7 @@ export async function publishOpenClawCrablineArtifactGeneration(
         throw new Error("OpenClaw Crabline artifact pointer is missing after publication.");
       }
       await pruneArtifactStore({
+        directoryOptions,
         lock: params.lock,
         pointer: committedPointer,
         store,
@@ -323,32 +337,53 @@ export async function publishOpenClawCrablineArtifactGeneration(
       warnings = [`OpenClaw Crabline artifact retention cleanup failed: ${detail}`];
     }
 
-    return {
+    published = {
       ...pointer,
       pointerPath: OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
       smoke,
       ...(warnings ? { warnings } : {}),
     };
-  } finally {
-    if (!committed) {
-      const unpublishedPath = installed ? generationPath : stagingPath;
-      let referencedByPointer = false;
-      if (installed) {
-        try {
-          const livePointer = await readOpenClawCrablineArtifactPointer(outputDir);
-          referencedByPointer =
-            livePointer?.generation === generation ||
-            livePointer?.previousGeneration === generation;
-        } catch {
-          referencedByPointer = true;
-        }
+  } catch (error) {
+    primaryError = error;
+  }
+
+  if (!committed) {
+    const unpublishedPath = installed ? generationPath : stagingPath;
+    let referencedByPointer = false;
+    if (installed) {
+      try {
+        const livePointer = await readOpenClawCrablineArtifactPointer(outputDir);
+        referencedByPointer =
+          livePointer?.generation === generation || livePointer?.previousGeneration === generation;
+      } catch {
+        referencedByPointer = true;
       }
-      if (!referencedByPointer) {
-        await staging
-          .assertIdentityAt(unpublishedPath)
-          .then(() => fs.rm(unpublishedPath, { force: true, recursive: true }))
-          .catch(() => undefined);
+    }
+    if (!referencedByPointer) {
+      try {
+        await removeSecuredPrivateDirectory(staging, unpublishedPath);
+      } catch (cleanupError) {
+        if (primaryError !== undefined) {
+          const primaryMessage =
+            primaryError instanceof Error ? primaryError.message : String(primaryError);
+          const aggregateError = new AggregateError(
+            [primaryError, cleanupError],
+            `${primaryMessage} OpenClaw Crabline artifact rollback cleanup also failed.`,
+          );
+          aggregateError.cause = primaryError;
+          const primaryCode = (primaryError as NodeJS.ErrnoException).code;
+          if (primaryCode) {
+            Object.assign(aggregateError, { code: primaryCode });
+          }
+          throw aggregateError;
+        }
+        throw cleanupError;
       }
     }
   }
+
+  if (primaryError !== undefined) {
+    throw primaryError;
+  }
+  return published!;
 }

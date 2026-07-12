@@ -84,10 +84,17 @@ describe("OpenClaw artifact generation publication", () => {
   it("publishes one complete owner-only generation behind an atomic pointer", async () => {
     const outputDir = await createTempDir();
     const lock = createLock();
+    const syncedPaths: string[] = [];
     try {
       const result = await publishOpenClawCrablineArtifactGeneration(
         publishParams(outputDir, lock),
-        { createGenerationId: () => "11111111-1111-4111-8111-111111111111", platform: "linux" },
+        {
+          createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+          platform: "linux",
+          syncParent: async (filePath) => {
+            syncedPaths.push(filePath);
+          },
+        },
       );
 
       expect(result).toMatchObject({
@@ -120,6 +127,13 @@ describe("OpenClaw artifact generation publication", () => {
       ).toBe(0o700);
       expect(lock.assertOwned).toHaveBeenCalledTimes(3);
       expect(lock.commitFileAtomically).toHaveBeenCalledTimes(1);
+      expect(syncedPaths).toContain(
+        path.join(
+          outputDir,
+          OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
+          "generation-11111111-1111-4111-8111-111111111111",
+        ),
+      );
     } finally {
       await disposeTempDir(outputDir);
     }
@@ -574,6 +588,33 @@ describe("OpenClaw artifact generation publication", () => {
         ),
       ).rejects.toThrow(/BigInt/u);
       await expect(fs.readdir(storePath)).resolves.toEqual([]);
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("preserves publication and rollback cleanup failures", async () => {
+    const outputDir = await createTempDir();
+    const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
+    const generation = "generation-11111111-1111-4111-8111-111111111111";
+    const generationPath = path.join(storePath, generation);
+    const displacedPath = `${generationPath}.displaced`;
+    const publicationError = new Error("pointer switch failed");
+    try {
+      const failure = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        beforePointerSwitch: async () => {
+          await fs.rename(generationPath, displacedPath);
+          await fs.mkdir(generationPath);
+          throw publicationError;
+        },
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      }).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).errors[0]).toBe(publicationError);
+      expect((failure as AggregateError).errors[1]).toBeInstanceOf(Error);
+      await expect(fs.stat(generationPath)).resolves.toBeDefined();
+      await expect(fs.stat(displacedPath)).resolves.toBeDefined();
     } finally {
       await disposeTempDir(outputDir);
     }

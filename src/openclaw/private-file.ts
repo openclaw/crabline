@@ -148,7 +148,7 @@ const runWindowsAclCommand: WindowsAclRunner = async (command, args, options) =>
   await execFileAsync(command, args, options);
 };
 
-function resolveWindowsPowerShellPath(systemRoot: string | null | undefined): string {
+export function resolveWindowsPowerShellPath(systemRoot: string | null | undefined): string {
   const normalizedRoot = systemRoot?.trim() ? path.win32.normalize(systemRoot.trim()) : undefined;
   if (!normalizedRoot || !/^[A-Za-z]:\\/.test(normalizedRoot)) {
     throw new Error("SystemRoot must be an absolute local Windows path.");
@@ -252,8 +252,8 @@ type DirectoryIdentity = {
   inode: bigint;
 };
 
-async function readDirectoryIdentity(directoryPath: string): Promise<DirectoryIdentity> {
-  const stats = await fs.lstat(directoryPath, { bigint: true });
+async function readDirectoryHandleIdentity(handle: FileHandle): Promise<DirectoryIdentity> {
+  const stats = await handle.stat({ bigint: true });
   if (!stats.isDirectory() || stats.ino <= 0n) {
     throw new Error("The filesystem did not provide a stable private directory identity.");
   }
@@ -285,6 +285,37 @@ export type SecuredPrivateDirectory = {
   directoryPath: string;
 };
 
+export async function syncParentDirectory(
+  filePath: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (platform === "win32") {
+    return;
+  }
+  const handle = await fs.open(path.dirname(filePath), "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function removeSecuredPrivateDirectory(
+  secured: SecuredPrivateDirectory,
+  currentPath = secured.directoryPath,
+): Promise<void> {
+  const quarantinePath = path.join(
+    path.dirname(currentPath),
+    `.${path.basename(currentPath)}.${process.pid}.${randomUUID()}.remove`,
+  );
+  await secured.assertIdentityAt(currentPath);
+  await fs.rename(currentPath, quarantinePath);
+  await secured.assertIdentityAt(quarantinePath);
+  await syncParentDirectory(quarantinePath);
+  await fs.rm(quarantinePath, { force: true, recursive: true });
+  await syncParentDirectory(quarantinePath);
+}
+
 export async function securePrivateDirectory(
   directoryPath: string,
   options: {
@@ -302,29 +333,77 @@ export async function securePrivateDirectory(
     }
   }
 
-  const identity = await readDirectoryIdentity(directoryPath);
-  try {
-    if ((options.platform ?? process.platform) === "win32") {
-      await (options.secureWindowsDirectory ?? applyOwnerOnlyWindowsDirectoryAcl)(directoryPath);
-    } else {
-      await fs.chmod(directoryPath, 0o700);
+  const handle = await fs.open(directoryPath, "r");
+  let handleOpen = true;
+  const closeHandle = async () => {
+    if (!handleOpen) {
+      return;
     }
-    await assertDirectoryPathIdentity(directoryPath, identity);
+    handleOpen = false;
+    await handle.close();
+  };
+  let identity: DirectoryIdentity;
+  try {
+    identity = await readDirectoryHandleIdentity(handle);
   } catch (error) {
-    if (created) {
-      await assertDirectoryPathIdentity(directoryPath, identity)
-        .then(() => fs.rm(directoryPath, { force: true, recursive: true }))
-        .catch(() => undefined);
+    try {
+      await closeHandle();
+    } catch (closeError) {
+      const aggregateError = new AggregateError(
+        [error, closeError],
+        "Private directory identity verification failed and its handle could not be closed.",
+      );
+      aggregateError.cause = error;
+      throw aggregateError;
     }
     throw error;
   }
-
-  return {
+  const secured: SecuredPrivateDirectory = {
     async assertIdentityAt(currentPath = directoryPath) {
       await assertDirectoryPathIdentity(currentPath, identity);
     },
     directoryPath,
   };
+  try {
+    await secured.assertIdentityAt();
+    if ((options.platform ?? process.platform) === "win32") {
+      await (options.secureWindowsDirectory ?? applyOwnerOnlyWindowsDirectoryAcl)(directoryPath);
+    } else {
+      await handle.chmod(0o700);
+    }
+    await secured.assertIdentityAt();
+  } catch (error) {
+    let primaryError = error;
+    try {
+      await closeHandle();
+    } catch (closeError) {
+      const aggregateError = new AggregateError(
+        [error, closeError],
+        "Private directory securing failed and its verification handle could not be closed.",
+      );
+      aggregateError.cause = error;
+      primaryError = aggregateError;
+    }
+    if (created) {
+      try {
+        await removeSecuredPrivateDirectory(secured);
+      } catch (cleanupError) {
+        const aggregateError = new AggregateError(
+          [primaryError, cleanupError],
+          `Private directory securing failed and rollback cleanup also failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        aggregateError.cause = primaryError;
+        throw aggregateError;
+      }
+    }
+    throw primaryError;
+  } finally {
+    await closeHandle();
+  }
+
+  return secured;
 }
 
 export async function publishPrivateFileAtomically(
@@ -334,6 +413,7 @@ export async function publishPrivateFileAtomically(
     afterRename?: (filePath: string) => Promise<void>;
     platform?: NodeJS.Platform;
     secureWindowsFile?: (temporaryPath: string) => Promise<void>;
+    syncParent?: (filePath: string, platform?: NodeJS.Platform) => Promise<void>;
   } = {},
 ): Promise<void> {
   const temporaryPath = path.join(
@@ -356,6 +436,7 @@ export async function publishPrivateFileAtomically(
     await handle.sync();
     await assertPathIdentity(temporaryPath, identity);
     await fs.rename(temporaryPath, filePath);
+    await (options.syncParent ?? syncParentDirectory)(filePath, options.platform);
     await options.afterRename?.(filePath);
     await assertPathIdentity(filePath, identity);
   } finally {

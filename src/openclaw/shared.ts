@@ -63,7 +63,7 @@ export type OpenClawCrablineAgentDelivery = {
 export type OpenClawCrablineInboundInput = {
   conversation: {
     id: string;
-    kind: string;
+    kind: "direct" | "group";
   };
   senderId: string;
   senderName?: string | undefined;
@@ -157,6 +157,9 @@ export function createOpenClawCrablineProviderBridge<
       createInbound(input) {
         if (!readNonBlankString(input.text)) {
           throw new Error("OpenClaw Crabline inbound message text is required.");
+        }
+        if (input.conversation.kind !== "direct" && input.conversation.kind !== "group") {
+          throw new Error("OpenClaw Crabline inbound conversation kind must be direct or group.");
         }
         return adapter.createInbound(input);
       },
@@ -290,7 +293,11 @@ export function parseQaTarget(target: string): ParsedQaTarget {
 }
 
 export function canonicalConversationIdForInbound(input: OpenClawCrablineInboundInput) {
-  return input.conversation.id.trim();
+  const conversationId = readNonBlankString(input.conversation.id);
+  if (!conversationId) {
+    throw new Error("OpenClaw Crabline inbound conversation id is required.");
+  }
+  return conversationId.trim();
 }
 
 function encodeQaThreadComponent(value: string): string {
@@ -300,12 +307,7 @@ function encodeQaThreadComponent(value: string): string {
 export function qaTargetForInbound(input: OpenClawCrablineInboundInput) {
   const conversationId = canonicalConversationIdForInbound(input);
   const threadId = input.threadId?.trim();
-  const prefix =
-    input.conversation.kind === "direct"
-      ? "dm"
-      : input.conversation.kind === "channel"
-        ? "channel"
-        : "group";
+  const prefix = input.conversation.kind === "direct" ? "dm" : "group";
   return threadId
     ? `thread:/v1/${encodeQaThreadComponent(conversationId)}/${encodeQaThreadComponent(threadId)}`
     : `${prefix}:${conversationId}`;
