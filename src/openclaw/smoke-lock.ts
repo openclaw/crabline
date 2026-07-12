@@ -43,6 +43,7 @@ export type OpenClawCrablineSmokeRunLock = {
 
 type HeartbeatController = {
   assertHealthy(): void;
+  settle(): Promise<void>;
   stop(): Promise<void>;
 };
 type RemoveLockDirectory = (lockDirectory: string) => Promise<void>;
@@ -53,6 +54,7 @@ type BeforeRecoveryClaim = () => Promise<void>;
 type BeforeRecoveryDeleteClaim = () => Promise<void>;
 type BeforeReleaseClaim = () => Promise<void>;
 type BeforeCommitFileRename = () => Promise<void>;
+type BeforeCommitRename = () => Promise<void>;
 type SecureWindowsDirectory = (directoryPath: string) => Promise<void>;
 type AfterLockDirectoryWrite = (directoryPath: string) => Promise<void>;
 type LockClaimKind = "commit" | "recovering" | "release";
@@ -74,6 +76,7 @@ type SmokeLockRuntime = {
 };
 
 const LOCK_OWNER_FILE = "owner.json";
+const LOCK_COMMIT_STAGE_FILE = "commit-stage.json";
 const LOCK_LEASE_FILE_PREFIX = "lease.";
 const LEGACY_RECOVERY_SUFFIX = ".recovering";
 const COMMIT_CLAIM_SUFFIX = ".commit";
@@ -82,6 +85,42 @@ const LOCK_LEASE_MS = 10 * 60 * 1000;
 const RELEASE_ATTEMPTS = 3;
 const RELEASE_RETRY_DELAY_MS = 10;
 const CURRENT_PROCESS_STARTED_AT_MS = Math.trunc(Date.now() - process.uptime() * 1000);
+
+function parseCommitStagePath(contents: string, token: string): string {
+  let value: { path?: unknown; token?: unknown };
+  try {
+    value = JSON.parse(contents) as { path?: unknown; token?: unknown };
+  } catch (error) {
+    throw new Error("OpenClaw Crabline smoke lock commit stage metadata is malformed.", {
+      cause: error,
+    });
+  }
+  const expectedPrefix = `.commit-file.${token}.`;
+  if (
+    value.token !== token ||
+    typeof value.path !== "string" ||
+    !path.isAbsolute(value.path) ||
+    !path.basename(value.path).startsWith(expectedPrefix) ||
+    !path.basename(value.path).endsWith(".tmp")
+  ) {
+    throw new Error("OpenClaw Crabline smoke lock commit stage metadata is malformed.");
+  }
+  return value.path;
+}
+
+async function readCommitStagePath(lockDirectory: string, token: string): Promise<string | null> {
+  try {
+    return parseCommitStagePath(
+      await fs.readFile(path.join(lockDirectory, LOCK_COMMIT_STAGE_FILE), "utf8"),
+      token,
+    );
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
 
 const removeLockDirectory: RemoveLockDirectory = async (lockDirectory) => {
   await fs.rm(lockDirectory, { force: true, recursive: true });
@@ -121,6 +160,9 @@ const startHeartbeat: StartHeartbeat = (renew, intervalMs) => {
       if (failure !== undefined) {
         throw new Error("OpenClaw Crabline smoke lock heartbeat failed.", { cause: failure });
       }
+    },
+    async settle() {
+      await pending;
     },
     async stop() {
       stopped = true;
@@ -383,6 +425,22 @@ async function removeOwnedLock(params: {
       }
     }
     return false;
+  }
+
+  const stagedFilePath = await readCommitStagePath(releaseClaim, params.token);
+  if (stagedFilePath) {
+    const revokedStagePath = path.join(
+      path.dirname(stagedFilePath),
+      `.revoked-commit-file.${params.token}.${randomUUID()}.tmp`,
+    );
+    try {
+      await fs.rename(stagedFilePath, revokedStagePath);
+      await fs.rm(revokedStagePath, { force: true });
+    } catch (error) {
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+    }
   }
 
   await (params.removeDirectory ?? removeLockDirectory)(releaseClaim);
@@ -684,6 +742,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     platform?: NodeJS.Platform;
     secureWindowsDirectory?: SecureWindowsDirectory;
     beforeCommitFileRename?: BeforeCommitFileRename;
+    beforeCommitRename?: BeforeCommitRename;
     beforeRecoveryDeleteClaim?: BeforeRecoveryDeleteClaim;
     beforeRecoveryClaim?: BeforeRecoveryClaim;
     beforeReleaseClaim?: BeforeReleaseClaim;
@@ -789,6 +848,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     }
 
     let ownedDirectory = lockDirectory;
+    let commitFenceConsumed = false;
     let heartbeat: HeartbeatController;
     const renew = async () => {
       const renewedAtMs = runtime.now();
@@ -824,7 +884,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         if (released) {
           throw new Error("OpenClaw Crabline smoke lock has already been released.");
         }
-        if (heartbeatStopped || ownedDirectory !== lockDirectory) {
+        if (commitFenceConsumed || heartbeatStopped || ownedDirectory !== lockDirectory) {
           throw new Error("OpenClaw Crabline smoke lock has already committed its fence.");
         }
         heartbeat.assertHealthy();
@@ -836,6 +896,19 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         let committed = false;
         try {
           await stageFile(stagedFilePath, contents);
+          if (stageDirectory) {
+            const commitStagePath = path.join(lockDirectory, LOCK_COMMIT_STAGE_FILE);
+            await fs.writeFile(
+              commitStagePath,
+              `${JSON.stringify({ path: stagedFilePath, token })}\n`,
+              {
+                encoding: "utf8",
+                flag: "wx",
+                mode: 0o600,
+              },
+            );
+            await fs.chmod(commitStagePath, 0o600);
+          }
           heartbeat.assertHealthy();
           await renew();
           heartbeat.assertHealthy();
@@ -862,6 +935,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
             throw error;
           }
           ownedDirectory = commitClaim;
+          commitFenceConsumed = true;
 
           const claimed = await readLockRecord(commitClaim);
           const claimedIdentity = await readDirectoryIdentity(commitClaim);
@@ -887,9 +961,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           heartbeat.assertHealthy();
           await renew();
           heartbeat.assertHealthy();
-          await heartbeat.stop();
-          heartbeatStopped = true;
+          await heartbeat.settle();
           heartbeat.assertHealthy();
+          await dependencies.beforeCommitRename?.();
           await fs.rename(
             stageDirectory ? stagedFilePath : path.join(commitClaim, stagedFileName),
             destinationPath,
