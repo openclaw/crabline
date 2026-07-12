@@ -2,11 +2,13 @@ import { matchesInbound } from "./matcher.js";
 import { createOutboundText } from "./message-template.js";
 import { createNonce } from "./nonces.js";
 import { type FailureKind, CrablineError, ensureErrorMessage } from "./errors.js";
+import { EXIT_CODES, type ExitCode } from "./exit-codes.js";
 import type { ManifestDefinition } from "../config/schema.js";
 import type { Registry } from "../providers/registry.js";
 
 export type CommandRunResult = {
   diagnostics: string[];
+  exitCode?: ExitCode | undefined;
   failureKind?: FailureKind | undefined;
   fixtureId: string;
   mode: string;
@@ -189,9 +191,15 @@ export async function runFixtureCommand(params: {
       const diagnostic = `cleanup failed: ${ensureErrorMessage(error)}`;
       if (result) {
         result.diagnostics.push(diagnostic);
+        if (result.ok) {
+          result.exitCode = EXIT_CODES.ASSERTION;
+          result.failureKind = "assertion";
+          result.ok = false;
+        }
       } else {
         result = {
           diagnostics: [...diagnostics, diagnostic],
+          exitCode: EXIT_CODES.ASSERTION,
           failureKind: "assertion",
           fixtureId: fixture.id,
           mode,
@@ -241,6 +249,10 @@ export function computeExitCode(result: CommandRunResult | SuiteRunResult): numb
     return 0;
   }
 
+  if (result.exitCode !== undefined) {
+    return result.exitCode;
+  }
+
   switch (result.failureKind) {
     case "auth":
       return 11;
@@ -272,6 +284,7 @@ function toFailure(
   if (error instanceof CrablineError) {
     return {
       diagnostics,
+      exitCode: error.exitCode,
       failureKind: error.kind,
       fixtureId,
       mode,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CrablineError } from "../src/core/errors.js";
+import { EXIT_CODES } from "../src/core/exit-codes.js";
 import { computeExitCode, runFixtureCommand, runSuite } from "../src/core/run.js";
 import type { ManifestDefinition } from "../src/config/schema.js";
 import { OPENCLAW_SUPPORT_CATALOG } from "../src/providers/catalog.js";
@@ -156,7 +157,7 @@ describe("run behavior", () => {
     expect(roundtrip.failureKind).toBe("assertion");
   });
 
-  it("preserves the fixture result when cleanup fails", async () => {
+  it("fails an otherwise successful fixture when cleanup fails", async () => {
     const provider: ProviderAdapter = {
       id: "mock",
       platform: "loopback",
@@ -187,8 +188,10 @@ describe("run behavior", () => {
       registry: buildRegistry(provider),
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.failureKind).toBe("assertion");
     expect(result.diagnostics).toContain("cleanup failed: cleanup exploded");
+    expect(computeExitCode(result)).toBe(EXIT_CODES.ASSERTION);
   });
 
   it("preserves captured failures when cleanup fails", async () => {
@@ -222,6 +225,37 @@ describe("run behavior", () => {
       ok: false,
     });
     expect(result.diagnostics).toEqual(["send failed", "cleanup failed: cleanup exploded"]);
+  });
+
+  it("preserves explicit CrablineError exit codes", async () => {
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => {
+        throw new CrablineError("custom failure", {
+          exitCode: EXIT_CODES.AUTH,
+          kind: "outbound",
+        });
+      },
+      waitForInbound: async () => null,
+    };
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: withAllCapabilities(manifest),
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.failureKind).toBe("outbound");
+    expect(result.exitCode).toBe(EXIT_CODES.AUTH);
+    expect(computeExitCode(result)).toBe(EXIT_CODES.AUTH);
   });
 
   it("computes suite exit codes", async () => {
