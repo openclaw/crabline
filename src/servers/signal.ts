@@ -224,7 +224,7 @@ function flushPendingSignalEvents(state: SignalServerState, client: ServerRespon
 
 function emitSignalEvent(state: SignalServerState, payload: unknown): boolean {
   const event = `event:receive\ndata:${JSON.stringify(payload)}\n\n`;
-  if (state.clients.size === 0) {
+  if (state.clients.size === 0 || state.pendingEvents.length > 0) {
     return queueSignalEvent(state, event);
   }
   let delivered = false;
@@ -333,12 +333,23 @@ function validTimestamp(value: unknown): boolean {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
+function hasStringArray(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((entry) => typeof entry === "string" && entry.trim().length > 0)
+  );
+}
+
 function validSignalRpcParams(method: string, value: unknown): boolean {
   if (!isJsonObject(value)) {
     return false;
   }
   if (method === "send") {
-    return hasRecipients(value) && readTrimmedString(value.message) !== undefined;
+    return (
+      hasRecipients(value) &&
+      (readTrimmedString(value.message) !== undefined || hasStringArray(value.attachments))
+    );
   }
   if (method === "sendReaction") {
     return (
@@ -349,11 +360,12 @@ function validSignalRpcParams(method: string, value: unknown): boolean {
     );
   }
   if (method === "sendReceipt") {
-    const timestamps = Array.isArray(value.targetTimestamp)
-      ? value.targetTimestamp
-      : [value.targetTimestamp];
+    const targetTimestamps = value.targetTimestamps ?? value.targetTimestamp;
+    const timestamps = Array.isArray(targetTimestamps) ? targetTimestamps : [targetTimestamps];
     return (
-      readTrimmedString(value.recipient) !== undefined &&
+      (readTrimmedString(value.recipient) !== undefined ||
+        readTrimmedString(value.username) !== undefined ||
+        hasStringArray(value.usernames)) &&
       timestamps.length > 0 &&
       timestamps.every(validTimestamp) &&
       (value.type === undefined || value.type === "read" || value.type === "viewed")
