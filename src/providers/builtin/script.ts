@@ -385,6 +385,8 @@ export class ScriptProviderAdapter implements ProviderAdapter {
     let stderr = "";
     let childError: unknown;
     let outputLimitError: CrablineError | undefined;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
     child.stdin.on("error", () => {
       // Child closure is reported through the process error/close handlers.
     });
@@ -392,7 +394,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       if (outputLimitError) {
         return;
       }
-      stderr += String(chunk);
+      stderr += chunk;
       if (Buffer.byteLength(stderr) > MAX_SCRIPT_OUTPUT_BYTES) {
         outputLimitError = new CrablineError(
           `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of stderr: ${command}`,
@@ -425,7 +427,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
 
     try {
       for await (const chunk of child.stdout) {
-        buffer += String(chunk);
+        buffer += chunk;
         if (Buffer.byteLength(buffer) > MAX_SCRIPT_OUTPUT_BYTES && !buffer.includes("\n")) {
           throw new CrablineError(
             `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes without a newline: ${command}`,
