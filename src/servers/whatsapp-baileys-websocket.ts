@@ -22,7 +22,7 @@ import {
 } from "./whatsapp-wire/binary-node.js";
 import { decodeHandshakeMessage, encodeHandshakeMessage } from "./whatsapp-wire/handshake.js";
 import { KEY_BUNDLE_TYPE, xmppPreKey, xmppSignedPreKey } from "./whatsapp-wire/signal.js";
-import { WebSocket, WebSocketServer, type RawData } from "ws";
+import { WebSocket, WebSocketServer, type RawData, type ServerOptions } from "ws";
 import type { ServerRequestEvent } from "./http.js";
 import { closeWebSocketServer } from "./websocket.js";
 
@@ -31,6 +31,14 @@ import { closeWebSocketServer } from "./websocket.js";
 const EMPTY_BUFFER = Buffer.alloc(0);
 const IV_LENGTH = 12;
 const MAX_PENDING_INBOUND_MESSAGES = 1_000;
+export const MAX_WHATSAPP_NOISE_FRAME_BYTES = 2 * 1024 * 1024;
+export const MAX_WHATSAPP_WEBSOCKET_BUFFERED_BYTES = 4 * 1024 * 1024;
+export const MAX_WHATSAPP_WEBSOCKET_MESSAGE_BYTES = 4 * 1024 * 1024;
+export const MAX_WHATSAPP_NOISE_BUFFER_CHUNKS = 1_024;
+export const WHATSAPP_WEBSOCKET_SEND_TIMEOUT_MS = 5_000;
+const MAX_PENDING_WEBSOCKET_BYTES = 8 * 1024 * 1024;
+const MAX_PENDING_WEBSOCKET_MESSAGES = 32;
+const MAX_WEBSOCKET_FRAGMENTS = 1_024;
 export const MAX_WHATSAPP_SIGNAL_BUNDLES = 1_024;
 const SIGNAL_BUNDLE_JID_RE = /^\d{7,15}(?::\d+)?@(?:s\.whatsapp\.net|lid)$/iu;
 type NodeBuffer = Buffer<ArrayBufferLike>;
@@ -57,7 +65,7 @@ export type WhatsAppBaileysWebSocketServerParams = {
 
 export type PreparedWhatsAppBaileysInboundDelivery = {
   cancel(): void;
-  commit(): "delivered" | "queued";
+  commit(): Promise<"delivered" | "queued">;
 };
 
 export type WhatsAppBaileysInboundMessage = {
@@ -140,23 +148,152 @@ export class WhatsAppSignalBundleStore {
 export function createSerializedMessageHandler<T>(
   processMessage: (message: T) => Promise<void>,
   onError: (error: unknown) => void,
+  options: {
+    maxPendingBytes?: number | undefined;
+    maxPendingMessages?: number | undefined;
+    sizeOf?: ((message: T) => number) | undefined;
+  } = {},
 ): (message: T) => Promise<void> {
+  const maxPendingBytes = options.maxPendingBytes ?? MAX_PENDING_WEBSOCKET_BYTES;
+  const maxPendingMessages = options.maxPendingMessages ?? MAX_PENDING_WEBSOCKET_MESSAGES;
+  const sizeOf = options.sizeOf ?? (() => 1);
   let failed = false;
+  let pendingBytes = 0;
+  let pendingMessages = 0;
   let pending = Promise.resolve();
+  const fail = (error: unknown) => {
+    if (!failed) {
+      failed = true;
+      onError(error);
+    }
+  };
   return (message) => {
-    const next = pending.then(async () => {
-      if (!failed) {
-        await processMessage(message);
-      }
-    });
+    if (failed) {
+      return pending;
+    }
+    const messageBytes = sizeOf(message);
+    if (!Number.isSafeInteger(messageBytes) || messageBytes < 0) {
+      fail(new Error("WhatsApp WebSocket message size must be a non-negative safe integer."));
+      return pending;
+    }
+    if (pendingMessages >= maxPendingMessages || pendingBytes + messageBytes > maxPendingBytes) {
+      fail(new Error("WhatsApp WebSocket inbound backlog limit exceeded."));
+      return pending;
+    }
+    pendingMessages += 1;
+    pendingBytes += messageBytes;
+    const next = pending
+      .then(async () => {
+        if (!failed) {
+          await processMessage(message);
+        }
+      })
+      .finally(() => {
+        pendingMessages -= 1;
+        pendingBytes -= messageBytes;
+      });
     pending = next.catch((error: unknown) => {
-      if (!failed) {
-        failed = true;
-        onError(error);
-      }
+      fail(error);
     });
     return pending;
   };
+}
+
+export class WhatsAppNoiseFrameDecoder {
+  #bufferedBytes = 0;
+  readonly #chunks: NodeBuffer[] = [];
+  #expectIntro = true;
+  #offset = 0;
+
+  get bufferedBytes(): number {
+    return this.#bufferedBytes;
+  }
+
+  decodeFrames(data: RawData): NodeBuffer[] {
+    let chunk = rawDataToBuffer(data);
+    if (this.#expectIntro) {
+      chunk = removeNoiseIntroHeader(chunk);
+      this.#expectIntro = false;
+    }
+    if (chunk.length > 0) {
+      if (this.#chunks.length >= MAX_WHATSAPP_NOISE_BUFFER_CHUNKS) {
+        throw new Error(
+          `WhatsApp Noise buffer exceeds ${MAX_WHATSAPP_NOISE_BUFFER_CHUNKS} chunks.`,
+        );
+      }
+      this.#chunks.push(chunk);
+      this.#bufferedBytes += chunk.length;
+    }
+
+    const frames: NodeBuffer[] = [];
+    while (this.#bufferedBytes >= 3) {
+      const size = (this.#peekByte(0) << 16) | (this.#peekByte(1) << 8) | this.#peekByte(2);
+      if (size > MAX_WHATSAPP_NOISE_FRAME_BYTES) {
+        throw new Error(`WhatsApp Noise frame exceeds ${MAX_WHATSAPP_NOISE_FRAME_BYTES} bytes.`);
+      }
+      if (this.#bufferedBytes < size + 3) {
+        break;
+      }
+      this.#consume(3);
+      frames.push(this.#read(size));
+    }
+    return frames;
+  }
+
+  #consume(length: number): void {
+    let remaining = length;
+    while (remaining > 0) {
+      const chunk = this.#chunks[0];
+      if (!chunk) {
+        throw new Error("Unexpected end of WhatsApp Noise frame buffer.");
+      }
+      const available = chunk.length - this.#offset;
+      const consumed = Math.min(available, remaining);
+      this.#offset += consumed;
+      this.#bufferedBytes -= consumed;
+      remaining -= consumed;
+      if (this.#offset === chunk.length) {
+        this.#chunks.shift();
+        this.#offset = 0;
+      }
+    }
+  }
+
+  #peekByte(index: number): number {
+    let remaining = index + this.#offset;
+    for (const chunk of this.#chunks) {
+      if (remaining < chunk.length) {
+        return chunk[remaining]!;
+      }
+      remaining -= chunk.length;
+    }
+    throw new Error("Unexpected end of WhatsApp Noise frame buffer.");
+  }
+
+  #read(length: number): NodeBuffer {
+    const result = Buffer.allocUnsafe(length);
+    let resultOffset = 0;
+    while (resultOffset < length) {
+      const chunk = this.#chunks[0];
+      if (!chunk) {
+        throw new Error("Unexpected end of WhatsApp Noise frame buffer.");
+      }
+      const copied = chunk.copy(
+        result,
+        resultOffset,
+        this.#offset,
+        Math.min(chunk.length, this.#offset + length - resultOffset),
+      );
+      this.#offset += copied;
+      this.#bufferedBytes -= copied;
+      resultOffset += copied;
+      if (this.#offset === chunk.length) {
+        this.#chunks.shift();
+        this.#offset = 0;
+      }
+    }
+    return result;
+  }
 }
 
 class TransportState {
@@ -183,9 +320,8 @@ class BaileysNoiseServer {
   #counter = 0;
   #decKey: NodeBuffer;
   #encKey: NodeBuffer;
-  #expectIntro = true;
+  readonly #frames = new WhatsAppNoiseFrameDecoder();
   #hash: NodeBuffer;
-  #inBytes: NodeBuffer = Buffer.alloc(0);
   #salt: NodeBuffer;
   #serverEphemeralKey: KeyPair | undefined;
   #serverStaticKey: KeyPair | undefined;
@@ -201,30 +337,7 @@ class BaileysNoiseServer {
   }
 
   decodeFrames(data: RawData): NodeBuffer[] {
-    let chunk: NodeBuffer = Buffer.from(
-      Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer),
-    );
-    if (this.#expectIntro) {
-      chunk = this.#removeIntroHeader(chunk);
-      this.#expectIntro = false;
-    }
-    this.#inBytes = this.#inBytes.length ? Buffer.concat([this.#inBytes, chunk]) : chunk;
-    const frames: NodeBuffer[] = [];
-    while (this.#inBytes.length >= 3) {
-      const head0 = this.#inBytes[0];
-      const head1 = this.#inBytes[1];
-      const head2 = this.#inBytes[2];
-      if (head0 === undefined || head1 === undefined || head2 === undefined) {
-        break;
-      }
-      const size = (head0 << 16) | (head1 << 8) | head2;
-      if (this.#inBytes.length < size + 3) {
-        break;
-      }
-      frames.push(this.#inBytes.subarray(3, size + 3));
-      this.#inBytes = this.#inBytes.subarray(size + 3);
-    }
-    return frames;
+    return this.#frames.decodeFrames(data);
   }
 
   async decodeTransportNode(frame: Uint8Array): Promise<BinaryNode> {
@@ -318,26 +431,6 @@ class BaileysNoiseServer {
     this.#decKey = readKey;
     this.#counter = 0;
   }
-
-  #removeIntroHeader(chunk: NodeBuffer): NodeBuffer {
-    if (chunk.subarray(0, NOISE_WA_HEADER.length).equals(NOISE_WA_HEADER)) {
-      return chunk.subarray(NOISE_WA_HEADER.length);
-    }
-    if (chunk.length >= 11 && chunk.subarray(0, 2).toString("utf8") === "ED" && chunk[3] === 1) {
-      const routingInfoPrefix = chunk[4];
-      if (routingInfoPrefix === undefined) {
-        throw new Error("Invalid Baileys Noise routing header.");
-      }
-      const routingInfoLength = (routingInfoPrefix << 16) | chunk.readUInt16BE(5);
-      const headerLength = 7 + routingInfoLength + NOISE_WA_HEADER.length;
-      if (
-        chunk.subarray(headerLength - NOISE_WA_HEADER.length, headerLength).equals(NOISE_WA_HEADER)
-      ) {
-        return chunk.subarray(headerLength);
-      }
-    }
-    throw new Error("Invalid Baileys Noise intro header.");
-  }
 }
 
 class WhatsAppBaileysWebSocketSession {
@@ -360,6 +453,9 @@ class WhatsAppBaileysWebSocketSession {
       (error) => {
         this.socket.close(1011, error instanceof Error ? error.message : String(error));
       },
+      {
+        sizeOf: rawDataByteLength,
+      },
     );
   }
 
@@ -371,32 +467,37 @@ class WhatsAppBaileysWebSocketSession {
     void this.#handleSerializedMessage(data);
   }
 
-  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): boolean {
+  async deliverInboundMessage(message: WhatsAppBaileysInboundMessage): Promise<boolean> {
     if (!this.isOpen) {
       return false;
     }
-    this.#sendNode(createInboundMessageNode(message));
-    return true;
+    try {
+      await this.#sendNode(createInboundMessageNode(message));
+      return true;
+    } catch {
+      this.socket.terminate();
+      return false;
+    }
   }
 
   async #handleMessage(data: RawData): Promise<void> {
     for (const frame of this.#noise.decodeFrames(data)) {
       if (this.#handshakeState === "client-hello") {
-        this.socket.send(this.#noise.createServerHello(frame));
+        await sendWhatsAppWebSocketPayload(this.socket, this.#noise.createServerHello(frame));
         this.#handshakeState = "client-finish";
         continue;
       }
       if (this.#handshakeState === "client-finish") {
         this.#noise.finishClientHandshake(frame);
         this.#handshakeState = "open";
-        this.#sendNode({
+        await this.#sendNode({
           attrs: {
             lid: lidForJid(this.params.selfJid),
             t: unixSeconds(),
           },
           tag: "success",
         });
-        this.#sendNode({
+        await this.#sendNode({
           attrs: {},
           content: [{ attrs: { count: "0" }, tag: "offline" }],
           tag: "ib",
@@ -411,12 +512,12 @@ class WhatsAppBaileysWebSocketSession {
   async #handleNode(node: BinaryNode): Promise<void> {
     await this.#recordNode(node);
     if (node.tag === "iq") {
-      this.#sendNode(this.#createIqResult(node));
+      await this.#sendNode(this.#createIqResult(node));
       return;
     }
     if (node.tag === "message") {
       const peer = requireAttr(node, "to");
-      this.#sendNode({
+      await this.#sendNode({
         attrs: {
           class: "message",
           from: peer,
@@ -624,9 +725,46 @@ class WhatsAppBaileysWebSocketSession {
     });
   }
 
-  #sendNode(node: BinaryNode): void {
-    this.socket.send(this.#noise.encodeNode(node));
+  async #sendNode(node: BinaryNode): Promise<void> {
+    await sendWhatsAppWebSocketPayload(this.socket, this.#noise.encodeNode(node));
   }
+}
+
+export async function sendWhatsAppWebSocketPayload(
+  socket: Pick<WebSocket, "bufferedAmount" | "readyState" | "send" | "terminate">,
+  payload: Uint8Array,
+): Promise<void> {
+  if (socket.readyState !== WebSocket.OPEN) {
+    throw new Error("WhatsApp WebSocket is not open.");
+  }
+  if (socket.bufferedAmount + payload.byteLength > MAX_WHATSAPP_WEBSOCKET_BUFFERED_BYTES) {
+    socket.terminate();
+    throw new Error("WhatsApp WebSocket outbound buffer limit exceeded.");
+  }
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    const timeout = setTimeout(() => {
+      socket.terminate();
+      finish(new Error("WhatsApp WebSocket send timed out."));
+    }, WHATSAPP_WEBSOCKET_SEND_TIMEOUT_MS);
+    try {
+      socket.send(payload, finish);
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
 }
 
 export function attachWhatsAppBaileysWebSocketServer(
@@ -639,25 +777,52 @@ export function attachWhatsAppBaileysWebSocketServer(
     params.maxPendingInboundMessages,
   );
   let pendingReservations = 0;
-  const wss = new WebSocketServer({ noServer: true });
-  const flushPendingMessages = (session: WhatsAppBaileysWebSocketSession) => {
-    while (pendingMessages.length > 0) {
-      const message = pendingMessages[0];
-      if (!message || !session.deliverInboundMessage(message)) {
-        return;
+  let closing = false;
+  let flushPromise = Promise.resolve();
+  const webSocketServerOptions: ServerOptions & {
+    maxBufferedChunks: number;
+    maxFragments: number;
+  } = {
+    maxBufferedChunks: MAX_WEBSOCKET_FRAGMENTS,
+    maxFragments: MAX_WEBSOCKET_FRAGMENTS,
+    maxPayload: MAX_WHATSAPP_WEBSOCKET_MESSAGE_BYTES,
+    noServer: true,
+  };
+  const wss = new WebSocketServer(webSocketServerOptions);
+  const flushPendingMessages = (): Promise<void> => {
+    const next = flushPromise.then(async () => {
+      while (pendingMessages.length > 0) {
+        if (closing) {
+          return;
+        }
+        const message = pendingMessages[0];
+        if (!message) {
+          return;
+        }
+        const results = await Promise.all(
+          [...sessions].map((session) => session.deliverInboundMessage(message)),
+        );
+        if (!results.some(Boolean)) {
+          return;
+        }
+        pendingMessages.shift();
       }
-      pendingMessages.shift();
-    }
+    });
+    flushPromise = next.catch(() => undefined);
+    return next;
   };
   const handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const url = parseWhatsAppWebSocketUpgradeUrl(request.url);
+    if (!url) {
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      return;
+    }
     if (url.pathname !== params.path) {
       socket.destroy();
       return;
     }
     if (url.searchParams.get("access_token") !== params.accessToken) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-      socket.destroy();
+      socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       return;
     }
     wss.handleUpgrade(request, socket, head, (ws) => {
@@ -668,8 +833,8 @@ export function attachWhatsAppBaileysWebSocketServer(
   wss.on("connection", (socket: WebSocket) => {
     const session = new WhatsAppBaileysWebSocketSession(socket, {
       appendEvent: params.appendEvent,
-      onOpen: (openSession) => {
-        flushPendingMessages(openSession);
+      onOpen: () => {
+        void flushPendingMessages();
       },
       path: params.path,
       selfJid: params.selfJid,
@@ -685,9 +850,11 @@ export function attachWhatsAppBaileysWebSocketServer(
   });
   return {
     async close() {
+      closing = true;
       params.httpServer.off("upgrade", handleUpgrade);
       pendingMessages.length = 0;
       await closeWebSocketServer(wss);
+      await flushPromise;
     },
     prepareInboundMessage(message) {
       if (pendingMessages.length + pendingReservations >= maxPendingInboundMessages) {
@@ -709,38 +876,19 @@ export function attachWhatsAppBaileysWebSocketServer(
             releaseReservation();
           }
         },
-        commit() {
+        async commit() {
           if (settled) {
             throw new Error("WhatsApp inbound delivery reservation is already settled.");
           }
           settled = true;
           try {
-            if (pendingMessages.length > 0) {
-              releaseReservation();
-              if (pendingMessages.length >= maxPendingInboundMessages) {
-                throw new Error("WhatsApp inbound delivery reservation exceeded queue capacity.");
-              }
-              pendingMessages.push(message);
-              for (const session of sessions) {
-                flushPendingMessages(session);
-              }
-              return pendingMessages.includes(message) ? "queued" : "delivered";
-            }
-            let delivered = false;
-            for (const session of sessions) {
-              if (session.deliverInboundMessage(message)) {
-                delivered = true;
-              }
-            }
-            if (delivered) {
-              return "delivered";
-            }
             releaseReservation();
             if (pendingMessages.length >= maxPendingInboundMessages) {
               throw new Error("WhatsApp inbound delivery reservation exceeded queue capacity.");
             }
             pendingMessages.push(message);
-            return "queued";
+            await flushPendingMessages();
+            return pendingMessages.includes(message) ? "queued" : "delivered";
           } finally {
             releaseReservation();
           }
@@ -748,6 +896,53 @@ export function attachWhatsAppBaileysWebSocketServer(
       };
     },
   };
+}
+
+export function parseWhatsAppWebSocketUpgradeUrl(
+  requestTarget: string | undefined,
+): URL | undefined {
+  try {
+    return new URL(requestTarget ?? "/", "http://127.0.0.1");
+  } catch {
+    return undefined;
+  }
+}
+
+function rawDataByteLength(data: RawData): number {
+  if (Array.isArray(data)) {
+    return data.reduce((total, chunk) => total + chunk.byteLength, 0);
+  }
+  return data.byteLength;
+}
+
+function rawDataToBuffer(data: RawData): NodeBuffer {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return Buffer.concat(data);
+  }
+  return Buffer.from(data);
+}
+
+function removeNoiseIntroHeader(chunk: NodeBuffer): NodeBuffer {
+  if (chunk.subarray(0, NOISE_WA_HEADER.length).equals(NOISE_WA_HEADER)) {
+    return chunk.subarray(NOISE_WA_HEADER.length);
+  }
+  if (chunk.length >= 11 && chunk.subarray(0, 2).toString("utf8") === "ED" && chunk[3] === 1) {
+    const routingInfoPrefix = chunk[4];
+    if (routingInfoPrefix === undefined) {
+      throw new Error("Invalid Baileys Noise routing header.");
+    }
+    const routingInfoLength = (routingInfoPrefix << 16) | chunk.readUInt16BE(5);
+    const headerLength = 7 + routingInfoLength + NOISE_WA_HEADER.length;
+    if (
+      chunk.subarray(headerLength - NOISE_WA_HEADER.length, headerLength).equals(NOISE_WA_HEADER)
+    ) {
+      return chunk.subarray(headerLength);
+    }
+  }
+  throw new Error("Invalid Baileys Noise intro header.");
 }
 
 function children(node: BinaryNode): BinaryNode[] {

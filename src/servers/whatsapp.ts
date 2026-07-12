@@ -151,21 +151,34 @@ async function appendEvent(state: WhatsAppServerState, event: ServerRequestEvent
   await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
-function isWhatsAppJid(value: string): boolean {
+function isWhatsAppUserJid(value: string): boolean {
   return (
     WHATSAPP_USER_JID_RE.test(value) ||
     WHATSAPP_LEGACY_USER_JID_RE.test(value) ||
-    WHATSAPP_GROUP_JID_RE.test(value) ||
     WHATSAPP_LID_RE.test(value)
   );
 }
 
-function requireWhatsAppJid(value: unknown, label: string): string | Response {
+function requireWhatsAppChatJid(value: unknown): string | Response {
   const stringValue = readTrimmedString(value);
-  if (!stringValue || !isWhatsAppJid(stringValue)) {
+  if (
+    !stringValue ||
+    (!isWhatsAppUserJid(stringValue) && !WHATSAPP_GROUP_JID_RE.test(stringValue))
+  ) {
     return graphParameterError(
-      `(#100) Invalid parameter: ${label}`,
-      `${label} must be a WhatsApp JID such as 15551234567@s.whatsapp.net or 120363001234567890@g.us.`,
+      "(#100) Invalid parameter: chatJid",
+      "chatJid must be a WhatsApp user or group JID.",
+    );
+  }
+  return stringValue;
+}
+
+function requireWhatsAppSenderJid(value: unknown): string | Response {
+  const stringValue = readTrimmedString(value);
+  if (!stringValue || !isWhatsAppUserJid(stringValue)) {
+    return graphParameterError(
+      "(#100) Invalid parameter: senderJid",
+      "senderJid must be a WhatsApp user JID.",
     );
   }
   return stringValue;
@@ -184,9 +197,11 @@ function requireCloudRecipient(value: unknown): string | Response {
 
 function requireAuth(request: IncomingMessage, state: WhatsAppServerState): boolean {
   const authorization = request.headers.authorization;
-  return (
-    typeof authorization === "string" && authorization.trim() === `Bearer ${state.accessToken}`
-  );
+  if (typeof authorization !== "string") {
+    return false;
+  }
+  const match = /^Bearer +(.+)$/iu.exec(authorization.trimStart());
+  return match?.[1] === state.accessToken;
 }
 
 function nextMessageId(state: WhatsAppServerState): string {
@@ -195,6 +210,13 @@ function nextMessageId(state: WhatsAppServerState): string {
 
 function waIdFromJid(jid: string): string {
   return jid.split("@", 1)[0]?.split(":", 1)[0] ?? jid;
+}
+
+function directPeerIdentity(jid: string): string {
+  const separator = jid.lastIndexOf("@");
+  const user = jid.slice(0, separator).split(":", 1)[0] ?? jid;
+  const server = jid.slice(separator + 1);
+  return `${user}@${server === "c.us" ? "s.whatsapp.net" : server}`;
 }
 
 function requireMessagingProduct(body: Record<string, unknown>): Response | undefined {
@@ -210,7 +232,13 @@ function requireMessagingProduct(body: Record<string, unknown>): Response | unde
 
 function readTextMessageBody(body: Record<string, unknown>): string | Response {
   const type = readTrimmedString(body.type);
-  if (type && type !== "text") {
+  if (!type) {
+    return graphParameterError(
+      "(#100) Missing required parameter: type",
+      'A WhatsApp text send requires type to be "text".',
+    );
+  }
+  if (type !== "text") {
     return graphParameterError(
       "(#100) Unsupported message type",
       "This test API currently supports WhatsApp text message sends.",
@@ -318,13 +346,22 @@ async function handleAdminInbound(params: {
   body: Record<string, unknown>;
   state: WhatsAppServerState;
 }): Promise<WhatsAppAdminInboundResult> {
-  const chatJid = requireWhatsAppJid(params.body.chatJid ?? params.body.chatId, "chatJid");
+  const chatJid = requireWhatsAppChatJid(params.body.chatJid ?? params.body.chatId);
   if (chatJid instanceof Response) {
     return { response: chatJid };
   }
-  const senderJid = requireWhatsAppJid(params.body.senderJid ?? params.body.from, "senderJid");
+  const senderJid = requireWhatsAppSenderJid(params.body.senderJid ?? params.body.from);
   if (senderJid instanceof Response) {
     return { response: senderJid };
+  }
+  const isGroupChat = WHATSAPP_GROUP_JID_RE.test(chatJid);
+  if (!isGroupChat && directPeerIdentity(chatJid) !== directPeerIdentity(senderJid)) {
+    return {
+      response: graphParameterError(
+        "(#100) Invalid parameter: senderJid",
+        "senderJid must identify the direct chat peer.",
+      ),
+    };
   }
   const text = readMessageText(params.body.text);
   if (text === undefined) {
@@ -340,7 +377,7 @@ async function handleAdminInbound(params: {
     id: readTrimmedString(params.body.messageId) ?? nextMessageId(params.state),
     pushName: readTrimmedString(params.body.pushName) ?? "Test User",
     remoteJid: chatJid,
-    senderJid,
+    senderJid: isGroupChat ? senderJid : undefined,
     text,
   });
   const timestamp = String(message.messageTimestamp);
@@ -434,7 +471,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       throw error;
     }
     if (result.message && preparedDelivery) {
-      const delivery = preparedDelivery.commit();
+      const delivery = await preparedDelivery.commit();
       return whatsappOk({ delivery, message: result.message, webhook: result.webhook });
     }
     return graphParameterError("(#100) Invalid inbound WhatsApp event");
@@ -494,6 +531,9 @@ export async function startWhatsAppServer(
   params: StartWhatsAppServerParams = {},
 ): Promise<StartedWhatsAppServer> {
   const host = params.host ?? "127.0.0.1";
+  if (params.accessToken !== undefined && !params.accessToken.trim()) {
+    throw new Error("WhatsApp accessToken must not be empty.");
+  }
   const graphVersion = params.graphVersion ?? DEFAULT_GRAPH_VERSION;
   if (!WHATSAPP_GRAPH_VERSION_RE.test(graphVersion)) {
     throw new Error(`Invalid WhatsApp Graph API version: ${graphVersion}.`);

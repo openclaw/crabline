@@ -1,6 +1,7 @@
 import { deflateSync } from "node:zlib";
 import { Curve as BaileysCurve } from "baileys";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
 import {
   decodeBinaryNode,
   encodeBinaryNode,
@@ -15,10 +16,18 @@ import {
   createCurve,
   Curve,
   encodeBigEndian,
+  NOISE_WA_HEADER,
 } from "../src/servers/whatsapp-wire/crypto.js";
 import { decodeHandshakeMessage } from "../src/servers/whatsapp-wire/handshake.js";
 import {
   createSerializedMessageHandler,
+  MAX_WHATSAPP_NOISE_BUFFER_CHUNKS,
+  MAX_WHATSAPP_NOISE_FRAME_BYTES,
+  MAX_WHATSAPP_WEBSOCKET_BUFFERED_BYTES,
+  parseWhatsAppWebSocketUpgradeUrl,
+  sendWhatsAppWebSocketPayload,
+  WHATSAPP_WEBSOCKET_SEND_TIMEOUT_MS,
+  WhatsAppNoiseFrameDecoder,
   WhatsAppSignalBundleStore,
 } from "../src/servers/whatsapp-baileys-websocket.js";
 
@@ -78,6 +87,27 @@ describe("WhatsApp X25519 agreement", () => {
       curve.sharedKey(bob.private, alice.public),
     );
     expect(nativeSharedKeyCalls).toBe(0);
+  });
+
+  it("rejects low-order peers when the JS backend derives an all-zero secret", () => {
+    const curve = createCurve({
+      generateKeyPair() {
+        throw new Error("native X25519 unavailable");
+      },
+      sharedKey() {
+        throw new Error("native shared key should not run");
+      },
+    });
+    curve.generateKeyPair();
+    const lowOrderPeer = Buffer.alloc(32);
+    lowOrderPeer[0] = 1;
+
+    expect(() => curve.sharedKey(RFC_7748_ALICE_PRIVATE, lowOrderPeer)).toThrow(
+      "failed during derivation",
+    );
+    expect(() =>
+      curve.sharedKey(RFC_7748_ALICE_PRIVATE, Buffer.concat([Buffer.from([5]), lowOrderPeer])),
+    ).toThrow("failed during derivation");
   });
 });
 
@@ -150,6 +180,145 @@ describe("WhatsApp WebSocket message processing", () => {
     await Promise.all([first, second]);
 
     expect(events).toEqual(["start:1", "end:1", "start:2", "end:2"]);
+  });
+
+  it("closes a serialized handler when its bounded backlog is exceeded", async () => {
+    let releaseFirstFrame: () => void = () => undefined;
+    let markFirstFrameStarted: () => void = () => undefined;
+    const firstFrameBlocked = new Promise<void>((resolve) => {
+      releaseFirstFrame = resolve;
+    });
+    const firstFrameStarted = new Promise<void>((resolve) => {
+      markFirstFrameStarted = resolve;
+    });
+    const errors: unknown[] = [];
+    const processed: number[] = [];
+    const handleMessage = createSerializedMessageHandler<Buffer>(
+      async (frame) => {
+        processed.push(frame[0]!);
+        markFirstFrameStarted();
+        await firstFrameBlocked;
+      },
+      (error) => errors.push(error),
+      {
+        maxPendingBytes: 2,
+        maxPendingMessages: 2,
+        sizeOf: (frame) => frame.byteLength,
+      },
+    );
+
+    const first = handleMessage(Buffer.from([1]));
+    await firstFrameStarted;
+    const second = handleMessage(Buffer.from([2]));
+    const overflow = handleMessage(Buffer.from([3]));
+
+    expect(errors).toEqual([
+      expect.objectContaining({ message: expect.stringContaining("backlog") }),
+    ]);
+    releaseFirstFrame();
+    await Promise.all([first, second, overflow]);
+    expect(processed).toEqual([1]);
+  });
+
+  it("decodes fragmented Noise frames without retaining concatenated input", () => {
+    const decoder = new WhatsAppNoiseFrameDecoder();
+    const frames = [Buffer.from([0, 0, 3, 1, 2, 3]), Buffer.from([0, 0, 2, 4, 5])];
+    const input = Buffer.concat([NOISE_WA_HEADER, ...frames]);
+    const decoded = [
+      ...decoder.decodeFrames(input.subarray(0, 6)),
+      ...decoder.decodeFrames(input.subarray(6, 10)),
+      ...decoder.decodeFrames(input.subarray(10)),
+    ];
+
+    expect(decoded).toEqual([Buffer.from([1, 2, 3]), Buffer.from([4, 5])]);
+    expect(decoder.bufferedBytes).toBe(0);
+  });
+
+  it("rejects Noise frames above the stable frame limit", () => {
+    const decoder = new WhatsAppNoiseFrameDecoder();
+    const size = MAX_WHATSAPP_NOISE_FRAME_BYTES + 1;
+    const prefix = Buffer.from([(size >>> 16) & 0xff, (size >>> 8) & 0xff, size & 0xff]);
+
+    expect(() => decoder.decodeFrames(Buffer.concat([NOISE_WA_HEADER, prefix]))).toThrow(
+      `exceeds ${MAX_WHATSAPP_NOISE_FRAME_BYTES} bytes`,
+    );
+  });
+
+  it("rejects excessive fragmented Noise buffering", () => {
+    const decoder = new WhatsAppNoiseFrameDecoder();
+    decoder.decodeFrames(Buffer.concat([NOISE_WA_HEADER, Buffer.from([0, 0x08, 0])]));
+    for (let index = 1; index < MAX_WHATSAPP_NOISE_BUFFER_CHUNKS; index += 1) {
+      decoder.decodeFrames(Buffer.from([index & 0xff]));
+    }
+
+    expect(() => decoder.decodeFrames(Buffer.from([0]))).toThrow(
+      `exceeds ${MAX_WHATSAPP_NOISE_BUFFER_CHUNKS} chunks`,
+    );
+  });
+
+  it("waits for WebSocket writes and rejects buffered payloads", async () => {
+    let completeWrite: ((error?: Error) => void) | undefined;
+    const send = vi.fn((_payload: unknown, callback: (error?: Error) => void) => {
+      completeWrite = callback;
+    });
+    const terminate = vi.fn();
+    const socket = {
+      bufferedAmount: 0,
+      readyState: WebSocket.OPEN,
+      send,
+      terminate,
+    } as unknown as Parameters<typeof sendWhatsAppWebSocketPayload>[0];
+    let completed = false;
+    const write = sendWhatsAppWebSocketPayload(socket, Buffer.from("payload")).then(() => {
+      completed = true;
+    });
+
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    completeWrite?.();
+    await write;
+    expect(completed).toBe(true);
+
+    const backedUpSocket = {
+      ...socket,
+      bufferedAmount: MAX_WHATSAPP_WEBSOCKET_BUFFERED_BYTES,
+    };
+    await expect(sendWhatsAppWebSocketPayload(backedUpSocket, Buffer.from([1]))).rejects.toThrow(
+      "outbound buffer limit",
+    );
+    expect(terminate).toHaveBeenCalledOnce();
+  });
+
+  it("terminates WebSocket writes that never complete", async () => {
+    vi.useFakeTimers();
+    try {
+      const terminate = vi.fn();
+      const socket = {
+        bufferedAmount: 0,
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+        terminate,
+      } as unknown as Parameters<typeof sendWhatsAppWebSocketPayload>[0];
+      const write = sendWhatsAppWebSocketPayload(socket, Buffer.from("payload")).then(
+        () => ({ error: undefined }),
+        (error: unknown) => ({ error }),
+      );
+
+      await vi.advanceTimersByTimeAsync(WHATSAPP_WEBSOCKET_SEND_TIMEOUT_MS);
+      await expect(write).resolves.toEqual({
+        error: expect.objectContaining({ message: "WhatsApp WebSocket send timed out." }),
+      });
+      expect(terminate).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects malformed absolute WebSocket request targets", () => {
+    expect(parseWhatsAppWebSocketUpgradeUrl("http://[invalid")).toBeUndefined();
+    expect(parseWhatsAppWebSocketUpgradeUrl("/ws/chat?access_token=fake")?.pathname).toBe(
+      "/ws/chat",
+    );
   });
 });
 
