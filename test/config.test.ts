@@ -48,6 +48,49 @@ describe("manifest schema", () => {
     }
   });
 
+  it("rejects exact static patterns that also require a generated nonce", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [
+          {
+            id: "impossible-exact-match",
+            inboundMatch: {
+              nonce: "contains",
+              pattern: "static response",
+              strategy: "exact",
+            },
+            mode: "roundtrip",
+            provider: "local",
+            target: { id: "echo-bot" },
+          },
+        ],
+        providers: { local: { adapter: "loopback" } },
+      }),
+    ).toThrow(/strategy=exact requires inboundMatch\.nonce=ignore/u);
+  });
+
+  it("accepts only HTTP(S) provider endpoint URLs", () => {
+    for (const apiUrl of [
+      "data:text/plain,hello",
+      "file:///tmp/provider",
+      "mailto:test@example.com",
+    ]) {
+      expect(() =>
+        ManifestSchema.parse({
+          configVersion: 1,
+          fixtures: [],
+          providers: {
+            whatsapp: {
+              adapter: "whatsapp",
+              whatsapp: { apiUrl },
+            },
+          },
+        }),
+      ).toThrow(/URL must use http or https/u);
+    }
+  });
+
   it("accepts the documented thread target shape", () => {
     expect(() =>
       ManifestSchema.parse({

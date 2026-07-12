@@ -710,4 +710,145 @@ describe("lazy provider lifecycle", () => {
       await disposeTempDir(directory);
     }
   });
+
+  it("cancels an admitted watch before cleaning up a materializing provider", async () => {
+    let releaseFactory: (() => void) | undefined;
+    const factoryBlocked = new Promise<void>((resolve) => {
+      releaseFactory = resolve;
+    });
+    const events: string[] = [];
+    const concrete: ProviderAdapter = {
+      id: "test",
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      async waitForInbound() {
+        return null;
+      },
+      async *watch() {
+        events.push("watch");
+        yield* [];
+      },
+      beginCleanup() {
+        events.push("beginCleanup");
+      },
+      async cleanup() {
+        events.push("cleanup");
+      },
+    };
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory: async () => {
+        await factoryBlocked;
+        return concrete;
+      },
+      id: "test",
+      normalizeTarget: concrete.normalizeTarget.bind(concrete),
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+    });
+    const { context } = createTelegramManifest("/tmp/unused.jsonl");
+    const iterator = provider.watch(context)[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    const cleanup = provider.cleanup();
+
+    await Promise.resolve();
+    expect(events).toEqual([]);
+
+    releaseFactory?.();
+    await expect(pending).resolves.toEqual({ done: true, value: undefined });
+    await expect(cleanup).resolves.toBeUndefined();
+    expect(events).toEqual(["beginCleanup", "cleanup"]);
+  });
+
+  it("attempts every teardown and reports watch and provider cleanup failures", async () => {
+    const watchCloseError = new Error("watch close failed");
+    const beginCleanupError = new Error("begin cleanup failed");
+    let markWatchStarted: (() => void) | undefined;
+    const watchStarted = new Promise<void>((resolve) => {
+      markWatchStarted = resolve;
+    });
+    const cleanup = vi.fn(async () => undefined);
+    const concrete: ProviderAdapter = {
+      id: "test",
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      async waitForInbound() {
+        return null;
+      },
+      watch(_context) {
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              async next() {
+                markWatchStarted?.();
+                return {
+                  done: false as const,
+                  value: {
+                    author: "assistant" as const,
+                    id: "watch-event",
+                    provider: "test",
+                    sentAt: new Date().toISOString(),
+                    text: "watch event",
+                    threadId: "thread",
+                  },
+                };
+              },
+              async return() {
+                throw watchCloseError;
+              },
+            };
+          },
+        };
+      },
+      beginCleanup() {
+        throw beginCleanupError;
+      },
+      cleanup,
+    };
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory: async () => concrete,
+      id: "test",
+      normalizeTarget: concrete.normalizeTarget.bind(concrete),
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+    });
+    const { context } = createTelegramManifest("/tmp/unused.jsonl");
+    const iterator = provider.watch(context)[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    await watchStarted;
+    await expect(pending).resolves.toMatchObject({
+      done: false,
+      value: { id: "watch-event" },
+    });
+
+    const cleanupResult = provider.cleanup();
+
+    await expect(cleanupResult).rejects.toMatchObject({
+      errors: expect.arrayContaining([beginCleanupError, watchCloseError]),
+    });
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
 });

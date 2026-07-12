@@ -276,10 +276,27 @@ export async function runFixtureCommand(params: {
       providerId: fixture.provider,
     });
   } finally {
+    let cleanupError: unknown;
     try {
-      await provider.cleanup?.();
+      const cleanup = provider.cleanup?.();
+      if (cleanup) {
+        if (
+          abortDrainFailed &&
+          (await raceInboundDeadline(cleanup, INBOUND_ABORT_GRACE_MS)) === INBOUND_DEADLINE_REACHED
+        ) {
+          cleanupError = new Error(
+            `Provider cleanup did not settle within ${INBOUND_ABORT_GRACE_MS}ms after an aborted inbound wait.`,
+          );
+        }
+        if (!abortDrainFailed) {
+          await cleanup;
+        }
+      }
     } catch (error) {
-      const diagnostic = `cleanup failed: ${ensureErrorMessage(error)}`;
+      cleanupError = error;
+    }
+    if (cleanupError !== undefined) {
+      const diagnostic = `cleanup failed: ${ensureErrorMessage(cleanupError)}`;
       if (result) {
         result.diagnostics.push(diagnostic);
         if (result.ok) {

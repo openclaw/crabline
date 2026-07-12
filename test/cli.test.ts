@@ -2,7 +2,13 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createProgram, publishReadyFile, runCli, waitForShutdown } from "../src/cli/program.js";
+import {
+  createProgram,
+  publishReadyFile,
+  removeReadyFile,
+  runCli,
+  waitForShutdown,
+} from "../src/cli/program.js";
 import type { StartedCrablineServer } from "../src/servers/index.js";
 import { captureWrites, createTempDir, disposeTempDir, writeText } from "./test-helpers.js";
 
@@ -442,26 +448,20 @@ describe("cli", () => {
     await expect(fs.readFile(readyFile, "utf8")).resolves.toBe("stale\n");
   });
 
-  it.each(["EACCES", "EINVAL", "EMLINK", "EOPNOTSUPP"])(
-    "replaces an existing ready file when hard links fail with %s",
-    async (code) => {
-      const directory = await createTempDir();
-      directories.push(directory);
-      const readyFile = path.join(directory, "server.json");
-      await writeText(readyFile, "stale\n");
-      const linkError = Object.assign(new Error("hard links unavailable"), { code });
-      const linkSpy = vi.spyOn(fs, "link").mockRejectedValueOnce(linkError);
+  it("replaces an existing ready file without hard-linking its backup", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, "server.json");
+    await writeText(readyFile, "stale\n");
+    const linkSpy = vi.spyOn(fs, "link");
 
-      try {
-        await expect(publishReadyFile(readyFile, "replacement\n")).resolves.toBeDefined();
-      } finally {
-        linkSpy.mockRestore();
-      }
+    await expect(publishReadyFile(readyFile, "replacement\n")).resolves.toBeDefined();
 
-      await expect(fs.readFile(readyFile, "utf8")).resolves.toBe("replacement\n");
-      expect(await fs.readdir(directory)).toEqual(["server.json"]);
-    },
-  );
+    expect(linkSpy).not.toHaveBeenCalled();
+    linkSpy.mockRestore();
+    await expect(fs.readFile(readyFile, "utf8")).resolves.toBe("replacement\n");
+    expect(await fs.readdir(directory)).toEqual(["server.json"]);
+  });
 
   it("does not recursively remove a stale non-lock directory", async () => {
     const directory = await createTempDir();
@@ -480,7 +480,7 @@ describe("cli", () => {
     await expect(fs.readFile(sentinelPath, "utf8")).resolves.toBe("unrelated\n");
   });
 
-  it("removes a committed ready file when lock release fails", async () => {
+  it("preserves a committed ready file when lock release fails", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, "server.json");
@@ -489,14 +489,40 @@ describe("cli", () => {
 
     await expect(publishReadyFile(readyFile, "manifest\n")).rejects.toBe(releaseError);
 
-    await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(readyFile, "utf8")).resolves.toBe("manifest\n");
+  });
+
+  it("preserves a replacement swapped in during owned ready-file removal", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, "server.json");
+    const displacedFile = path.join(directory, "displaced.json");
+    const contents = "owned\n";
+    const identity = await publishReadyFile(readyFile, contents);
+    const actualRename = fs.rename;
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+      if (source === readyFile && String(destination).endsWith(".remove")) {
+        await actualRename(readyFile, displacedFile);
+        await fs.writeFile(readyFile, "replacement\n");
+      }
+      await actualRename(source, destination);
+    });
+
+    try {
+      await removeReadyFile(readyFile, contents, identity);
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    await expect(fs.readFile(readyFile, "utf8")).resolves.toBe("replacement\n");
+    await expect(fs.readFile(displacedFile, "utf8")).resolves.toBe(contents);
   });
 
   it("closes the server once when ready-file publication fails after startup", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const close = vi.fn(async () => undefined);
-    const removeReadyFile = vi.fn(async () => undefined);
+    const removeReadyFileMock = vi.fn(async () => undefined);
     const publishError = new Error("publish exploded");
     const server = {
       close,
@@ -520,7 +546,7 @@ describe("cli", () => {
       publishReadyFile: async () => {
         throw publishError;
       },
-      removeReadyFile,
+      removeReadyFile: removeReadyFileMock,
       startServer: async () => server,
     });
 
@@ -536,7 +562,7 @@ describe("cli", () => {
       ]),
     ).rejects.toBe(publishError);
     expect(close).toHaveBeenCalledTimes(1);
-    expect(removeReadyFile).not.toHaveBeenCalled();
+    expect(removeReadyFileMock).not.toHaveBeenCalled();
   });
 
   it("holds ready-file ownership until server shutdown completes", async () => {
@@ -628,7 +654,7 @@ describe("cli", () => {
       releasePublish = resolve;
     });
     const close = vi.fn(async () => undefined);
-    const removeReadyFile = vi.fn(async () => undefined);
+    const removeReadyFileMock = vi.fn(async () => undefined);
     const program = createProgram(() => undefined, {
       acquireReadyFileLease: async () => async () => undefined,
       publishReadyFile: async () => {
@@ -642,7 +668,7 @@ describe("cli", () => {
           size: 1n,
         };
       },
-      removeReadyFile,
+      removeReadyFile: removeReadyFileMock,
       startServer: async () => ({
         close,
         manifest: {
@@ -680,7 +706,7 @@ describe("cli", () => {
     await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
     await running;
 
-    expect(removeReadyFile).toHaveBeenCalledTimes(1);
+    expect(removeReadyFileMock).toHaveBeenCalledTimes(1);
   });
 
   it("uses one heartbeat lease policy for ready-file ownership", async () => {
@@ -882,6 +908,62 @@ describe("cli", () => {
     }
     expect(caught).toEqual({ rejected: true, value: undefined });
     expect(provider.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels and cleans up watch commands on signals", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  local:",
+        "    adapter: loopback",
+        "fixtures:",
+        "  - id: watched",
+        "    provider: local",
+        "    mode: agent",
+        "    target:",
+        "      id: echo-bot",
+      ].join("\n"),
+    );
+    const cleanup = vi.fn(async () => undefined);
+    let watchSignal: AbortSignal | undefined;
+    const provider = {
+      cleanup,
+      async *watch(context: { signal?: AbortSignal }) {
+        watchSignal = context.signal;
+        await new Promise<void>((resolve) => {
+          context.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        yield* [];
+      },
+    };
+    const program = createProgram(() => undefined, {
+      createRegistry: () =>
+        ({
+          resolve: () => provider,
+        }) as never,
+    });
+    const baseline = process.listenerCount("SIGTERM");
+    const running = program.parseAsync([
+      "node",
+      "crabline",
+      "--config",
+      configPath,
+      "watch",
+      "watched",
+    ]);
+    await vi.waitFor(() => expect(process.listenerCount("SIGTERM")).toBeGreaterThan(baseline));
+
+    process.emit("SIGTERM", "SIGTERM");
+    await running;
+
+    expect(watchSignal?.aborted).toBe(true);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(process.listenerCount("SIGTERM")).toBe(baseline);
   });
 
   it("preserves shutdown and ready-file cleanup failures", async () => {

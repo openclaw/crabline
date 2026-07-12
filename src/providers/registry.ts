@@ -25,9 +25,11 @@ type ProviderFactory = () => Promise<ProviderAdapter>;
 type ActiveWatch = {
   abort(): void;
   close(): Promise<void>;
+  dispatch: DispatchBarrier;
 };
 type DispatchBarrier = {
   promise: Promise<void>;
+  reach(): void;
   reached: boolean;
 };
 type AdmittedOperation = {
@@ -90,6 +92,24 @@ const LAZY_PROVIDER_FACTORIES = {
     return new ZaloProviderAdapter(providerId, config, userName);
   },
 } satisfies Record<LazyAdapterId, LazyProviderFactory>;
+
+function createDispatchBarrier(): DispatchBarrier {
+  let resolveDispatch: (() => void) | undefined;
+  const dispatch: DispatchBarrier = {
+    promise: new Promise<void>((resolve) => {
+      resolveDispatch = resolve;
+    }),
+    reach() {
+      if (dispatch.reached) {
+        return;
+      }
+      dispatch.reached = true;
+      resolveDispatch?.();
+    },
+    reached: false,
+  };
+  return dispatch;
+}
 
 function isLazyAdapter(adapter: BuiltinAdapterId): adapter is LazyAdapterId {
   return adapter in LAZY_PROVIDER_FACTORIES;
@@ -181,7 +201,8 @@ export class LazyProviderAdapter implements ProviderAdapter {
     } else {
       context.signal?.addEventListener("abort", abortFromContext, { once: true });
     }
-    const source = this.#watch(context, controller.signal)[Symbol.asyncIterator]();
+    const dispatch = createDispatchBarrier();
+    const source = this.#watch(context, controller.signal, dispatch)[Symbol.asyncIterator]();
     let activeWatch: ActiveWatch;
     let closed = false;
     let closePromise: Promise<IteratorResult<InboundEnvelope>> | null = null;
@@ -201,6 +222,7 @@ export class LazyProviderAdapter implements ProviderAdapter {
             ? await source.return()
             : { done: true as const, value: undefined as never };
         } finally {
+          dispatch.reach();
           finish();
         }
       })();
@@ -240,6 +262,7 @@ export class LazyProviderAdapter implements ProviderAdapter {
       close: async () => {
         await close();
       },
+      dispatch,
     };
     this.#activeWatches.add(activeWatch);
     return iterator;
@@ -252,11 +275,14 @@ export class LazyProviderAdapter implements ProviderAdapter {
     }
     this.#cleanupPromise ??= (async () => {
       const operations = [...this.#inFlightOperations];
-      const closingWatches = [...this.#activeWatches].map(async (watch) => await watch.close());
+      const watches = [...this.#activeWatches];
+      const closingWatches = watches.map(async (watch) => await watch.close());
       const providerCleanup = this.#cleanupProvider(
-        operations.map((operation) => operation.dispatch),
+        operations
+          .map((operation) => operation.dispatch)
+          .concat(watches.map((watch) => watch.dispatch)),
       );
-      const [cleanupResult] = await Promise.all([
+      const [cleanupResult, , watchResults] = await Promise.all([
         providerCleanup.then(
           () => ({ ok: true as const }),
           (error: unknown) => ({ error, ok: false as const }),
@@ -264,8 +290,17 @@ export class LazyProviderAdapter implements ProviderAdapter {
         Promise.allSettled(operations.map((operation) => operation.completion)),
         Promise.allSettled(closingWatches),
       ]);
+      const teardownErrors = watchResults.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
       if (!cleanupResult.ok) {
-        throw cleanupResult.error;
+        teardownErrors.unshift(cleanupResult.error);
+      }
+      if (teardownErrors.length === 1) {
+        throw teardownErrors[0];
+      }
+      if (teardownErrors.length > 1) {
+        throw new AggregateError(teardownErrors, "Provider cleanup failed.");
       }
     })();
     await this.#cleanupPromise;
@@ -288,39 +323,32 @@ export class LazyProviderAdapter implements ProviderAdapter {
     return await this.#providerPromise;
   }
 
-  async *#watch(context: WatchContext, signal: AbortSignal): AsyncIterable<InboundEnvelope> {
-    const provider = await this.#provider();
-    if (!provider.watch) {
-      throw new CrablineError(`Provider "${this.id}" does not implement watch.`, {
-        kind: "config",
-      });
+  async *#watch(
+    context: WatchContext,
+    signal: AbortSignal,
+    dispatch: DispatchBarrier,
+  ): AsyncIterable<InboundEnvelope> {
+    try {
+      const provider = await this.#provider();
+      if (signal.aborted) {
+        return;
+      }
+      if (!provider.watch) {
+        throw new CrablineError(`Provider "${this.id}" does not implement watch.`, {
+          kind: "config",
+        });
+      }
+      dispatch.reach();
+      yield* provider.watch({ ...context, signal });
+    } finally {
+      dispatch.reach();
     }
-    yield* provider.watch({ ...context, signal });
   }
 
   #assertActive(): void {
     if (this.#cleanedUp) {
       throw this.#cleanedUpError();
     }
-  }
-
-  #beginProviderCleanup(): Promise<ProviderAdapter | null> {
-    if (this.#providerInstance) {
-      try {
-        this.#providerInstance.beginCleanup?.();
-        return Promise.resolve(this.#providerInstance);
-      } catch (error) {
-        return Promise.reject(error);
-      }
-    }
-    const providerPromise = this.#providerPromise;
-    if (!providerPromise) {
-      return Promise.resolve(null);
-    }
-    return providerPromise.then((provider) => {
-      provider.beginCleanup?.();
-      return provider;
-    });
   }
 
   async #cleanupProvider(dispatches: readonly DispatchBarrier[]): Promise<void> {
@@ -330,11 +358,34 @@ export class LazyProviderAdapter implements ProviderAdapter {
     if (pendingDispatches.length > 0) {
       await Promise.allSettled(pendingDispatches);
     }
-    const provider = await this.#beginProviderCleanup();
+    let provider = this.#providerInstance;
+    if (!provider) {
+      const providerPromise = this.#providerPromise;
+      if (!providerPromise) {
+        return;
+      }
+      provider = await providerPromise;
+    }
     if (!provider) {
       return;
     }
-    await provider.cleanup?.();
+    const errors: unknown[] = [];
+    try {
+      provider.beginCleanup?.();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await provider.cleanup?.();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length === 1) {
+      throw errors[0];
+    }
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "Provider teardown failed.");
+    }
   }
 
   #runOperation<T>(
@@ -347,14 +398,7 @@ export class LazyProviderAdapter implements ProviderAdapter {
     if (signal?.aborted) {
       return Promise.reject(signal.reason ?? new Error("Provider operation aborted."));
     }
-    let markDispatched: (() => void) | undefined;
-    const dispatched = new Promise<void>((resolve) => {
-      markDispatched = resolve;
-    });
-    const dispatch: DispatchBarrier = {
-      promise: dispatched,
-      reached: false,
-    };
+    const dispatch = createDispatchBarrier();
     const underlying = (async () => {
       try {
         const provider = await this.#provider();
@@ -362,12 +406,10 @@ export class LazyProviderAdapter implements ProviderAdapter {
           throw signal.reason ?? new Error("Provider operation aborted.");
         }
         const result = run(provider);
-        dispatch.reached = true;
-        markDispatched?.();
+        dispatch.reach();
         return await result;
       } catch (error) {
-        dispatch.reached = true;
-        markDispatched?.();
+        dispatch.reach();
         throw error;
       }
     })();
@@ -406,6 +448,11 @@ export function createRegistry(manifest: ManifestDefinition, manifestPath: strin
 
       if (config.status === "disabled") {
         throw new CrablineError(`Provider "${providerId}" is disabled.`, { kind: "config" });
+      }
+      if (config.status === "planned") {
+        throw new CrablineError(`Provider "${providerId}" is planned and cannot run.`, {
+          kind: "config",
+        });
       }
 
       const context: ProviderContext = {

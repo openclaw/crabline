@@ -50,6 +50,18 @@ export const PROVIDER_PLATFORMS = [
 type BuiltinAdapterName = (typeof BUILTIN_ADAPTERS)[number];
 type ProviderPlatformName = (typeof PROVIDER_PLATFORMS)[number];
 
+const HttpUrlSchema = z
+  .string()
+  .url()
+  .refine((value) => {
+    try {
+      const protocol = new URL(value).protocol;
+      return protocol === "http:" || protocol === "https:";
+    } catch {
+      return false;
+    }
+  }, "URL must use http or https");
+
 function inferProviderPlatform(adapter: BuiltinAdapterName): ProviderPlatformName | undefined {
   if (adapter === "script") {
     return undefined;
@@ -74,6 +86,13 @@ const InboundMatchSchema = z
     strategy: z.enum(INBOUND_STRATEGIES).default("contains"),
   })
   .superRefine((value, ctx) => {
+    if (value.strategy === "exact" && value.pattern && value.nonce !== "ignore") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "inboundMatch.strategy=exact requires inboundMatch.nonce=ignore",
+        path: ["nonce"],
+      });
+    }
     if (value.strategy !== "regex" || !value.pattern) {
       return;
     }
@@ -122,7 +141,7 @@ const SlackWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/slack/events"),
   port: z.number().int().min(0).max(65_535).default(8787),
-  publicUrl: z.string().url().optional(),
+  publicUrl: HttpUrlSchema.optional(),
 });
 
 const SlackConfigSchema = z.strictObject({
@@ -143,7 +162,7 @@ const DiscordWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/discord/interactions"),
   port: z.number().int().min(0).max(65_535).default(8788),
-  publicUrl: z.string().url().optional(),
+  publicUrl: HttpUrlSchema.optional(),
 });
 
 const DiscordConfigSchema = z.strictObject({
@@ -168,12 +187,12 @@ const WhatsAppWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/whatsapp/webhook"),
   port: z.number().int().min(0).max(65_535).default(8789),
-  publicUrl: z.string().url().optional(),
+  publicUrl: HttpUrlSchema.optional(),
 });
 
 const WhatsAppConfigSchema = z.strictObject({
   accessToken: z.string().min(1).optional(),
-  apiUrl: z.string().url().optional(),
+  apiUrl: HttpUrlSchema.optional(),
   apiVersion: z.string().min(1).optional(),
   appSecret: z.string().min(1).optional(),
   phoneNumberId: z.string().min(1).optional(),
@@ -200,11 +219,11 @@ const MsTeamsWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/msteams/webhook"),
   port: z.number().int().min(0).max(65_535).default(8791),
-  publicUrl: z.string().url().optional(),
+  publicUrl: HttpUrlSchema.optional(),
 });
 
 const MsTeamsConfigSchema = z.strictObject({
-  apiUrl: z.string().url().optional(),
+  apiUrl: HttpUrlSchema.optional(),
   appId: z.string().min(1).optional(),
   appPassword: z.string().min(1).optional(),
   appTenantId: z.string().min(1).optional(),
@@ -236,14 +255,14 @@ const GoogleChatWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/googlechat/webhook"),
   port: z.number().int().min(0).max(65_535).default(8792),
-  publicUrl: z.string().url().optional(),
+  publicUrl: HttpUrlSchema.optional(),
 });
 
 const GoogleChatConfigSchema = z.strictObject({
-  apiUrl: z.string().url().optional(),
+  apiUrl: HttpUrlSchema.optional(),
   credentials: GoogleChatCredentialsSchema.optional(),
   disableSignatureVerification: z.boolean().optional(),
-  endpointUrl: z.string().url().optional(),
+  endpointUrl: HttpUrlSchema.optional(),
   googleChatProjectNumber: z.string().min(1).optional(),
   impersonateUser: z.string().min(1).optional(),
   pubsubAudience: z.string().min(1).optional(),
@@ -275,11 +294,11 @@ const TelegramWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/telegram/webhook"),
   port: z.number().int().min(0).max(65_535).default(8790),
-  publicUrl: z.string().url().optional(),
+  publicUrl: HttpUrlSchema.optional(),
 });
 
 const TelegramConfigSchema = z.strictObject({
-  apiUrl: z.string().url().optional(),
+  apiUrl: HttpUrlSchema.optional(),
   botToken: z.string().min(1).optional(),
   longPolling: TelegramLongPollingSchema.optional(),
   mode: z.enum(["auto", "polling", "webhook"]).default("auto"),
@@ -303,7 +322,7 @@ const FeishuConfigSchema = z.strictObject({
       host: z.string().min(1).default("127.0.0.1"),
       path: z.string().min(1).default("/feishu/webhook"),
       port: z.number().int().min(0).max(65_535).default(8795),
-      publicUrl: z.string().url().optional(),
+      publicUrl: HttpUrlSchema.optional(),
     })
     .default({
       host: "127.0.0.1",
@@ -320,7 +339,7 @@ const MattermostWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/mattermost/webhook"),
   port: z.number().int().min(0).max(65_535).default(8793),
-  publicUrl: z.string().url().optional(),
+  publicUrl: HttpUrlSchema.optional(),
 });
 
 const MattermostWebsocketSchema = z.strictObject({
@@ -330,9 +349,9 @@ const MattermostWebsocketSchema = z.strictObject({
 });
 
 const MattermostConfigSchema = z.strictObject({
-  baseUrl: z.string().url().optional(),
+  baseUrl: HttpUrlSchema.optional(),
   botToken: z.string().min(1).optional(),
-  callbackUrl: z.string().url().optional(),
+  callbackUrl: HttpUrlSchema.optional(),
   recorder: MattermostRecorderSchema.default({}),
   userName: z.string().min(1).optional(),
   webhook: MattermostWebhookSchema.default({
@@ -351,7 +370,7 @@ const ZaloWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
   path: z.string().min(1).default("/zalo/webhook"),
   port: z.number().int().min(0).max(65_535).default(8794),
-  publicUrl: z.string().url().optional(),
+  publicUrl: HttpUrlSchema.optional(),
 });
 
 const ZaloConfigSchema = z.strictObject({
@@ -381,7 +400,7 @@ const MatrixPasswordAuthSchema = z.strictObject({
 
 const MatrixConfigSchema = z.strictObject({
   auth: z.union([MatrixAccessTokenAuthSchema, MatrixPasswordAuthSchema]).optional(),
-  baseURL: z.string().url().optional(),
+  baseURL: HttpUrlSchema.optional(),
   commandPrefix: z.string().min(1).optional(),
   recorder: z.strictObject({ path: z.string().min(1).optional() }).default({}),
   recoveryKey: z.string().min(1).optional(),
@@ -391,7 +410,7 @@ const MatrixConfigSchema = z.strictObject({
       host: z.string().min(1).default("127.0.0.1"),
       path: z.string().min(1).default("/matrix/webhook"),
       port: z.number().int().min(0).max(65_535).default(8797),
-      publicUrl: z.string().url().optional(),
+      publicUrl: HttpUrlSchema.optional(),
     })
     .default({
       host: "127.0.0.1",
@@ -405,13 +424,13 @@ const IMessageConfigSchema = z.strictObject({
   gatewayDurationMs: z.number().int().min(1000).default(180_000),
   local: z.boolean().optional(),
   recorder: z.strictObject({ path: z.string().min(1).optional() }).default({}),
-  serverUrl: z.string().url().optional(),
+  serverUrl: HttpUrlSchema.optional(),
   webhook: z
     .strictObject({
       host: z.string().min(1).default("127.0.0.1"),
       path: z.string().min(1).default("/imessage/webhook"),
       port: z.number().int().min(0).max(65_535).default(8796),
-      publicUrl: z.string().url().optional(),
+      publicUrl: HttpUrlSchema.optional(),
     })
     .default({
       host: "127.0.0.1",
