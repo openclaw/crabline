@@ -1,5 +1,10 @@
 import { randomBytes } from "node:crypto";
-import type { ClientRequest, IncomingMessage, ServerResponse } from "node:http";
+import {
+  validateHeaderValue,
+  type ClientRequest,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import path from "node:path";
 import {
   adminAuthError,
@@ -28,7 +33,13 @@ import {
 type ZaloChatType = "GROUP" | "PRIVATE";
 
 const DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_MS = 5_000;
+const MAX_ACTIVE_ZALO_WEBHOOK_VALIDATIONS = 8;
 const MAX_WEBHOOK_DELIVERY_TIMEOUT_MS = 30_000;
+const MAX_ZALO_WEBHOOK_SECRET_BYTES = 256;
+
+type ZaloServerEvent = ServerRequestEvent & {
+  accepted?: boolean | undefined;
+};
 
 type ZaloMessage = {
   chat: { chat_type: ZaloChatType; id: string };
@@ -63,6 +74,7 @@ type ZaloValidatedWebhookTarget = {
 
 type ZaloServerState = {
   activeWebhookRequests: Set<ClientRequest>;
+  activeWebhookValidations: Set<AbortController>;
   adminToken: string;
   allowLoopbackHttpWebhook: boolean;
   botId: string;
@@ -121,7 +133,7 @@ export type StartZaloServerParams = {
   webhookDeliveryTimeoutMs?: number | undefined;
 };
 
-async function appendEvent(state: ZaloServerState, event: ServerRequestEvent): Promise<void> {
+async function appendEvent(state: ZaloServerState, event: ZaloServerEvent): Promise<void> {
   await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
@@ -189,10 +201,12 @@ function webhookDeliveryTimeoutMs(value: number | undefined): number {
 async function validateWebhookUrl(
   url: URL,
   state: Pick<ZaloServerState, "allowLoopbackHttpWebhook" | "restrictWebhookTargets">,
+  signal?: AbortSignal,
 ): Promise<Response | ZaloValidatedWebhookTarget> {
   const target = await validateWebhookTarget({
     allowLoopbackHttp: state.allowLoopbackHttpWebhook,
     restrictPrivateAddresses: state.restrictWebhookTargets,
+    signal,
     url,
   });
   if ("error" in target) {
@@ -205,33 +219,44 @@ async function validateWebhookUrl(
   return target;
 }
 
-function webhookTimeoutError(timeoutMs: number): DOMException {
-  return new DOMException(`Webhook delivery timed out after ${timeoutMs}ms`, "TimeoutError");
+function validateZaloWebhookSecret(secretToken: string): Response | undefined {
+  if (Buffer.byteLength(secretToken) > MAX_ZALO_WEBHOOK_SECRET_BYTES) {
+    return zaloError(`secret_token must not exceed ${MAX_ZALO_WEBHOOK_SECRET_BYTES} bytes`, 400);
+  }
+  try {
+    validateHeaderValue("x-bot-api-secret-token", secretToken);
+  } catch {
+    return zaloError("secret_token contains invalid HTTP header characters", 400);
+  }
+  return undefined;
 }
 
-async function withWebhookDeadline<T>(
-  promise: Promise<T>,
+async function validateWebhookUrlWithDeadline(
+  url: URL,
+  state: ZaloServerState,
   deadlineAt: number,
-  timeoutMs: number,
-): Promise<T> {
+): Promise<Response | ZaloValidatedWebhookTarget> {
   const remainingMs = deadlineAt - Date.now();
   if (remainingMs <= 0) {
-    throw webhookTimeoutError(timeoutMs);
+    throw webhookTimeoutError(state.webhookDeliveryTimeoutMs);
   }
-  return await new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(webhookTimeoutError(timeoutMs)), remainingMs);
-    timer.unref();
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
+  const validation = new AbortController();
+  state.activeWebhookValidations.add(validation);
+  const timer = setTimeout(
+    () => validation.abort(webhookTimeoutError(state.webhookDeliveryTimeoutMs)),
+    remainingMs,
+  );
+  timer.unref();
+  try {
+    return await validateWebhookUrl(url, state, validation.signal);
+  } finally {
+    clearTimeout(timer);
+    state.activeWebhookValidations.delete(validation);
+  }
+}
+
+function webhookTimeoutError(timeoutMs: number): DOMException {
+  return new DOMException(`Webhook delivery timed out after ${timeoutMs}ms`, "TimeoutError");
 }
 
 /** @internal */
@@ -507,11 +532,7 @@ async function deliverWebhookUpdate(
   const url = new URL(webhook.url);
   let target: Response | ZaloValidatedWebhookTarget;
   try {
-    target = await withWebhookDeadline(
-      validateWebhookUrl(url, state),
-      deadlineAt,
-      state.webhookDeliveryTimeoutMs,
-    );
+    target = await validateWebhookUrlWithDeadline(url, state, deadlineAt);
   } catch (error) {
     if (error instanceof DOMException && error.name === "TimeoutError") {
       return zaloError(`Webhook delivery timed out after ${state.webhookDeliveryTimeoutMs}ms`, 502);
@@ -637,14 +658,32 @@ async function handleZaloMethod(
     return zaloError("Bad Request: can't parse JSON object", 400);
   }
   const body = requestParams(url, parsedBody);
-  await appendEvent(state, {
+  const event: ZaloServerEvent = {
     at: new Date().toISOString(),
     ...(Object.keys(body).length > 0 ? { body: redactParams(body) } : {}),
     method: request.method ?? "GET",
     path: `/bot<redacted>/${method}`,
     query: redactParams(queryRecord(url)) as Record<string, string>,
     type: "api",
-  });
+  };
+
+  if (method === "sendMessage" || method === "sendPhoto") {
+    const chatId = requireParam(body, "chat_id");
+    const content = requireParam(body, method === "sendMessage" ? "text" : "photo");
+    const error = firstError(chatId, content);
+    const sendResponse = error ?? zaloOk({ date: Date.now(), message_id: messageId(state) });
+    event.accepted = sendResponse.ok;
+    try {
+      await appendEvent(state, event);
+    } catch (appendError) {
+      if (!event.accepted) {
+        throw appendError;
+      }
+    }
+    return sendResponse;
+  }
+
+  await appendEvent(state, event);
 
   if (method === "getMe") {
     return zaloOk({
@@ -661,15 +700,6 @@ async function handleZaloMethod(
     const parsedTimeout = Number(readTrimmedString(body.timeout) ?? "30");
     const timeout = Number.isFinite(parsedTimeout) ? Math.max(0, Math.min(parsedTimeout, 50)) : 30;
     return await waitForUpdate(request, response, state, timeout);
-  }
-  if (method === "sendMessage" || method === "sendPhoto") {
-    const chatId = requireParam(body, "chat_id");
-    const content = requireParam(body, method === "sendMessage" ? "text" : "photo");
-    const error = firstError(chatId, content);
-    if (error) {
-      return error;
-    }
-    return zaloOk({ date: Date.now(), message_id: messageId(state) });
   }
   if (method === "sendChatAction") {
     const chatId = requireParam(body, "chat_id");
@@ -693,13 +723,29 @@ async function handleZaloMethod(
     if (typeof webhookUrl !== "string" || typeof secretToken !== "string") {
       return zaloError("Invalid webhook parameters", 400);
     }
+    const secretError = validateZaloWebhookSecret(secretToken);
+    if (secretError) {
+      return secretError;
+    }
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(webhookUrl);
     } catch {
       return zaloError("url must be a valid HTTPS URL", 400);
     }
-    const target = await validateWebhookUrl(parsedUrl, state);
+    if (state.activeWebhookValidations.size >= MAX_ACTIVE_ZALO_WEBHOOK_VALIDATIONS) {
+      return zaloError("Too many webhook validations", 429);
+    }
+    let target: Response | ZaloValidatedWebhookTarget;
+    try {
+      target = await validateWebhookUrlWithDeadline(
+        parsedUrl,
+        state,
+        Date.now() + state.webhookDeliveryTimeoutMs,
+      );
+    } catch {
+      return zaloError("url host could not be resolved", 400);
+    }
     if (target instanceof Response) {
       return target;
     }
@@ -732,6 +778,7 @@ export async function startZaloServer(
   const host = params.host ?? "127.0.0.1";
   const state: ZaloServerState = {
     activeWebhookRequests: new Set(),
+    activeWebhookValidations: new Set(),
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     allowLoopbackHttpWebhook: isLoopbackHost(host),
     botId: params.botId ?? "1459232241454765289",
@@ -749,7 +796,7 @@ export async function startZaloServer(
     pendingRequest: undefined,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "zalo.jsonl"),
     reservedUpdateOrders: new Set(),
-    restrictWebhookTargets: !isLoopbackHost(host),
+    restrictWebhookTargets: true,
     updateOrders: new WeakMap(),
     updates: [],
     webhook: undefined,
@@ -806,6 +853,9 @@ export async function startZaloServer(
       state.closing = true;
       for (const request of state.activeWebhookRequests) {
         request.destroy(new Error("Zalo server is shutting down."));
+      }
+      for (const validation of state.activeWebhookValidations) {
+        validation.abort(new Error("Zalo server is shutting down."));
       }
       if (state.pendingRequest) {
         settlePendingUpdate(state, state.pendingRequest, { kind: "shutdown" });

@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import {
   adminAuthError,
+  drainRequestBody,
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
@@ -24,6 +25,7 @@ import {
 } from "./whatsapp-baileys-websocket.js";
 import {
   canonicalizeWhatsAppChatJid,
+  canonicalizeWhatsAppUserCorrelationJid,
   canonicalizeWhatsAppUserJid,
   isWhatsAppGroupJid,
 } from "./whatsapp-jid.js";
@@ -206,9 +208,7 @@ function waIdFromJid(jid: string): string {
 }
 
 function directPeerIdentity(jid: string): string {
-  const separator = jid.lastIndexOf("@");
-  const user = jid.slice(0, separator).split(":", 1)[0] ?? jid;
-  return `${user}@${jid.slice(separator + 1).toLowerCase()}`;
+  return canonicalizeWhatsAppUserCorrelationJid(jid) ?? jid;
 }
 
 function requireMessagingProduct(body: Record<string, unknown>): Response | undefined {
@@ -424,6 +424,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
 
   if (url.pathname === "/_crabline/admin/whatsapp/inbound") {
     if (params.request.method !== "POST") {
+      drainRequestBody(params.request);
       return new Response("not found", { status: 404 });
     }
     if (!hasAdminToken(params.request, params.state.adminToken)) {
@@ -502,6 +503,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
   }
   if (url.pathname === messagesPath) {
     if (params.request.method !== "POST") {
+      drainRequestBody(params.request);
       return new Response("not found", { status: 404 });
     }
     const body = await parseUnknownRequestBody(params.request);
@@ -535,6 +537,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
     await appendEvent(params.state, event);
     return response;
   }
+  drainRequestBody(params.request);
   return new Response("not found", { status: 404 });
 }
 
@@ -542,11 +545,17 @@ export async function startWhatsAppServer(
   params: StartWhatsAppServerParams = {},
 ): Promise<StartedWhatsAppServer> {
   const host = params.host ?? "127.0.0.1";
-  if (params.accessToken !== undefined && !params.accessToken.trim()) {
-    throw new Error("WhatsApp accessToken must not be empty.");
+  if (
+    params.accessToken !== undefined &&
+    (!params.accessToken.trim() || params.accessToken !== params.accessToken.trim())
+  ) {
+    throw new Error("WhatsApp accessToken must not be empty or whitespace-padded.");
   }
-  if (params.adminToken !== undefined && !params.adminToken.trim()) {
-    throw new Error("WhatsApp adminToken must not be empty.");
+  if (
+    params.adminToken !== undefined &&
+    (!params.adminToken.trim() || params.adminToken !== params.adminToken.trim())
+  ) {
+    throw new Error("WhatsApp adminToken must not be empty or whitespace-padded.");
   }
   const graphVersion = params.graphVersion ?? DEFAULT_GRAPH_VERSION;
   if (!WHATSAPP_GRAPH_VERSION_RE.test(graphVersion)) {

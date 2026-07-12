@@ -1,5 +1,10 @@
+import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
-import { validateWebhookTarget } from "../src/servers/webhook-target.js";
+import {
+  postWebhookRequest,
+  validateWebhookTarget,
+  WebhookDnsLookupPool,
+} from "../src/servers/webhook-target.js";
 
 async function validate(address: string) {
   return await validateWebhookTarget({
@@ -75,5 +80,91 @@ describe("webhook target validation", () => {
     await expect(validate(host)).resolves.toEqual({
       addresses: [{ address, family }],
     });
+  });
+
+  it("only exempts loopback HTTP from private-address blocking", async () => {
+    await expect(
+      validateWebhookTarget({
+        allowLoopbackHttp: true,
+        restrictPrivateAddresses: true,
+        url: new URL("http://127.0.0.1/webhook"),
+      }),
+    ).resolves.toEqual({ addresses: undefined });
+    await expect(
+      validateWebhookTarget({
+        allowLoopbackHttp: true,
+        restrictPrivateAddresses: true,
+        url: new URL("https://10.0.0.1/webhook"),
+      }),
+    ).resolves.toEqual({ error: "private-address" });
+  });
+
+  it.each(["ftp://93.184.216.34/webhook", "ws://93.184.216.34/webhook"])(
+    "rejects unsupported webhook protocol %s",
+    async (url) => {
+      await expect(
+        validateWebhookTarget({
+          allowLoopbackHttp: true,
+          restrictPrivateAddresses: true,
+          url: new URL(url),
+        }),
+      ).resolves.toEqual({ error: "https-required" });
+    },
+  );
+
+  it("bounds DNS lookup concurrency and cancels queued registrations", async () => {
+    const started: string[] = [];
+    const releases = new Map<
+      string,
+      (addresses: Array<{ address: string; family: number }>) => void
+    >();
+    const pool = new WebhookDnsLookupPool(
+      2,
+      async (hostname) =>
+        await new Promise((resolve) => {
+          started.push(hostname);
+          releases.set(hostname, resolve);
+        }),
+    );
+    const first = pool.resolve("first.test");
+    const second = pool.resolve("second.test");
+    const controller = new AbortController();
+    const third = pool.resolve("third.test", controller.signal);
+
+    expect(started).toEqual(["first.test", "second.test"]);
+    controller.abort();
+    await expect(third).rejects.toMatchObject({ name: "AbortError" });
+    expect(started).toEqual(["first.test", "second.test"]);
+
+    releases.get("first.test")?.([{ address: "93.184.216.34", family: 4 }]);
+    releases.get("second.test")?.([{ address: "93.184.216.35", family: 4 }]);
+    await expect(first).resolves.toEqual([{ address: "93.184.216.34", family: 4 }]);
+    await expect(second).resolves.toEqual([{ address: "93.184.216.35", family: 4 }]);
+  });
+
+  it("does not reuse sockets for DNS-pinned webhook delivery", async () => {
+    const remotePorts: number[] = [];
+    const receiver = createServer((request, response) => {
+      remotePorts.push(request.socket.remotePort ?? 0);
+      request.resume();
+      response.end("ok");
+    });
+    await new Promise<void>((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+    const address = receiver.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve webhook receiver.");
+    }
+    const url = new URL(`http://127.0.0.1:${address.port}/webhook`);
+
+    try {
+      await postWebhookRequest({ body: "{}", timeoutMs: 1_000, url });
+      await postWebhookRequest({ body: "{}", timeoutMs: 1_000, url });
+      expect(remotePorts).toHaveLength(2);
+      expect(new Set(remotePorts).size).toBe(2);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        receiver.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   });
 });

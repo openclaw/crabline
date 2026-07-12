@@ -9,6 +9,7 @@
 - Enforce native Matrix, Mattermost, Signal, and Slack outcomes, pagination, retries, state, JSON-RPC, WebSocket, HTTP response, and recorder privacy contracts.
 - Harden OpenClaw artifact publication identity and cleanup, and align Mattermost, Matrix, Signal, Slack, Telegram, and WhatsApp bridge contracts.
 - Bound fixture execution and script input, harden CLI pipe output and manifest parsing, and preserve watch cleanup and stateless inbound progress.
+- Harden Telegram, WhatsApp, and Zalo webhook validation, delivery acknowledgement, identity correlation, media metadata, and accepted-send evidence.
 - Bound signed-JWT key refreshes and authenticate, decode, or suppress Google Chat, Teams, Feishu, and Discord webhook ingress according to provider contracts.
 - Bound recorder tail memory, harden shared provider cleanup and inbound matching, and reject non-global webhook targets.
 - Recover backpressured Signal events without recording rejected RPC calls.

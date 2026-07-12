@@ -262,6 +262,115 @@ describe("Zalo local provider server", () => {
     }
   });
 
+  it("rejects oversized or header-unsafe webhook secrets", async () => {
+    const server = await startZaloServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    for (const secretToken of ["a".repeat(257), "safe\r\nunsafe"]) {
+      const response = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
+        {
+          body: JSON.stringify({
+            secret_token: secretToken,
+            url: "https://93.184.216.34/zalo",
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(response.status).toBe(400);
+    }
+  });
+
+  it("records producer-owned acceptance for Zalo sends", async () => {
+    const observed: Array<{ accepted?: boolean; path?: string }> = [];
+    const server = await startZaloServer({
+      botToken: "test-token-placeholder",
+      onEvent(event) {
+        observed.push(event);
+      },
+    });
+    servers.push(server);
+
+    const accepted = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body: JSON.stringify({ chat_id: "chat-1", text: "accepted" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    const rejected = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body: JSON.stringify({ chat_id: "chat-1" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+
+    expect(accepted.status).toBe(200);
+    expect(rejected.status).toBe(400);
+    expect(observed).toEqual([
+      expect.objectContaining({ accepted: true, path: "/bot<redacted>/sendMessage" }),
+      expect.objectContaining({ accepted: false, path: "/bot<redacted>/sendMessage" }),
+    ]);
+  });
+
+  it("preserves committed sends but surfaces rejected-send evidence failures", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    let failAcceptedEvent = true;
+    const server = await startZaloServer({
+      botToken: "test-token-placeholder",
+      onEvent(event) {
+        if (event.path !== "/bot<redacted>/sendMessage") {
+          return;
+        }
+        const accepted = (event as { accepted?: boolean }).accepted;
+        if (accepted && failAcceptedEvent) {
+          failAcceptedEvent = false;
+          throw new Error("accepted Zalo evidence failed");
+        }
+        if (accepted === false) {
+          throw new Error("rejected Zalo evidence failed");
+        }
+      },
+      recorderPath: path.join(directory, "zalo-send-evidence.jsonl"),
+    });
+    servers.push(server);
+
+    const first = await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`, {
+      body: JSON.stringify({ chat_id: "chat-1", text: "committed" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as { result: { message_id: string } };
+
+    const second = await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`, {
+      body: JSON.stringify({ chat_id: "chat-1", text: "next" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    const secondBody = (await second.json()) as { result: { message_id: string } };
+    expect(secondBody.result.message_id).not.toBe(firstBody.result.message_id);
+
+    const rejected = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body: JSON.stringify({ chat_id: "chat-1" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(rejected.status).toBe(500);
+    await expect(rejected.json()).resolves.toEqual({
+      error: "internal server error",
+      ok: false,
+    });
+  });
+
   it("keeps queued updates when webhook delivery is enabled", async () => {
     const webhook = createServer((_request, response) => {
       response.statusCode = 200;
@@ -813,6 +922,19 @@ describe("Zalo local provider server", () => {
       description: "url must use HTTPS",
       error_code: 400,
       ok: false,
+    });
+
+    const privateHttps = await fetch(`${server.manifest.baseUrl}/bottest-auth-token/setWebhook`, {
+      body: JSON.stringify({
+        secret_token: "secret-token",
+        url: "https://10.0.0.1/zalo",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(privateHttps.status).toBe(400);
+    await expect(privateHttps.json()).resolves.toMatchObject({
+      description: "url must not target a private or link-local address",
     });
   });
 
