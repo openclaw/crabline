@@ -31,19 +31,31 @@ type TelegramServerEvent = {
   type: "admin" | "api";
 };
 
+type TelegramWebhook = {
+  lastErrorDate?: number;
+  lastErrorMessage?: string;
+  secretToken?: string;
+  url: string;
+};
+
 type TelegramServerState = {
   activeUpdatePoll: TelegramUpdatePoll | undefined;
+  activeWebhookDeliveries: Set<AbortController>;
   adminToken: string;
   botId: number;
   botToken: string;
   botUsername: string;
   closing: boolean;
+  inboundAdmission: Promise<void>;
   maxPendingInboundEvents: number;
   nextMessageId: number;
   nextUpdateId: number;
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
   updates: TelegramUpdate[];
+  webhook: TelegramWebhook | undefined;
+  webhookDelivery: Promise<Response | undefined> | undefined;
+  webhookRetryTimer: NodeJS.Timeout | undefined;
 };
 
 type TelegramUpdatePoll = {
@@ -165,49 +177,40 @@ async function parseRequestBody(request: IncomingMessage): Promise<unknown> {
   }
   const contentType = request.headers["content-type"] ?? "";
   const contentTypes = Array.isArray(contentType) ? contentType : [contentType];
-  if (contentTypes.some((entry) => entry.includes("json"))) {
+  if (contentTypes.some((entry) => entry.toLowerCase().includes("json"))) {
     try {
       return JSON.parse(body.toString("utf8")) as unknown;
     } catch (error) {
       throw new InvalidJsonBodyError(error);
     }
   }
-  const multipartType = contentTypes.find((entry) => entry.includes("multipart/form-data"));
+  const multipartType = contentTypes.find((entry) =>
+    entry.toLowerCase().includes("multipart/form-data"),
+  );
   if (multipartType) {
-    return parseMultipartFormDataBody(body, multipartType);
+    return await parseMultipartFormDataBody(body, multipartType);
   }
   const params = new URLSearchParams(body.toString("utf8"));
   return Object.fromEntries(params.entries());
 }
 
-function parseMultipartFormDataBody(body: Buffer, contentType: string): Record<string, unknown> {
-  const boundary = /(?:^|;\s*)boundary=(?:"([^"]+)"|([^;]+))/iu.exec(contentType);
-  const boundaryValue = boundary?.[1] ?? boundary?.[2];
-  if (!boundaryValue) {
-    return {};
+async function parseMultipartFormDataBody(
+  body: Buffer,
+  contentType: string,
+): Promise<Record<string, unknown>> {
+  let form: FormData;
+  try {
+    form = await new Request("http://localhost", {
+      body,
+      headers: { "content-type": contentType },
+      method: "POST",
+    }).formData();
+  } catch (error) {
+    throw new InvalidJsonBodyError(error);
   }
   const fields: Record<string, unknown> = {};
-  const delimiter = `--${boundaryValue}`;
-  for (const rawPart of body.toString("binary").split(delimiter)) {
-    const part = rawPart.replace(/^\r?\n/u, "").replace(/\r?\n$/u, "");
-    if (!part || part === "--") {
-      continue;
-    }
-    const separatorIndex = part.indexOf("\r\n\r\n");
-    if (separatorIndex < 0) {
-      continue;
-    }
-    const rawHeaders = part.slice(0, separatorIndex);
-    const rawContent = part.slice(separatorIndex + 4).replace(/\r?\n--$/u, "");
-    const disposition = rawHeaders
-      .split(/\r?\n/u)
-      .find((header) => header.toLowerCase().startsWith("content-disposition:"));
-    const name = /(?:^|;\s*)name="([^"]+)"/iu.exec(disposition ?? "")?.[1];
-    if (!name) {
-      continue;
-    }
-    const filename = /(?:^|;\s*)filename="([^"]*)"/iu.exec(disposition ?? "")?.[1];
-    fields[name] = filename && filename.length > 0 ? filename : rawContent;
+  for (const [name, value] of form) {
+    fields[name] = typeof value === "string" ? value : value.name;
   }
   return fields;
 }
@@ -236,6 +239,10 @@ function toIntegerValue(value: unknown): number | undefined {
   return Number(stringValue);
 }
 
+function toBooleanValue(value: unknown): boolean {
+  return value === true || (typeof value === "string" && value.toLowerCase() === "true");
+}
+
 function telegramChatId(value: unknown): number | string | undefined {
   const stringValue = toStringValue(value);
   if (!stringValue) {
@@ -246,6 +253,15 @@ function telegramChatId(value: unknown): number | string | undefined {
 
 async function appendEvent(state: TelegramServerState, event: TelegramServerEvent) {
   await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
+}
+
+function redactTelegramBody(body: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(body).map(([key, value]) => [
+      key,
+      key === "secret_token" ? "<redacted>" : value,
+    ]),
+  );
 }
 
 function createBotUser(state: TelegramServerState) {
@@ -375,12 +391,6 @@ function createInboundUpdate(
           typeof (entry as { type?: unknown }).type === "string",
       )
     : undefined;
-  if (messageId !== undefined) {
-    state.nextMessageId = Math.max(state.nextMessageId, messageId + 1);
-  }
-  if (updateId !== undefined) {
-    state.nextUpdateId = Math.max(state.nextUpdateId, updateId + 1);
-  }
   return {
     message: {
       chat: createChat(chatId),
@@ -391,13 +401,170 @@ function createInboundUpdate(
         is_bot: false,
         ...(fromUsername ? { username: fromUsername } : {}),
       },
-      message_id: messageId ?? state.nextMessageId++,
+      message_id: messageId ?? state.nextMessageId,
       ...(entities && entities.length > 0 ? { entities } : {}),
       ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
       text,
     },
-    update_id: updateId ?? state.nextUpdateId++,
+    update_id: updateId ?? state.nextUpdateId,
   };
+}
+
+async function handleTelegramAdminInbound(params: {
+  body: Record<string, unknown>;
+  request: IncomingMessage;
+  state: TelegramServerState;
+  url: URL;
+}): Promise<Response> {
+  let releaseAdmission!: () => void;
+  const previousAdmission = params.state.inboundAdmission;
+  params.state.inboundAdmission = new Promise<void>((resolve) => {
+    releaseAdmission = resolve;
+  });
+  await previousAdmission;
+  try {
+    const nextMessageId = params.state.nextMessageId;
+    const nextUpdateId = params.state.nextUpdateId;
+    const update = createInboundUpdate(params.state, params.body);
+    params.state.nextMessageId = nextMessageId;
+    params.state.nextUpdateId = nextUpdateId;
+    if (!update) {
+      return telegramError("Bad Request: chatId and text are required");
+    }
+    if (params.state.updates.length >= params.state.maxPendingInboundEvents) {
+      return telegramError(
+        `Too Many Requests: pending inbound queue is full (${params.state.maxPendingInboundEvents} updates)`,
+        429,
+      );
+    }
+    params.state.nextMessageId = Math.max(
+      params.state.nextMessageId,
+      update.message.message_id + 1,
+    );
+    params.state.nextUpdateId = Math.max(params.state.nextUpdateId, update.update_id + 1);
+    try {
+      await appendEvent(params.state, {
+        at: new Date().toISOString(),
+        body: params.body,
+        method: params.request.method ?? "POST",
+        path: params.url.pathname,
+        query: queryRecord(params.url),
+        type: "admin",
+      });
+    } catch (error) {
+      params.state.nextMessageId = nextMessageId;
+      params.state.nextUpdateId = nextUpdateId;
+      throw error;
+    }
+    params.state.updates.push(update);
+    params.state.updates.sort((left, right) => left.update_id - right.update_id);
+    if (params.state.webhook) {
+      const deliveryError = await deliverTelegramWebhookUpdates(params.state);
+      return deliveryError ?? jsonResponse({ ok: true, update });
+    }
+    finishTelegramUpdatePoll(params.state, "update");
+    return jsonResponse({ ok: true, update });
+  } finally {
+    releaseAdmission();
+  }
+}
+
+async function flushTelegramWebhookUpdates(
+  state: TelegramServerState,
+): Promise<Response | undefined> {
+  if (!state.webhook) {
+    return undefined;
+  }
+  while (state.updates.length > 0 && state.webhook) {
+    const webhook: TelegramWebhook = state.webhook;
+    const update = state.updates[0]!;
+    const controller = new AbortController();
+    state.activeWebhookDeliveries.add(controller);
+    try {
+      const response = await fetch(webhook.url, {
+        body: JSON.stringify(update),
+        headers: {
+          "content-type": "application/json",
+          ...(webhook.secretToken
+            ? { "x-telegram-bot-api-secret-token": webhook.secretToken }
+            : {}),
+        },
+        method: "POST",
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3_000)]),
+      });
+      await response.body?.cancel();
+      if (!response.ok) {
+        if (state.webhook === webhook) {
+          webhook.lastErrorDate = Math.floor(Date.now() / 1_000);
+          webhook.lastErrorMessage = `Wrong response from the webhook: ${response.status}`;
+        }
+        return telegramError("Bad Gateway: webhook delivery failed", 502);
+      }
+      const deliveredIndex = state.updates.indexOf(update);
+      if (deliveredIndex >= 0) {
+        state.updates.splice(deliveredIndex, 1);
+      }
+      if (state.webhook === webhook) {
+        delete webhook.lastErrorDate;
+        delete webhook.lastErrorMessage;
+      }
+    } catch {
+      if (state.webhook === webhook) {
+        webhook.lastErrorDate = Math.floor(Date.now() / 1_000);
+        webhook.lastErrorMessage = "Webhook delivery failed";
+      }
+      return telegramError("Bad Gateway: webhook delivery failed", 502);
+    } finally {
+      state.activeWebhookDeliveries.delete(controller);
+    }
+  }
+  return undefined;
+}
+
+function clearTelegramWebhookRetry(state: TelegramServerState): void {
+  if (state.webhookRetryTimer) {
+    clearTimeout(state.webhookRetryTimer);
+    state.webhookRetryTimer = undefined;
+  }
+}
+
+function scheduleTelegramWebhookDelivery(state: TelegramServerState, delayMs: number): void {
+  if (
+    state.closing ||
+    !state.webhook ||
+    state.updates.length === 0 ||
+    state.webhookDelivery ||
+    state.webhookRetryTimer
+  ) {
+    return;
+  }
+  state.webhookRetryTimer = setTimeout(() => {
+    state.webhookRetryTimer = undefined;
+    void deliverTelegramWebhookUpdates(state);
+  }, delayMs);
+  state.webhookRetryTimer.unref();
+}
+
+async function deliverTelegramWebhookUpdates(
+  state: TelegramServerState,
+): Promise<Response | undefined> {
+  if (state.webhookDelivery) {
+    return await state.webhookDelivery;
+  }
+  const delivery = flushTelegramWebhookUpdates(state);
+  state.webhookDelivery = delivery;
+  let result: Response | undefined;
+  try {
+    result = await delivery;
+    return result;
+  } finally {
+    if (state.webhookDelivery === delivery) {
+      state.webhookDelivery = undefined;
+    }
+    if (state.webhook && state.updates.length > 0) {
+      scheduleTelegramWebhookDelivery(state, result ? 100 : 0);
+    }
+  }
 }
 
 async function handleTelegramApi(params: {
@@ -410,8 +577,6 @@ async function handleTelegramApi(params: {
   switch (method) {
     case "getme":
       return telegramOk(createBotUser(params.state));
-    case "deletewebhook":
-    case "setwebhook":
     case "setmycommands":
     case "deletemycommands":
     case "sendchataction":
@@ -422,6 +587,63 @@ async function handleTelegramApi(params: {
     case "setmessagereaction":
     case "editforumtopic":
       return telegramOk(true);
+    case "setwebhook": {
+      if (params.body.url === "") {
+        if (toBooleanValue(params.body.drop_pending_updates)) {
+          params.state.updates.length = 0;
+        }
+        clearTelegramWebhookRetry(params.state);
+        params.state.webhook = undefined;
+        return telegramOk(true);
+      }
+      const webhookUrl = toStringValue(params.body.url);
+      if (!webhookUrl) {
+        return telegramError("Bad Request: url is required");
+      }
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(webhookUrl);
+      } catch {
+        return telegramError("Bad Request: bad webhook URL");
+      }
+      if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+        return telegramError("Bad Request: bad webhook URL");
+      }
+      const secretToken = toStringValue(params.body.secret_token);
+      if (secretToken && !/^[A-Za-z0-9_-]{1,256}$/u.test(secretToken)) {
+        return telegramError("Bad Request: invalid secret token");
+      }
+      if (toBooleanValue(params.body.drop_pending_updates)) {
+        params.state.updates.length = 0;
+      }
+      params.state.webhook = {
+        ...(secretToken ? { secretToken } : {}),
+        url: parsedUrl.href,
+      };
+      finishTelegramUpdatePoll(params.state, "conflict");
+      clearTelegramWebhookRetry(params.state);
+      scheduleTelegramWebhookDelivery(params.state, 0);
+      return telegramOk(true);
+    }
+    case "deletewebhook":
+      if (toBooleanValue(params.body.drop_pending_updates)) {
+        params.state.updates.length = 0;
+      }
+      clearTelegramWebhookRetry(params.state);
+      params.state.webhook = undefined;
+      return telegramOk(true);
+    case "getwebhookinfo":
+      return telegramOk({
+        has_custom_certificate: false,
+        ...(params.state.webhook?.lastErrorDate
+          ? { last_error_date: params.state.webhook.lastErrorDate }
+          : {}),
+        ...(params.state.webhook?.lastErrorMessage
+          ? { last_error_message: params.state.webhook.lastErrorMessage }
+          : {}),
+        pending_update_count: params.state.updates.length,
+        url: params.state.webhook?.url ?? "",
+      });
     case "createforumtopic":
       return telegramOk({
         icon_color: 0x6fb9f0,
@@ -457,6 +679,9 @@ async function handleTelegramApi(params: {
         : telegramError(`Bad Request: chat_id and ${mediaKind} are required`);
     }
     case "getupdates":
+      if (params.state.webhook) {
+        return telegramError("Conflict: can't use getUpdates method while webhook is active", 409);
+      }
       return await handleTelegramGetUpdates(params);
     default:
       return telegramError(`Not Found: unsupported method ${params.method}`, 404);
@@ -602,28 +827,12 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
     if (!isJsonObject(body)) {
       return telegramError("Bad Request: request body must be a JSON object");
     }
-    const update = createInboundUpdate(params.state, body);
-    if (!update) {
-      return telegramError("Bad Request: chatId and text are required");
-    }
-    if (params.state.updates.length >= params.state.maxPendingInboundEvents) {
-      return telegramError(
-        `Too Many Requests: pending inbound queue is full (${params.state.maxPendingInboundEvents} updates)`,
-        429,
-      );
-    }
-    await appendEvent(params.state, {
-      at: new Date().toISOString(),
+    return await handleTelegramAdminInbound({
       body,
-      method: params.request.method ?? "POST",
-      path: url.pathname,
-      query: queryRecord(url),
-      type: "admin",
+      request: params.request,
+      state: params.state,
+      url,
     });
-    params.state.updates.push(update);
-    params.state.updates.sort((left, right) => left.update_id - right.update_id);
-    finishTelegramUpdatePoll(params.state, "update");
-    return jsonResponse({ ok: true, update });
   }
 
   const botPath = requireTelegramBotPath(url.pathname);
@@ -642,7 +851,7 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
   }
   await appendEvent(params.state, {
     at: new Date().toISOString(),
-    body,
+    body: redactTelegramBody(body),
     method: requestMethod,
     path: `/bot<redacted>/${botPath.method}`,
     query: queryRecord(url),
@@ -663,6 +872,7 @@ export async function startTelegramServer(
   const botId = params.botId ?? 424242;
   const state: TelegramServerState = {
     activeUpdatePoll: undefined,
+    activeWebhookDeliveries: new Set(),
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     botId,
     botToken:
@@ -671,6 +881,7 @@ export async function startTelegramServer(
         ? "424242:crabline-telegram-token"
         : `${botId}:${randomBytes(26).toString("base64url")}`),
     botUsername: params.botUsername ?? "crabline_bot",
+    inboundAdmission: Promise.resolve(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessageId: 1,
     nextUpdateId: 1,
@@ -678,6 +889,9 @@ export async function startTelegramServer(
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "telegram.jsonl"),
     closing: false,
     updates: [],
+    webhook: undefined,
+    webhookDelivery: undefined,
+    webhookRetryTimer: undefined,
   };
   const port = params.port ?? 0;
   const server = createServer(async (request, response) => {
@@ -690,13 +904,7 @@ export async function startTelegramServer(
           ? telegramError("Bad Request: can't parse JSON object")
           : error instanceof RequestBodyTooLargeError
             ? telegramError("Request Entity Too Large", 413)
-            : jsonResponse(
-                {
-                  error: error instanceof Error ? error.message : String(error),
-                  ok: false,
-                },
-                500,
-              ),
+            : jsonResponse({ error: "internal server error", ok: false }, 500),
       );
     }
   });
@@ -718,6 +926,12 @@ export async function startTelegramServer(
     async close() {
       state.closing = true;
       finishTelegramUpdatePoll(state, "shutdown");
+      clearTelegramWebhookRetry(state);
+      for (const controller of state.activeWebhookDeliveries) {
+        controller.abort();
+      }
+      await state.webhookDelivery;
+      await state.inboundAdmission;
       await closeServer(server);
     },
     manifest: {

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startZaloServer, type StartedZaloServer } from "../src/index.js";
+import { postZaloWebhook } from "../src/servers/zalo.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedZaloServer[] = [];
@@ -359,6 +360,84 @@ describe("Zalo local provider server", () => {
         error_code: 502,
         ok: false,
       });
+    } finally {
+      webhook.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        webhook.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("tries each validated webhook address until one connects", async () => {
+    const received: string[] = [];
+    const webhook = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) {
+        chunks.push(Buffer.from(chunk));
+      }
+      received.push(Buffer.concat(chunks).toString("utf8"));
+      response.statusCode = 200;
+      response.end();
+    });
+    await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+    const address = webhook.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve webhook test server address.");
+    }
+    try {
+      await expect(
+        postZaloWebhook({
+          addresses: [
+            { address: "127.0.0.2", family: 4 },
+            { address: "127.0.0.1", family: 4 },
+          ],
+          body: '{"ok":true}',
+          secretToken: "secret",
+          timeoutMs: 1_000,
+          url: new URL(`http://webhook.test:${address.port}/zalo`),
+        }),
+      ).resolves.toBe(200);
+      expect(received).toEqual(['{"ok":true}']);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        webhook.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("closes active webhook requests during server shutdown", async () => {
+    let observeRequest!: () => void;
+    const requestObserved = new Promise<void>((resolve) => {
+      observeRequest = resolve;
+    });
+    const webhook = createServer((_request, _response) => {
+      observeRequest();
+    });
+    await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+    const address = webhook.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve webhook test server address.");
+    }
+    const server = await startZaloServer({ botToken: "zalo-token" });
+    servers.push(server);
+    try {
+      await fetch(`${server.manifest.baseUrl}/botzalo-token/setWebhook`, {
+        body: JSON.stringify({
+          secret_token: "webhook-secret",
+          url: `http://127.0.0.1:${address.port}/zalo`,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      const inbound = fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "hello" }),
+        headers: adminHeaders(server),
+        method: "POST",
+      });
+      await requestObserved;
+      await server.close();
+      servers.splice(servers.indexOf(server), 1);
+      expect((await inbound).status).toBe(502);
     } finally {
       webhook.closeAllConnections();
       await new Promise<void>((resolve, reject) =>
