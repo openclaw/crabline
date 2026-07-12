@@ -261,12 +261,12 @@ describe("Zalo local provider server", () => {
   });
 
   it("requires HTTPS except for loopback HTTP on loopback-bound servers", async () => {
-    const server = await startZaloServer({ botToken: "zalo-token" });
+    const server = await startZaloServer({ botToken: "test-auth-token" });
     servers.push(server);
 
-    const rejected = await fetch(`${server.manifest.baseUrl}/botzalo-token/setWebhook`, {
+    const rejected = await fetch(`${server.manifest.baseUrl}/bottest-auth-token/setWebhook`, {
       body: JSON.stringify({
-        secret_token: "webhook-secret",
+        secret_token: "secret-token",
         url: "http://192.168.1.10/zalo",
       }),
       headers: { "content-type": "application/json" },
@@ -282,7 +282,7 @@ describe("Zalo local provider server", () => {
 
   it("blocks private and link-local webhook targets when remotely bound", async () => {
     const server = await startZaloServer({
-      botToken: "zalo-token",
+      botToken: "test-auth-token",
       host: "0.0.0.0",
     });
     servers.push(server);
@@ -294,8 +294,8 @@ describe("Zalo local provider server", () => {
       "https://169.254.169.254/latest/meta-data",
       "https://[::1]/zalo",
     ]) {
-      const response = await fetch(`${apiRoot}/botzalo-token/setWebhook`, {
-        body: JSON.stringify({ secret_token: "webhook-secret", url }),
+      const response = await fetch(`${apiRoot}/bottest-auth-token/setWebhook`, {
+        body: JSON.stringify({ secret_token: "secret-token", url }),
         headers: { "content-type": "application/json" },
         method: "POST",
       });
@@ -307,9 +307,9 @@ describe("Zalo local provider server", () => {
       });
     }
 
-    const http = await fetch(`${apiRoot}/botzalo-token/setWebhook`, {
+    const http = await fetch(`${apiRoot}/bottest-auth-token/setWebhook`, {
       body: JSON.stringify({
-        secret_token: "webhook-secret",
+        secret_token: "secret-token",
         url: "http://93.184.216.34/zalo",
       }),
       headers: { "content-type": "application/json" },
@@ -321,9 +321,9 @@ describe("Zalo local provider server", () => {
       ok: false,
     });
 
-    const publicHttps = await fetch(`${apiRoot}/botzalo-token/setWebhook`, {
+    const publicHttps = await fetch(`${apiRoot}/bottest-auth-token/setWebhook`, {
       body: JSON.stringify({
-        secret_token: "webhook-secret",
+        secret_token: "secret-token",
         url: "https://93.184.216.34/zalo",
       }),
       headers: { "content-type": "application/json" },

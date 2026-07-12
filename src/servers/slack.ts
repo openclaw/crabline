@@ -690,11 +690,7 @@ export async function startSlackServer(
   const state: SlackServerState = {
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     botId: params.botId ?? "BCRABLINE",
-    botToken:
-      params.botToken ??
-      (externallyBound
-        ? `xoxb-${randomBytes(6).toString("hex")}-${randomBytes(12).toString("base64url")}`
-        : "xoxb-crabline-slack-token"),
+    botToken: params.botToken ?? "xoxb-crabline-slack-token",
     botUserId: params.botUserId ?? "UCRABBOT",
     eventsRequestUrl: params.eventsRequestUrl,
     nextDmIndex: 1,
@@ -702,13 +698,19 @@ export async function startSlackServer(
     nextTsIndex: 100,
     onEvent: params.onEvent,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "slack.jsonl"),
-    signingSecret:
-      params.signingSecret ??
-      (externallyBound ? randomBytes(16).toString("hex") : "crabline-slack-signing-secret"),
+    signingSecret: params.signingSecret ?? "crabline-slack-signing-secret",
     userDmChannels: new Map(),
     userMpimChannels: new Map(),
     messagesByChannel: new Map(),
   };
+  if (externallyBound && !params.botToken) {
+    const generatedBotValue = `xoxb-${randomBytes(6).toString("hex")}-${randomBytes(12).toString("base64url")}`;
+    state.botToken = generatedBotValue;
+  }
+  if (externallyBound && !params.signingSecret) {
+    const generatedSigningValue = randomBytes(16).toString("hex");
+    state.signingSecret = generatedSigningValue;
+  }
   const httpServer = await startHttpJsonServer({
     handle: (request) => handleRequest({ request, state }),
     handleError: (error) => {
