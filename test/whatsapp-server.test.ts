@@ -677,7 +677,7 @@ describe("whatsapp local provider server", () => {
         }),
         headers: {
           "content-type": "application/json",
-          "x-crabline-admin-token": server.manifest.adminToken,
+          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
         },
         method: "POST",
       });
