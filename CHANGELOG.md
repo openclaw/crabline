@@ -11,6 +11,7 @@
 - Fix provider normalization for loopback pagination and thread codecs, Telegram edited channel posts, Feishu and Matrix thread roots, and complete WhatsApp webhook batches.
 - Harden provider server fidelity with idempotent Matrix send transactions, valid Telegram IPv6 URLs, provider-native malformed JSON errors, signed Slack Events API delivery, and bounded Zalo webhook delivery.
 - Serve WhatsApp Cloud API requests on provider-native Graph routes, queue acknowledged Baileys inbound messages until a session opens, and bound binary frame decoding.
+- Accept uint64 unknown fields in WhatsApp handshakes and bound recursive binary-node decoding.
 - Harden OpenClaw bridges for provider-level probe failures, whitespace-preserving message capture, stable symbolic Telegram IDs, and unsupported thread targets.
 
 ## 0.1.9 - 2026-07-03

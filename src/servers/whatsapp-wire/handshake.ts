@@ -107,7 +107,7 @@ class ProtoReader {
 
   skip(wireType: number): void {
     if (wireType === 0) {
-      this.uint32();
+      this.#skipVarint();
       return;
     }
     if (wireType === 1) {
@@ -144,6 +144,21 @@ class ProtoReader {
         return value >>> 0;
       }
       shift += 7;
+    }
+    throw new Error("Invalid WhatsApp handshake varint.");
+  }
+
+  #skipVarint(): void {
+    for (let index = 0; index < 10; index += 1) {
+      this.#require(1);
+      const byte = this.#buffer[this.#offset];
+      this.#offset += 1;
+      if (byte === undefined || (index === 9 && byte > 1)) {
+        throw new Error("Invalid WhatsApp handshake varint.");
+      }
+      if ((byte & 0x80) === 0) {
+        return;
+      }
     }
     throw new Error("Invalid WhatsApp handshake varint.");
   }

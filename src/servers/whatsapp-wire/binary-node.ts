@@ -10,6 +10,7 @@ export type BinaryNode = {
 
 export const WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES = 1024 * 1024;
 export const WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES = 8 * 1024 * 1024;
+export const WHATSAPP_BINARY_NODE_MAX_DEPTH = 128;
 
 const inflateAsync = promisify(inflate) as (
   buffer: Uint8Array,
@@ -166,7 +167,14 @@ async function decompressIfRequired(buffer: Buffer): Promise<Buffer> {
   return payload;
 }
 
-function decodeDecompressedBinaryNode(buffer: Buffer, indexRef = { index: 0 }): BinaryNode {
+function decodeDecompressedBinaryNode(
+  buffer: Buffer,
+  indexRef = { index: 0 },
+  depth = 1,
+): BinaryNode {
+  if (depth > WHATSAPP_BINARY_NODE_MAX_DEPTH) {
+    throw new Error(`WhatsApp binary node nesting exceeds ${WHATSAPP_BINARY_NODE_MAX_DEPTH}.`);
+  }
   const checkEOS = (length: number) => {
     if (!Number.isSafeInteger(length) || length < 0 || length > buffer.length - indexRef.index) {
       throw new Error("Unexpected end of WhatsApp binary node.");
@@ -307,7 +315,7 @@ function decodeDecompressedBinaryNode(buffer: Buffer, indexRef = { index: 0 }): 
     const items: BinaryNode[] = [];
     const size = readListSize(tag);
     for (let index = 0; index < size; index += 1) {
-      items.push(decodeDecompressedBinaryNode(buffer, indexRef));
+      items.push(decodeDecompressedBinaryNode(buffer, indexRef, depth + 1));
     }
     return items;
   };
