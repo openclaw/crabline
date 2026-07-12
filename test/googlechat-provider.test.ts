@@ -25,6 +25,52 @@ function signedJwt(
 }
 
 describe("Google Chat webhook authentication", () => {
+  it("verifies HTTP endpoint audience ID tokens", async () => {
+    const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = Date.now();
+    const authenticate = createGoogleChatWebhookAuthenticator(config, {
+      fetch: async () =>
+        Response.json({
+          "test-key": keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+        }),
+      now: () => now,
+    });
+    const body = JSON.stringify({ chat: { messagePayload: {} } });
+    const signedRequest = signedJwt(keys.privateKey, {
+      aud: config.googlechat!.endpointUrl,
+      email: "chat@system.gserviceaccount.com",
+      email_verified: true,
+      exp: Math.floor(now / 1000) + 60,
+      iss: "https://accounts.google.com",
+    });
+    await expect(
+      authenticate!(
+        new Request(config.googlechat!.endpointUrl, {
+          headers: { authorization: `Bearer ${signedRequest}` },
+        }),
+        body,
+      ),
+    ).resolves.toBeUndefined();
+
+    const wrongIdentity = signedJwt(keys.privateKey, {
+      aud: config.googlechat!.endpointUrl,
+      email: "other@example.iam.gserviceaccount.com",
+      email_verified: true,
+      exp: Math.floor(now / 1000) + 60,
+      iss: "https://accounts.google.com",
+    });
+    await expect(
+      authenticate!(
+        new Request(config.googlechat!.endpointUrl, {
+          headers: { authorization: `Bearer ${wrongIdentity}` },
+        }),
+        body,
+      ),
+    ).resolves.toMatchObject({ status: 401 });
+  });
+
   it("verifies configured direct webhook bearer tokens", async () => {
     const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
     config.googlechat!.googleChatProjectNumber = "1234567890";

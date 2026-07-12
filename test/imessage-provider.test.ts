@@ -36,5 +36,5 @@ runLocalMockProviderContract({
     isFromMe: false,
     text: "reply nonce-2",
   },
-  webhookThreadId: "+15551234567",
+  webhookThreadId: "iMessage;-;chat-guid-1",
 });
