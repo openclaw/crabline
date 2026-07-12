@@ -70,6 +70,9 @@ type ServeParamFactory = (
   commandOptions: ServeCommandOptions,
 ) => StartCrablineServerParams;
 
+const READY_FILE_OPERATION_STALE_MS = 10_000;
+const READY_FILE_LIFECYCLE_STALE_MS = 24 * 60 * 60 * 1_000;
+
 const SERVE_PARAM_FACTORIES = {
   mattermost: (shared, commandOptions) => ({
     ...shared,
@@ -338,8 +341,20 @@ export function createProgram(
           settleStartup?.();
         }
       };
+      let publicationSettled = false;
+      let settlePublication: (() => void) | undefined;
+      const publication = new Promise<void>((resolve) => {
+        settlePublication = resolve;
+      });
+      const finishPublication = () => {
+        if (!publicationSettled) {
+          publicationSettled = true;
+          settlePublication?.();
+        }
+      };
       const close = onceAsync(async () => {
         await startup;
+        await publication;
         await server?.close();
       });
       const shutdown = installShutdownHandler(close);
@@ -353,6 +368,7 @@ export function createProgram(
         }
         if (shutdown.requested()) {
           finishStartup();
+          finishPublication();
           await shutdown.wait();
         } else {
           try {
@@ -370,22 +386,27 @@ export function createProgram(
             finishStartup();
           }
           if (shutdown.requested()) {
+            finishPublication();
             await shutdown.wait();
           } else {
-            const payload = formatJson(server.manifest);
-            if (commandOptions.readyFile) {
-              const readyContents = `${payload}\n`;
-              publishedReady = {
-                contents: readyContents,
-                identity: await publish(commandOptions.readyFile, readyContents),
-              };
+            try {
+              const payload = formatJson(server.manifest);
+              if (commandOptions.readyFile) {
+                const readyContents = `${payload}\n`;
+                publishedReady = {
+                  contents: readyContents,
+                  identity: await publish(commandOptions.readyFile, readyContents),
+                };
+              }
+              print(
+                options.json
+                  ? payload
+                  : renderServeText(server.manifest, commandOptions.showSecrets === true),
+              );
+            } finally {
+              finishPublication();
             }
-            print(
-              options.json
-                ? payload
-                : renderServeText(server.manifest, commandOptions.showSecrets === true),
-            );
-            if (!commandOptions.once) {
+            if (shutdown.requested() || !commandOptions.once) {
               await shutdown.wait();
             }
           }
@@ -395,6 +416,7 @@ export function createProgram(
         actionError = error;
       }
       finishStartup();
+      finishPublication();
       shutdown.dispose();
       const cleanupErrors: unknown[] = [];
       const readyToRemove = publishedReady;
@@ -415,7 +437,9 @@ export function createProgram(
         try {
           await cleanup();
         } catch (error) {
-          cleanupErrors.push(error);
+          if (!actionFailed || error !== actionError) {
+            cleanupErrors.push(error);
+          }
         }
       }
       if (actionFailed || cleanupErrors.length > 0) {
@@ -476,7 +500,7 @@ function sameReadyFileIdentity(left: ReadyFileIdentity, right: ReadyFileIdentity
 }
 
 async function withReadyFileLock<T>(filePath: string, action: () => Promise<T>): Promise<T> {
-  const release = await acquireReadyFileLease(filePath);
+  const release = await acquireReadyFileOperationLease(filePath);
   let actionFailed = false;
   let actionError: unknown;
   let result: T | undefined;
@@ -504,6 +528,17 @@ async function withReadyFileLock<T>(filePath: string, action: () => Promise<T>):
 }
 
 async function acquireReadyFileLease(filePath: string): Promise<() => Promise<void>> {
+  return await acquireReadyFileLock(filePath, READY_FILE_LIFECYCLE_STALE_MS);
+}
+
+async function acquireReadyFileOperationLease(filePath: string): Promise<() => Promise<void>> {
+  return await acquireReadyFileLock(filePath, READY_FILE_OPERATION_STALE_MS);
+}
+
+async function acquireReadyFileLock(
+  filePath: string,
+  staleMs: number,
+): Promise<() => Promise<void>> {
   await fs.mkdir(nodePath.dirname(filePath), { recursive: true });
   return await lock(filePath, {
     realpath: false,
@@ -513,8 +548,8 @@ async function acquireReadyFileLease(filePath: string): Promise<() => Promise<vo
       minTimeout: 10,
       retries: 100,
     },
-    stale: 10_000,
-    update: 2_500,
+    stale: staleMs,
+    update: Math.min(60_000, staleMs / 4),
   });
 }
 

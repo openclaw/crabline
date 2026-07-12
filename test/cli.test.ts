@@ -6,13 +6,17 @@ import { createProgram, publishReadyFile, runCli, waitForShutdown } from "../src
 import type { StartedCrablineServer } from "../src/servers/index.js";
 import { captureWrites, createTempDir, disposeTempDir, writeText } from "./test-helpers.js";
 
-const lockState = vi.hoisted(() => ({ releaseError: undefined as Error | undefined }));
+const lockState = vi.hoisted(() => ({
+  options: [] as unknown[],
+  releaseError: undefined as Error | undefined,
+}));
 
 vi.mock("proper-lockfile", async (importOriginal) => {
   const actual = await importOriginal<typeof import("proper-lockfile")>();
   return {
     ...actual,
     async lock(...args: Parameters<typeof actual.lock>) {
+      lockState.options.push(args[1]);
       const release = await actual.lock(...args);
       return async () => {
         await release();
@@ -31,6 +35,7 @@ const stripAnsi = (value: string): string => value.replace(ansiPattern, "");
 
 afterEach(async () => {
   process.exitCode = 0;
+  lockState.options.length = 0;
   lockState.releaseError = undefined;
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
@@ -572,7 +577,7 @@ describe("cli", () => {
     await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("closes and removes a published ready file when shutdown arrives during publication", async () => {
+  it("keeps the server live until shutdown-time publication settles", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, "server.json");
@@ -631,11 +636,88 @@ describe("cli", () => {
     await publishStarted;
 
     process.emit("SIGTERM", "SIGTERM");
-    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(close).not.toHaveBeenCalled();
     releasePublish?.();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
     await running;
 
     expect(removeReadyFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a lifecycle-scale stale threshold while holding ready-file ownership", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, "server.json");
+    const program = createProgram(() => undefined, {
+      startServer: async () => ({
+        close: async () => undefined,
+        manifest: {
+          adminToken: "fake",
+          baseUrl: "http://127.0.0.1:12345",
+          botToken: "sample",
+          endpoints: {
+            adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
+            apiRoot: "http://127.0.0.1:12345",
+          },
+          env: { TELEGRAM_BOT_TOKEN: "sample" },
+          provider: "telegram",
+          recorderPath: path.join(directory, "telegram.jsonl"),
+          version: 1,
+        },
+      }),
+    });
+
+    await program.parseAsync([
+      "node",
+      "crabline",
+      "--json",
+      "serve",
+      "telegram",
+      "--once",
+      "--ready-file",
+      readyFile,
+    ]);
+
+    expect(lockState.options).toHaveLength(1);
+    expect(lockState.options[0]).toMatchObject({
+      stale: 24 * 60 * 60 * 1_000,
+      update: 60_000,
+    });
+  });
+
+  it("reports a signal-triggered close failure only once", async () => {
+    const closeError = new Error("close exploded");
+    const close = vi.fn(async () => {
+      throw closeError;
+    });
+    const program = createProgram(() => undefined, {
+      startServer: async () => ({
+        close,
+        manifest: {
+          adminToken: "fake",
+          baseUrl: "http://127.0.0.1:12345",
+          botToken: "sample",
+          endpoints: {
+            adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
+            apiRoot: "http://127.0.0.1:12345",
+          },
+          env: { TELEGRAM_BOT_TOKEN: "sample" },
+          provider: "telegram",
+          recorderPath: "telegram.jsonl",
+          version: 1,
+        },
+      }),
+    });
+    const running = program
+      .parseAsync(["node", "crabline", "--json", "serve", "telegram"])
+      .catch((error: unknown) => error);
+    await vi.waitFor(() => expect(process.listenerCount("SIGTERM")).toBeGreaterThan(0));
+
+    process.emit("SIGTERM", "SIGTERM");
+
+    await expect(running).resolves.toBe(closeError);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it("preserves shutdown and ready-file cleanup failures", async () => {
