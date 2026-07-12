@@ -480,7 +480,7 @@ describe("cli", () => {
     await expect(fs.readFile(sentinelPath, "utf8")).resolves.toBe("unrelated\n");
   });
 
-  it("preserves a committed ready file when lock release fails", async () => {
+  it("removes a committed ready file when lock release fails", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, "server.json");
@@ -489,7 +489,7 @@ describe("cli", () => {
 
     await expect(publishReadyFile(readyFile, "manifest\n")).rejects.toBe(releaseError);
 
-    await expect(fs.readFile(readyFile, "utf8")).resolves.toBe("manifest\n");
+    await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("preserves a replacement swapped in during owned ready-file removal", async () => {
