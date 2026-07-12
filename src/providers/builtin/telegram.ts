@@ -11,6 +11,7 @@ import {
 import type { ProviderAdapter } from "../types.js";
 import {
   authorFromBotFlag,
+  createSecretVerifier,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
@@ -151,16 +152,18 @@ export function normalizeTelegramWebhookPayload(payload: unknown) {
 export class TelegramProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string) {
     const resolvedConfig = resolveTelegramAdapterConfig(config);
+    const authenticateWebhook = resolvedConfig.secretToken
+      ? createSecretVerifier(resolvedConfig.secretToken)
+      : undefined;
     super({
       codec: getBuiltinTargetCodec("telegram"),
       config,
       id,
       options: {
-        ...(resolvedConfig.secretToken
+        ...(authenticateWebhook
           ? {
               authenticateWebhookRequest(request: Request) {
-                return request.headers.get("x-telegram-bot-api-secret-token") ===
-                  resolvedConfig.secretToken
+                return authenticateWebhook(request.headers.get("x-telegram-bot-api-secret-token"))
                   ? undefined
                   : new Response("unauthorized", { status: 401 });
               },

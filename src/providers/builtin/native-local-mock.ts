@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { CrablineError } from "../../core/errors.js";
 import type { NativeIdRule } from "../native-ids.js";
 import type { InboundEnvelope } from "../types.js";
@@ -6,6 +7,13 @@ export type { NativeIdRule } from "../native-ids.js";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function createSecretVerifier(expected: string): (candidate: string | null) => boolean {
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  return (candidate) =>
+    candidate !== null &&
+    timingSafeEqual(createHash("sha256").update(candidate).digest(), expectedDigest);
 }
 
 export function optionalRecord(
