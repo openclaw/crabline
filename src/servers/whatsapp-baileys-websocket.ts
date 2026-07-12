@@ -39,15 +39,23 @@ const WHATSAPP_NOISE_CERT_CHAIN = Buffer.from(
 
 export type WhatsAppBaileysWebSocketServer = {
   close(): Promise<void>;
-  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): "delivered" | "queued";
+  prepareInboundMessage(
+    message: WhatsAppBaileysInboundMessage,
+  ): PreparedWhatsAppBaileysInboundDelivery | undefined;
 };
 
 export type WhatsAppBaileysWebSocketServerParams = {
   accessToken: string;
   appendEvent(event: ServerRequestEvent): Promise<void>;
   httpServer: Server;
+  maxPendingInboundMessages?: number | undefined;
   path: string;
   selfJid: string;
+};
+
+export type PreparedWhatsAppBaileysInboundDelivery = {
+  cancel(): void;
+  commit(): "delivered" | "queued";
 };
 
 export type WhatsAppBaileysInboundMessage = {
@@ -350,12 +358,14 @@ class WhatsAppBaileysWebSocketSession {
       return;
     }
     if (node.tag === "message") {
+      const peer = requireAttr(node, "to");
       this.#sendNode({
         attrs: {
-          class: "receipt",
+          class: "message",
+          from: peer,
           id: requireAttr(node, "id"),
-          to: requireAttr(node, "to"),
-          type: "server",
+          to: this.params.selfJid,
+          ...(node.attrs.type ? { type: node.attrs.type } : {}),
         },
         tag: "ack",
       });
@@ -550,6 +560,12 @@ export function attachWhatsAppBaileysWebSocketServer(
   const signalBundles = new Map<string, MockSignalBundle>();
   const sessions = new Set<WhatsAppBaileysWebSocketSession>();
   const pendingMessages: WhatsAppBaileysInboundMessage[] = [];
+  const maxPendingInboundMessages =
+    params.maxPendingInboundMessages ?? MAX_PENDING_INBOUND_MESSAGES;
+  if (!Number.isSafeInteger(maxPendingInboundMessages) || maxPendingInboundMessages < 1) {
+    throw new Error("WhatsApp maxPendingInboundMessages must be a positive safe integer.");
+  }
+  let pendingReservations = 0;
   const wss = new WebSocketServer({ noServer: true });
   const flushPendingMessages = (session: WhatsAppBaileysWebSocketSession) => {
     while (pendingMessages.length > 0) {
@@ -559,12 +575,6 @@ export function attachWhatsAppBaileysWebSocketServer(
       }
       pendingMessages.shift();
     }
-  };
-  const enqueuePendingMessage = (message: WhatsAppBaileysInboundMessage) => {
-    if (pendingMessages.length >= MAX_PENDING_INBOUND_MESSAGES) {
-      throw new Error(`WhatsApp inbound queue is full (${MAX_PENDING_INBOUND_MESSAGES} messages).`);
-    }
-    pendingMessages.push(message);
   };
   const handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -594,6 +604,10 @@ export function attachWhatsAppBaileysWebSocketServer(
     });
     sessions.add(session);
     socket.once("close", () => sessions.delete(session));
+    socket.on("error", () => {
+      sessions.delete(session);
+      socket.terminate();
+    });
     socket.on("message", (data) => session.handleMessage(data));
   });
   return {
@@ -602,18 +616,45 @@ export function attachWhatsAppBaileysWebSocketServer(
       pendingMessages.length = 0;
       await closeWebSocketServer(wss);
     },
-    deliverInboundMessage(message) {
-      let delivered = false;
-      for (const session of sessions) {
-        if (session.deliverInboundMessage(message)) {
-          delivered = true;
+    prepareInboundMessage(message) {
+      if (pendingMessages.length + pendingReservations >= maxPendingInboundMessages) {
+        return undefined;
+      }
+      let reserved = true;
+      let settled = false;
+      pendingReservations += 1;
+      const releaseReservation = () => {
+        if (reserved) {
+          reserved = false;
+          pendingReservations -= 1;
         }
-      }
-      if (delivered) {
-        return "delivered";
-      }
-      enqueuePendingMessage(message);
-      return "queued";
+      };
+      return {
+        cancel() {
+          if (!settled) {
+            settled = true;
+            releaseReservation();
+          }
+        },
+        commit() {
+          if (settled) {
+            throw new Error("WhatsApp inbound delivery reservation is already settled.");
+          }
+          settled = true;
+          let delivered = false;
+          for (const session of sessions) {
+            if (session.deliverInboundMessage(message)) {
+              delivered = true;
+            }
+          }
+          releaseReservation();
+          if (delivered) {
+            return "delivered";
+          }
+          pendingMessages.push(message);
+          return "queued";
+        },
+      };
     },
   };
 }
