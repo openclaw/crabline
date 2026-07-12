@@ -43,6 +43,37 @@ afterEach(async () => {
 });
 
 describe("telegram local provider server", () => {
+  it("accepts only GET and POST and resolves Bot API methods case-insensitively", async () => {
+    const server = await startTelegramServer({ botToken: "test-token" });
+    servers.push(server);
+    const apiRoot = `${server.manifest.baseUrl}/bottest-token`;
+
+    const getMe = await fetch(`${apiRoot}/gEtMe`);
+    await expect(getMe.json()).resolves.toMatchObject({
+      ok: true,
+      result: { is_bot: true },
+    });
+
+    const sent = await fetch(`${apiRoot}/sEnDmEsSaGe`, {
+      body: JSON.stringify({ chat_id: "123", text: "case-insensitive" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(sent.json()).resolves.toMatchObject({
+      ok: true,
+      result: { text: "case-insensitive" },
+    });
+
+    const rejected = await fetch(`${apiRoot}/getMe`, { method: "PUT" });
+    expect(rejected.status).toBe(405);
+    expect(rejected.headers.get("allow")).toBe("GET, POST");
+    await expect(rejected.json()).resolves.toEqual({
+      description: "Method Not Allowed",
+      error_code: 405,
+      ok: false,
+    });
+  });
+
   it("advertises valid URLs when bound to IPv6", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -413,6 +444,35 @@ describe("telegram local provider server", () => {
     await expect(pending.then((response) => response.json())).resolves.toMatchObject({
       ok: true,
       result: [{ message: { text: "wake the poll" }, update_id: 100 }],
+    });
+  });
+
+  it("supersedes an active long poll with a Telegram conflict response", async () => {
+    const server = await startTelegramServer({ botToken: "test-token" });
+    servers.push(server);
+
+    const firstPoll = getUpdates(server, { offset: 100, timeout: 30 });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const replacementPoll = getUpdates(server, { offset: 100, timeout: 30 });
+
+    const conflicted = await firstPoll;
+    expect(conflicted.status).toBe(409);
+    await expect(conflicted.json()).resolves.toEqual({
+      description:
+        "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running",
+      error_code: 409,
+      ok: false,
+    });
+
+    const inbound = await injectUpdate(server, {
+      chatId: "123",
+      text: "replacement poll remains active",
+      updateId: 100,
+    });
+    expect(inbound.status).toBe(200);
+    await expect(replacementPoll.then((response) => response.json())).resolves.toMatchObject({
+      ok: true,
+      result: [{ message: { text: "replacement poll remains active" }, update_id: 100 }],
     });
   });
 

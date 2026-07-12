@@ -30,6 +30,7 @@ type TelegramServerEvent = {
 };
 
 type TelegramServerState = {
+  activeUpdatePoll: TelegramUpdatePoll | undefined;
   adminToken: string;
   botId: number;
   botToken: string;
@@ -39,9 +40,14 @@ type TelegramServerState = {
   nextUpdateId: number;
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
-  updateWaiters: Set<(hasUpdate: boolean) => void>;
   updates: TelegramUpdate[];
 };
+
+type TelegramUpdatePoll = {
+  finish(result: TelegramUpdatePollResult): void;
+};
+
+type TelegramUpdatePollResult = "conflict" | "shutdown" | "timeout" | "update";
 
 type TelegramMessage = {
   chat: {
@@ -391,45 +397,46 @@ async function handleTelegramApi(params: {
   request: IncomingMessage;
   state: TelegramServerState;
 }) {
-  switch (params.method) {
-    case "getMe":
+  const method = params.method.toLowerCase();
+  switch (method) {
+    case "getme":
       return telegramOk(createBotUser(params.state));
-    case "deleteWebhook":
-    case "setWebhook":
-    case "setMyCommands":
-    case "deleteMyCommands":
-    case "sendChatAction":
-    case "answerCallbackQuery":
-    case "deleteMessage":
-    case "pinChatMessage":
-    case "unpinChatMessage":
-    case "setMessageReaction":
-    case "editForumTopic":
+    case "deletewebhook":
+    case "setwebhook":
+    case "setmycommands":
+    case "deletemycommands":
+    case "sendchataction":
+    case "answercallbackquery":
+    case "deletemessage":
+    case "pinchatmessage":
+    case "unpinchatmessage":
+    case "setmessagereaction":
+    case "editforumtopic":
       return telegramOk(true);
-    case "createForumTopic":
+    case "createforumtopic":
       return telegramOk({
         icon_color: 0x6fb9f0,
         message_thread_id: params.state.nextMessageId++,
         name: toStringValue(params.body.name) ?? "Crabline Topic",
       });
-    case "editMessageText": {
+    case "editmessagetext": {
       const message = createEditedMessage(params.state, params.body);
       return message
         ? telegramOk(message)
         : telegramError("Bad Request: chat_id, message_id, and text are required");
     }
-    case "sendMessage": {
+    case "sendmessage": {
       const message = createOutboundMessage(params.state, params.body);
       return message
         ? telegramOk(message)
         : telegramError("Bad Request: chat_id and text are required");
     }
-    case "sendAnimation":
-    case "sendAudio":
-    case "sendDocument":
-    case "sendPhoto":
-    case "sendVideo": {
-      const mediaKind = params.method.slice("send".length).toLowerCase() as
+    case "sendanimation":
+    case "sendaudio":
+    case "senddocument":
+    case "sendphoto":
+    case "sendvideo": {
+      const mediaKind = method.slice("send".length) as
         | "animation"
         | "audio"
         | "document"
@@ -440,7 +447,7 @@ async function handleTelegramApi(params: {
         ? telegramOk(message)
         : telegramError(`Bad Request: chat_id and ${mediaKind} are required`);
     }
-    case "getUpdates": {
+    case "getupdates": {
       const offset = toIntegerValue(params.body.offset);
       const limit = toIntegerValue(params.body.limit) ?? 100;
       const timeout = toIntegerValue(params.body.timeout) ?? 0;
@@ -455,10 +462,22 @@ async function handleTelegramApi(params: {
       if (updates.length === 0 && timeout > 0) {
         while (updates.length === 0) {
           const remainingMs = deadline - Date.now();
-          if (
-            remainingMs <= 0 ||
-            !(await waitForTelegramUpdate(params.state, params.request, remainingMs))
-          ) {
+          if (remainingMs <= 0) {
+            break;
+          }
+          const pollResult = await waitForTelegramUpdate(
+            params.state,
+            params.request,
+            remainingMs,
+            () => hasTelegramUpdates(params.state, offset),
+          );
+          if (pollResult === "conflict") {
+            return telegramError(
+              "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running",
+              409,
+            );
+          }
+          if (pollResult !== "update") {
             break;
           }
           updates = takeTelegramUpdates(params.state, offset, limit);
@@ -490,44 +509,64 @@ function takeTelegramUpdates(
   return state.updates.slice(0, limit);
 }
 
-function notifyTelegramUpdateWaiters(state: TelegramServerState, hasUpdate: boolean): void {
-  const waiters = [...state.updateWaiters];
-  state.updateWaiters.clear();
-  for (const resolve of waiters) {
-    resolve(hasUpdate);
+function hasTelegramUpdates(state: TelegramServerState, offset: number | undefined): boolean {
+  if (offset === undefined || offset < 0) {
+    return state.updates.length > 0;
   }
+  return state.updates.some((update) => update.update_id >= offset);
+}
+
+function finishTelegramUpdatePoll(
+  state: TelegramServerState,
+  result: TelegramUpdatePollResult,
+): void {
+  state.activeUpdatePoll?.finish(result);
 }
 
 async function waitForTelegramUpdate(
   state: TelegramServerState,
   request: IncomingMessage,
   timeoutMs: number,
-): Promise<boolean> {
+  hasUpdate: () => boolean,
+): Promise<TelegramUpdatePollResult> {
   if (state.closing || request.socket.destroyed) {
-    return false;
+    return "shutdown";
   }
-  return await new Promise<boolean>((resolve) => {
+  return await new Promise<TelegramUpdatePollResult>((resolve) => {
     let settled = false;
-    const finish = (hasUpdate: boolean) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      request.socket.off("close", onSocketClose);
-      state.updateWaiters.delete(onUpdate);
-      resolve(hasUpdate);
+    const poll: TelegramUpdatePoll = {
+      finish(result) {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        request.socket.off("close", onSocketClose);
+        if (state.activeUpdatePoll === poll) {
+          state.activeUpdatePoll = undefined;
+        }
+        resolve(result);
+      },
     };
-    const onUpdate = (hasUpdate: boolean) => finish(hasUpdate);
-    const onSocketClose = () => finish(false);
-    const timer = setTimeout(() => finish(false), timeoutMs);
+    const onSocketClose = () => poll.finish("shutdown");
+    const timer = setTimeout(() => poll.finish("timeout"), timeoutMs);
     timer.unref();
+    const previousPoll = state.activeUpdatePoll;
+    state.activeUpdatePoll = poll;
+    previousPoll?.finish("conflict");
     request.socket.once("close", onSocketClose);
-    state.updateWaiters.add(onUpdate);
     if (state.closing || request.socket.destroyed) {
-      finish(false);
+      poll.finish("shutdown");
+    } else if (hasUpdate()) {
+      poll.finish("update");
     }
   });
+}
+
+function telegramMethodNotAllowed(): Response {
+  const response = telegramError("Method Not Allowed", 405);
+  response.headers.set("allow", "GET, POST");
+  return response;
 }
 
 async function handleRequest(params: { request: IncomingMessage; state: TelegramServerState }) {
@@ -558,7 +597,7 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
     }
     params.state.updates.push(update);
     params.state.updates.sort((left, right) => left.update_id - right.update_id);
-    notifyTelegramUpdateWaiters(params.state, true);
+    finishTelegramUpdatePoll(params.state, "update");
     return jsonResponse({ ok: true, update });
   }
 
@@ -567,15 +606,19 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
     drainRequestBody(params.request);
     return new Response("not found", { status: 404 });
   }
-  const body =
-    params.request.method === "GET" ? queryRecord(url) : await parseRequestBody(params.request);
+  const requestMethod = params.request.method ?? "GET";
+  if (requestMethod !== "GET" && requestMethod !== "POST") {
+    drainRequestBody(params.request);
+    return telegramMethodNotAllowed();
+  }
+  const body = requestMethod === "GET" ? queryRecord(url) : await parseRequestBody(params.request);
   if (!isJsonObject(body)) {
     return telegramError("Bad Request: can't parse JSON object");
   }
   await appendEvent(params.state, {
     at: new Date().toISOString(),
     body,
-    method: params.request.method ?? "GET",
+    method: requestMethod,
     path: `/bot<redacted>/${botPath.method}`,
     query: queryRecord(url),
     type: "api",
@@ -592,6 +635,7 @@ export async function startTelegramServer(
   params: StartTelegramServerParams = {},
 ): Promise<StartedTelegramServer> {
   const state: TelegramServerState = {
+    activeUpdatePoll: undefined,
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     botId: params.botId ?? 424242,
     botToken: params.botToken ?? "424242:crabline-telegram-token",
@@ -601,7 +645,6 @@ export async function startTelegramServer(
     onEvent: params.onEvent,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "telegram.jsonl"),
     closing: false,
-    updateWaiters: new Set(),
     updates: [],
   };
   const host = params.host ?? "127.0.0.1";
@@ -643,7 +686,7 @@ export async function startTelegramServer(
   return {
     async close() {
       state.closing = true;
-      notifyTelegramUpdateWaiters(state, false);
+      finishTelegramUpdatePoll(state, "shutdown");
       await closeServer(server);
     },
     manifest: {
