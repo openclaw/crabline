@@ -48,6 +48,7 @@ type Sleep = (delayMs: number) => Promise<void>;
 type IsProcessAlive = (pid: number) => boolean;
 type StartHeartbeat = (renew: () => Promise<void>, intervalMs: number) => HeartbeatController;
 type BeforeRecoveryClaim = () => Promise<void>;
+type BeforeRecoveryDeleteClaim = () => Promise<void>;
 type BeforeReleaseClaim = () => Promise<void>;
 type BeforeCommitFileRename = () => Promise<void>;
 type LockClaimKind = "commit" | "recovering" | "release";
@@ -330,11 +331,12 @@ function activeRunError(params: {
 }
 
 async function removeOwnedLock(params: {
-  beforeReleaseClaim?: BeforeReleaseClaim;
+  beforeClaim?: () => Promise<void>;
   lockDirectory: string;
   onOwnedDirectoryChange?: (directoryPath: string) => void;
   ownedDirectory: string;
   removeDirectory?: RemoveLockDirectory;
+  runtime?: SmokeLockRuntime;
   token: string;
 }): Promise<boolean> {
   const observed = await readLockRecord(params.ownedDirectory);
@@ -346,7 +348,7 @@ async function removeOwnedLock(params: {
     return false;
   }
 
-  await params.beforeReleaseClaim?.();
+  await params.beforeClaim?.();
   const releaseClaim = `${params.lockDirectory}${RELEASE_CLAIM_SUFFIX}.${params.token}.${randomUUID()}`;
   try {
     await fs.rename(params.ownedDirectory, releaseClaim);
@@ -363,7 +365,8 @@ async function removeOwnedLock(params: {
   if (
     claimed.kind === "missing" ||
     claimed.record.owner.token !== params.token ||
-    !hasSameDirectoryIdentity(observedIdentity, claimedIdentity)
+    !hasSameDirectoryIdentity(observedIdentity, claimedIdentity) ||
+    (params.runtime !== undefined && isLockOwnerActive(claimed.record, params.runtime))
   ) {
     if (!(await pathExists(params.ownedDirectory))) {
       try {
@@ -484,6 +487,7 @@ async function claimLegacyRecoveryDirectory(
 }
 
 async function resolveLockClaim(params: {
+  beforeRecoveryDeleteClaim: BeforeRecoveryDeleteClaim;
   claim: LockClaim;
   lockDirectory: string;
   outputDir: string;
@@ -541,8 +545,10 @@ async function resolveLockClaim(params: {
   }
   if (
     !(await removeOwnedLock({
+      beforeClaim: params.beforeRecoveryDeleteClaim,
       lockDirectory: params.lockDirectory,
       ownedDirectory: params.claim.directoryPath,
+      runtime: params.runtime,
       token: revalidated.record.owner.token,
     }))
   ) {
@@ -551,6 +557,7 @@ async function resolveLockClaim(params: {
 }
 
 async function resolveLockClaims(params: {
+  beforeRecoveryDeleteClaim: BeforeRecoveryDeleteClaim;
   lockDirectory: string;
   outputDir: string;
   requestedChannel: CrablineServerChannel;
@@ -566,6 +573,7 @@ async function resolveLockClaims(params: {
 }
 
 async function resolveLockContention(params: {
+  beforeRecoveryDeleteClaim: BeforeRecoveryDeleteClaim;
   cause: unknown;
   lockDirectory: string;
   outputDir: string;
@@ -652,6 +660,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     pid?: number;
     processStartedAtMs?: number;
     beforeCommitFileRename?: BeforeCommitFileRename;
+    beforeRecoveryDeleteClaim?: BeforeRecoveryDeleteClaim;
     beforeRecoveryClaim?: BeforeRecoveryClaim;
     beforeReleaseClaim?: BeforeReleaseClaim;
     removeDirectory?: RemoveLockDirectory;
@@ -691,6 +700,8 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     const lockClaims = await listLockClaims(lockDirectory);
     if (lockClaims.length > 0 || (await pathExists(`${lockDirectory}${LEGACY_RECOVERY_SUFFIX}`))) {
       await resolveLockClaims({
+        beforeRecoveryDeleteClaim:
+          dependencies.beforeRecoveryDeleteClaim ?? (async () => undefined),
         lockDirectory,
         outputDir,
         requestedChannel: params.channel,
@@ -708,6 +719,8 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     } catch (error) {
       await fs.rm(candidateDirectory, { force: true, recursive: true }).catch(() => undefined);
       await resolveLockContention({
+        beforeRecoveryDeleteClaim:
+          dependencies.beforeRecoveryDeleteClaim ?? (async () => undefined),
         cause: error,
         lockDirectory,
         outputDir,
@@ -728,6 +741,8 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         token,
       });
       await resolveLockClaims({
+        beforeRecoveryDeleteClaim:
+          dependencies.beforeRecoveryDeleteClaim ?? (async () => undefined),
         lockDirectory,
         outputDir,
         requestedChannel: params.channel,
@@ -852,7 +867,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         }
         await removeOwnedLock({
           ...(dependencies.beforeReleaseClaim
-            ? { beforeReleaseClaim: dependencies.beforeReleaseClaim }
+            ? { beforeClaim: dependencies.beforeReleaseClaim }
             : {}),
           lockDirectory,
           onOwnedDirectoryChange: (directoryPath) => {
