@@ -1,4 +1,5 @@
 import {
+  canonicalConversationIdForInbound,
   createAdminInboundRequest,
   createOpenClawCrablineProviderBridge,
   DEFAULT_ACCOUNT_ID,
@@ -80,11 +81,12 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
       },
       createInbound(input) {
         const kind = input.conversation.kind === "direct" ? "direct" : "group";
+        const conversationId = canonicalConversationIdForInbound(input);
         const senderId = nativeId(input.senderId);
         const channelId =
           kind === "direct"
             ? directChannelId(mattermost.botUserId, senderId)
-            : nativeId(input.conversation.id);
+            : nativeId(conversationId);
         const rootId = input.threadId ? nativeId(input.threadId) : undefined;
         return {
           ...createAdminInboundRequest(mattermost),
@@ -98,7 +100,7 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
           },
           providerTargetKey: targetKey(channelId, rootId),
           qaTarget: qaTargetForInbound(input),
-          stateConversation: { id: input.conversation.id, kind },
+          stateConversation: { id: conversationId, kind },
           ...(rootId ? { threadId: rootId } : {}),
         };
       },

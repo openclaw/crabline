@@ -1285,7 +1285,7 @@ describe("OpenClaw local provider bridge", () => {
     const inbound = createOpenClawCrablineInbound({
       manifest: mattermostManifest,
       input: {
-        conversation: { id: "alice", kind: "direct" },
+        conversation: { id: " alice ", kind: "direct" },
         senderId: "alice",
         senderName: "Alice",
         text: "hello",
@@ -1299,6 +1299,10 @@ describe("OpenClaw local provider bridge", () => {
       },
       providerUrl: "http://127.0.0.1:9753/crabline/mattermost/inbound",
       qaTarget: "dm:alice",
+      stateConversation: {
+        id: "alice",
+        kind: "direct",
+      },
     });
     expect(inbound.providerBody.senderId).toBe(delivery.to.slice("user:".length));
 
@@ -1455,6 +1459,10 @@ describe("OpenClaw local provider bridge", () => {
     expect(threadedInbound).toMatchObject({
       providerTargetKey: `${roomId}:thread:$root:matrix.test`,
       qaTarget: `thread:${roomId}/$root:matrix.test`,
+      stateConversation: {
+        id: roomId,
+        kind: "group",
+      },
       threadId: "$root:matrix.test",
     });
 
@@ -1524,50 +1532,118 @@ describe("OpenClaw local provider bridge", () => {
         outputDir,
         selection,
       });
-
-      expect(result.capabilityReport).toMatchObject({
-        result: {
-          driver: "crabline",
-          selectedChannel: "telegram",
-          supportedChannels: [
-            "mattermost",
-            "matrix",
-            "signal",
-            "slack",
-            "telegram",
-            "whatsapp",
-            "zalo",
-          ],
-        },
-      });
-      expect(result.smoke).toMatchObject({
-        manifestPath: OPENCLAW_CRABLINE_MANIFEST_PATH,
-        result: {
-          ok: true,
-          provider: "telegram",
-          recorderPath: "artifacts/crabline/telegram-fake-provider.jsonl",
-          probe: {
+      try {
+        expect(result.capabilityReport).toMatchObject({
+          result: {
+            driver: "crabline",
+            selectedChannel: "telegram",
+            supportedChannels: [
+              "mattermost",
+              "matrix",
+              "signal",
+              "slack",
+              "telegram",
+              "whatsapp",
+              "zalo",
+            ],
+          },
+        });
+        expect(result.smoke).toMatchObject({
+          manifestPath: OPENCLAW_CRABLINE_MANIFEST_PATH,
+          result: {
             ok: true,
-            result: {
-              is_bot: true,
-              username: "crabline_bot",
+            provider: "telegram",
+            recorderPath: "artifacts/crabline/telegram-fake-provider.jsonl",
+            probe: {
+              ok: true,
+              result: {
+                is_bot: true,
+                username: "crabline_bot",
+              },
             },
           },
-        },
+        });
+        const writtenManifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
+          provider?: string;
+        };
+        expect(writtenManifest.provider).toBe("telegram");
+        const manifestMode = (await fs.stat(manifestPath)).mode & 0o777;
+        const expectedMode = process.platform === "win32" ? manifestMode : 0o600;
+        expect(manifestMode).toBe(expectedMode);
+        expect(createOpenClawCrablineChannelReportNotes(selection)).toEqual([
+          "Channel driver: crabline local provider for telegram.",
+          "Channel capability report: crabline-fake-provider-capabilities.json.",
+          "Channel driver smoke: crabline-fake-provider-smoke.json.",
+          "Crabline starts local provider-shaped servers; OpenClaw uses its normal channel adapter against those endpoints.",
+        ]);
+      } finally {
+        await result.release();
+      }
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it("holds the output lock through complete caller artifact publication", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-artifacts-"));
+    const telegram = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    const slack = resolveOpenClawCrablineChannelDriverSelection({ channel: "slack" });
+    try {
+      const first = await runOpenClawCrablineChannelDriverSmoke({
+        outputDir,
+        selection: telegram,
       });
-      const writtenManifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
-        provider?: string;
-      };
-      expect(writtenManifest.provider).toBe("telegram");
-      const manifestMode = (await fs.stat(manifestPath)).mode & 0o777;
-      const expectedMode = process.platform === "win32" ? manifestMode : 0o600;
-      expect(manifestMode).toBe(expectedMode);
-      expect(createOpenClawCrablineChannelReportNotes(selection)).toEqual([
-        "Channel driver: crabline local provider for telegram.",
-        "Channel capability report: crabline-fake-provider-capabilities.json.",
-        "Channel driver smoke: crabline-fake-provider-smoke.json.",
-        "Crabline starts local provider-shaped servers; OpenClaw uses its normal channel adapter against those endpoints.",
-      ]);
+      try {
+        await fs.writeFile(
+          path.join(outputDir, telegram.capabilityMatrixPath),
+          `${JSON.stringify({ selectedChannel: telegram.channel })}\n`,
+        );
+        await expect(
+          runOpenClawCrablineChannelDriverSmoke({ outputDir, selection: slack }),
+        ).rejects.toThrow('OpenClaw Crabline smoke is already running for channel "telegram"');
+        await fs.writeFile(
+          path.join(outputDir, telegram.smokeArtifactPath),
+          `${JSON.stringify({ selectedChannel: telegram.channel })}\n`,
+        );
+      } finally {
+        await first.release();
+      }
+
+      const second = await runOpenClawCrablineChannelDriverSmoke({
+        outputDir,
+        selection: slack,
+      });
+      try {
+        await fs.writeFile(
+          path.join(outputDir, slack.capabilityMatrixPath),
+          `${JSON.stringify({ selectedChannel: slack.channel })}\n`,
+        );
+        await fs.writeFile(
+          path.join(outputDir, slack.smokeArtifactPath),
+          `${JSON.stringify({ selectedChannel: slack.channel })}\n`,
+        );
+      } finally {
+        await second.release();
+      }
+
+      const writtenManifest = JSON.parse(
+        await fs.readFile(path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH), "utf8"),
+      ) as { provider?: string };
+      const capability = JSON.parse(
+        await fs.readFile(path.join(outputDir, slack.capabilityMatrixPath), "utf8"),
+      ) as { selectedChannel?: string };
+      const smoke = JSON.parse(
+        await fs.readFile(path.join(outputDir, slack.smokeArtifactPath), "utf8"),
+      ) as { selectedChannel?: string };
+      expect({
+        capability: capability.selectedChannel,
+        manifest: writtenManifest.provider,
+        smoke: smoke.selectedChannel,
+      }).toEqual({
+        capability: "slack",
+        manifest: "slack",
+        smoke: "slack",
+      });
     } finally {
       await fs.rm(outputDir, { recursive: true, force: true });
     }
@@ -1595,11 +1671,14 @@ describe("OpenClaw local provider bridge", () => {
       const [exitCode, signal] = await holderExit;
       expect({ exitCode, signal }).toEqual({ exitCode: 0, signal: null });
 
-      await expect(
-        runOpenClawCrablineChannelDriverSmoke({ outputDir, selection }),
-      ).resolves.toMatchObject({
-        smoke: { result: { ok: true, provider: "telegram" } },
-      });
+      const result = await runOpenClawCrablineChannelDriverSmoke({ outputDir, selection });
+      try {
+        expect(result).toMatchObject({
+          smoke: { result: { ok: true, provider: "telegram" } },
+        });
+      } finally {
+        await result.release();
+      }
     } finally {
       if (holder.exitCode === null && holder.signalCode === null) {
         holder.kill("SIGTERM");
@@ -1619,11 +1698,14 @@ describe("OpenClaw local provider bridge", () => {
       await holderExit;
 
       const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
-      await expect(
-        runOpenClawCrablineChannelDriverSmoke({ outputDir, selection }),
-      ).resolves.toMatchObject({
-        smoke: { result: { ok: true, provider: "telegram" } },
-      });
+      const result = await runOpenClawCrablineChannelDriverSmoke({ outputDir, selection });
+      try {
+        expect(result).toMatchObject({
+          smoke: { result: { ok: true, provider: "telegram" } },
+        });
+      } finally {
+        await result.release();
+      }
     } finally {
       if (holder.exitCode === null && holder.signalCode === null) {
         holder.kill("SIGTERM");

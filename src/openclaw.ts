@@ -187,6 +187,7 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
     channel: params.selection.channel,
     outputDir,
   });
+  let lockTransferred = false;
 
   try {
     const manifestPath = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
@@ -202,13 +203,14 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
       openclawConfig: {},
       recorderPath,
     });
+    let result: OpenClawCrablineChannelDriverSmokeResult;
     try {
       await publishPrivateFileAtomically(
         manifestPath,
         `${JSON.stringify(adapter.manifest, null, 2)}\n`,
       );
       const probe = await adapter.probe();
-      return {
+      result = {
         capabilityReport: {
           result: {
             driver: "crabline",
@@ -217,6 +219,9 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
           },
         },
         manifestPath: path.basename(manifestPath),
+        release: async () => {
+          await releaseOpenClawCrablineSmokeRunLock(smokeLock);
+        },
         smoke: {
           manifestPath: path.basename(manifestPath),
           result: {
@@ -231,8 +236,12 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
     } finally {
       await adapter.close();
     }
+    lockTransferred = true;
+    return result;
   } finally {
-    await releaseOpenClawCrablineSmokeRunLock(smokeLock);
+    if (!lockTransferred) {
+      await releaseOpenClawCrablineSmokeRunLock(smokeLock);
+    }
   }
 }
 

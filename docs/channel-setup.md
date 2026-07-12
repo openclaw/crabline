@@ -432,7 +432,9 @@ run. New lock owners renew a 10-minute lease while the smoke run remains active,
 so a live run retains exclusive ownership beyond the initial lease. The lease
 also bounds stale locks when an unrelated live process has inherited the
 abandoned PID. Older owner records remain PID-protected for compatibility and
-are reclaimed only after their recorded process exits.
+are reclaimed only after their recorded process exits. A successful smoke call
+transfers lock ownership to its result; callers release it only after publishing
+the selected capability and smoke JSON artifacts.
 
 For release or live verification, use OpenClaw's live driver:
 
