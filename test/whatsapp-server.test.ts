@@ -82,6 +82,33 @@ function createMemorySignalStore(): MemorySignalStore {
   };
 }
 
+function createBaileysTestSocket(server: StartedWhatsAppServer) {
+  const creds: AuthenticationCreds = {
+    ...initAuthCreds(),
+    me: {
+      id: "15550000001:0@s.whatsapp.net",
+      name: "Crabline Test Bot",
+    },
+  };
+  return makeWASocket({
+    auth: {
+      creds,
+      keys: makeCacheableSignalKeyStore(createMemorySignalStore(), silentLogger),
+    },
+    browser: ["crabline", "test", "1.0"],
+    connectTimeoutMs: 2_000,
+    defaultQueryTimeoutMs: 750,
+    fireInitQueries: false,
+    keepAliveIntervalMs: 10_000,
+    logger: silentLogger,
+    markOnlineOnConnect: false,
+    printQRInTerminal: false,
+    syncFullHistory: false,
+    waWebSocketUrl: server.manifest.endpoints.baileysWebSocketUrl,
+    version: [2, 3000, 1035194821],
+  });
+}
+
 async function waitForCondition(
   predicate: () => boolean | Promise<boolean>,
   label: string,
@@ -215,6 +242,30 @@ describe("whatsapp local provider server", () => {
         type: "OAuthException",
       },
     });
+
+    for (const scalarBody of ["null", '"scalar"', "42", "true", "[]"]) {
+      const invalidBody = await fetch(server.manifest.endpoints.messagesUrl, {
+        body: scalarBody,
+        headers: {
+          authorization: "Bearer fake-whatsapp-token",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(invalidBody.status).toBe(400);
+      await expect(invalidBody.json()).resolves.toEqual({
+        error: {
+          code: 100,
+          error_data: {
+            details: "The request body must be a JSON object.",
+            messaging_product: "whatsapp",
+          },
+          fbtrace_id: "A1B2C3D4E5F",
+          message: "(#100) Invalid parameter: request body",
+          type: "OAuthException",
+        },
+      });
+    }
 
     const status = await fetch(server.manifest.endpoints.statusUrl, {
       body: JSON.stringify({
@@ -374,30 +425,7 @@ describe("whatsapp local provider server", () => {
       },
       ok: true,
     });
-    const creds: AuthenticationCreds = {
-      ...initAuthCreds(),
-      me: {
-        id: "15550000001:0@s.whatsapp.net",
-        name: "Crabline Test Bot",
-      },
-    };
-    const socket = makeWASocket({
-      auth: {
-        creds,
-        keys: makeCacheableSignalKeyStore(createMemorySignalStore(), silentLogger),
-      },
-      browser: ["crabline", "test", "1.0"],
-      connectTimeoutMs: 2_000,
-      defaultQueryTimeoutMs: 750,
-      fireInitQueries: false,
-      keepAliveIntervalMs: 10_000,
-      logger: silentLogger,
-      markOnlineOnConnect: false,
-      printQRInTerminal: false,
-      syncFullHistory: false,
-      waWebSocketUrl: server.manifest.endpoints.baileysWebSocketUrl,
-      version: [2, 3000, 1035194821],
-    });
+    const socket = createBaileysTestSocket(server);
     const connectionUpdates: unknown[] = [];
     socket.ev.on("connection.update", (update) => {
       connectionUpdates.push(update);
@@ -467,6 +495,93 @@ describe("whatsapp local provider server", () => {
       });
     } finally {
       socket.end(undefined);
+    }
+  });
+
+  it("fans admin inbound messages out to every open Baileys session", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startWhatsAppServer({
+      recorderPath: path.join(directory, "whatsapp-multi-session.jsonl"),
+      selfJid: "15550000001:0@s.whatsapp.net",
+    });
+    servers.push(server);
+    const sockets = [createBaileysTestSocket(server), createBaileysTestSocket(server)];
+    const connectionUpdates: unknown[][] = sockets.map(() => []);
+    const messageUpserts: BaileysMessagesUpsertEvent[][] = sockets.map(() => []);
+    sockets.forEach((socket, index) => {
+      socket.ev.on("connection.update", (update) => {
+        connectionUpdates[index]?.push(update);
+      });
+      socket.ev.on("messages.upsert", (event) => {
+        messageUpserts[index]?.push(event);
+      });
+    });
+
+    try {
+      await Promise.all(
+        connectionUpdates.map((updates, index) =>
+          waitForCondition(
+            () =>
+              updates.some(
+                (update) =>
+                  !!update &&
+                  typeof update === "object" &&
+                  (update as { connection?: unknown }).connection === "open",
+              ),
+            `Baileys connection ${index + 1} open`,
+          ),
+        ),
+      );
+
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          chatJid: "120363001234567890@g.us",
+          pushName: "Fake Sender",
+          senderJid: "15551234567@s.whatsapp.net",
+          text: "hello to every Baileys session",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+      await expect(inbound.json()).resolves.toMatchObject({
+        delivery: "delivered",
+        ok: true,
+      });
+
+      await Promise.all(
+        messageUpserts.map((upserts, index) =>
+          waitForCondition(
+            () =>
+              upserts
+                .flatMap((event) => event.messages)
+                .some(
+                  (message) =>
+                    message.key?.remoteJid === "120363001234567890@g.us" &&
+                    message.message?.conversation === "hello to every Baileys session",
+                ),
+            `Baileys session ${index + 1} inbound messages.upsert`,
+          ),
+        ),
+      );
+      for (const upserts of messageUpserts) {
+        expect(
+          upserts
+            .flatMap((event) => event.messages)
+            .filter(
+              (message) =>
+                message.key?.remoteJid === "120363001234567890@g.us" &&
+                message.message?.conversation === "hello to every Baileys session",
+            ),
+        ).toHaveLength(1);
+      }
+    } finally {
+      for (const socket of sockets) {
+        socket.end(undefined);
+      }
     }
   });
 });

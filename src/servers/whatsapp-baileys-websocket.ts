@@ -585,12 +585,14 @@ export function attachWhatsAppBaileysWebSocketServer(
       });
     },
     deliverInboundMessage(message) {
-      if (pendingMessages.length === 0) {
-        for (const session of sessions) {
-          if (session.deliverInboundMessage(message)) {
-            return "delivered";
-          }
+      let delivered = false;
+      for (const session of sessions) {
+        if (session.deliverInboundMessage(message)) {
+          delivered = true;
         }
+      }
+      if (delivered) {
+        return "delivered";
       }
       enqueuePendingMessage(message);
       return "queued";

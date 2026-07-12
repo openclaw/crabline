@@ -138,6 +138,10 @@ function graphAuthError(): Response {
   });
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 async function appendEvent(state: WhatsAppServerState, event: ServerRequestEvent) {
   await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
@@ -434,6 +438,12 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
   if (url.pathname === messagesPath) {
     if (params.request.method !== "POST") {
       return new Response("not found", { status: 404 });
+    }
+    if (!isJsonObject(body)) {
+      return graphParameterError(
+        "(#100) Invalid parameter: request body",
+        "The request body must be a JSON object.",
+      );
     }
     if ("status" in body || "message_id" in body) {
       return handleMessageStatus(body);
