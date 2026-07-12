@@ -617,6 +617,92 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("replaces its token-specific stage record when retrying before the commit claim", async () => {
+    const outputDir = await createTempDir();
+    const stageDirectory = path.join(outputDir, "artifacts");
+    const destinationPath = path.join(stageDirectory, "current.json");
+    let failCommitClaim = true;
+    try {
+      await fs.mkdir(stageDirectory);
+      const lock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          beforeCommitClaim: async () => {
+            if (failCommitClaim) {
+              failCommitClaim = false;
+              throw new Error("injected pre-claim failure");
+            }
+          },
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+      const commit = (contents: string) =>
+        lock.commitFileAtomically({
+          contents,
+          destinationPath,
+          stageDirectory,
+          stageFile: async (filePath, value) => {
+            await fs.writeFile(filePath, value);
+          },
+        });
+
+      await expect(commit("first\n")).rejects.toThrow("injected pre-claim failure");
+      await expect(commit("second\n")).resolves.toBeUndefined();
+      await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe("second\n");
+      await lock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("ignores an interrupted temporary stage record while recovering an expired lock", async () => {
+    const outputDir = await createTempDir();
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    let now = 1_000;
+    try {
+      const expiredLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 4_242,
+          processStartedAtMs: 100,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+      const owner = JSON.parse(await fs.readFile(path.join(lockDirectory, "owner.json"), "utf8"));
+      await fs.writeFile(
+        path.join(lockDirectory, `.commit-stage.${owner.token}.interrupted.tmp`),
+        "{",
+      );
+
+      now = 2_001;
+      const successorLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 5_252,
+          processStartedAtMs: 200,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+
+      expect(
+        (await fs.readdir(lockDirectory)).some((entry) => entry.endsWith(".interrupted.tmp")),
+      ).toBe(false);
+      await successorLock.release();
+      await expiredLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("expires an old lock whose PID now belongs to another live process", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };

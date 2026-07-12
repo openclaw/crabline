@@ -53,6 +53,7 @@ type StartHeartbeat = (renew: () => Promise<void>, intervalMs: number) => Heartb
 type BeforeRecoveryClaim = () => Promise<void>;
 type BeforeRecoveryDeleteClaim = () => Promise<void>;
 type BeforeReleaseClaim = () => Promise<void>;
+type BeforeCommitClaim = () => Promise<void>;
 type BeforeCommitFileRename = () => Promise<void>;
 type BeforeCommitRename = () => Promise<void>;
 type SecureWindowsDirectory = (directoryPath: string) => Promise<void>;
@@ -76,7 +77,7 @@ type SmokeLockRuntime = {
 };
 
 const LOCK_OWNER_FILE = "owner.json";
-const LOCK_COMMIT_STAGE_FILE = "commit-stage.json";
+const LOCK_COMMIT_STAGE_FILE_PREFIX = "commit-stage";
 const LOCK_LEASE_FILE_PREFIX = "lease.";
 const LEGACY_RECOVERY_SUFFIX = ".recovering";
 const COMMIT_CLAIM_SUFFIX = ".commit";
@@ -111,7 +112,7 @@ function parseCommitStagePath(contents: string, token: string): string {
 async function readCommitStagePath(lockDirectory: string, token: string): Promise<string | null> {
   try {
     return parseCommitStagePath(
-      await fs.readFile(path.join(lockDirectory, LOCK_COMMIT_STAGE_FILE), "utf8"),
+      await fs.readFile(path.join(lockDirectory, commitStageFileName(token)), "utf8"),
       token,
     );
   } catch (error) {
@@ -119,6 +120,32 @@ async function readCommitStagePath(lockDirectory: string, token: string): Promis
       return null;
     }
     throw error;
+  }
+}
+
+function commitStageFileName(token: string): string {
+  return `${LOCK_COMMIT_STAGE_FILE_PREFIX}.${token}.json`;
+}
+
+async function writeCommitStagePath(
+  lockDirectory: string,
+  stagedFilePath: string,
+  token: string,
+): Promise<void> {
+  const temporaryPath = path.join(
+    lockDirectory,
+    `.${commitStageFileName(token)}.${randomUUID()}.tmp`,
+  );
+  try {
+    await fs.writeFile(temporaryPath, `${JSON.stringify({ path: stagedFilePath, token })}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await fs.chmod(temporaryPath, 0o600);
+    await fs.rename(temporaryPath, path.join(lockDirectory, commitStageFileName(token)));
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
   }
 }
 
@@ -741,6 +768,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     processStartedAtMs?: number;
     platform?: NodeJS.Platform;
     secureWindowsDirectory?: SecureWindowsDirectory;
+    beforeCommitClaim?: BeforeCommitClaim;
     beforeCommitFileRename?: BeforeCommitFileRename;
     beforeCommitRename?: BeforeCommitRename;
     beforeRecoveryDeleteClaim?: BeforeRecoveryDeleteClaim;
@@ -897,17 +925,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         try {
           await stageFile(stagedFilePath, contents);
           if (stageDirectory) {
-            const commitStagePath = path.join(lockDirectory, LOCK_COMMIT_STAGE_FILE);
-            await fs.writeFile(
-              commitStagePath,
-              `${JSON.stringify({ path: stagedFilePath, token })}\n`,
-              {
-                encoding: "utf8",
-                flag: "wx",
-                mode: 0o600,
-              },
-            );
-            await fs.chmod(commitStagePath, 0o600);
+            await writeCommitStagePath(lockDirectory, stagedFilePath, token);
           }
           heartbeat.assertHealthy();
           await renew();
@@ -923,6 +941,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
             throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
           }
 
+          await dependencies.beforeCommitClaim?.();
           const commitClaim = `${lockDirectory}${COMMIT_CLAIM_SUFFIX}.${token}.${randomUUID()}`;
           try {
             await fs.rename(lockDirectory, commitClaim);
