@@ -113,7 +113,8 @@ describe("release workflow", () => {
     expect(packageStep).toContain('execFileSync("tar", ["-xzf", tarballPath');
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity');
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@latest" version');
-    expect(publishStep).toContain("Refusing to publish ${release} because npm latest is newer");
+    expect(publishStep).toContain('"Refusing to publish " +');
+    expect(publishStep).toContain('" because npm latest is newer at " +');
     expect(publishStep).toContain('npm publish "$PACKAGE_TARBALL" --access public --provenance');
     expect(releaseStep).toContain('gh release view "$RELEASE_TAG"');
     expect(releaseStep).toContain("--json isDraft,isPrerelease");

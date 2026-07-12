@@ -275,7 +275,7 @@ jobs:
               const parse = (value) => {
                 const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
                 if (!match) {
-                  throw new Error(`Expected a stable semantic version, got ${value}.`);
+                  throw new Error("Expected a stable semantic version, got " + value + ".");
                 }
                 return match.slice(1).map(BigInt);
               };
@@ -285,7 +285,11 @@ jobs:
                 if (releaseParts[index] > latestParts[index]) process.exit(0);
                 if (releaseParts[index] < latestParts[index]) {
                   throw new Error(
-                    `Refusing to publish ${release} because npm latest is newer at ${latest}.`,
+                    "Refusing to publish " +
+                      release +
+                      " because npm latest is newer at " +
+                      latest +
+                      ".",
                   );
                 }
               }
