@@ -20,6 +20,23 @@ function createMessageId(): string {
   return `loopback-mock-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function cloneRawMessage(raw: LoopbackRawMessage): LoopbackRawMessage {
+  return { ...raw };
+}
+
+function cloneMessage(message: LoopbackMessage): LoopbackMessage {
+  return {
+    ...message,
+    author: { ...message.author },
+    metadata: {
+      dateSent: new Date(message.metadata.dateSent),
+      edited: message.metadata.edited,
+      ...(message.metadata.editedAt ? { editedAt: new Date(message.metadata.editedAt) } : {}),
+    },
+    raw: cloneRawMessage(message.raw),
+  };
+}
+
 function toPostableText(message: PostableMessage): string {
   if (typeof message === "string") {
     return message;
@@ -109,7 +126,7 @@ export class LoopbackChatAdapter {
     existing.metadata.edited = true;
     existing.metadata.editedAt = new Date();
     existing.raw.text = text;
-    return Promise.resolve({ id: existing.id, raw: existing.raw, threadId });
+    return Promise.resolve({ id: existing.id, raw: cloneRawMessage(existing.raw), threadId });
   }
 
   encodeThreadId(platformData: ThreadAddress): string {
@@ -129,7 +146,7 @@ export class LoopbackChatAdapter {
     const limit = options?.limit ?? messages.length;
     if (!options?.cursor) {
       const result: { messages: LoopbackMessage[]; nextCursor?: string } = {
-        messages: messages.slice(-limit),
+        messages: messages.slice(-limit).map(cloneMessage),
       };
       if (messages.length - limit > 0) {
         result.nextCursor = String(messages.length - limit);
@@ -139,7 +156,7 @@ export class LoopbackChatAdapter {
 
     const offset = Number(options.cursor);
     const result: { messages: LoopbackMessage[]; nextCursor?: string } = {
-      messages: messages.slice(Math.max(0, offset - limit), offset),
+      messages: messages.slice(Math.max(0, offset - limit), offset).map(cloneMessage),
     };
     if (offset - limit > 0) {
       result.nextCursor = String(offset - limit);
@@ -178,7 +195,7 @@ export class LoopbackChatAdapter {
         dateSent: new Date(raw.timestamp),
         edited: false,
       },
-      raw,
+      raw: cloneRawMessage(raw),
       text: raw.text,
       threadId: raw.threadId,
     };
@@ -198,7 +215,7 @@ export class LoopbackChatAdapter {
     } satisfies LoopbackRawMessage;
     const parsed = this.parseMessage(raw);
     this.#append(threadId, parsed);
-    return Promise.resolve({ id: raw.id, raw, threadId });
+    return Promise.resolve({ id: raw.id, raw: cloneRawMessage(raw), threadId });
   }
 
   removeReaction(): Promise<void> {
@@ -223,19 +240,19 @@ export class LoopbackChatAdapter {
     } satisfies LoopbackRawMessage;
     const parsed = this.parseMessage(raw);
     this.#append(threadId, parsed);
-    return parsed;
+    return cloneMessage(parsed);
   }
 
   listSince(threadId: string, since: string): LoopbackMessage[] {
     const sinceTime = new Date(since).getTime();
-    return (this.#messages.get(threadId) ?? []).filter(
-      (entry) => entry.metadata.dateSent.getTime() >= sinceTime,
-    );
+    return (this.#messages.get(threadId) ?? [])
+      .filter((entry) => entry.metadata.dateSent.getTime() >= sinceTime)
+      .map(cloneMessage);
   }
 
   #append(threadId: string, message: LoopbackMessage): void {
     const bucket = this.#messages.get(threadId) ?? [];
-    bucket.push(message);
+    bucket.push(cloneMessage(message));
     this.#messages.set(threadId, bucket);
   }
 }
