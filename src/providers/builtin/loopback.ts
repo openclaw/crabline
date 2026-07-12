@@ -48,8 +48,11 @@ export class LoopbackChatAdapter {
   }
 
   channelIdFromThreadId(threadId: string): string {
-    const [channelId = threadId] = threadId.split("::");
-    return channelId;
+    const [address = threadId] = threadId.split("::");
+    if (!address.startsWith("loopback+v2:")) {
+      return address;
+    }
+    return this.decodeThreadId(threadId).channelId ?? address;
   }
 
   decodeThreadId(threadId: string): ThreadAddress {
