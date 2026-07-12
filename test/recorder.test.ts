@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   appendRecordedInbound,
+  createRecordedInboundCursor,
   readRecordedInbound,
   waitForRecordedInbound,
   watchRecordedInbound,
@@ -121,6 +122,44 @@ describe("recorder", () => {
       id: "evt-2",
       text: "match me",
     });
+  });
+
+  it("retains unread events when a cursor returns an earlier match", async () => {
+    const filePath = await createRecorderPath();
+    const cursor = createRecordedInboundCursor();
+    const first = await appendRecordedInbound(filePath, {
+      author: "assistant",
+      id: "first",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "first",
+      threadId: "slack:C123",
+    });
+    const second = await appendRecordedInbound(filePath, {
+      author: "assistant",
+      id: "second",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "second",
+      threadId: "slack:C123",
+    });
+
+    await expect(
+      waitForRecordedInbound({
+        cursor,
+        filePath,
+        matches: () => true,
+        timeoutMs: 30,
+      }),
+    ).resolves.toEqual(first);
+    await expect(
+      waitForRecordedInbound({
+        cursor,
+        filePath,
+        matches: () => true,
+        timeoutMs: 30,
+      }),
+    ).resolves.toEqual(second);
   });
 
   it("does not collapse distinct records whose fields contain delimiters", async () => {

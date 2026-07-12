@@ -1,12 +1,15 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ProviderConfig } from "../src/config/schema.js";
+import type { ManifestDefinition, ProviderConfig } from "../src/config/schema.js";
+import { runFixtureCommand } from "../src/core/run.js";
 import { SlackProviderAdapter } from "../src/providers/builtin/slack.js";
+import { OPENCLAW_SUPPORT_CATALOG } from "../src/providers/catalog.js";
 import {
   createGenericLocalMockTargetCodec,
   LocalMockProviderAdapter,
 } from "../src/providers/local-mock.js";
 import { appendRecordedInbound } from "../src/providers/recorder.js";
+import type { Registry } from "../src/providers/registry.js";
 import type { ProviderAdapter, ProviderContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
@@ -275,5 +278,58 @@ describe("local mock provider", () => {
       },
     });
     await iterator.return?.();
+  });
+
+  it("runs past an earlier unrelated recorder event to the matching reply", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "slack.jsonl");
+    const config = createConfig();
+    config.slack!.recorder.path = recorderPath;
+    const provider = new SlackProviderAdapter("provider-a", config, "crabline");
+    providers.push(provider);
+    const fixture: ManifestDefinition["fixtures"][number] = {
+      env: [],
+      id: "slack-roundtrip",
+      inboundMatch: { author: "assistant", nonce: "contains", strategy: "contains" },
+      mode: "roundtrip",
+      provider: "provider-a",
+      retries: 0,
+      tags: [],
+      target: { behavior: "echo", id: "C1234567890", metadata: {} },
+      timeoutMs: 100,
+    };
+    const manifest: ManifestDefinition = {
+      configVersion: 1,
+      fixtures: [fixture],
+      providers: { "provider-a": config },
+      userName: "crabline",
+    };
+    const registry: Registry = {
+      catalog: OPENCLAW_SUPPORT_CATALOG,
+      resolve() {
+        return provider;
+      },
+    };
+
+    await appendRecordedInbound(recorderPath, {
+      author: "assistant",
+      id: "unrelated",
+      provider: "provider-a",
+      sentAt: new Date(Date.now() + 60_000).toISOString(),
+      text: "unrelated canonical-free message",
+      threadId: "C1234567890",
+    });
+
+    await expect(
+      runFixtureCommand({
+        fixtureId: fixture.id,
+        manifest,
+        manifestPath: "/tmp/crabline.yaml",
+        registry,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+    });
   });
 });

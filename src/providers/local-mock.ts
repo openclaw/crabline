@@ -1,7 +1,13 @@
 import path from "node:path";
 import { CrablineError, ensureErrorMessage } from "../core/errors.js";
 import type { ProviderConfig, ProviderPlatform } from "../config/schema.js";
-import { appendRecordedInbound, waitForRecordedInbound, watchRecordedInbound } from "./recorder.js";
+import {
+  appendRecordedInbound,
+  createRecordedInboundCursor,
+  waitForRecordedInbound,
+  watchRecordedInbound,
+  type RecordedInboundCursor,
+} from "./recorder.js";
 import type {
   InboundEnvelope,
   NormalizedTarget,
@@ -136,6 +142,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   readonly #options: LocalMockAdapterOptions;
   readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
+  readonly #waitCursors = new Map<string, RecordedInboundCursor>();
   #server: StartedWebhookServer | null = null;
   #serverClosing: Promise<void> | null = null;
   #serverStarting: Promise<StartedWebhookServer> | null = null;
@@ -225,15 +232,30 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
     const expectedAuthor = context.fixture.inboundMatch.author;
-    return await waitForRecordedInbound({
-      filePath: this.#recorderPath,
-      matches: (event) =>
-        event.provider === this.id &&
-        (expectedAuthor === "any" || event.author === expectedAuthor) &&
-        isAddressInChannel(event.threadId, context.threadId ?? target.threadId ?? target.channelId),
-      since: context.since,
-      timeoutMs: context.timeoutMs,
-    });
+    const channelId = context.threadId ?? target.threadId ?? target.channelId;
+    const cursorKey = JSON.stringify([context.nonce, context.since, channelId]);
+    const cursor = this.#waitCursors.get(cursorKey) ?? createRecordedInboundCursor();
+    this.#waitCursors.set(cursorKey, cursor);
+
+    try {
+      const event = await waitForRecordedInbound({
+        cursor,
+        filePath: this.#recorderPath,
+        matches: (candidate) =>
+          candidate.provider === this.id &&
+          (expectedAuthor === "any" || candidate.author === expectedAuthor) &&
+          isAddressInChannel(candidate.threadId, channelId),
+        since: context.since,
+        timeoutMs: context.timeoutMs,
+      });
+      if (!event) {
+        this.#waitCursors.delete(cursorKey);
+      }
+      return event;
+    } catch (error) {
+      this.#waitCursors.delete(cursorKey);
+      throw error;
+    }
   }
 
   async *watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
@@ -251,6 +273,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async cleanup(): Promise<void> {
+    this.#waitCursors.clear();
     if (this.#serverClosing) {
       await this.#serverClosing;
       return;
