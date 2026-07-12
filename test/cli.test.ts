@@ -507,9 +507,9 @@ describe("cli", () => {
           "telegram",
           "--once",
           "--admin-token",
-          "admin-sentinel",
+          "redacted-admin-value",
           "--bot-token",
-          "424242:bot-sentinel",
+          "redacted-bot-value",
           "--recorder",
           path.join(directory, "redacted.jsonl"),
         ]),
@@ -523,9 +523,9 @@ describe("cli", () => {
           "--once",
           "--show-secrets",
           "--admin-token",
-          "visible-admin",
+          "shown-admin-value",
           "--bot-token",
-          "424242:visible-bot",
+          "shown-bot-value",
           "--recorder",
           path.join(directory, "visible.jsonl"),
         ]),
@@ -535,12 +535,12 @@ describe("cli", () => {
     }
 
     const stdout = captured.stdout.join("");
-    expect(stdout).not.toContain("admin-sentinel");
-    expect(stdout).not.toContain("bot-sentinel");
+    expect(stdout).not.toContain("redacted-admin-value");
+    expect(stdout).not.toContain("redacted-bot-value");
     expect(stdout).toContain("adminToken: <redacted>");
     expect(stdout).toContain("botToken: <redacted>");
-    expect(stdout).toContain("adminToken: visible-admin");
-    expect(stdout).toContain("botToken: 424242:visible-bot");
+    expect(stdout).toContain("adminToken: shown-admin-value");
+    expect(stdout).toContain("botToken: shown-bot-value");
   });
 
   it("prints a Telegram server runtime manifest", async () => {
