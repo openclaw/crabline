@@ -61,14 +61,16 @@ export function createMsTeamsWebhookAuthenticator(
       });
     }
     try {
-      let channelId: string | undefined;
-      try {
-        const payload: unknown = JSON.parse(rawBody);
-        channelId = isRecord(payload) ? optionalString(payload, "channelId") : undefined;
-      } catch {
-        // Authentication does not depend on the activity body.
+      const payload: unknown = JSON.parse(rawBody);
+      if (!isRecord(payload)) {
+        throw new Error("Bot Connector activity must be an object.");
       }
-      await verifySignedJwt({
+      const channelId = optionalString(payload, "channelId");
+      const serviceUrl = optionalString(payload, "serviceUrl");
+      if (!serviceUrl) {
+        throw new Error("Bot Connector activity omitted serviceUrl.");
+      }
+      const claims = await verifySignedJwt({
         audience: appId,
         issuers: [BOT_CONNECTOR_ISSUER],
         now: runtime.now,
@@ -116,6 +118,12 @@ export function createMsTeamsWebhookAuthenticator(
         },
         token,
       });
+      if (
+        typeof claims.serviceurl !== "string" ||
+        claims.serviceurl.localeCompare(serviceUrl, undefined, { sensitivity: "accent" }) !== 0
+      ) {
+        throw new Error("Bot Connector serviceurl claim does not match the activity.");
+      }
       return undefined;
     } catch {
       return new Response("unauthorized", {
