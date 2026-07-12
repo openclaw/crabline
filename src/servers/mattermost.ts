@@ -515,10 +515,13 @@ export async function startMattermostServer(
     port: params.port ?? 0,
     serverName: "Mattermost",
   });
-  const closeWebSocketServer = attachWebSocketServer({ server: httpServer.server, state });
+  const closeMattermostWebSocketServer = attachWebSocketServer({
+    server: httpServer.server,
+    state,
+  });
   return {
     async close() {
-      await closeWebSocketServer();
+      await closeMattermostWebSocketServer();
       await httpServer.close();
     },
     manifest: {
