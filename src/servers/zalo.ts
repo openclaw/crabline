@@ -69,6 +69,7 @@ type ZaloServerState = {
   botName: string;
   botToken: string;
   closing: boolean;
+  failedUpdateOrders: Set<number>;
   inboundAdmission: Promise<void>;
   maxPendingInboundEvents: number;
   nextMessage: number;
@@ -76,7 +77,7 @@ type ZaloServerState = {
   onEvent: ServerEventObserver | undefined;
   pendingRequest: PendingUpdateRequest | undefined;
   recorderPath: string;
-  reservedUpdates: number;
+  reservedUpdateOrders: Set<number>;
   restrictWebhookTargets: boolean;
   updateOrders: WeakMap<ZaloUpdate, number>;
   updates: ZaloUpdate[];
@@ -292,11 +293,19 @@ function nextUpdate(
   if (request.aborted || request.socket.destroyed || response.destroyed) {
     return undefined;
   }
-  const update = state.updates.shift();
+  const update = state.updates[0];
   if (!update) {
     return undefined;
   }
-  state.reservedUpdates++;
+  const order = pollingUpdateOrder(state, update);
+  if (
+    state.failedUpdateOrders.has(order) &&
+    [...state.reservedUpdateOrders].some((reservedOrder) => reservedOrder < order)
+  ) {
+    return undefined;
+  }
+  state.updates.shift();
+  reservePollingUpdate(state, update);
   return reservedUpdateResponse(state, update);
 }
 
@@ -322,6 +331,34 @@ function queuePollingUpdate(state: ZaloServerState, update: ZaloUpdate): void {
   }
 }
 
+function reservePollingUpdate(state: ZaloServerState, update: ZaloUpdate): void {
+  const order = pollingUpdateOrder(state, update);
+  state.failedUpdateOrders.delete(order);
+  state.reservedUpdateOrders.add(order);
+}
+
+function flushPendingPollingUpdate(state: ZaloServerState): void {
+  const pending = state.pendingRequest;
+  const update = state.updates[0];
+  if (!pending || !update) {
+    return;
+  }
+  if (!isPendingUpdateRequestLive(pending)) {
+    settlePendingUpdate(state, pending, { kind: "disconnect" });
+    return;
+  }
+  const order = pollingUpdateOrder(state, update);
+  if (
+    state.failedUpdateOrders.has(order) &&
+    [...state.reservedUpdateOrders].some((reservedOrder) => reservedOrder < order)
+  ) {
+    return;
+  }
+  state.updates.shift();
+  reservePollingUpdate(state, update);
+  settlePendingUpdate(state, pending, { kind: "update", update });
+}
+
 function reservedUpdateResponse(state: ZaloServerState, update: ZaloUpdate): HttpJsonHandlerResult {
   let settled = false;
   const release = () => {
@@ -329,7 +366,7 @@ function reservedUpdateResponse(state: ZaloServerState, update: ZaloUpdate): Htt
       return false;
     }
     settled = true;
-    state.reservedUpdates--;
+    state.reservedUpdateOrders.delete(pollingUpdateOrder(state, update));
     return true;
   };
   return {
@@ -337,12 +374,14 @@ function reservedUpdateResponse(state: ZaloServerState, update: ZaloUpdate): Htt
       if (!release()) {
         return;
       }
-      if (!deliverPollingUpdate(state, update)) {
-        queuePollingUpdate(state, update);
-      }
+      state.failedUpdateOrders.add(pollingUpdateOrder(state, update));
+      queuePollingUpdate(state, update);
+      flushPendingPollingUpdate(state);
     },
     onWriteSuccess() {
-      release();
+      if (release()) {
+        flushPendingPollingUpdate(state);
+      }
     },
     response: zaloOk(update),
   };
@@ -438,13 +477,13 @@ function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boole
   const pending = state.pendingRequest;
   if (pending) {
     if (isPendingUpdateRequestLive(pending)) {
-      state.reservedUpdates++;
+      reservePollingUpdate(state, update);
       settlePendingUpdate(state, pending, { kind: "update", update });
       return true;
     }
     settlePendingUpdate(state, pending, { kind: "disconnect" });
   }
-  if (state.updates.length + state.reservedUpdates >= state.maxPendingInboundEvents) {
+  if (state.updates.length + state.reservedUpdateOrders.size >= state.maxPendingInboundEvents) {
     return false;
   }
   queuePollingUpdate(state, update);
@@ -532,7 +571,7 @@ async function handleAdminInbound(
   try {
     if (
       !state.webhook?.url &&
-      state.updates.length + state.reservedUpdates >= state.maxPendingInboundEvents
+      state.updates.length + state.reservedUpdateOrders.size >= state.maxPendingInboundEvents
     ) {
       return zaloError(
         `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
@@ -656,7 +695,7 @@ async function handleZaloMethod(
     if (target instanceof Response) {
       return target;
     }
-    if (state.reservedUpdates > 0) {
+    if (state.reservedUpdateOrders.size > 0) {
       return zaloError("Polling deliveries are still in progress", 409);
     }
     const webhook = { secretToken, updatedAt: Date.now(), url: parsedUrl.href };
@@ -693,6 +732,7 @@ export async function startZaloServer(
       params.botToken ??
       (isLoopbackHost(host) ? "crabline-zalo-bot-token" : randomBytes(32).toString("base64url")),
     closing: false,
+    failedUpdateOrders: new Set(),
     inboundAdmission: Promise.resolve(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessage: 1,
@@ -700,7 +740,7 @@ export async function startZaloServer(
     onEvent: params.onEvent,
     pendingRequest: undefined,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "zalo.jsonl"),
-    reservedUpdates: 0,
+    reservedUpdateOrders: new Set(),
     restrictWebhookTargets: !isLoopbackHost(host),
     updateOrders: new WeakMap(),
     updates: [],

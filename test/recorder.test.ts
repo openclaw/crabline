@@ -96,6 +96,35 @@ describe("recorder", () => {
     });
   });
 
+  it("deduplicates a valid recorder tail that is missing its final newline", async () => {
+    const filePath = await createRecorderPath();
+    const sentAt = new Date().toISOString();
+    const event = {
+      author: "user" as const,
+      id: "unterminated-retry",
+      provider: "whatsapp",
+      sentAt,
+      text: "retry",
+      threadId: "15551234567",
+    };
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        ...event,
+        recordedAt: sentAt,
+      }),
+      "utf8",
+    );
+
+    await expect(appendRecordedInboundBatch(filePath, [event])).resolves.toEqual([]);
+    expect(await readFile(filePath, "utf8")).toBe(
+      `${JSON.stringify({ ...event, recordedAt: sentAt })}\n`,
+    );
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: "unterminated-retry" }),
+    ]);
+  });
+
   it("hides partial batch appends before retrying", async () => {
     const filePath = await createRecorderPath();
     const sentAt = new Date().toISOString();
