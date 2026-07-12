@@ -736,6 +736,22 @@ describe("OpenClaw local provider bridge", () => {
       text: "hello from openclaw",
       to: "dm:alice",
     });
+    for (const body of [
+      { jid: "15551234567@s.whatsapp.net", text: "rejected legacy shape" },
+      { text: "rejected flat text", to: "15551234567" },
+    ]) {
+      expect(
+        createOpenClawCrablineOutboundFromRecorderEvent({
+          manifest: whatsappManifest,
+          targetByProviderTarget: new Map(),
+          event: {
+            type: "api",
+            path: "/v25.0/100000000000000/messages",
+            body,
+          },
+        }),
+      ).toBeNull();
+    }
   });
 
   it("maps Slack QA targets, inbound messages, and recorder events", () => {

@@ -118,11 +118,9 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (event.path !== messagesPath || !isRecord(event.body)) {
           return null;
         }
-        const to = readString(event.body.to ?? event.body.jid);
+        const to = readString(event.body.to);
         const textPayload = event.body.text;
-        const text = isRecord(textPayload)
-          ? readNonBlankString(textPayload.body)
-          : readNonBlankString(textPayload);
+        const text = isRecord(textPayload) ? readNonBlankString(textPayload.body) : undefined;
         if (!to || !text) {
           return null;
         }
