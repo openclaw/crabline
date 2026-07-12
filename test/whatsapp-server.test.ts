@@ -11,7 +11,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { startWhatsAppServer, type StartedWhatsAppServer } from "../src/index.js";
-import { createTempDir, disposeTempDir } from "./test-helpers.js";
+import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedWhatsAppServer[] = [];
 const directories: string[] = [];
@@ -368,6 +368,81 @@ describe("whatsapp local provider server", () => {
     const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
     expect(recorder).not.toContain("forged user nonce");
     expect(recorder).toContain('"path":"/_crabline/admin/whatsapp/inbound"');
+  });
+
+  it("authenticates Graph requests before reading or recording their bodies", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const observed: unknown[] = [];
+    const server = await startWhatsAppServer({
+      accessToken: "fake",
+      onEvent: (event) => {
+        observed.push(event);
+      },
+      recorderPath: path.join(directory, "whatsapp-auth.jsonl"),
+    });
+    servers.push(server);
+
+    const unauthenticated = await fetch(server.manifest.endpoints.messagesUrl, {
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        text: { body: "untrusted whatsapp body" },
+        to: "15551234567",
+        type: "text",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(unauthenticated.status).toBe(401);
+    const unauthorizedOversized = await requestHttp({
+      body: Buffer.alloc(1024 * 1024 + 1, 0x20),
+      headers: {
+        authorization: "Bearer wrong-token",
+        "content-length": String(1024 * 1024 + 1),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      url: server.manifest.endpoints.messagesUrl,
+    });
+    expect(unauthorizedOversized.status).toBe(401);
+
+    const oversized = await requestHttp({
+      body: Buffer.alloc(1024 * 1024 + 1, 0x20),
+      headers: {
+        authorization: "Bearer fake",
+        "content-length": String(1024 * 1024 + 1),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      url: server.manifest.endpoints.messagesUrl,
+    });
+    expect(oversized.status).toBe(413);
+    expect(JSON.parse(oversized.body)).toMatchObject({
+      error: {
+        code: 100,
+        error_data: {
+          details: "The request body exceeds the supported size limit.",
+          messaging_product: "whatsapp",
+        },
+        message: "(#100) Request body is too large.",
+        type: "OAuthException",
+      },
+    });
+
+    const phoneNumber = await fetch(server.manifest.endpoints.phoneNumberUrl, {
+      headers: { authorization: "Bearer fake" },
+    });
+    expect(phoneNumber.status).toBe(200);
+
+    const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
+    expect(recorder).not.toContain("untrusted whatsapp body");
+    expect(observed).toEqual([
+      expect.objectContaining({
+        method: "GET",
+        path: new URL(server.manifest.endpoints.phoneNumberUrl).pathname,
+        type: "api",
+      }),
+    ]);
   });
 
   it("does not accept admin inbound messages when recorder append fails", async () => {

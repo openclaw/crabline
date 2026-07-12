@@ -8,7 +8,7 @@ import {
   type StartedSlackServer,
   type StartSlackServerParams,
 } from "../src/index.js";
-import { createTempDir, disposeTempDir } from "./test-helpers.js";
+import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedSlackServer[] = [];
 const directories: string[] = [];
@@ -115,6 +115,96 @@ describe("slack local provider server", () => {
       },
       ok: true,
     });
+  });
+
+  it("bounds request bodies and does not record rejected API authentication", async () => {
+    const observed: unknown[] = [];
+    const server = await startTestSlackServer({
+      onEvent: (event) => {
+        observed.push(event);
+      },
+    });
+    const authUrl = `${server.manifest.endpoints.apiRoot}auth.test`;
+
+    const unauthenticated = await fetch(authUrl, {
+      body: JSON.stringify({ probe: "untrusted slack body" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(unauthenticated.json()).resolves.toEqual({
+      error: "not_authed",
+      ok: false,
+    });
+    const invalidHeader = await requestHttp({
+      body: Buffer.alloc(1024 * 1024 + 1, 0x20),
+      headers: {
+        authorization: "Bearer wrong-token",
+        "content-length": String(1024 * 1024 + 1),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      url: authUrl,
+    });
+    expect(invalidHeader.status).toBe(200);
+    expect(JSON.parse(invalidHeader.body)).toEqual({
+      error: "invalid_auth",
+      ok: false,
+    });
+
+    for (const scalarBody of ["null", '"scalar"', "42", "true", "[]"]) {
+      const invalid = await fetch(authUrl, {
+        body: scalarBody,
+        headers: {
+          authorization: "Bearer xoxb-fake",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toEqual({ error: "json_not_object", ok: false });
+    }
+
+    const earlyRejected = await requestHttp({
+      body: Buffer.alloc(1024 * 1024 + 1, 0x20),
+      headers: {
+        authorization: "Bearer xoxb-fake",
+        "content-length": String(1024 * 1024 + 1),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      url: authUrl,
+    });
+    expect(earlyRejected.status).toBe(413);
+    expect(JSON.parse(earlyRejected.body)).toEqual({
+      error: "request_too_large",
+      ok: false,
+    });
+
+    const streamed = await requestHttp({
+      body: Buffer.alloc(1024 * 1024 + 1, 0x20),
+      headers: {
+        authorization: "Bearer xoxb-fake",
+        "content-type": "application/json",
+        "transfer-encoding": "chunked",
+      },
+      method: "POST",
+      url: authUrl,
+    });
+    expect(streamed.status).toBe(413);
+    expect(JSON.parse(streamed.body)).toEqual({
+      error: "request_too_large",
+      ok: false,
+    });
+
+    await expect((await slackApi(server, "auth.test")).json()).resolves.toMatchObject({ ok: true });
+    const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
+    expect(recorder).not.toContain("untrusted slack body");
+    expect(observed).toEqual([
+      expect.objectContaining({
+        path: "/api/auth.test",
+        type: "api",
+      }),
+    ]);
   });
 
   it("posts messages and serves thread/history reads", async () => {

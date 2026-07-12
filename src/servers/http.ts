@@ -12,6 +12,7 @@ export type ServerRequestEvent = {
 };
 
 export const ADMIN_TOKEN_HEADER = "x-crabline-admin-token";
+export const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 
 export class InvalidJsonBodyError extends Error {
   constructor(cause: unknown) {
@@ -20,20 +21,99 @@ export class InvalidJsonBodyError extends Error {
   }
 }
 
+export class RequestBodyTooLargeError extends Error {
+  constructor(readonly maxBytes: number) {
+    super(`Request body exceeds the ${maxBytes} byte limit.`);
+    this.name = "RequestBodyTooLargeError";
+  }
+}
+
 export function jsonResponse(value: unknown, status = 200): Response {
   return Response.json(value, { status });
 }
 
-export async function readBody(request: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
+function drainRejectedRequest(request: IncomingMessage): void {
+  const ignoreError = () => {};
+  const cleanup = () => {
+    request.off("close", cleanup);
+    request.off("end", cleanup);
+    request.off("error", ignoreError);
+  };
+
+  request.on("error", ignoreError);
+  request.once("close", cleanup);
+  request.once("end", cleanup);
+  request.resume();
 }
 
-export async function parseRequestBody(request: IncomingMessage): Promise<Record<string, unknown>> {
-  const body = await readBody(request);
+export async function readBody(
+  request: IncomingMessage,
+  maxBytes = DEFAULT_MAX_REQUEST_BODY_BYTES,
+): Promise<Buffer> {
+  const contentLengthHeader = request.headers["content-length"];
+  const contentLengthValue = Array.isArray(contentLengthHeader)
+    ? contentLengthHeader[0]
+    : contentLengthHeader;
+  if (contentLengthValue && /^\d+$/u.test(contentLengthValue)) {
+    const contentLength = Number(contentLengthValue);
+    if (!Number.isSafeInteger(contentLength) || contentLength > maxBytes) {
+      drainRejectedRequest(request);
+      throw new RequestBodyTooLargeError(maxBytes);
+    }
+  }
+
+  return await new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let length = 0;
+    let settled = false;
+
+    const cleanup = () => {
+      request.off("aborted", onAborted);
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("error", onError);
+    };
+    const fail = (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      drainRejectedRequest(request);
+      cleanup();
+      reject(error);
+    };
+    const onAborted = () => fail(new Error("Request body stream was aborted."));
+    const onData = (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      length += buffer.length;
+      if (length > maxBytes) {
+        fail(new RequestBodyTooLargeError(maxBytes));
+        return;
+      }
+      chunks.push(buffer);
+    };
+    const onEnd = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(Buffer.concat(chunks, length));
+    };
+    const onError = (error: Error) => fail(error);
+
+    request.on("aborted", onAborted);
+    request.on("data", onData);
+    request.on("end", onEnd);
+    request.on("error", onError);
+  });
+}
+
+export async function parseUnknownRequestBody(
+  request: IncomingMessage,
+  maxBytes = DEFAULT_MAX_REQUEST_BODY_BYTES,
+): Promise<unknown> {
+  const body = await readBody(request, maxBytes);
   if (body.length === 0) {
     return {};
   }
@@ -43,13 +123,24 @@ export async function parseRequestBody(request: IncomingMessage): Promise<Record
     : contentType.includes("json");
   if (includesJson) {
     try {
-      return JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+      return JSON.parse(body.toString("utf8")) as unknown;
     } catch (error) {
       throw new InvalidJsonBodyError(error);
     }
   }
   const params = new URLSearchParams(body.toString("utf8"));
   return Object.fromEntries(params.entries());
+}
+
+export async function parseRequestBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  return (await parseUnknownRequestBody(request, Number.MAX_SAFE_INTEGER)) as Record<
+    string,
+    unknown
+  >;
+}
+
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export function queryRecord(url: URL): Record<string, string> {
@@ -73,13 +164,17 @@ export async function writeResponse(
 
 export function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
+    const closeIdleInterval = setInterval(() => server.closeIdleConnections(), 25);
+    closeIdleInterval.unref();
     server.close((error) => {
+      clearInterval(closeIdleInterval);
       if (error) {
         reject(error);
         return;
       }
       resolve();
     });
+    server.closeIdleConnections();
   });
 }
 

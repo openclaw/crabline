@@ -6,6 +6,7 @@
 - Reject ambiguous fixture/config inputs and keep the published CLI, type dependencies, and README assets aligned with their public contract.
 - Poll recorder JSONL incrementally while preserving incomplete trailing records.
 - Serialize local mock and WhatsApp webhook startup and cleanup, and honor explicit public webhook URL precedence.
+- Bound Matrix, Mattermost, Signal, Slack, and WhatsApp request bodies, validate JSON object payloads with native errors, and keep rejected authentication out of recorder events.
 - Harden release packaging and retries, and make cleanup scripts portable across supported platforms.
 - Export the OpenClaw conversation type from the package root.
 - Harden CLI lifecycle cleanup, ready-file publication, run diagnostics, and config validation.

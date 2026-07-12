@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startSignalServer, type StartedSignalServer } from "../src/index.js";
-import { createTempDir, disposeTempDir } from "./test-helpers.js";
+import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedSignalServer[] = [];
 const directories: string[] = [];
@@ -13,6 +13,71 @@ afterEach(async () => {
 });
 
 describe("signal local provider server", () => {
+  it("returns JSON-RPC errors for non-object and oversized request bodies", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startSignalServer({
+      recorderPath: path.join(directory, "signal-bodies.jsonl"),
+    });
+    servers.push(server);
+
+    for (const scalarBody of ["null", '"scalar"', "42", "true", "[]"]) {
+      const invalid = await fetch(server.manifest.endpoints.rpcUrl, {
+        body: scalarBody,
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toEqual({
+        error: { code: -32600, message: "Invalid Request" },
+        id: null,
+        jsonrpc: "2.0",
+      });
+    }
+
+    const malformed = await fetch(server.manifest.endpoints.rpcUrl, {
+      body: "{",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toEqual({
+      error: { code: -32700, message: "Parse error" },
+      id: null,
+      jsonrpc: "2.0",
+    });
+
+    const malformedAdmin = await fetch(`${server.manifest.endpoints.adminInboundUrl}?trace=1`, {
+      body: "{",
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+    expect(malformedAdmin.status).toBe(400);
+    await expect(malformedAdmin.json()).resolves.toEqual({
+      error: "Request body is not valid JSON",
+      ok: false,
+    });
+
+    const oversized = await requestHttp({
+      body: Buffer.alloc(1024 * 1024 + 1, 0x20),
+      headers: {
+        "content-length": String(1024 * 1024 + 1),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      url: server.manifest.endpoints.rpcUrl,
+    });
+    expect(oversized.status).toBe(413);
+    expect(JSON.parse(oversized.body)).toEqual({
+      error: { code: -32600, message: "Request body is too large" },
+      id: null,
+      jsonrpc: "2.0",
+    });
+  });
+
   it("advertises valid URLs when bound to IPv6", async () => {
     const directory = await createTempDir();
     directories.push(directory);

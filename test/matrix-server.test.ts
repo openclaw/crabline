@@ -3,7 +3,7 @@ import path from "node:path";
 import { ClientEvent, createClient, RoomEvent, SyncState, type MatrixEvent } from "matrix-js-sdk";
 import { afterEach, describe, expect, it } from "vitest";
 import { startMatrixServer, type StartedMatrixServer } from "../src/index.js";
-import { createTempDir, disposeTempDir } from "./test-helpers.js";
+import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedMatrixServer[] = [];
 const directories: string[] = [];
@@ -95,6 +95,84 @@ describe("Matrix local provider server", () => {
         type: "api",
       }),
     );
+  });
+
+  it("validates object bodies, rejects oversized payloads, and records only authenticated API calls", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const observed: unknown[] = [];
+    const server = await startMatrixServer({
+      accessToken: "test-token",
+      onEvent: (event) => {
+        observed.push(event);
+      },
+      recorderPath: path.join(directory, "matrix-ingress.jsonl"),
+      roomId: "!qa:matrix.test",
+    });
+    servers.push(server);
+    const sendUrl = `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!qa:matrix.test")}/send/m.room.message/ingress`;
+
+    const unauthorized = await fetch(sendUrl, {
+      body: JSON.stringify({ body: "untrusted matrix body", msgtype: "m.text" }),
+      headers: { ...auth("wrong-token"), "content-type": "application/json" },
+      method: "PUT",
+    });
+    expect(unauthorized.status).toBe(401);
+    const unauthorizedOversized = await requestHttp({
+      body: Buffer.alloc(1024 * 1024 + 1, 0x20),
+      headers: {
+        ...auth("wrong-token"),
+        "content-length": String(1024 * 1024 + 1),
+        "content-type": "application/json",
+      },
+      method: "PUT",
+      url: sendUrl,
+    });
+    expect(unauthorizedOversized.status).toBe(401);
+
+    for (const scalarBody of ["null", '"scalar"', "42", "true", "[]"]) {
+      const invalid = await fetch(sendUrl, {
+        body: scalarBody,
+        headers: { ...auth("test-token"), "content-type": "application/json" },
+        method: "PUT",
+      });
+      expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toEqual({
+        errcode: "M_BAD_JSON",
+        error: "Request body must be a JSON object",
+      });
+    }
+
+    const oversized = await requestHttp({
+      body: Buffer.alloc(1024 * 1024 + 1, 0x20),
+      headers: {
+        ...auth("test-token"),
+        "content-length": String(1024 * 1024 + 1),
+        "content-type": "application/json",
+      },
+      method: "PUT",
+      url: sendUrl,
+    });
+    expect(oversized.status).toBe(413);
+    expect(JSON.parse(oversized.body)).toEqual({
+      errcode: "M_TOO_LARGE",
+      error: "Request body is too large",
+    });
+
+    const whoami = await fetch(`${server.manifest.endpoints.clientApiRoot}/account/whoami`, {
+      headers: auth("test-token"),
+    });
+    expect(whoami.status).toBe(200);
+
+    const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
+    expect(recorder).not.toContain("untrusted matrix body");
+    expect(observed).toEqual([
+      expect.objectContaining({
+        method: "GET",
+        path: "/_matrix/client/v3/account/whoami",
+        type: "api",
+      }),
+    ]);
   });
 
   it("works with matrix-js-sdk sync and delivers admin inbound as a room event", async () => {

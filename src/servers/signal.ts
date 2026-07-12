@@ -5,11 +5,14 @@ import {
   adminAuthError,
   closeServer,
   hasAdminToken,
+  InvalidJsonBodyError,
+  isJsonObject,
   jsonResponse,
-  parseRequestBody,
+  parseUnknownRequestBody,
   queryRecord,
   readInteger,
   readTrimmedString,
+  RequestBodyTooLargeError,
   type ServerRequestEvent,
   writeResponse,
 } from "./http.js";
@@ -65,6 +68,17 @@ function rpcResponse(id: unknown, result: unknown): Response {
   return jsonResponse({ id: id ?? null, jsonrpc: "2.0", result });
 }
 
+function rpcError(code: number, message: string, id: unknown = null, status = 400): Response {
+  return jsonResponse(
+    {
+      error: { code, message },
+      id: id ?? null,
+      jsonrpc: "2.0",
+    },
+    status,
+  );
+}
+
 function emitSignalEvent(state: SignalServerState, payload: unknown): void {
   const event = `event:receive\ndata:${JSON.stringify(payload)}\n\n`;
   if (state.clients.size === 0) {
@@ -109,14 +123,7 @@ async function handleRpc(params: {
 }): Promise<Response> {
   const method = readTrimmedString(params.body.method);
   if (!method) {
-    return jsonResponse(
-      {
-        error: { code: -32600, message: "Invalid Request" },
-        id: params.body.id ?? null,
-        jsonrpc: "2.0",
-      },
-      400,
-    );
+    return rpcError(-32600, "Invalid Request", params.body.id);
   }
   if (method === "version") {
     return rpcResponse(params.body.id, { version: "crabline-signal-1" });
@@ -165,7 +172,15 @@ async function handleRequest(params: {
     if (!hasAdminToken(params.request, params.state.adminToken)) {
       fetchResponse = adminAuthError();
     } else {
-      const body = await parseRequestBody(params.request);
+      const body = await parseUnknownRequestBody(params.request);
+      if (!isJsonObject(body)) {
+        fetchResponse = jsonResponse(
+          { error: "Request body must be a JSON object", ok: false },
+          400,
+        );
+        await writeResponse(params.response, fetchResponse);
+        return;
+      }
       await appendEvent(params.state, {
         at: new Date().toISOString(),
         body,
@@ -186,7 +201,11 @@ async function handleRequest(params: {
     });
     fetchResponse = new Response(null, { status: 200 });
   } else if (url.pathname === "/api/v1/rpc" && params.request.method === "POST") {
-    const body = await parseRequestBody(params.request);
+    const body = await parseUnknownRequestBody(params.request);
+    if (!isJsonObject(body)) {
+      await writeResponse(params.response, rpcError(-32600, "Invalid Request"));
+      return;
+    }
     await appendEvent(params.state, {
       at: new Date().toISOString(),
       body,
@@ -218,13 +237,24 @@ export async function startSignalServer(
   const server = createServer((request, response) => {
     void handleRequest({ request, response, state }).catch(async (error) => {
       if (!response.headersSent) {
-        await writeResponse(
-          response,
-          jsonResponse(
+        let errorResponse: Response;
+        const isAdminRequest =
+          new URL(request.url ?? "/", "http://localhost").pathname === "/crabline/signal/inbound";
+        if (error instanceof InvalidJsonBodyError) {
+          errorResponse = isAdminRequest
+            ? jsonResponse({ error: "Request body is not valid JSON", ok: false }, 400)
+            : rpcError(-32700, "Parse error");
+        } else if (error instanceof RequestBodyTooLargeError) {
+          errorResponse = isAdminRequest
+            ? jsonResponse({ error: "Request body is too large", ok: false }, 413)
+            : rpcError(-32600, "Request body is too large", null, 413);
+        } else {
+          errorResponse = jsonResponse(
             { error: error instanceof Error ? error.message : String(error), ok: false },
             500,
-          ),
-        );
+          );
+        }
+        await writeResponse(response, errorResponse);
       } else {
         response.destroy(error instanceof Error ? error : new Error(String(error)));
       }
