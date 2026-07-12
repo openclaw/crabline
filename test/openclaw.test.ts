@@ -767,6 +767,32 @@ describe("OpenClaw local provider bridge", () => {
     ).toMatchObject({
       entities: [{ length: 17, offset: 0, type: "bot_command" }],
     });
+    expect(
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          nativeCommand: { name: "stop" },
+          senderId: "alice",
+          text: "/Stop",
+        },
+      }).providerBody,
+    ).toMatchObject({
+      entities: [{ length: 5, offset: 0, type: "bot_command" }],
+    });
+    expect(
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          nativeCommand: { name: "stop" },
+          senderId: "alice",
+          text: "/STOP@CrablineBot now",
+        },
+      }).providerBody,
+    ).toMatchObject({
+      entities: [{ length: 17, offset: 0, type: "bot_command" }],
+    });
     expect(() =>
       createOpenClawCrablineInbound({
         manifest,

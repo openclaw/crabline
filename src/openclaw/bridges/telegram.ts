@@ -55,8 +55,8 @@ function telegramBotCommandEntity(text: string, commandName: string) {
   const token = text.match(/^\S+/u)?.[0];
   if (
     !token ||
-    (token !== commandPrefix &&
-      !new RegExp(`^/${commandName}@[A-Za-z][A-Za-z0-9_]{4,31}$`, "u").test(token))
+    (token.toLowerCase() !== commandPrefix &&
+      !new RegExp(`^/${commandName}@[A-Za-z][A-Za-z0-9_]{4,31}$`, "iu").test(token))
   ) {
     throw new Error(`Telegram native command text must start with ${commandPrefix}.`);
   }
