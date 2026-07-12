@@ -26,6 +26,22 @@ describe("iMessage thread matching", () => {
     ).toBe(true);
   });
 
+  it("rejects unrelated GUIDs and recipient aliases", () => {
+    expect(
+      matchesIMessageThread(
+        "iMessage;-;unrelated-guid",
+        "+15551234567",
+        {
+          id: "+15551234567",
+        },
+        {
+          chatGuid: "iMessage;-;unrelated-guid",
+          chatIdentifier: "+15557654321",
+        },
+      ),
+    ).toBe(false);
+  });
+
   it("matches recipient targets while preserving the native chat GUID", async () => {
     const config = await createLocalMockConfig("imessage", "/imessage/webhook");
     const provider = new IMessageProviderAdapter("imessage", config, "crabline");
