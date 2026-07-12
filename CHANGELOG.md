@@ -17,6 +17,7 @@
 - Accept uint64 unknown fields in WhatsApp handshakes and bound recursive binary-node decoding.
 - Harden OpenClaw bridges for provider-level probe failures, whitespace-preserving message capture, stable symbolic Telegram IDs, and unsupported thread targets.
 - Reject invalid Telegram topic IDs in explicit OpenClaw QA targets instead of silently dropping or coercing them.
+- Bound every OpenClaw provider probe to five seconds and label timeout failures.
 
 ## 0.1.9 - 2026-07-03
 

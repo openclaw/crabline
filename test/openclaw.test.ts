@@ -197,6 +197,53 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
+  it.each([
+    { label: "Mattermost users.me", manifest: mattermostManifest },
+    { label: "Matrix whoami", manifest: matrixManifest },
+    { label: "Signal check", manifest: signalManifest },
+    { label: "Slack auth.test", manifest: slackManifest },
+    { label: "Telegram getMe", manifest },
+    { label: "WhatsApp phone number", manifest: whatsappManifest },
+    { label: "Zalo getMe", manifest: zaloManifest },
+  ])("times out stalled $label probe headers", async ({ label, manifest: probeManifest }) => {
+    const controller = new AbortController();
+    const timeoutMock = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => new Promise<Response>(() => {}));
+    try {
+      const probe = probeOpenClawCrablineProvider(probeManifest);
+      expect(timeoutMock).toHaveBeenCalledWith(5_000);
+      controller.abort(new DOMException("probe deadline", "TimeoutError"));
+      await expect(probe).rejects.toThrow(
+        `Crabline ${label} probe timed out after 5000 ms.`,
+      );
+    } finally {
+      fetchMock.mockRestore();
+      timeoutMock.mockRestore();
+    }
+  });
+
+  it("times out a stalled provider probe response body", async () => {
+    const controller = new AbortController();
+    const timeoutMock = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      json: () => new Promise<unknown>(() => {}),
+      ok: true,
+      status: 200,
+    } as Response);
+    try {
+      const probe = probeOpenClawCrablineProvider(manifest);
+      controller.abort(new DOMException("probe deadline", "TimeoutError"));
+      await expect(probe).rejects.toThrow(
+        "Crabline Telegram getMe probe timed out after 5000 ms.",
+      );
+    } finally {
+      fetchMock.mockRestore();
+      timeoutMock.mockRestore();
+    }
+  });
+
   it("resolves channel-driver metadata through Crabline", () => {
     expect(resolveOpenClawCrablineChannelDriverSelection({})).toEqual({
       capabilityMatrixPath: OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,

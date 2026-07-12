@@ -19,6 +19,7 @@ import {
   OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
   parseQaTarget,
+  runOpenClawCrablineProviderProbe,
   type OpenClawCrablineAgentDelivery,
   type OpenClawCrablineChannelDriverSelection,
   type OpenClawCrablineChannelDriverSmokeResult,
@@ -75,7 +76,11 @@ function createOpenClawCrablineProviderAdapter(
     (candidate) => candidate.provider === manifest.provider,
   );
   if (bridge) {
-    return bridge.createAdapterFromManifest(manifest);
+    const adapter = bridge.createAdapterFromManifest(manifest);
+    return {
+      ...adapter,
+      probe: () => runOpenClawCrablineProviderProbe(manifest.provider, () => adapter.probe()),
+    };
   }
   throw new Error("Unsupported OpenClaw provider binding.");
 }
