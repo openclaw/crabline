@@ -175,6 +175,59 @@ describe("Matrix local provider server", () => {
     ]);
   });
 
+  it("returns filters only through their owning user URL", async () => {
+    const server = await startMatrixServer({ accessToken: "matrix-token" });
+    servers.push(server);
+    const filter = { room: { timeline: { limit: 10 } } };
+    const created = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent(server.manifest.botUserId)}/filter`,
+      {
+        body: JSON.stringify(filter),
+        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    const createdBody = (await created.json()) as { filter_id: string };
+
+    const owned = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent(server.manifest.botUserId)}/filter/${createdBody.filter_id}`,
+      { headers: auth("matrix-token") },
+    );
+    await expect(owned.json()).resolves.toEqual(filter);
+
+    const forged = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent("@other:matrix.test")}/filter/${createdBody.filter_id}`,
+      { headers: auth("matrix-token") },
+    );
+    expect(forged.status).toBe(403);
+    await expect(forged.json()).resolves.toEqual({
+      errcode: "M_FORBIDDEN",
+      error: "Cannot get filters for another user",
+    });
+  });
+
+  it("returns provider-native internal errors without exception details", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startMatrixServer({
+      accessToken: "matrix-token",
+      onEvent() {
+        throw new Error("sensitive Matrix observer detail");
+      },
+      recorderPath: path.join(directory, "matrix-internal-error.jsonl"),
+    });
+    servers.push(server);
+
+    const response = await fetch(`${server.manifest.endpoints.clientApiRoot}/account/whoami`, {
+      headers: auth("matrix-token"),
+    });
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      errcode: "M_UNKNOWN",
+      error: "Internal server error",
+    });
+  });
+
   it("works with matrix-js-sdk sync and delivers admin inbound as a room event", async () => {
     const directory = await createTempDir();
     directories.push(directory);
