@@ -35,6 +35,11 @@ type MatrixRoom = {
   users: Map<string, { avatar_url?: string; display_name?: string }>;
 };
 
+type MatrixTransactionResponse = {
+  body: Record<string, unknown>;
+  status: number;
+};
+
 type MatrixServerState = {
   accessToken: string;
   adminToken: string;
@@ -49,7 +54,7 @@ type MatrixServerState = {
   rooms: Map<string, MatrixRoom>;
   serverName: string;
   syncWaiters: Set<() => void>;
-  transactions: Map<string, string>;
+  transactions: Map<string, MatrixTransactionResponse>;
 };
 
 export type MatrixServerManifest = {
@@ -411,14 +416,16 @@ async function handleMatrixApi(params: {
 
   match = /^\/rooms\/([^/]+)\/send\/([^/]+)\/([^/]+)$/u.exec(relativePath);
   if (params.method === "PUT" && match) {
+    const transactionKey = relativePath;
+    const existingResponse = params.state.transactions.get(transactionKey);
+    if (existingResponse) {
+      return jsonResponse(existingResponse.body, existingResponse.status);
+    }
     const room = findRoom(params.state, match[1]!);
     if (!room) {
-      return matrixError("M_NOT_FOUND", "Unknown room", 404);
-    }
-    const transactionKey = relativePath;
-    const existingEventId = params.state.transactions.get(transactionKey);
-    if (existingEventId) {
-      return jsonResponse({ event_id: existingEventId });
+      const body = { errcode: "M_NOT_FOUND", error: "Unknown room" };
+      params.state.transactions.set(transactionKey, { body, status: 404 });
+      return jsonResponse(body, 404);
     }
     const event = createEvent({
       content: params.body,
@@ -429,9 +436,10 @@ async function handleMatrixApi(params: {
       type: decodeURIComponent(match[2]!),
     });
     room.timeline.push({ event, sequence: params.state.nextSequence++ });
-    params.state.transactions.set(transactionKey, event.event_id);
+    const body = { event_id: event.event_id };
+    params.state.transactions.set(transactionKey, { body, status: 200 });
     notifySyncWaiters(params.state);
-    return jsonResponse({ event_id: event.event_id });
+    return jsonResponse(body);
   }
 
   match = /^\/rooms\/([^/]+)\/typing\/([^/]+)$/u.exec(relativePath);

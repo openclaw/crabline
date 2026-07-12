@@ -215,6 +215,61 @@ describe("Matrix local provider server", () => {
     }
   });
 
+  it("replays a transaction room error after the room is created", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startMatrixServer({
+      recorderPath: path.join(directory, "matrix-transaction-error.jsonl"),
+    });
+    servers.push(server);
+    const roomId = "!later:matrix.test";
+    const transactionUrl = `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent(roomId)}/send/m.room.message/stable-error`;
+
+    const firstAttempt = await fetch(transactionUrl, {
+      body: JSON.stringify({ body: "room does not exist yet", msgtype: "m.text" }),
+      headers: { ...auth(server.manifest.accessToken), "content-type": "application/json" },
+      method: "PUT",
+    });
+    expect(firstAttempt.status).toBe(404);
+    const firstBody = await firstAttempt.json();
+    expect(firstBody).toEqual({
+      errcode: "M_NOT_FOUND",
+      error: "Unknown room",
+    });
+
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        roomId,
+        senderId: "@alice:matrix.test",
+        text: "create the room",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+    expect(inbound.status).toBe(200);
+
+    const retry = await fetch(transactionUrl, {
+      body: JSON.stringify({ body: "must not be sent", msgtype: "m.text" }),
+      headers: { ...auth(server.manifest.accessToken), "content-type": "application/json" },
+      method: "PUT",
+    });
+    expect(retry.status).toBe(firstAttempt.status);
+    await expect(retry.json()).resolves.toEqual(firstBody);
+
+    const nextTransaction = await fetch(`${transactionUrl}-next`, {
+      body: JSON.stringify({ body: "new transaction succeeds", msgtype: "m.text" }),
+      headers: { ...auth(server.manifest.accessToken), "content-type": "application/json" },
+      method: "PUT",
+    });
+    expect(nextTransaction.status).toBe(200);
+    await expect(nextTransaction.json()).resolves.toMatchObject({
+      event_id: expect.stringMatching(/^\$/u),
+    });
+  });
+
   it("provisions direct rooms with native Matrix membership evidence", async () => {
     const directory = await createTempDir();
     directories.push(directory);
