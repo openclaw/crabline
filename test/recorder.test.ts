@@ -38,6 +38,12 @@ describe("recorder", () => {
     await expect(readRecordedInbound(filePath)).resolves.toEqual([]);
   });
 
+  it("does not create a recorder for an empty batch", async () => {
+    const filePath = await createRecorderPath();
+    await expect(appendRecordedInboundBatch(filePath, [])).resolves.toEqual([]);
+    await expect(readFile(filePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("appends and reads recorded inbound events", async () => {
     const filePath = await createRecorderPath();
 

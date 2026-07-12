@@ -496,6 +496,9 @@ export async function appendRecordedInboundBatch(
   filePath: string,
   events: InboundEnvelope[],
 ): Promise<RecordedInboundEnvelope[]> {
+  if (events.length === 0) {
+    return [];
+  }
   await mkdir(path.dirname(filePath), { recursive: true });
   return await serializeAppend(filePath, async (publicationPath, logicalPath) => {
     await prepareRecorderPathForAppend(publicationPath, logicalPath, true);
