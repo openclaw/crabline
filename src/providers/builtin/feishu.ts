@@ -18,10 +18,29 @@ import {
   optionalString,
   requireNativeInboundId,
 } from "./native-local-mock.js";
+import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
 type FeishuEnvironment = Partial<
   Pick<NodeJS.ProcessEnv, "FEISHU_ENCRYPT_KEY" | "FEISHU_VERIFICATION_TOKEN">
 >;
+
+type FeishuAuthRuntime = {
+  now?: (() => number) | undefined;
+};
+
+type FeishuReplayReservation = {
+  keys: Set<string>;
+  promise: Promise<boolean>;
+  resolve: (accepted: boolean) => void;
+};
+
+type FeishuReplayState = {
+  accepted: Map<string, number>;
+  inFlight: Map<string, FeishuReplayReservation>;
+};
+
+const FEISHU_MAX_CALLBACK_AGE_MS = 5 * 60_000;
+const FEISHU_REPLAY_CACHE_LIMIT = 2_048;
 
 export function resolveFeishuAdapterConfig(
   config: ProviderConfig,
@@ -60,6 +79,16 @@ export function handleFeishuWebhookPayload(payload: unknown): Response | undefin
 export function createFeishuWebhookAuthenticator(
   config: ProviderConfig,
   env: FeishuEnvironment = process.env,
+  runtime: FeishuAuthRuntime = {},
+) {
+  return createFeishuWebhookAuthenticatorWithReplay(config, env, runtime);
+}
+
+function createFeishuWebhookAuthenticatorWithReplay(
+  config: ProviderConfig,
+  env: FeishuEnvironment,
+  runtime: FeishuAuthRuntime,
+  replayState?: FeishuReplayState,
 ) {
   const resolved = resolveFeishuAdapterConfig(config, env);
   const validateCallback = resolved.verificationToken
@@ -68,7 +97,6 @@ export function createFeishuWebhookAuthenticator(
   if (!(resolved.encryptKey || validateCallback)) {
     return undefined;
   }
-
   return async (request: Request, rawBody: string): Promise<Response | undefined> => {
     let payload: unknown;
     try {
@@ -79,8 +107,10 @@ export function createFeishuWebhookAuthenticator(
     if (!isRecord(payload)) {
       return unauthorizedFeishuWebhook();
     }
+    const encryptedEnvelope = payload;
 
     const encrypted = typeof payload.encrypt === "string";
+    let signedRequest = false;
     if (encrypted) {
       if (!resolved.encryptKey) {
         return unauthorizedFeishuWebhook();
@@ -96,6 +126,7 @@ export function createFeishuWebhookAuthenticator(
       ) {
         return unauthorizedFeishuWebhook();
       }
+      signedRequest = !isFeishuUrlVerification(payload);
     } else if (resolved.encryptKey) {
       return unauthorizedFeishuWebhook();
     }
@@ -103,15 +134,63 @@ export function createFeishuWebhookAuthenticator(
     if (validateCallback && !validateCallback(readFeishuVerificationToken(payload))) {
       return unauthorizedFeishuWebhook();
     }
+    const now = runtime.now?.() ?? Date.now();
+    const callbackTimestamp = readFeishuCallbackTimestamp(request, payload, signedRequest);
+    if (callbackTimestamp === null) {
+      return unauthorizedFeishuWebhook();
+    }
+    if (
+      callbackTimestamp !== undefined &&
+      Math.abs(now - callbackTimestamp) > FEISHU_MAX_CALLBACK_AGE_MS
+    ) {
+      return unauthorizedFeishuWebhook();
+    }
+    const callbackKeys = readFeishuCallbackKeys(payload, encryptedEnvelope);
+    if (!replayState) {
+      return undefined;
+    }
+    pruneFeishuReplayCache(replayState.accepted, now);
+    while (callbackKeys.length > 0) {
+      if (callbackKeys.some((key) => replayState.accepted.has(key))) {
+        return new Response(null, { status: 200 });
+      }
+      const reservation = callbackKeys
+        .map((key) => replayState.inFlight.get(key))
+        .find((candidate) => candidate !== undefined);
+      if (!reservation) {
+        reserveFeishuCallback(replayState, callbackKeys);
+        break;
+      }
+      if (await reservation.promise) {
+        return new Response(null, { status: 200 });
+      }
+    }
     return undefined;
   };
 }
 
 export class FeishuProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, runtime?: unknown) {
-    const env = (runtime as { env?: FeishuEnvironment } | undefined)?.env ?? process.env;
+    const authRuntime =
+      (runtime as (FeishuAuthRuntime & { env?: FeishuEnvironment }) | undefined) ?? {};
+    const env = authRuntime.env ?? process.env;
     const resolved = resolveFeishuAdapterConfig(config, env);
-    const authenticateWebhookRequest = createFeishuWebhookAuthenticator(config, env);
+    requireExternalWebhookAuthentication({
+      authenticated: Boolean(resolved.encryptKey),
+      provider: "Feishu",
+      requirement: "feishu.encryptKey or FEISHU_ENCRYPT_KEY for X-Lark-Signature verification",
+      webhook: config.feishu?.webhook,
+    });
+    const replayState: FeishuReplayState = {
+      accepted: new Map(),
+      inFlight: new Map(),
+    };
+    const authenticateWebhookRequest = createFeishuWebhookAuthenticatorWithReplay(
+      config,
+      env,
+      authRuntime,
+      replayState,
+    );
     const decodePayload = (payload: unknown) =>
       resolved.encryptKey ? decryptFeishuWebhookPayload(payload, resolved.encryptKey) : payload;
     super({
@@ -120,6 +199,12 @@ export class FeishuProviderAdapter extends LocalMockProviderAdapter implements P
       id,
       options: {
         ...(authenticateWebhookRequest ? { authenticateWebhookRequest } : {}),
+        createWebhookSuccessResponse(payload, responseId) {
+          return new Response(JSON.stringify({ id: responseId, ok: true }), {
+            headers: { "content-type": "application/json" },
+            status: 200,
+          });
+        },
         defaultWebhook: { host: "127.0.0.1", path: "/feishu/webhook", port: 8795 },
         endpointLabel: "webhook endpoint",
         handleWebhookPayload: (payload) => handleFeishuWebhookPayload(decodePayload(payload)),
@@ -129,6 +214,20 @@ export class FeishuProviderAdapter extends LocalMockProviderAdapter implements P
         recorderPath: config.feishu?.recorder.path
           ? path.resolve(config.feishu.recorder.path)
           : undefined,
+        settleWebhookRequest({ accepted, payload, rawBody }) {
+          const encryptedEnvelope = readFeishuSettledEnvelope(payload, rawBody);
+          const decodedPayload = decodePayload(encryptedEnvelope);
+          if (accepted) {
+            acceptFeishuCallback(
+              replayState,
+              decodedPayload,
+              encryptedEnvelope,
+              authRuntime.now?.() ?? Date.now(),
+            );
+          } else {
+            rejectFeishuCallback(replayState, decodedPayload, encryptedEnvelope);
+          }
+        },
         webhook: config.feishu?.webhook,
       },
     });
@@ -195,10 +294,21 @@ function parseFeishuText(content: string | undefined): string | undefined {
     if (isRecord(parsed) && typeof parsed.text === "string") {
       return parsed.text;
     }
+    return undefined;
   } catch {
     return content;
   }
-  return content;
+}
+
+function readFeishuSettledEnvelope(payload: unknown, rawBody: string): unknown {
+  if (isRecord(payload)) {
+    return payload;
+  }
+  try {
+    return JSON.parse(rawBody) as unknown;
+  } catch {
+    return payload;
+  }
 }
 
 export function decryptFeishuWebhookPayload(payload: unknown, encryptKey: string): unknown {
@@ -206,7 +316,7 @@ export function decryptFeishuWebhookPayload(payload: unknown, encryptKey: string
     return payload;
   }
   const encrypted = Buffer.from(payload.encrypt, "base64");
-  if (encrypted.length <= 16) {
+  if (encrypted.length <= 16 || (encrypted.length - 16) % 16 !== 0) {
     throw new Error("Feishu encrypted payload is truncated.");
   }
   const key = createHash("sha256").update(encryptKey).digest();
@@ -248,6 +358,131 @@ function verifyFeishuSignature(request: Request, rawBody: string, encryptKey: st
     .update(timestamp + nonce + encryptKey + rawBody)
     .digest();
   return timingSafeEqual(expected, Buffer.from(signature, "hex"));
+}
+
+function readFeishuCallbackTimestamp(
+  request: Request,
+  payload: unknown,
+  signedRequest: boolean,
+): number | null | undefined {
+  const requestTimestamp = signedRequest
+    ? request.headers.get("x-lark-request-timestamp")
+    : undefined;
+  const header = isRecord(payload) ? optionalRecord(payload, "header") : undefined;
+  const headerTimestamp = header ? optionalString(header, "create_time") : undefined;
+  const value = requestTimestamp ?? headerTimestamp;
+  if (!value) {
+    return undefined;
+  }
+  if (!/^\d+$/u.test(value)) {
+    return null;
+  }
+  const timestamp = Number(value);
+  if (!Number.isSafeInteger(timestamp)) {
+    return null;
+  }
+  if (timestamp >= 100_000_000_000_000) {
+    return Math.floor(timestamp / 1_000);
+  }
+  if (timestamp >= 100_000_000_000) {
+    return timestamp;
+  }
+  return timestamp * 1_000;
+}
+
+function readFeishuCallbackKeys(payload: unknown, encryptedEnvelope: unknown): string[] {
+  if (!isRecord(payload) || isFeishuUrlVerification(payload)) {
+    return [];
+  }
+  const event = optionalRecord(payload, "event");
+  const message = event ? optionalRecord(event, "message") : undefined;
+  const header = optionalRecord(payload, "header");
+  const messageId = message ? optionalString(message, "message_id") : undefined;
+  const eventId = header ? optionalString(header, "event_id") : undefined;
+  const encrypted = isRecord(encryptedEnvelope)
+    ? optionalString(encryptedEnvelope, "encrypt")
+    : undefined;
+  return [
+    ...(messageId ? [`message:${messageId}`] : []),
+    ...(eventId ? [`event:${eventId}`] : []),
+    ...(encrypted ? [`encrypted:${createHash("sha256").update(encrypted).digest("hex")}`] : []),
+  ];
+}
+
+function reserveFeishuCallback(replayState: FeishuReplayState, callbackKeys: string[]): void {
+  let resolveReservation!: (accepted: boolean) => void;
+  const promise = new Promise<boolean>((resolve) => {
+    resolveReservation = resolve;
+  });
+  const reservation: FeishuReplayReservation = {
+    keys: new Set(callbackKeys),
+    promise,
+    resolve: resolveReservation,
+  };
+  for (const key of callbackKeys) {
+    replayState.inFlight.set(key, reservation);
+  }
+}
+
+function acceptFeishuCallback(
+  replayState: FeishuReplayState,
+  payload: unknown,
+  encryptedEnvelope: unknown,
+  now: number,
+): void {
+  const callbackKeys = readFeishuCallbackKeys(payload, encryptedEnvelope);
+  pruneFeishuReplayCache(replayState.accepted, now);
+  for (const key of callbackKeys) {
+    replayState.accepted.set(key, now);
+  }
+  const reservations = new Set(
+    callbackKeys
+      .map((key) => replayState.inFlight.get(key))
+      .filter((reservation) => reservation !== undefined),
+  );
+  for (const reservation of reservations) {
+    releaseFeishuReservation(replayState, reservation, true);
+  }
+}
+
+function rejectFeishuCallback(
+  replayState: FeishuReplayState,
+  payload: unknown,
+  encryptedEnvelope: unknown,
+): void {
+  const callbackKeys = readFeishuCallbackKeys(payload, encryptedEnvelope);
+  const reservations = new Set(
+    callbackKeys
+      .map((key) => replayState.inFlight.get(key))
+      .filter((reservation) => reservation !== undefined),
+  );
+  for (const reservation of reservations) {
+    releaseFeishuReservation(replayState, reservation, false);
+  }
+}
+
+function releaseFeishuReservation(
+  replayState: FeishuReplayState,
+  reservation: FeishuReplayReservation,
+  accepted: boolean,
+): void {
+  for (const key of reservation.keys) {
+    if (replayState.inFlight.get(key) === reservation) {
+      replayState.inFlight.delete(key);
+    }
+  }
+  reservation.resolve(accepted);
+}
+
+function pruneFeishuReplayCache(recentCallbacks: Map<string, number>, now: number): void {
+  for (const [key, acceptedAt] of recentCallbacks) {
+    if (
+      now - acceptedAt > FEISHU_MAX_CALLBACK_AGE_MS ||
+      recentCallbacks.size > FEISHU_REPLAY_CACHE_LIMIT
+    ) {
+      recentCallbacks.delete(key);
+    }
+  }
 }
 
 function unauthorizedFeishuWebhook(): Response {

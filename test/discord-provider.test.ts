@@ -53,6 +53,34 @@ describe("Discord interaction responses", () => {
       threadId: "123456789012345678",
     });
   });
+
+  it("includes nested application-command option values", () => {
+    expect(
+      normalizeDiscordWebhookPayload({
+        channel_id: "123456789012345678",
+        data: {
+          name: "deploy",
+          options: [
+            {
+              name: "service",
+              options: [
+                {
+                  name: "environment",
+                  options: [{ name: "nonce", type: 3, value: "nonce-nested" }],
+                  type: 1,
+                },
+              ],
+              type: 2,
+            },
+          ],
+        },
+        id: "444456789012345678",
+        type: 2,
+      }),
+    ).toMatchObject({
+      text: "deploy nonce-nested",
+    });
+  });
 });
 
 afterEach(async () => {
@@ -128,6 +156,25 @@ function createContext(config: ProviderConfig): ProviderContext {
 }
 
 describe("discord provider", () => {
+  it("requires signatures for externally reachable interaction endpoints", async () => {
+    const config = await createDiscordConfig(0);
+    config.discord!.webhook.host = "0.0.0.0";
+    expect(() => new DiscordProviderAdapter("discord", config, "crabline", { env: {} })).toThrow(
+      /externally reachable webhooks require discord\.publicKey/u,
+    );
+
+    config.discord!.webhook.host = "127.0.0.1";
+    config.discord!.webhook.publicUrl = "https://discord.example.test/interactions";
+    expect(() => new DiscordProviderAdapter("discord", config, "crabline", { env: {} })).toThrow(
+      /externally reachable webhooks require discord\.publicKey/u,
+    );
+
+    config.discord!.publicKey = "a".repeat(64);
+    expect(
+      () => new DiscordProviderAdapter("discord", config, "crabline", { env: {} }),
+    ).not.toThrow();
+  });
+
   it("verifies configured signatures and answers PING without recording it", async () => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const config = await createDiscordConfig(0);
@@ -232,6 +279,7 @@ describe("discord provider", () => {
   it("probes built-in discord configuration and DM targets", async () => {
     const config = await createDiscordConfig(0);
     config.discord!.webhook.publicUrl = "https://example.ngrok.app/discord/interactions";
+    config.discord!.publicKey = "a".repeat(64);
     const provider = new DiscordProviderAdapter("discord", config, "crabline");
     providers.push(provider);
 
@@ -287,7 +335,6 @@ describe("discord provider", () => {
 
   it("records webhook inbound events and waits for them", async () => {
     const config = await createDiscordConfig(0);
-    config.discord!.webhook.publicUrl = "https://example.ngrok.app/discord/interactions";
     const provider = new DiscordProviderAdapter("discord", config, "crabline");
     providers.push(provider);
 

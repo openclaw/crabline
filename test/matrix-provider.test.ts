@@ -4,9 +4,20 @@ import {
   matchesMatrixThread,
   normalizeMatrixWebhookPayload,
 } from "../src/providers/builtin/matrix.js";
-import { runLocalMockProviderContract } from "./local-mock-provider-helpers.js";
+import {
+  createLocalMockConfig,
+  runLocalMockProviderContract,
+} from "./local-mock-provider-helpers.js";
 
 describe("Matrix webhook normalizer", () => {
+  it("rejects externally reachable webhooks without native authentication", async () => {
+    const config = await createLocalMockConfig("matrix", "/matrix/webhook");
+    config.matrix!.webhook.host = "0.0.0.0";
+    expect(() => new MatrixProviderAdapter("matrix", config, "crabline")).toThrow(
+      /provider-native authenticated ingress mode/u,
+    );
+  });
+
   it("uses the room for main-timeline events", () => {
     const payload = {
       content: { body: "hello", msgtype: "m.text" },
@@ -64,6 +75,36 @@ describe("Matrix webhook normalizer", () => {
         channelId: "!abc123:matrix.org",
       }),
     ).toBe(true);
+  });
+
+  it("requires native event identity, type, and thread roots", () => {
+    expect(() =>
+      normalizeMatrixWebhookPayload({
+        content: { body: "missing id", msgtype: "m.text" },
+        room_id: "!abc123:matrix.org",
+        type: "m.room.message",
+      }),
+    ).toThrow(/event_id/u);
+    expect(() =>
+      normalizeMatrixWebhookPayload({
+        content: { body: "wrong type", msgtype: "m.text" },
+        event_id: "$event123:matrix.org",
+        room_id: "!abc123:matrix.org",
+        type: "m.reaction",
+      }),
+    ).toThrow(/type=m\.room\.message/u);
+    expect(() =>
+      normalizeMatrixWebhookPayload({
+        content: {
+          body: "missing root",
+          "m.relates_to": { rel_type: "m.thread" },
+          msgtype: "m.text",
+        },
+        event_id: "$event123:matrix.org",
+        room_id: "!abc123:matrix.org",
+        type: "m.room.message",
+      }),
+    ).toThrow(/m\.thread relation requires event_id/u);
   });
 });
 

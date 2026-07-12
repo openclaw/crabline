@@ -16,6 +16,7 @@ import {
   optionalString,
   requireNativeInboundId,
 } from "./native-local-mock.js";
+import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
 export function resolveMatrixAdapterConfig(
   config: ProviderConfig,
@@ -38,6 +39,13 @@ export class MatrixProviderAdapter extends LocalMockProviderAdapter implements P
   constructor(id: string, config: ProviderConfig, userName: string, _runtime?: unknown) {
     const resolvedConfig = resolveMatrixAdapterConfig(config, userName);
     const botUserId = resolvedConfig.auth.userID;
+    requireExternalWebhookAuthentication({
+      authenticated: false,
+      provider: "Matrix",
+      requirement:
+        "a provider-native authenticated ingress mode, which this adapter does not support",
+      webhook: config.matrix?.webhook,
+    });
     super({
       codec: getBuiltinTargetCodec("matrix"),
       config,
@@ -98,25 +106,32 @@ export function normalizeMatrixWebhookPayload(payload: unknown, botUserId?: stri
   const content = optionalRecord(payload, "content");
   const roomId = optionalString(payload, "room_id");
   const eventId = optionalString(payload, "event_id");
+  const eventType = optionalString(payload, "type");
   const senderId = optionalString(payload, "sender");
   const text = content ? optionalString(content, "body") : undefined;
-  if (!roomId || !text) {
-    throw new CrablineError("Matrix event payload requires room_id and content.body", {
+  if (eventType !== "m.room.message") {
+    throw new CrablineError("Matrix event payload requires type=m.room.message", {
+      kind: "inbound",
+    });
+  }
+  if (!roomId || !eventId || !text) {
+    throw new CrablineError("Matrix event payload requires room_id, event_id, and content.body", {
       kind: "inbound",
     });
   }
 
   const relation = content ? optionalRecord(content, "m.relates_to") : undefined;
-  const threadRootId =
-    relation && optionalString(relation, "rel_type") === "m.thread"
-      ? optionalString(relation, "event_id")
-      : undefined;
+  const isThread = relation && optionalString(relation, "rel_type") === "m.thread";
+  const threadRootId = isThread ? optionalString(relation, "event_id") : undefined;
+  if (isThread && !threadRootId) {
+    throw new CrablineError("Matrix m.thread relation requires event_id", {
+      kind: "inbound",
+    });
+  }
 
   return {
     author: authorFromBotFlag(senderId !== undefined && senderId === botUserId),
-    ...(eventId
-      ? { id: requireNativeInboundId(eventId, MATRIX_EVENT_ID_RULE, "Matrix event_id") }
-      : {}),
+    id: requireNativeInboundId(eventId, MATRIX_EVENT_ID_RULE, "Matrix event_id"),
     raw: payload,
     text,
     threadId: threadRootId

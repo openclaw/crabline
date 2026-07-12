@@ -177,6 +177,24 @@ describe("Microsoft Teams webhook authentication", () => {
         missingChannelBody,
       ),
     ).resolves.toMatchObject({ status: 401 });
+
+    const emptyEndorsementsAuthenticator = createMsTeamsWebhookAuthenticator(config, {
+      fetch: async (input: string | URL | Request) =>
+        String(input).includes("openidconfiguration")
+          ? Response.json({ jwks_uri: "https://login.example.test/keys" })
+          : Response.json({
+              keys: [{ ...jwk, endorsements: [], kid: "test-key" }],
+            }),
+      now: () => now,
+    });
+    await expect(
+      emptyEndorsementsAuthenticator!(
+        new Request(url, {
+          headers: { authorization: `Bearer ${header}.${payload}.${signature}` },
+        }),
+        body,
+      ),
+    ).resolves.toMatchObject({ status: 401 });
   });
 });
 

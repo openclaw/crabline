@@ -25,6 +25,28 @@ function signedJwt(
 }
 
 describe("Google Chat webhook authentication", () => {
+  it("requires signed identity for externally reachable webhooks", async () => {
+    const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    config.googlechat!.webhook.host = "0.0.0.0";
+    expect(() => new GoogleChatProviderAdapter("googlechat", config, "crabline")).toThrow(
+      /externally reachable webhooks require googlechat\.endpointUrl/u,
+    );
+
+    config.googlechat!.pubsubAudience = "https://chat.example.test/googlechat/webhook";
+    expect(() => new GoogleChatProviderAdapter("googlechat", config, "crabline")).toThrow(
+      /Pub\/Sub service-account identity/u,
+    );
+
+    config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
+    config.googlechat!.disableSignatureVerification = true;
+    expect(() => new GoogleChatProviderAdapter("googlechat", config, "crabline")).toThrow(
+      /signature verification enabled/u,
+    );
+
+    config.googlechat!.disableSignatureVerification = false;
+    expect(() => new GoogleChatProviderAdapter("googlechat", config, "crabline")).not.toThrow();
+  });
+
   it("verifies HTTP endpoint audience ID tokens", async () => {
     const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
     config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
@@ -136,9 +158,9 @@ describe("Google Chat webhook authentication", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("uses the configured Pub/Sub audience for push deliveries", async () => {
+  it("defaults the Pub/Sub audience to the endpoint URL", async () => {
     const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
-    config.googlechat!.pubsubAudience = "https://chat.example.test/pubsub";
+    config.googlechat!.endpointUrl = "https://chat.example.test/pubsub";
     config.googlechat!.pubsubServiceAccountEmail = "chat-push@example.iam.gserviceaccount.com";
     config.googlechat!.useApplicationDefaultCredentials = true;
     const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -164,7 +186,7 @@ describe("Google Chat webhook authentication", () => {
     };
     const body = JSON.stringify(pubsubPayload);
     const jwt = signedJwt(keys.privateKey, {
-      aud: config.googlechat!.pubsubAudience,
+      aud: config.googlechat!.endpointUrl,
       email: config.googlechat!.pubsubServiceAccountEmail,
       email_verified: true,
       exp: Math.floor(now / 1000) + 60,
@@ -186,7 +208,7 @@ describe("Google Chat webhook authentication", () => {
     });
 
     const wrongIdentityJwt = signedJwt(keys.privateKey, {
-      aud: config.googlechat!.pubsubAudience,
+      aud: config.googlechat!.endpointUrl,
       email: "other@example.iam.gserviceaccount.com",
       email_verified: true,
       exp: Math.floor(now / 1000) + 60,
@@ -206,6 +228,39 @@ describe("Google Chat webhook authentication", () => {
     expect(
       matchesGoogleChatThread("spaces/AAAABbbbCCC/threads/BBBBccccDDD", "spaces/AAAABbbbCCC"),
     ).toBe(true);
+    expect(
+      matchesGoogleChatThread("spaces/OtherSpace/threads/BBBBccccDDD", undefined, {
+        channelId: "spaces/AAAABbbbCCC",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects unbound Workspace add-on payloads and cross-space threads", () => {
+    expect(() =>
+      normalizeGoogleChatWebhookPayload({
+        chat: {
+          messagePayload: {
+            message: {
+              name: "spaces/AAAABbbbCCC/messages/msg-native",
+              sender: { type: "HUMAN" },
+              space: { name: "spaces/AAAABbbbCCC" },
+              text: "native event",
+              thread: { name: "spaces/AAAABbbbCCC/threads/BBBBccccDDD" },
+            },
+          },
+        },
+      }),
+    ).toThrow(/unsupported without a configured deployment identity/u);
+
+    expect(() =>
+      normalizeGoogleChatWebhookPayload({
+        message: {
+          space: { name: "spaces/AAAABbbbCCC" },
+          text: "wrong parent",
+          thread: { name: "spaces/OtherSpace/threads/BBBBccccDDD" },
+        },
+      }),
+    ).toThrow(/must belong to message\.space\.name/u);
   });
 });
 

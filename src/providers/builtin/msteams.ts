@@ -2,7 +2,6 @@ import { createPublicKey, type JsonWebKey } from "node:crypto";
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { isLoopbackHost } from "../../servers/http.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
 import {
@@ -20,6 +19,7 @@ import {
   optionalString,
   requireNativeInboundId,
 } from "./native-local-mock.js";
+import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
 export function resolveMsTeamsAdapterConfig(
   config: ProviderConfig,
@@ -118,11 +118,7 @@ export function createMsTeamsWebhookAuthenticator(
         now: runtime.now,
         async resolveKey(header) {
           const key = await resolveSigningKey(header);
-          if (
-            key.endorsements &&
-            key.endorsements.length > 0 &&
-            !key.endorsements.includes(channelId)
-          ) {
+          if (key.endorsements && !key.endorsements.includes(channelId)) {
             throw new Error("Bot Connector JWT key does not endorse the activity channel.");
           }
           return createPublicKey({ format: "jwk", key });
@@ -171,16 +167,13 @@ function requireExternalMsTeamsWebhookAuthentication(
   config: ProviderConfig,
   env: NodeJS.ProcessEnv,
 ): void {
-  const webhook = config.msteams?.webhook;
-  const host = webhook?.host ?? "127.0.0.1";
-  const externallyReachable = Boolean(webhook?.publicUrl) || !isLoopbackHost(host);
   const appId = config.msteams?.appId ?? env.TEAMS_APP_ID;
-  if (externallyReachable && !appId) {
-    throw new CrablineError(
-      "Microsoft Teams externally reachable webhooks require msteams.appId or TEAMS_APP_ID.",
-      { kind: "config" },
-    );
-  }
+  requireExternalWebhookAuthentication({
+    authenticated: Boolean(appId),
+    provider: "Microsoft Teams",
+    requirement: "msteams.appId or TEAMS_APP_ID",
+    webhook: config.msteams?.webhook,
+  });
 }
 
 export function normalizeMsTeamsWebhookPayload(payload: unknown) {
