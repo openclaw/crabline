@@ -304,6 +304,33 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("reclaims a timestamp-only lock when its PID is reused by the acquiring process", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    try {
+      const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        now: () => 1_000,
+        pid: 4_242,
+        processIdentity: null,
+        processStartedAtMs: 100,
+      });
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        now: () => 1_100,
+        pid: 4_242,
+        processIdentity: null,
+        processStartedAtMs: 200,
+      });
+
+      await firstLock.release();
+      await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
+      await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("keeps an active legacy-format lock owned by its live PID", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
