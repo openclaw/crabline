@@ -4,7 +4,12 @@ import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
-import { readBearerToken, resolveHttpCacheExpiry, verifySignedJwt } from "../signed-jwt.js";
+import {
+  createCachedJwtKeyResolver,
+  readBearerToken,
+  resolveHttpCacheExpiry,
+  verifySignedJwt,
+} from "../signed-jwt.js";
 import {
   getBuiltinTargetCodec,
   GOOGLE_CHAT_SPACE_RULE,
@@ -26,6 +31,8 @@ export function resolveGoogleChatAdapterConfig(
   return {
     endpointUrl: config.googlechat?.endpointUrl,
     projectNumber: config.googlechat?.googleChatProjectNumber ?? "local-mock-googlechat",
+    pubsubServiceAccountEmail:
+      config.googlechat?.pubsubServiceAccountEmail ?? config.googlechat?.credentials?.client_email,
     userName: config.googlechat?.userName,
   };
 }
@@ -37,7 +44,14 @@ const GOOGLE_CHAT_CERTS_URL =
 
 type GoogleChatAuthRuntime = {
   fetch?: typeof fetch | undefined;
+  keyFetchTimeoutMs?: number | undefined;
   now?: (() => number) | undefined;
+  unknownKeyCooldownMs?: number | undefined;
+};
+
+type GoogleCertificate = {
+  certificate: string;
+  kid: string;
 };
 
 export function createGoogleChatWebhookAuthenticator(
@@ -50,33 +64,42 @@ export function createGoogleChatWebhookAuthenticator(
   const endpointAudience = config.googlechat?.endpointUrl;
   const projectAudience = config.googlechat?.googleChatProjectNumber;
   const pubsubAudience = config.googlechat?.pubsubAudience;
-  const pubsubServiceAccount = config.googlechat?.credentials?.client_email;
+  const pubsubServiceAccount =
+    config.googlechat?.pubsubServiceAccountEmail ?? config.googlechat?.credentials?.client_email;
   if (!(endpointAudience || projectAudience || pubsubAudience)) {
     return undefined;
   }
 
   const fetchImpl = runtime.fetch ?? fetch;
-  const cachedCertificates = new Map<
-    string,
-    { expiresAt: number; values: Record<string, string> }
-  >();
-  const loadCertificates = async (certificateUrl: string, force: boolean) => {
-    const now = runtime.now?.() ?? Date.now();
-    const cached = cachedCertificates.get(certificateUrl);
-    if (!force && cached && cached.expiresAt > now) {
-      return cached;
-    }
-    const response = await fetchImpl(certificateUrl);
-    if (!response.ok) {
-      throw new Error(`Google certificate fetch failed with HTTP ${response.status}.`);
-    }
-    const certificates = {
-      expiresAt: resolveHttpCacheExpiry(response, now),
-      values: (await response.json()) as Record<string, string>,
-    };
-    cachedCertificates.set(certificateUrl, certificates);
-    return certificates;
+  const createCertificateResolver = (certificateUrl: string) => {
+    return createCachedJwtKeyResolver<GoogleCertificate>({
+      async fetchKeys(signal) {
+        const fetchedAt = runtime.now?.() ?? Date.now();
+        const response = await fetchImpl(certificateUrl, { signal });
+        if (!response.ok) {
+          throw new Error(`Google certificate fetch failed with HTTP ${response.status}.`);
+        }
+        const body: unknown = await response.json();
+        if (!isRecord(body)) {
+          throw new Error("Google certificate response must be an object.");
+        }
+        const values = Object.entries(body).flatMap(([kid, certificate]) =>
+          typeof certificate === "string" ? [{ certificate, kid }] : [],
+        );
+        return {
+          expiresAt: resolveHttpCacheExpiry(response, fetchedAt),
+          values,
+        };
+      },
+      keyId: (value) => value.kid,
+      now: runtime.now,
+      refreshCooldownMs: runtime.unknownKeyCooldownMs,
+      timeoutMs: runtime.keyFetchTimeoutMs,
+      unknownKeyMessage: "Google JWT signing key is unknown.",
+    });
   };
+  const resolveGoogleIdentityCertificate = createCertificateResolver(GOOGLE_OAUTH_CERTS_URL);
+  const resolveGoogleChatCertificate = createCertificateResolver(GOOGLE_CHAT_CERTS_URL);
   return async (request: Request, rawBody: string): Promise<Response | undefined> => {
     const token = readBearerToken(request);
     if (!token) {
@@ -113,16 +136,10 @@ export function createGoogleChatWebhookAuthenticator(
           : [GOOGLE_CHAT_SERVICE_ACCOUNT],
         now: runtime.now,
         async resolveKey(header) {
-          let certificates = await loadCertificates(certificateUrl, false);
-          let certificate = certificates.values[header.kid];
-          if (!certificate) {
-            certificates = await loadCertificates(certificateUrl, true);
-            certificate = certificates.values[header.kid];
-          }
-          if (!certificate) {
-            throw new Error("Google JWT signing key is unknown.");
-          }
-          return createPublicKey(certificate);
+          const certificate = await (certificateUrl === GOOGLE_OAUTH_CERTS_URL
+            ? resolveGoogleIdentityCertificate(header)
+            : resolveGoogleChatCertificate(header));
+          return createPublicKey(certificate.certificate);
         },
         token,
       });
@@ -192,7 +209,8 @@ export class GoogleChatProviderAdapter extends LocalMockProviderAdapter implemen
   }
 }
 
-function normalizeGoogleChatWebhookPayload(payload: unknown) {
+export function normalizeGoogleChatWebhookPayload(payload: unknown) {
+  payload = unwrapGoogleChatPubsubPayload(payload);
   if (!isRecord(payload)) {
     throw new CrablineError("Google Chat webhook payload must be an object", {
       kind: "inbound",
@@ -230,4 +248,23 @@ function normalizeGoogleChatWebhookPayload(payload: unknown) {
       ? requireNativeInboundId(threadName, GOOGLE_CHAT_THREAD_RULE, "Google Chat thread.name")
       : requireNativeInboundId(spaceName, GOOGLE_CHAT_SPACE_RULE, "Google Chat space.name"),
   };
+}
+
+function unwrapGoogleChatPubsubPayload(payload: unknown): unknown {
+  if (!isRecord(payload)) {
+    return payload;
+  }
+  const message = optionalRecord(payload, "message");
+  const data = message ? optionalString(message, "data") : undefined;
+  if (!data || typeof payload.subscription !== "string") {
+    return payload;
+  }
+
+  try {
+    return JSON.parse(Buffer.from(data, "base64").toString("utf8")) as unknown;
+  } catch {
+    throw new CrablineError("Google Pub/Sub message.data must contain base64-encoded JSON.", {
+      kind: "inbound",
+    });
+  }
 }

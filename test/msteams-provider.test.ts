@@ -18,6 +18,26 @@ describe("Microsoft Teams webhook authentication", () => {
     );
   });
 
+  it("requires Bot Connector auth for externally reachable webhooks", async () => {
+    const config = await createLocalMockConfig("msteams", "/msteams/webhook");
+    config.msteams!.webhook.host = "0.0.0.0";
+
+    expect(() => new MsTeamsProviderAdapter("msteams", config, "crabline", { env: {} })).toThrow(
+      /externally reachable webhooks require msteams\.appId/u,
+    );
+
+    config.msteams!.webhook.host = "127.0.0.1";
+    config.msteams!.webhook.publicUrl = "https://bot.example.test/msteams/webhook";
+    expect(() => new MsTeamsProviderAdapter("msteams", config, "crabline", { env: {} })).toThrow(
+      /externally reachable webhooks require msteams\.appId/u,
+    );
+
+    config.msteams!.appId = "teams-app-id";
+    expect(
+      () => new MsTeamsProviderAdapter("msteams", config, "crabline", { env: {} }),
+    ).not.toThrow();
+  });
+
   it("verifies Bot Connector bearer tokens for configured app identities", async () => {
     const config = await createLocalMockConfig("msteams", "/msteams/webhook");
     config.msteams!.appId = "teams-app-id";

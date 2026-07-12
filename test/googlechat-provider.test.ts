@@ -4,6 +4,7 @@ import {
   createGoogleChatWebhookAuthenticator,
   GoogleChatProviderAdapter,
   matchesGoogleChatThread,
+  normalizeGoogleChatWebhookPayload,
 } from "../src/providers/builtin/googlechat.js";
 import {
   createLocalMockConfig,
@@ -138,10 +139,8 @@ describe("Google Chat webhook authentication", () => {
   it("uses the configured Pub/Sub audience for push deliveries", async () => {
     const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
     config.googlechat!.pubsubAudience = "https://chat.example.test/pubsub";
-    config.googlechat!.credentials = {
-      client_email: "chat-push@example.iam.gserviceaccount.com",
-      private_key: "unused",
-    };
+    config.googlechat!.pubsubServiceAccountEmail = "chat-push@example.iam.gserviceaccount.com";
+    config.googlechat!.useApplicationDefaultCredentials = true;
     const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const now = Date.now();
     const authenticate = createGoogleChatWebhookAuthenticator(config, {
@@ -151,13 +150,22 @@ describe("Google Chat webhook authentication", () => {
         }),
       now: () => now,
     });
-    const body = JSON.stringify({
-      message: { data: Buffer.from("{}").toString("base64") },
+    const chatEvent = {
+      message: {
+        name: "spaces/AAAABbbbCCC/messages/msg-push",
+        sender: { type: "HUMAN" },
+        space: { name: "spaces/AAAABbbbCCC" },
+        text: "push message",
+      },
+    };
+    const pubsubPayload = {
+      message: { data: Buffer.from(JSON.stringify(chatEvent)).toString("base64") },
       subscription: "projects/example/subscriptions/chat",
-    });
+    };
+    const body = JSON.stringify(pubsubPayload);
     const jwt = signedJwt(keys.privateKey, {
       aud: config.googlechat!.pubsubAudience,
-      email: config.googlechat!.credentials.client_email,
+      email: config.googlechat!.pubsubServiceAccountEmail,
       email_verified: true,
       exp: Math.floor(now / 1000) + 60,
       iss: "https://accounts.google.com",
@@ -171,6 +179,11 @@ describe("Google Chat webhook authentication", () => {
         body,
       ),
     ).resolves.toBeUndefined();
+    expect(normalizeGoogleChatWebhookPayload(pubsubPayload)).toMatchObject({
+      id: "spaces/AAAABbbbCCC/messages/msg-push",
+      text: "push message",
+      threadId: "spaces/AAAABbbbCCC",
+    });
 
     const wrongIdentityJwt = signedJwt(keys.privateKey, {
       aud: config.googlechat!.pubsubAudience,

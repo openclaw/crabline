@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bound signed-JWT key refreshes and authenticate, decode, or suppress Google Chat, Teams, Feishu, and Discord webhook ingress according to provider contracts.
 - Harden release, CI, config, CLI, package, and OpenClaw artifact and process-identity boundaries.
 - Restore provider-native callbacks and authentication, preserve conversation targets and recorder progress, and harden local mock lifecycle and parsing.
 - Preserve native server sync, webhook, request-validation, backpressure, and shutdown semantics across Matrix, Mattermost, Signal, Slack, Telegram, and Zalo.

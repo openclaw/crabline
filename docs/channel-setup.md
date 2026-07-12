@@ -82,10 +82,18 @@ header before JSON parsing or recorder writes:
   `X-Signature-Ed25519` over `X-Signature-Timestamp` plus the raw request body.
 - Google Chat `endpointUrl` verifies Google ID tokens for the configured HTTP
   audience. `googleChatProjectNumber` selects project-number JWT verification
-  instead. Pub/Sub delivery uses `pubsubAudience` and
-  `credentials.client_email`.
+  instead. Authenticated Pub/Sub delivery uses `pubsubAudience` plus
+  `pubsubServiceAccountEmail`; `credentials.client_email` remains the fallback
+  when inline service-account credentials are configured. Wrapped Pub/Sub
+  `message.data` is base64-decoded before Google Chat event normalization.
 - Microsoft Teams `appId` or `TEAMS_APP_ID` verifies Bot Connector bearer
-  tokens, including the activity channel and exact `serviceUrl`.
+  tokens, including the activity channel and exact `serviceUrl`. An `appId` is
+  required when the webhook host is non-loopback or `publicUrl` is set; an
+  unauthenticated webhook remains available only on loopback.
+- Feishu `verificationToken` or `FEISHU_VERIFICATION_TOKEN` verifies plaintext
+  callback tokens. `encryptKey` or `FEISHU_ENCRYPT_KEY` verifies
+  `X-Lark-Signature` and decrypts encrypted event envelopes before challenge
+  handling or event normalization.
 - Slack `signingSecret` or `SLACK_SIGNING_SECRET` verifies
   `X-Slack-Request-Timestamp` and `X-Slack-Signature`.
 - Telegram `secretToken` or `TELEGRAM_WEBHOOK_SECRET_TOKEN` verifies

@@ -82,13 +82,17 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
     : path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
 }
 
-function normalizeDiscordWebhookPayload(payload: unknown) {
+export function normalizeDiscordWebhookPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("Discord webhook payload must be an object", { kind: "inbound" });
   }
 
   const message = optionalRecord(payload, "message");
-  if (message && ("text" in message || "threadId" in message)) {
+  if (
+    (message && ("text" in message || "threadId" in message)) ||
+    "text" in payload ||
+    "threadId" in payload
+  ) {
     return genericMockPayloadWithNativeThread({
       channelRule: DISCORD_SNOWFLAKE_RULE,
       payload,
@@ -137,6 +141,19 @@ export function createDiscordInteractionResponse(payload: unknown): Response {
   return Response.json({ type: 5 }, { status: 200 });
 }
 
+export function handleDiscordWebhookPayload(payload: unknown): Response | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+  if (payload.type === 1) {
+    return Response.json({ type: 1 }, { status: 200 });
+  }
+  if (payload.type === 4) {
+    return createDiscordInteractionResponse(payload);
+  }
+  return undefined;
+}
+
 export class DiscordProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, userName: string) {
     const resolvedConfig = resolveDiscordAdapterConfigValue(config, userName);
@@ -161,10 +178,7 @@ export class DiscordProviderAdapter extends LocalMockProviderAdapter implements 
         },
         createWebhookSuccessResponse: createDiscordInteractionResponse,
         endpointLabel: "interactions endpoint",
-        handleWebhookPayload: (payload) =>
-          isRecord(payload) && payload.type === 1
-            ? Response.json({ type: 1 }, { status: 200 })
-            : undefined,
+        handleWebhookPayload: handleDiscordWebhookPayload,
         normalizeWebhookPayload: normalizeDiscordWebhookPayload,
         platform: "discord",
         publicUrl: config.discord?.webhook.publicUrl,

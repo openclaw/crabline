@@ -2,9 +2,15 @@ import { createPublicKey, type JsonWebKey } from "node:crypto";
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
+import { isLoopbackHost } from "../../servers/http.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
-import { readBearerToken, resolveHttpCacheExpiry, verifySignedJwt } from "../signed-jwt.js";
+import {
+  createCachedJwtKeyResolver,
+  readBearerToken,
+  resolveHttpCacheExpiry,
+  verifySignedJwt,
+} from "../signed-jwt.js";
 import { getBuiltinTargetCodec, MSTEAMS_CONVERSATION_ID_RULE } from "../target-normalizers.js";
 import {
   authorFromBotFlag,
@@ -33,56 +39,61 @@ const BOT_CONNECTOR_OPENID_URL =
   "https://login.botframework.com/v1/.well-known/openidconfiguration";
 
 type MsTeamsAuthRuntime = {
+  env?: NodeJS.ProcessEnv | undefined;
   fetch?: typeof fetch | undefined;
+  keyFetchTimeoutMs?: number | undefined;
   now?: (() => number) | undefined;
+  unknownKeyCooldownMs?: number | undefined;
+};
+
+type BotConnectorKey = JsonWebKey & {
+  endorsements?: string[] | undefined;
+  kid?: string | undefined;
 };
 
 export function createMsTeamsWebhookAuthenticator(
   config: ProviderConfig,
   runtime: MsTeamsAuthRuntime = {},
 ) {
-  const appId = config.msteams?.appId ?? process.env.TEAMS_APP_ID;
+  const appId = config.msteams?.appId ?? (runtime.env ?? process.env).TEAMS_APP_ID;
   if (!appId) {
     return undefined;
   }
   const fetchImpl = runtime.fetch ?? fetch;
-  let cachedKeys:
-    | {
-        expiresAt: number;
-        values: Array<JsonWebKey & { endorsements?: string[] | undefined; kid?: string }>;
+  const resolveSigningKey = createCachedJwtKeyResolver<BotConnectorKey>({
+    async fetchKeys(signal) {
+      const fetchedAt = runtime.now?.() ?? Date.now();
+      const metadataResponse = await fetchImpl(BOT_CONNECTOR_OPENID_URL, { signal });
+      if (!metadataResponse.ok) {
+        throw new Error(
+          `Bot Connector metadata fetch failed with HTTP ${metadataResponse.status}.`,
+        );
       }
-    | undefined;
-  const loadKeys = async (force: boolean) => {
-    const now = runtime.now?.() ?? Date.now();
-    if (!force && cachedKeys && cachedKeys.expiresAt > now) {
-      return cachedKeys;
-    }
-    const metadataResponse = await fetchImpl(BOT_CONNECTOR_OPENID_URL);
-    if (!metadataResponse.ok) {
-      throw new Error(`Bot Connector metadata fetch failed with HTTP ${metadataResponse.status}.`);
-    }
-    const metadataExpiry = resolveHttpCacheExpiry(metadataResponse, now);
-    const metadata = (await metadataResponse.json()) as { jwks_uri?: unknown };
-    if (typeof metadata.jwks_uri !== "string") {
-      throw new Error("Bot Connector metadata omitted jwks_uri.");
-    }
-    const keysResponse = await fetchImpl(metadata.jwks_uri);
-    if (!keysResponse.ok) {
-      throw new Error(`Bot Connector key fetch failed with HTTP ${keysResponse.status}.`);
-    }
-    const keyExpiry = resolveHttpCacheExpiry(keysResponse, now);
-    const keys = (await keysResponse.json()) as { keys?: unknown };
-    if (!Array.isArray(keys.keys)) {
-      throw new Error("Bot Connector key response omitted keys.");
-    }
-    cachedKeys = {
-      expiresAt: Math.min(metadataExpiry, keyExpiry),
-      values: keys.keys as Array<
-        JsonWebKey & { endorsements?: string[] | undefined; kid?: string }
-      >,
-    };
-    return cachedKeys;
-  };
+      const metadataExpiry = resolveHttpCacheExpiry(metadataResponse, fetchedAt);
+      const metadata = (await metadataResponse.json()) as { jwks_uri?: unknown };
+      if (typeof metadata.jwks_uri !== "string") {
+        throw new Error("Bot Connector metadata omitted jwks_uri.");
+      }
+      const keysResponse = await fetchImpl(metadata.jwks_uri, { signal });
+      if (!keysResponse.ok) {
+        throw new Error(`Bot Connector key fetch failed with HTTP ${keysResponse.status}.`);
+      }
+      const keyExpiry = resolveHttpCacheExpiry(keysResponse, fetchedAt);
+      const keys = (await keysResponse.json()) as { keys?: unknown };
+      if (!Array.isArray(keys.keys)) {
+        throw new Error("Bot Connector key response omitted keys.");
+      }
+      return {
+        expiresAt: Math.min(metadataExpiry, keyExpiry),
+        values: keys.keys as BotConnectorKey[],
+      };
+    },
+    keyId: (value) => value.kid,
+    now: runtime.now,
+    refreshCooldownMs: runtime.unknownKeyCooldownMs,
+    timeoutMs: runtime.keyFetchTimeoutMs,
+    unknownKeyMessage: "Bot Connector JWT signing key is unknown.",
+  });
   return async (request: Request, rawBody: string): Promise<Response | undefined> => {
     const token = readBearerToken(request);
     if (!token) {
@@ -106,15 +117,7 @@ export function createMsTeamsWebhookAuthenticator(
         issuers: [BOT_CONNECTOR_ISSUER],
         now: runtime.now,
         async resolveKey(header) {
-          let keys = await loadKeys(false);
-          let key = keys.values.find((candidate) => candidate.kid === header.kid);
-          if (!key) {
-            keys = await loadKeys(true);
-            key = keys.values.find((candidate) => candidate.kid === header.kid);
-          }
-          if (!key) {
-            throw new Error("Bot Connector JWT signing key is unknown.");
-          }
+          const key = await resolveSigningKey(header);
           if (
             key.endorsements &&
             key.endorsements.length > 0 &&
@@ -141,10 +144,9 @@ export function createMsTeamsWebhookAuthenticator(
 
 export class MsTeamsProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, runtime?: unknown) {
-    const authenticateWebhookRequest = createMsTeamsWebhookAuthenticator(
-      config,
-      (runtime as MsTeamsAuthRuntime | undefined) ?? {},
-    );
+    const authRuntime = (runtime as MsTeamsAuthRuntime | undefined) ?? {};
+    requireExternalMsTeamsWebhookAuthentication(config, authRuntime.env ?? process.env);
+    const authenticateWebhookRequest = createMsTeamsWebhookAuthenticator(config, authRuntime);
     super({
       codec: getBuiltinTargetCodec("msteams"),
       config,
@@ -162,6 +164,22 @@ export class MsTeamsProviderAdapter extends LocalMockProviderAdapter implements 
         webhook: config.msteams?.webhook,
       },
     });
+  }
+}
+
+function requireExternalMsTeamsWebhookAuthentication(
+  config: ProviderConfig,
+  env: NodeJS.ProcessEnv,
+): void {
+  const webhook = config.msteams?.webhook;
+  const host = webhook?.host ?? "127.0.0.1";
+  const externallyReachable = Boolean(webhook?.publicUrl) || !isLoopbackHost(host);
+  const appId = config.msteams?.appId ?? env.TEAMS_APP_ID;
+  if (externallyReachable && !appId) {
+    throw new CrablineError(
+      "Microsoft Teams externally reachable webhooks require msteams.appId or TEAMS_APP_ID.",
+      { kind: "config" },
+    );
   }
 }
 

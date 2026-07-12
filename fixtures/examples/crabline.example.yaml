@@ -54,6 +54,7 @@ providers:
   msteams:
     adapter: msteams
     msteams:
+      # appId: teams-app-id-placeholder # Required for non-loopback/public webhooks.
       recorder:
         path: ./.crabline/recorders/msteams.jsonl
       webhook:
@@ -64,6 +65,8 @@ providers:
   googlechat:
     adapter: googlechat
     googlechat:
+      # pubsubAudience: https://example.test/googlechat/webhook
+      # pubsubServiceAccountEmail: chat-push@example.iam.gserviceaccount.com
       recorder:
         path: ./.crabline/recorders/googlechat.jsonl
       webhook:
@@ -74,6 +77,8 @@ providers:
   feishu:
     adapter: feishu
     feishu:
+      # verificationToken: verification-token-placeholder
+      # encryptKey: encrypt-key-placeholder
       recorder:
         path: ./.crabline/recorders/feishu.jsonl
       webhook:
