@@ -105,22 +105,21 @@ const whatsappManifest: CrablineServerManifest = {
   adminToken: "crabline-whatsapp-admin-token",
   baseUrl: "http://127.0.0.1:5678",
   endpoints: {
-    adminInboundUrl: "http://127.0.0.1:5678/crabline/whatsapp/inbound",
-    apiRoot: "http://127.0.0.1:5678/crabline/whatsapp",
-    baileysWebSocketUrl:
-      "ws://127.0.0.1:5678/crabline/whatsapp/ws/chat?access_token=crabline-whatsapp-access-token",
-    messagesUrl: "http://127.0.0.1:5678/crabline/whatsapp/messages",
-    presenceUrl: "http://127.0.0.1:5678/crabline/whatsapp/presence",
+    adminInboundUrl: "http://127.0.0.1:5678/_crabline/admin/whatsapp/inbound",
+    apiRoot: "http://127.0.0.1:5678/v25.0",
+    baileysWebSocketUrl: "ws://127.0.0.1:5678/ws/chat?access_token=crabline-whatsapp-access-token",
+    messagesUrl: "http://127.0.0.1:5678/v25.0/100000000000000/messages",
+    phoneNumberUrl: "http://127.0.0.1:5678/v25.0/100000000000000",
+    statusUrl: "http://127.0.0.1:5678/v25.0/100000000000000/messages",
   },
   env: {
-    CRABLINE_WHATSAPP_ADMIN_TOKEN: "crabline-whatsapp-admin-token",
-    CRABLINE_WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
-    CRABLINE_WHATSAPP_API_ROOT: "http://127.0.0.1:5678/crabline/whatsapp",
-    CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL:
-      "ws://127.0.0.1:5678/crabline/whatsapp/ws/chat?access_token=crabline-whatsapp-access-token",
-    CRABLINE_WHATSAPP_RECORDER_PATH: "/tmp/crabline/whatsapp.jsonl",
-    CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
+    CLOUD_API_ACCESS_TOKEN: "crabline-whatsapp-access-token",
+    CLOUD_API_VERSION: "v25.0",
+    WA_BASE_URL: "http://127.0.0.1:5678",
+    WA_PHONE_NUMBER_ID: "100000000000000",
   },
+  graphVersion: "v25.0",
+  phoneNumberId: "100000000000000",
   provider: "whatsapp",
   recorderPath: "/tmp/crabline/whatsapp.jsonl",
   selfJid: "15550000000@s.whatsapp.net",
@@ -410,7 +409,7 @@ describe("OpenClaw local provider bridge", () => {
       CRABLINE_WHATSAPP_RECORDER_PATH: "/tmp/crabline/whatsapp.jsonl",
       CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
       OPENCLAW_WHATSAPP_WEB_SOCKET_URL:
-        "ws://127.0.0.1:5678/crabline/whatsapp/ws/chat?access_token=crabline-whatsapp-access-token",
+        "ws://127.0.0.1:5678/ws/chat?access_token=crabline-whatsapp-access-token",
     });
   });
 
@@ -613,7 +612,7 @@ describe("OpenClaw local provider bridge", () => {
         "x-crabline-admin-token": "crabline-whatsapp-admin-token",
       },
       providerTargetKey: "120363001234567890@g.us",
-      providerUrl: "http://127.0.0.1:5678/crabline/whatsapp/inbound",
+      providerUrl: "http://127.0.0.1:5678/_crabline/admin/whatsapp/inbound",
       qaTarget: "group:120363001234567890@g.us",
       stateConversation: {
         id: "120363001234567890@g.us",
@@ -627,9 +626,9 @@ describe("OpenClaw local provider bridge", () => {
         targetByProviderTarget: new Map([["15551234567@s.whatsapp.net", "dm:alice"]]),
         event: {
           type: "api",
-          path: "/crabline/whatsapp/messages",
+          path: "/v25.0/100000000000000/messages",
           body: {
-            to: "15551234567@s.whatsapp.net",
+            to: "15551234567",
             text: { body: "hello from openclaw" },
           },
         },
@@ -981,6 +980,10 @@ describe("OpenClaw local provider bridge", () => {
       if (adapter.manifest.provider !== "whatsapp") {
         throw new Error("Expected WhatsApp local provider manifest.");
       }
+      await expect(probeOpenClawCrablineProvider(adapter.manifest)).resolves.toMatchObject({
+        id: adapter.manifest.phoneNumberId,
+        quality_rating: "GREEN",
+      });
 
       const inbound = adapter.createInbound({
         input: {

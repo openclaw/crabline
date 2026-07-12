@@ -18,14 +18,23 @@ function requireWhatsAppJid(value: string, label: string): string {
   return trimmed;
 }
 
+function readMessageText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
 export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
   provider: "whatsapp",
   createAdapter(whatsapp) {
+    const messagesPath = new URL(whatsapp.endpoints.messagesUrl).pathname;
     return {
       async probe() {
-        const response = await fetch(`${whatsapp.endpoints.apiRoot}/health`);
+        const response = await fetch(whatsapp.endpoints.phoneNumberUrl, {
+          headers: {
+            authorization: `Bearer ${whatsapp.accessToken}`,
+          },
+        });
         if (!response.ok) {
-          throw new Error(`Crabline WhatsApp health probe failed with HTTP ${response.status}.`);
+          throw new Error(`Crabline WhatsApp probe failed with HTTP ${response.status}.`);
         }
         return await response.json();
       },
@@ -103,21 +112,22 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (!isRecord(event) || event.type !== "api" || typeof event.path !== "string") {
           return null;
         }
-        if (!event.path.endsWith("/crabline/whatsapp/messages") || !isRecord(event.body)) {
+        if (event.path !== messagesPath || !isRecord(event.body)) {
           return null;
         }
-        const to = readString(event.body.to ?? event.body.jid);
+        const to = readString(event.body.to);
         const textPayload = event.body.text;
-        const text = isRecord(textPayload) ? readString(textPayload.body) : readString(textPayload);
+        const text = isRecord(textPayload) ? readMessageText(textPayload.body) : undefined;
         if (!to || !text) {
           return null;
         }
+        const providerTarget = /^\d{7,15}$/u.test(to) ? `${to}@s.whatsapp.net` : to;
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           senderId: "openclaw",
           senderName: "OpenClaw QA",
           text,
-          to: targetByProviderTarget.get(to) ?? to,
+          to: targetByProviderTarget.get(providerTarget) ?? providerTarget,
         };
       },
     };
