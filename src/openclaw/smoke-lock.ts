@@ -14,7 +14,13 @@ export type OpenClawCrablineSmokeRunLock = {
   release(): Promise<void>;
 };
 
+type RemoveLockDirectory = (lockDirectory: string) => Promise<void>;
+
 const LOCK_OWNER_FILE = "owner.json";
+
+const removeLockDirectory: RemoveLockDirectory = async (lockDirectory) => {
+  await fs.rm(lockDirectory, { force: true, recursive: true });
+};
 
 async function pathExists(filePath: string): Promise<boolean> {
   try {
@@ -68,12 +74,16 @@ function activeRunError(params: {
   );
 }
 
-async function removeOwnedLock(lockDirectory: string, token: string): Promise<boolean> {
+async function removeOwnedLock(
+  lockDirectory: string,
+  token: string,
+  removeDirectory: RemoveLockDirectory = removeLockDirectory,
+): Promise<boolean> {
   const owner = await readLockOwner(lockDirectory);
   if (owner?.token !== token) {
     return false;
   }
-  await fs.rm(lockDirectory, { force: true, recursive: true });
+  await removeDirectory(lockDirectory);
   return true;
 }
 
@@ -156,10 +166,15 @@ async function createLockCandidate(params: {
   }
 }
 
-export async function acquireOpenClawCrablineSmokeRunLock(params: {
-  channel: CrablineServerChannel;
-  outputDir: string;
-}): Promise<OpenClawCrablineSmokeRunLock> {
+export async function acquireOpenClawCrablineSmokeRunLock(
+  params: {
+    channel: CrablineServerChannel;
+    outputDir: string;
+  },
+  dependencies: {
+    removeDirectory?: RemoveLockDirectory;
+  } = {},
+): Promise<OpenClawCrablineSmokeRunLock> {
   const outputDir = path.resolve(params.outputDir);
   const lockDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
   const recoveryDirectory = `${lockDirectory}.recovering`;
@@ -213,9 +228,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(params: {
         if (released) {
           return;
         }
+        await removeOwnedLock(lockDirectory, token, dependencies.removeDirectory);
+        await removeOwnedLock(recoveryDirectory, token, dependencies.removeDirectory);
         released = true;
-        await removeOwnedLock(lockDirectory, token);
-        await removeOwnedLock(recoveryDirectory, token);
       },
     };
   }
