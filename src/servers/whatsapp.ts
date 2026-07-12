@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   adminAuthError,
   hasAdminToken,
+  InvalidJsonBodyError,
   jsonResponse,
   parseRequestBody,
   queryRecord,
@@ -479,6 +480,13 @@ export async function startWhatsAppServer(
   const host = params.host ?? "127.0.0.1";
   const httpServer = await startHttpJsonServer({
     handle: (request) => handleRequest({ request, state }),
+    handleError: (error) =>
+      error instanceof InvalidJsonBodyError
+        ? graphParameterError(
+            "(#100) Invalid parameter: request body",
+            "The request body must be valid JSON.",
+          )
+        : undefined,
     host,
     port: params.port ?? 0,
     serverName: "WhatsApp",

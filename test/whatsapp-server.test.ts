@@ -267,6 +267,28 @@ describe("whatsapp local provider server", () => {
       });
     }
 
+    const malformedBody = await fetch(server.manifest.endpoints.messagesUrl, {
+      body: "{",
+      headers: {
+        authorization: "Bearer fake-whatsapp-token",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(malformedBody.status).toBe(400);
+    await expect(malformedBody.json()).resolves.toEqual({
+      error: {
+        code: 100,
+        error_data: {
+          details: "The request body must be valid JSON.",
+          messaging_product: "whatsapp",
+        },
+        fbtrace_id: "A1B2C3D4E5F",
+        message: "(#100) Invalid parameter: request body",
+        type: "OAuthException",
+      },
+    });
+
     const status = await fetch(server.manifest.endpoints.statusUrl, {
       body: JSON.stringify({
         message_id: "wamid.FAKE00000001",
