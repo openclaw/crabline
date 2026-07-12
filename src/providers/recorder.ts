@@ -208,8 +208,8 @@ function consumeRecordedChunk(
 }
 
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
-  await serializeAppend(filePath, async (publicationPath) => {
-    await appendCommittedLine(publicationPath, line, false);
+  await serializeAppend(filePath, async (publicationPath, logicalPath) => {
+    await appendCommittedLine(publicationPath, logicalPath, line, false);
   });
 }
 
@@ -288,6 +288,7 @@ async function prepareRecorderTailForAppend(
 
 async function appendCommittedLine(
   publicationPath: string,
+  logicalPath: string,
   line: string,
   durable: boolean,
 ): Promise<void> {
@@ -306,7 +307,7 @@ async function appendCommittedLine(
   if (
     !sameRecorderFileIdentity(
       { dev: identity.dev, ino: identity.ino },
-      await readRecorderFileIdentity(publicationPath),
+      await readRecorderFileIdentity(await resolveRecorderPublicationPath(logicalPath)),
     )
   ) {
     throw new Error("Recorder rotated while appending a committed line.");
@@ -362,15 +363,16 @@ async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>
 
 async function serializeAppend<T>(
   filePath: string,
-  operation: (publicationPath: string) => Promise<T>,
+  operation: (publicationPath: string, logicalPath: string) => Promise<T>,
 ): Promise<T> {
-  const key = await resolveRecorderPublicationPath(filePath);
+  const logicalPath = path.resolve(filePath);
+  const key = await resolveRecorderPublicationPath(logicalPath);
   const previous = pendingAppends.get(key) ?? Promise.resolve();
   let result: T;
   const current = previous
     .catch(() => {})
     .then(async () => {
-      result = await withRecorderLock(key, async () => await operation(key));
+      result = await withRecorderLock(key, async () => await operation(key, logicalPath));
     });
   pendingAppends.set(key, current);
 
@@ -467,7 +469,7 @@ export async function appendRecordedInboundBatch(
   events: InboundEnvelope[],
 ): Promise<RecordedInboundEnvelope[]> {
   await mkdir(path.dirname(filePath), { recursive: true });
-  return await serializeAppend(filePath, async (publicationPath) => {
+  return await serializeAppend(filePath, async (publicationPath, logicalPath) => {
     const seen = await syncRecordIdentityIndex(publicationPath);
     const pendingIdentities = new Set<string>();
     const recorded: RecordedInboundEnvelope[] = [];
@@ -488,7 +490,7 @@ export async function appendRecordedInboundBatch(
         recordType: "crabline.recorder.batch",
         recorderBatchVersion: RECORDER_BATCH_VERSION,
       } satisfies RecordedInboundBatchLine;
-      await appendCommittedLine(publicationPath, `${JSON.stringify(batch)}\n`, true);
+      await appendCommittedLine(publicationPath, logicalPath, `${JSON.stringify(batch)}\n`, true);
       await syncRecordIdentityIndex(publicationPath);
     }
     return recorded;

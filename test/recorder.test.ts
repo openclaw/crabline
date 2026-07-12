@@ -1,4 +1,13 @@
-import { appendFile, open, readFile, rename, writeFile, type FileHandle } from "node:fs/promises";
+import {
+  appendFile,
+  open,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -212,6 +221,68 @@ describe("recorder", () => {
     await expect(readRecordedInbound(rotatedPath)).resolves.toEqual([
       expect.objectContaining({ id: "existing" }),
       expect.objectContaining({ id: "rotated-batch" }),
+    ]);
+  });
+
+  it("detects a symlinked recorder retargeted during a batch append", async () => {
+    const filePath = await createRecorderPath();
+    const firstTarget = path.join(path.dirname(filePath), "first-target.jsonl");
+    const secondTarget = path.join(path.dirname(filePath), "second-target.jsonl");
+    await writeFile(firstTarget, "", "utf8");
+    await writeFile(secondTarget, "", "utf8");
+    await symlink(firstTarget, filePath, "file");
+    const event = {
+      author: "user" as const,
+      id: "symlink-batch",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "detect retargeting",
+      threadId: "15551234567",
+    };
+
+    const probeHandle = await open(firstTarget, "a+");
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+      writeFile(data: string, encoding: BufferEncoding): Promise<void>;
+    };
+    await probeHandle.close();
+    const originalWriteFile = fileHandlePrototype.writeFile;
+    let releaseWrite!: () => void;
+    let reportWrite!: () => void;
+    const writeReported = new Promise<void>((resolve) => {
+      reportWrite = resolve;
+    });
+    const writeReleased = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let interceptBatch = true;
+    fileHandlePrototype.writeFile = async function (
+      this: FileHandle,
+      data: string,
+      encoding: BufferEncoding,
+    ) {
+      await originalWriteFile.call(this, data, encoding);
+      if (interceptBatch && data.includes('"recorderBatchVersion"')) {
+        interceptBatch = false;
+        reportWrite();
+        await writeReleased;
+      }
+    };
+
+    const append = appendRecordedInboundBatch(filePath, [event]);
+    try {
+      await writeReported;
+      await rm(filePath);
+      await symlink(secondTarget, filePath, "file");
+      releaseWrite();
+      await expect(append).rejects.toThrow("Recorder rotated");
+    } finally {
+      releaseWrite();
+      fileHandlePrototype.writeFile = originalWriteFile;
+    }
+
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([]);
+    await expect(readRecordedInbound(firstTarget)).resolves.toEqual([
+      expect.objectContaining({ id: "symlink-batch" }),
     ]);
   });
 

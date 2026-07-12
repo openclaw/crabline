@@ -273,10 +273,14 @@ function createWhatsAppMessage(params: {
   };
 }
 
-async function handleSendMessage(params: {
+type PreparedWhatsAppSend = {
+  commit(): Response;
+};
+
+function prepareSendMessage(params: {
   body: Record<string, unknown>;
   state: WhatsAppServerState;
-}): Promise<Response> {
+}): PreparedWhatsAppSend | Response {
   const productError = requireMessagingProduct(params.body);
   if (productError) {
     return productError;
@@ -296,22 +300,26 @@ async function handleSendMessage(params: {
   if (text instanceof Response) {
     return text;
   }
-  const message = createWhatsAppMessage({
-    fromMe: true,
-    id: nextMessageId(params.state),
-    remoteJid: `${to}@s.whatsapp.net`,
-    text,
-  });
-  return jsonResponse({
-    contacts: [
-      {
-        input: to,
-        wa_id: to,
-      },
-    ],
-    messages: [{ id: message.key.id }],
-    messaging_product: "whatsapp",
-  });
+  return {
+    commit() {
+      const message = createWhatsAppMessage({
+        fromMe: true,
+        id: nextMessageId(params.state),
+        remoteJid: `${to}@s.whatsapp.net`,
+        text,
+      });
+      return jsonResponse({
+        contacts: [
+          {
+            input: to,
+            wa_id: to,
+          },
+        ],
+        messages: [{ id: message.key.id }],
+        messaging_product: "whatsapp",
+      });
+    },
+  };
 }
 
 function handleMessageStatus(body: Record<string, unknown>): Response {
@@ -514,7 +522,13 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
     } else if ("status" in body || "message_id" in body) {
       response = handleMessageStatus(body);
     } else {
-      response = await handleSendMessage({ body, state: params.state });
+      const prepared = prepareSendMessage({ body, state: params.state });
+      if (!(prepared instanceof Response)) {
+        event.accepted = true;
+        await appendEvent(params.state, event);
+        return prepared.commit();
+      }
+      response = prepared;
     }
     event.accepted = response.ok;
     await appendEvent(params.state, event);
