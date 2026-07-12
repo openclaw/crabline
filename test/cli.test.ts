@@ -394,7 +394,7 @@ describe("cli", () => {
     expect(signals.listenerCount("SIGTERM")).toBe(0);
   });
 
-  it("removes a stale ready file before starting the server", async () => {
+  it("preserves an existing ready file when replacement startup fails", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, "server.json");
@@ -417,7 +417,7 @@ describe("cli", () => {
         readyFile,
       ]),
     ).rejects.toBe(startError);
-    await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(readyFile, "utf8")).resolves.toBe("stale\n");
   });
 
   it("does not recursively remove a stale non-lock directory", async () => {
@@ -496,15 +496,17 @@ describe("cli", () => {
     expect(removeReadyFile).not.toHaveBeenCalled();
   });
 
-  it("does not remove a same-content ready file replaced during server shutdown", async () => {
+  it("holds ready-file ownership until server shutdown completes", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, "server.json");
-    let replacementContents: string | undefined;
+    let releaseClose: (() => void) | undefined;
+    const closeBlocked = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
     const server = {
       async close() {
-        replacementContents = await fs.readFile(readyFile, "utf8");
-        await publishReadyFile(readyFile, replacementContents);
+        await closeBlocked;
       },
       manifest: {
         adminToken: "fake",
@@ -522,13 +524,13 @@ describe("cli", () => {
         version: 1,
       },
     } satisfies StartedCrablineServer;
-    const program = createProgram(() => undefined, {
+    const firstProgram = createProgram(() => undefined, {
       startServer: async () => server,
     });
     const captured = captureWrites();
 
     try {
-      await program.parseAsync([
+      const first = firstProgram.parseAsync([
         "node",
         "crabline",
         "--json",
@@ -538,11 +540,155 @@ describe("cli", () => {
         "--ready-file",
         readyFile,
       ]);
+      await vi.waitFor(async () => {
+        await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "telegram"');
+      });
+      const originalContents = await fs.readFile(readyFile, "utf8");
+      const secondStart = vi.fn(async () => server);
+      const secondProgram = createProgram(() => undefined, { startServer: secondStart });
+
+      await expect(
+        secondProgram.parseAsync([
+          "node",
+          "crabline",
+          "--json",
+          "serve",
+          "telegram",
+          "--once",
+          "--ready-file",
+          readyFile,
+        ]),
+      ).rejects.toBeInstanceOf(Error);
+      expect(secondStart).not.toHaveBeenCalled();
+      await expect(fs.readFile(readyFile, "utf8")).resolves.toBe(originalContents);
+
+      releaseClose?.();
+      await first;
     } finally {
+      releaseClose?.();
       captured.restore();
     }
 
-    await expect(fs.readFile(readyFile, "utf8")).resolves.toBe(replacementContents);
+    await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("closes and removes a published ready file when shutdown arrives during publication", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, "server.json");
+    let releasePublish: (() => void) | undefined;
+    let markPublishStarted: (() => void) | undefined;
+    const publishStarted = new Promise<void>((resolve) => {
+      markPublishStarted = resolve;
+    });
+    const publishBlocked = new Promise<void>((resolve) => {
+      releasePublish = resolve;
+    });
+    const close = vi.fn(async () => undefined);
+    const removeReadyFile = vi.fn(async () => undefined);
+    const program = createProgram(() => undefined, {
+      acquireReadyFileLease: async () => async () => undefined,
+      publishReadyFile: async () => {
+        markPublishStarted?.();
+        await publishBlocked;
+        return {
+          birthtimeNs: 1n,
+          ctimeNs: 1n,
+          dev: 1n,
+          ino: 1n,
+          size: 1n,
+        };
+      },
+      removeReadyFile,
+      startServer: async () => ({
+        close,
+        manifest: {
+          adminToken: "admin",
+          baseUrl: "http://127.0.0.1:12345",
+          botToken: "424242:token",
+          endpoints: {
+            adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
+            apiRoot: "http://127.0.0.1:12345",
+          },
+          env: { TELEGRAM_BOT_TOKEN: "424242:token" },
+          provider: "telegram",
+          recorderPath: path.join(directory, "telegram.jsonl"),
+          version: 1,
+        },
+      }),
+    });
+    const running = program.parseAsync([
+      "node",
+      "crabline",
+      "--json",
+      "serve",
+      "telegram",
+      "--ready-file",
+      readyFile,
+    ]);
+    await publishStarted;
+
+    process.emit("SIGTERM", "SIGTERM");
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    releasePublish?.();
+    await running;
+
+    expect(removeReadyFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves shutdown and ready-file cleanup failures", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const closeError = new Error("close exploded");
+    const removeError = new Error("remove exploded");
+    const program = createProgram(() => undefined, {
+      acquireReadyFileLease: async () => async () => undefined,
+      publishReadyFile: async () => ({
+        birthtimeNs: 1n,
+        ctimeNs: 1n,
+        dev: 1n,
+        ino: 1n,
+        size: 1n,
+      }),
+      removeReadyFile: async () => {
+        throw removeError;
+      },
+      startServer: async () => ({
+        async close() {
+          throw closeError;
+        },
+        manifest: {
+          adminToken: "admin",
+          baseUrl: "http://127.0.0.1:12345",
+          botToken: "424242:token",
+          endpoints: {
+            adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
+            apiRoot: "http://127.0.0.1:12345",
+          },
+          env: { TELEGRAM_BOT_TOKEN: "424242:token" },
+          provider: "telegram",
+          recorderPath: path.join(directory, "telegram.jsonl"),
+          version: 1,
+        },
+      }),
+    });
+
+    const failure = await program
+      .parseAsync([
+        "node",
+        "crabline",
+        "--json",
+        "serve",
+        "telegram",
+        "--once",
+        "--ready-file",
+        path.join(directory, "server.json"),
+      ])
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([closeError, removeError]);
+    expect((failure as AggregateError).cause).toBe(closeError);
   });
 
   it("redacts serve credentials from text output unless explicitly requested", async () => {
