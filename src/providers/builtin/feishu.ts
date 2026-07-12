@@ -4,27 +4,18 @@ import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
 import {
+  FEISHU_CHAT_ID_RULE,
+  FEISHU_MESSAGE_ID_RULE,
+  getBuiltinTargetCodec,
+} from "../target-normalizers.js";
+import {
   authorFromBotFlag,
-  createNativeTargetCodec,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
   optionalString,
   requireNativeInboundId,
-  type NativeIdRule,
 } from "./native-local-mock.js";
-
-const FEISHU_CHAT_ID_RULE: NativeIdRule = {
-  example: "oc_abc123",
-  name: "Feishu chat_id",
-  pattern: /^oc_[A-Za-z0-9_-]+$/u,
-};
-
-const FEISHU_MESSAGE_ID_RULE: NativeIdRule = {
-  example: "om_abc123",
-  name: "Feishu message_id",
-  pattern: /^om_[A-Za-z0-9_-]+$/u,
-};
 
 export function resolveFeishuAdapterConfig(
   config: ProviderConfig,
@@ -39,12 +30,7 @@ export function resolveFeishuAdapterConfig(
 export class FeishuProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
-      codec: createNativeTargetCodec({
-        channel: FEISHU_CHAT_ID_RULE,
-        channelLabel: "Feishu chat_id",
-        thread: FEISHU_MESSAGE_ID_RULE,
-        threadLabel: "Feishu message_id",
-      }),
+      codec: getBuiltinTargetCodec("feishu"),
       config,
       id,
       options: {

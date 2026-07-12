@@ -16,17 +16,16 @@ import type {
   WaitContext,
   WatchContext,
 } from "../types.js";
+import { getBuiltinTargetCodec, WHATSAPP_WA_ID_RULE } from "../target-normalizers.js";
 import { startWebhookServer, type StartedWebhookServer } from "../webhook-server.js";
 import {
   authorFromBotFlag,
-  createNativeTargetCodec,
   genericMockPayloadWithNativeThread,
   isRecord,
   normalizeAuthor,
   optionalRecord,
   optionalString,
   requireNativeInboundId,
-  type NativeIdRule,
 } from "./native-local-mock.js";
 
 type NormalizedWhatsAppWebhookMessage = {
@@ -44,12 +43,6 @@ type NormalizedWhatsAppWebhookMessage = {
   raw?: unknown;
   text?: string;
   threadId?: string;
-};
-
-const WHATSAPP_WA_ID_RULE: NativeIdRule = {
-  example: "15551234567",
-  name: "WhatsApp wa_id",
-  pattern: /^\d{7,15}$/u,
 };
 
 const DEFAULT_WHATSAPP_WEBHOOK = {
@@ -81,10 +74,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
 
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
-      codec: createNativeTargetCodec({
-        channel: WHATSAPP_WA_ID_RULE,
-        channelLabel: "WhatsApp wa_id",
-      }),
+      codec: getBuiltinTargetCodec("whatsapp"),
       config,
       id,
       options: {

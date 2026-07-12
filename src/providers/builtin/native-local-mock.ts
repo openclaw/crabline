@@ -1,7 +1,6 @@
 import { CrablineError } from "../../core/errors.js";
-import type { LocalMockTargetCodec } from "../local-mock.js";
 import type { NativeIdRule } from "../native-ids.js";
-import type { InboundEnvelope, NormalizedTarget, ProviderContext } from "../types.js";
+import type { InboundEnvelope } from "../types.js";
 
 export type { NativeIdRule } from "../native-ids.js";
 
@@ -38,15 +37,6 @@ export function normalizeAuthor(value: unknown): "assistant" | "system" | "user"
   return value === "assistant" || value === "system" || value === "user" ? value : undefined;
 }
 
-export function requireNativeId(value: string, rule: NativeIdRule, label: string): string {
-  if (!rule.pattern.test(value)) {
-    throw new CrablineError(`${label} must be a native ${rule.name} such as ${rule.example}.`, {
-      kind: "config",
-    });
-  }
-  return value;
-}
-
 export function requireNativeInboundId(value: string, rule: NativeIdRule, label: string): string {
   if (!rule.pattern.test(value)) {
     throw new CrablineError(`${label} must be a native ${rule.name} such as ${rule.example}.`, {
@@ -54,40 +44,6 @@ export function requireNativeInboundId(value: string, rule: NativeIdRule, label:
     });
   }
   return value;
-}
-
-export function createNativeTargetCodec(options: {
-  channel: NativeIdRule;
-  channelLabel?: string | undefined;
-  thread?: NativeIdRule | undefined;
-  threadLabel?: string | undefined;
-}): LocalMockTargetCodec {
-  const channelLabel = options.channelLabel ?? "channelId";
-  const threadLabel = options.threadLabel ?? "threadId";
-  const threadRule = options.thread ?? options.channel;
-
-  return {
-    normalize(target: ProviderContext["fixture"]["target"]): NormalizedTarget {
-      const channelId = requireNativeId(
-        target.channelId ?? target.id,
-        options.channel,
-        channelLabel,
-      );
-      const normalized: NormalizedTarget = {
-        channelId,
-        id: target.id,
-        metadata: target.metadata,
-      };
-      if (target.threadId) {
-        normalized.threadId = requireNativeId(target.threadId, threadRule, threadLabel);
-      }
-      return normalized;
-    },
-    resolveThreadId(target) {
-      const normalized = this.normalize(target);
-      return normalized.threadId ?? normalized.channelId ?? normalized.id;
-    },
-  };
 }
 
 export function genericMockPayloadWithNativeThread(params: {

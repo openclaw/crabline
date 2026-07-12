@@ -3,15 +3,14 @@ import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
+import { DISCORD_SNOWFLAKE_RULE, getBuiltinTargetCodec } from "../target-normalizers.js";
 import {
   authorFromBotFlag,
-  createNativeTargetCodec,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
   optionalString,
   requireNativeInboundId,
-  type NativeIdRule,
 } from "./native-local-mock.js";
 
 type DiscordEnvironment = Partial<
@@ -46,19 +45,6 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
     ? path.resolve(configuredPath)
     : path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
 }
-
-const DISCORD_SNOWFLAKE_RULE: NativeIdRule = {
-  example: "123456789012345678",
-  name: "Discord snowflake id",
-  pattern: /^\d{17,20}$/u,
-};
-
-const DISCORD_CODEC = createNativeTargetCodec({
-  channel: DISCORD_SNOWFLAKE_RULE,
-  channelLabel: "Discord channel_id",
-  thread: DISCORD_SNOWFLAKE_RULE,
-  threadLabel: "Discord thread id",
-});
 
 function normalizeDiscordWebhookPayload(payload: unknown) {
   if (!isRecord(payload)) {
@@ -105,7 +91,7 @@ function normalizeDiscordWebhookPayload(payload: unknown) {
 export class DiscordProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string) {
     super({
-      codec: DISCORD_CODEC,
+      codec: getBuiltinTargetCodec("discord"),
       config,
       id,
       options: {

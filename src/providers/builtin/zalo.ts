@@ -3,22 +3,15 @@ import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
+import { getBuiltinTargetCodec, ZALO_ID_RULE } from "../target-normalizers.js";
 import {
   authorFromBotFlag,
-  createNativeTargetCodec,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
   optionalString,
   requireNativeInboundId,
-  type NativeIdRule,
 } from "./native-local-mock.js";
-
-const ZALO_ID_RULE: NativeIdRule = {
-  example: "123456789012345678",
-  name: "Zalo user or OA id",
-  pattern: /^\d{6,20}$/u,
-};
 
 export function resolveZaloAdapterConfig(
   config: ProviderConfig,
@@ -33,10 +26,7 @@ export function resolveZaloAdapterConfig(
 export class ZaloProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
-      codec: createNativeTargetCodec({
-        channel: ZALO_ID_RULE,
-        channelLabel: "Zalo user_id or oa_id",
-      }),
+      codec: getBuiltinTargetCodec("zalo"),
       config,
       id,
       options: {

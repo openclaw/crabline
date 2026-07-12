@@ -3,23 +3,15 @@ import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
+import { getBuiltinTargetCodec, IMESSAGE_THREAD_RULE } from "../target-normalizers.js";
 import {
   authorFromBotFlag,
-  createNativeTargetCodec,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
   optionalString,
   requireNativeInboundId,
-  type NativeIdRule,
 } from "./native-local-mock.js";
-
-const IMESSAGE_THREAD_RULE: NativeIdRule = {
-  example: "+15551234567, user@example.com, or iMessage;-;chat-guid",
-  name: "iMessage recipient or chat GUID",
-  pattern:
-    /^(?:\+[1-9]\d{6,14}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|(?:iMessage|SMS);[+-];.+)$/u,
-};
 
 export function resolveIMessageAdapterConfig(
   config: ProviderConfig,
@@ -35,10 +27,7 @@ export function resolveIMessageAdapterConfig(
 export class IMessageProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
-      codec: createNativeTargetCodec({
-        channel: IMESSAGE_THREAD_RULE,
-        channelLabel: "iMessage recipient or chat GUID",
-      }),
+      codec: getBuiltinTargetCodec("imessage"),
       config,
       id,
       options: {

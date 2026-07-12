@@ -1,38 +1,15 @@
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { LocalMockProviderAdapter, type LocalMockTargetCodec } from "../local-mock.js";
-import type {
-  InboundEnvelope,
-  NormalizedTarget,
-  ProviderAdapter,
-  ProviderContext,
-} from "../types.js";
+import { LocalMockProviderAdapter } from "../local-mock.js";
+import { SLACK_CHANNEL_ID_RULE, SLACK_TS_RULE } from "../slack-ids.js";
+import { getBuiltinTargetCodec } from "../target-normalizers.js";
+import type { InboundEnvelope, ProviderAdapter } from "../types.js";
 import {
   genericMockPayloadWithNativeThread,
   isRecord,
   requireNativeInboundId,
 } from "./native-local-mock.js";
-import { SLACK_CHANNEL_ID_RULE, SLACK_TS_RULE } from "../slack-ids.js";
-
-function requireSlackChannelId(value: string, label: string): string {
-  if (!SLACK_CHANNEL_ID_RULE.pattern.test(value)) {
-    throw new CrablineError(
-      `Slack ${label} must be a native Slack conversation id such as C1234567890, G1234567890, or D1234567890.`,
-      { kind: "config" },
-    );
-  }
-  return value;
-}
-
-function requireSlackThreadTs(value: string, label: string): string {
-  if (!SLACK_TS_RULE.pattern.test(value)) {
-    throw new CrablineError(`Slack ${label} must be a Slack timestamp such as 1700000000.000100.`, {
-      kind: "config",
-    });
-  }
-  return value;
-}
 
 function slackAuthorFromEvent(event: Record<string, unknown>): InboundEnvelope["author"] {
   if (typeof event.bot_id === "string" || event.subtype === "bot_message") {
@@ -78,29 +55,10 @@ function normalizeSlackEventsPayload(payload: unknown) {
   });
 }
 
-const SLACK_CODEC: LocalMockTargetCodec = {
-  normalize(target: ProviderContext["fixture"]["target"]): NormalizedTarget {
-    const channelId = requireSlackChannelId(target.channelId ?? target.id, "channelId");
-    const normalized: NormalizedTarget = {
-      channelId,
-      id: target.id,
-      metadata: target.metadata,
-    };
-    if (target.threadId) {
-      normalized.threadId = requireSlackThreadTs(target.threadId, "threadId");
-    }
-    return normalized;
-  },
-  resolveThreadId(target) {
-    const normalized = this.normalize(target);
-    return normalized.threadId ?? normalized.channelId ?? normalized.id;
-  },
-};
-
 export class SlackProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
-      codec: SLACK_CODEC,
+      codec: getBuiltinTargetCodec("slack"),
       config,
       id,
       options: {

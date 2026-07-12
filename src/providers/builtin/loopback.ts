@@ -1,6 +1,7 @@
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { createGenericLocalMockTargetCodec, LocalMockProviderAdapter } from "../local-mock.js";
+import { LocalMockProviderAdapter } from "../local-mock.js";
+import { getBuiltinTargetCodec } from "../target-normalizers.js";
 import type { LoopbackMessage, LoopbackRawMessage, ProviderAdapter } from "../types.js";
 
 type ThreadAddress = {
@@ -242,7 +243,7 @@ export class LoopbackChatAdapter {
 export class LoopbackProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string) {
     super({
-      codec: createGenericLocalMockTargetCodec("loopback"),
+      codec: getBuiltinTargetCodec("loopback"),
       config,
       id,
       options: {

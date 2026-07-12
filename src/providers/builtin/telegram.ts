@@ -2,18 +2,21 @@ import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
+import {
+  getBuiltinTargetCodec,
+  parseCanonicalTelegramTopic,
+  TELEGRAM_CHAT_ID_RULE,
+  TELEGRAM_MESSAGE_THREAD_ID_RULE,
+} from "../target-normalizers.js";
 import type { ProviderAdapter } from "../types.js";
 import {
   authorFromBotFlag,
-  createNativeTargetCodec,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
   optionalString,
   optionalStringish,
-  requireNativeId,
   requireNativeInboundId,
-  type NativeIdRule,
 } from "./native-local-mock.js";
 
 type TelegramEnvironment = Partial<
@@ -47,82 +50,6 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
   return configuredPath
     ? path.resolve(configuredPath)
     : path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
-}
-
-const TELEGRAM_CHAT_ID_RULE: NativeIdRule = {
-  example: "-1001234567890 or @channelusername",
-  name: "Telegram chat id",
-  pattern: /^(?:-?\d+|@[A-Za-z][A-Za-z0-9_]{4,31})$/u,
-};
-
-const TELEGRAM_MESSAGE_THREAD_ID_RULE: NativeIdRule = {
-  example: "42",
-  name: "Telegram message_thread_id",
-  pattern: /^\d+$/u,
-};
-
-const TELEGRAM_BASE_CODEC = createNativeTargetCodec({
-  channel: TELEGRAM_CHAT_ID_RULE,
-  channelLabel: "Telegram chat_id",
-  thread: TELEGRAM_MESSAGE_THREAD_ID_RULE,
-  threadLabel: "Telegram message_thread_id",
-});
-
-const TELEGRAM_CODEC = {
-  normalize(target: Parameters<typeof TELEGRAM_BASE_CODEC.normalize>[0]) {
-    const canonicalTopic = target.threadId
-      ? parseCanonicalTelegramTopic(target.threadId)
-      : undefined;
-    const targetChatId = target.channelId ?? target.id;
-    if (
-      canonicalTopic &&
-      requireNativeId(targetChatId, TELEGRAM_CHAT_ID_RULE, "Telegram chat_id") !==
-        canonicalTopic.chatId
-    ) {
-      throw new CrablineError("Telegram canonical topic chat_id must match the target chat_id.", {
-        kind: "config",
-      });
-    }
-    const normalized = TELEGRAM_BASE_CODEC.normalize({
-      ...target,
-      ...(canonicalTopic ? { channelId: canonicalTopic.chatId } : {}),
-      threadId: undefined,
-    });
-    if (!target.threadId) {
-      return normalized;
-    }
-    const topicId = requireNativeId(
-      canonicalTopic?.topicId ?? target.threadId,
-      TELEGRAM_MESSAGE_THREAD_ID_RULE,
-      "Telegram message_thread_id",
-    );
-    return {
-      ...normalized,
-      threadId: `${normalized.channelId}:${topicId}`,
-    };
-  },
-  resolveThreadId(target: Parameters<typeof TELEGRAM_BASE_CODEC.resolveThreadId>[0]) {
-    const normalized = this.normalize(target);
-    return normalized.threadId ?? normalized.channelId ?? normalized.id;
-  },
-};
-
-function parseCanonicalTelegramTopic(
-  value: string,
-): { chatId: string; topicId: string } | undefined {
-  const separator = value.lastIndexOf(":");
-  if (separator <= 0) {
-    return undefined;
-  }
-  const chatId = value.slice(0, separator);
-  const topicId = value.slice(separator + 1);
-  if (
-    !TELEGRAM_CHAT_ID_RULE.pattern.test(chatId) ||
-    !TELEGRAM_MESSAGE_THREAD_ID_RULE.pattern.test(topicId)
-  ) {
-    return undefined;
-  }
-  return { chatId, topicId };
 }
 
 function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {
@@ -223,7 +150,7 @@ export function normalizeTelegramWebhookPayload(payload: unknown) {
 export class TelegramProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string) {
     super({
-      codec: TELEGRAM_CODEC,
+      codec: getBuiltinTargetCodec("telegram"),
       config,
       id,
       options: {

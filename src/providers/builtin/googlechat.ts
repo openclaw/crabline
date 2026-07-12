@@ -4,27 +4,18 @@ import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
 import {
+  getBuiltinTargetCodec,
+  GOOGLE_CHAT_SPACE_RULE,
+  GOOGLE_CHAT_THREAD_RULE,
+} from "../target-normalizers.js";
+import {
   authorFromBotFlag,
-  createNativeTargetCodec,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
   optionalString,
   requireNativeInboundId,
-  type NativeIdRule,
 } from "./native-local-mock.js";
-
-const GOOGLE_CHAT_SPACE_RULE: NativeIdRule = {
-  example: "spaces/AAAABbbbCCC",
-  name: "Google Chat space name",
-  pattern: /^spaces\/[A-Za-z0-9_-]+$/u,
-};
-
-const GOOGLE_CHAT_THREAD_RULE: NativeIdRule = {
-  example: "spaces/AAAABbbbCCC/threads/BBBBccccDDD",
-  name: "Google Chat thread name",
-  pattern: /^spaces\/[A-Za-z0-9_-]+\/threads\/[A-Za-z0-9_-]+$/u,
-};
 
 export function resolveGoogleChatAdapterConfig(
   config: ProviderConfig,
@@ -40,12 +31,7 @@ export function resolveGoogleChatAdapterConfig(
 export class GoogleChatProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
-      codec: createNativeTargetCodec({
-        channel: GOOGLE_CHAT_SPACE_RULE,
-        channelLabel: "Google Chat space.name",
-        thread: GOOGLE_CHAT_THREAD_RULE,
-        threadLabel: "Google Chat thread.name",
-      }),
+      codec: getBuiltinTargetCodec("googlechat"),
       config,
       id,
       options: {

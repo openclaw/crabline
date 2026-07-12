@@ -3,22 +3,15 @@ import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
+import { getBuiltinTargetCodec, MSTEAMS_CONVERSATION_ID_RULE } from "../target-normalizers.js";
 import {
   authorFromBotFlag,
-  createNativeTargetCodec,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
   optionalString,
   requireNativeInboundId,
-  type NativeIdRule,
 } from "./native-local-mock.js";
-
-const MSTEAMS_CONVERSATION_ID_RULE: NativeIdRule = {
-  example: "a:opaque-conversation-id",
-  name: "Microsoft Teams conversation id",
-  pattern: /^.+$/su,
-};
 
 export function resolveMsTeamsAdapterConfig(
   config: ProviderConfig,
@@ -36,10 +29,7 @@ export function resolveMsTeamsAdapterConfig(
 export class MsTeamsProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     super({
-      codec: createNativeTargetCodec({
-        channel: MSTEAMS_CONVERSATION_ID_RULE,
-        channelLabel: "Microsoft Teams conversation.id",
-      }),
+      codec: getBuiltinTargetCodec("msteams"),
       config,
       id,
       options: {
