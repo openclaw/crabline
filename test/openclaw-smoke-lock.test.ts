@@ -14,6 +14,83 @@ const disableHeartbeat = (_renew: () => Promise<void>, _intervalMs: number) => (
 });
 
 describe("OpenClaw smoke lock cleanup", () => {
+  it("secures an empty Windows lock directory before writing sensitive contents", async () => {
+    const outputDir = await createTempDir();
+    const destinationPath = path.join(outputDir, "current.json");
+    const events: string[] = [];
+    try {
+      const secureWindowsDirectory = vi.fn(async (directoryPath: string) => {
+        events.push("secure");
+        expect(await fs.readdir(directoryPath)).toEqual([]);
+      });
+      const lock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          now: () => 1_000,
+          pid: 4_242,
+          platform: "win32",
+          processStartedAtMs: 100,
+          secureWindowsDirectory,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+
+      const lockDirectory = path.join(
+        path.resolve(outputDir),
+        `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+      );
+      expect(await fs.readdir(lockDirectory)).toEqual(expect.arrayContaining(["owner.json"]));
+
+      await lock.commitFileAtomically({
+        contents: "private\n",
+        destinationPath,
+        stageFile: async (filePath, contents) => {
+          events.push("stage");
+          expect(events).toEqual(["secure", "stage"]);
+          await fs.writeFile(filePath, contents);
+        },
+      });
+
+      expect(secureWindowsDirectory).toHaveBeenCalledTimes(1);
+      expect(events).toEqual(["secure", "stage"]);
+      await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe("private\n");
+      await lock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("fails closed before writing Windows lock contents when directory security fails", async () => {
+    const outputDir = await createTempDir();
+    const aclError = new Error("ACL unavailable");
+    try {
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(
+          { channel: "telegram", outputDir },
+          {
+            now: () => 1_000,
+            pid: 4_242,
+            platform: "win32",
+            processStartedAtMs: 100,
+            secureWindowsDirectory: async (directoryPath) => {
+              expect(await fs.readdir(directoryPath)).toEqual([]);
+              throw aclError;
+            },
+            startHeartbeat: disableHeartbeat,
+          },
+        ),
+      ).rejects.toBe(aclError);
+
+      expect(
+        (await fs.readdir(outputDir)).filter((entry) =>
+          entry.includes(`.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`),
+        ),
+      ).toEqual([]);
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("retries release with bounded backoff before unwinding", async () => {
     const releaseError = new Error("transient removal failure");
     const release = vi
