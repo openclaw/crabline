@@ -182,7 +182,7 @@ describe("slack provider", () => {
       ...context,
       nonce: "nonce-2",
       since: new Date(Date.now() - 1000).toISOString(),
-      threadId: threadKey,
+      threadId: "1700000000.000100",
       timeoutMs: 500,
     });
 

@@ -92,6 +92,15 @@ function matchesSlackThread(candidateThreadId: string, expectedThreadId?: string
     return true;
   }
   const marker = ":thread:";
+  if (SLACK_TS_RULE.pattern.test(expectedThreadId)) {
+    const separator = candidateThreadId.indexOf(marker);
+    if (separator <= 0) {
+      return false;
+    }
+    const channelId = candidateThreadId.slice(0, separator);
+    const threadTs = candidateThreadId.slice(separator + marker.length);
+    return SLACK_CHANNEL_ID_RULE.pattern.test(channelId) && threadTs === expectedThreadId;
+  }
   const separator = expectedThreadId.indexOf(marker);
   if (separator <= 0) {
     return false;
