@@ -468,6 +468,46 @@ describe("Matrix local provider server", () => {
     });
   });
 
+  it("canonicalizes decoded transaction keys and rejects malformed path encoding", async () => {
+    const server = await startMatrixServer({
+      accessToken: "test-token-placeholder",
+      roomId: "!canonical:matrix.test",
+    });
+    servers.push(server);
+    const first = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!canonical:matrix.test")}/send/m.room.%6dessage/canonical%2Dtransaction`,
+      {
+        body: JSON.stringify({ body: "canonical body", msgtype: "m.text" }),
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    const firstBody = (await first.json()) as { event_id: string };
+    const replay = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!canonical:matrix.test")}/send/m.room.message/canonical-transaction`,
+      {
+        body: JSON.stringify({ body: "must be ignored", msgtype: "m.text" }),
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    await expect(replay.json()).resolves.toEqual(firstBody);
+
+    const malformed = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/%E0%A4%A/send/m.room.message/malformed`,
+      {
+        body: JSON.stringify({ body: "not sent", msgtype: "m.text" }),
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toEqual({
+      errcode: "M_INVALID_PARAM",
+      error: "Invalid request path encoding",
+    });
+  });
+
   it("provisions direct rooms with native Matrix membership evidence", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -679,7 +719,65 @@ describe("Matrix local provider server", () => {
     });
   });
 
-  it("bounds timelines without evicting accepted transaction responses", async () => {
+  it("includes omitted state changes when an incremental timeline is limited", async () => {
+    const server = await startMatrixServer({
+      accessToken: "test-token-placeholder",
+      adminToken: "test-auth-token",
+    });
+    servers.push(server);
+    const roomId = "!limited-state:matrix.test";
+    const sendInbound = (senderName: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          roomId,
+          senderId: "@alice:matrix.test",
+          senderName,
+          text: `hello from ${senderName}`,
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "test-auth-token",
+        },
+        method: "POST",
+      });
+    expect((await sendInbound("Alice")).status).toBe(200);
+    const initial = (await (
+      await fetch(server.manifest.endpoints.syncUrl, {
+        headers: auth("test-token-placeholder"),
+      })
+    ).json()) as { next_batch: string };
+    expect((await sendInbound("Alicia")).status).toBe(200);
+
+    const filter = encodeURIComponent(JSON.stringify({ room: { timeline: { limit: 1 } } }));
+    const sync = (await (
+      await fetch(
+        `${server.manifest.endpoints.syncUrl}?since=${initial.next_batch}&filter=${filter}`,
+        { headers: auth("test-token-placeholder") },
+      )
+    ).json()) as {
+      rooms: {
+        join: Record<
+          string,
+          {
+            state: { events: MatrixEvent[] };
+            timeline: { events: MatrixEvent[]; limited: boolean };
+          }
+        >;
+      };
+    };
+    const room = sync.rooms.join[roomId];
+    expect(room?.timeline.limited).toBe(true);
+    expect(room?.timeline.events).toHaveLength(1);
+    expect(room?.state.events).toContainEqual(
+      expect.objectContaining({
+        content: { displayname: "Alicia", membership: "join" },
+        state_key: "@alice:matrix.test",
+        type: "m.room.member",
+      }),
+    );
+  });
+
+  it("bounds timelines and retains recently replayed transactions", async () => {
     const server = await startMatrixServer({
       accessToken: "test-token-placeholder",
       roomId: "!bounded:matrix.test",
@@ -721,19 +819,24 @@ describe("Matrix local provider server", () => {
       }
     }
     expect(typingStatus).toBe(200);
-    const exhausted = await fetch(
-      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-1000`,
+    const refreshed = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-0`,
       {
-        body: JSON.stringify({ body: "over capacity", msgtype: "m.text" }),
+        body: JSON.stringify({ body: "transaction remains idempotent", msgtype: "m.text" }),
         headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
         method: "PUT",
       },
     );
-    expect(exhausted.status).toBe(503);
-    await expect(exhausted.json()).resolves.toMatchObject({
-      admin_contact: "mailto:admin@example.invalid",
-      errcode: "M_RESOURCE_LIMIT_EXCEEDED",
-    });
+    await expect(refreshed.json()).resolves.toEqual({ event_id: firstEventId });
+    const admitted = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-1000`,
+      {
+        body: JSON.stringify({ body: "after capacity", msgtype: "m.text" }),
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    expect(admitted.status).toBe(200);
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
         roomId: "!bounded:matrix.test",
@@ -764,7 +867,7 @@ describe("Matrix local provider server", () => {
     ).json()) as {
       rooms: { join: Record<string, { timeline: { limited: boolean } }> };
     };
-    expect(resumed.rooms.join["!bounded:matrix.test"]?.timeline.limited).toBe(false);
+    expect(resumed.rooms.join["!bounded:matrix.test"]?.timeline.limited).toBe(true);
 
     const retried = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-0`,

@@ -38,6 +38,7 @@ type MatrixRoom = {
   lastDroppedTimelineSequence: number | undefined;
   name: string;
   state: MatrixEvent[];
+  stateBeforeTimeline: Map<string, MatrixEvent>;
   timeline: Array<{ sequence: number; event: MatrixEvent }>;
   typingTimeouts: Map<string, NodeJS.Timeout>;
   typingUsers: Set<string>;
@@ -46,6 +47,7 @@ type MatrixRoom = {
 
 type MatrixTransactionResponse = {
   body: Record<string, unknown>;
+  expiresAt: number;
   status: number;
 };
 
@@ -68,7 +70,15 @@ type MatrixServerState = {
 
 const MAX_MATRIX_TIMELINE_EVENTS = 1_000;
 const MAX_MATRIX_TRANSACTION_RESPONSES = 1_000;
+const MATRIX_TRANSACTION_RETENTION_MS = 10 * 60_000;
 const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
+
+class InvalidMatrixPathEncodingError extends Error {
+  constructor() {
+    super("Matrix request path contains invalid percent encoding.");
+    this.name = "InvalidMatrixPathEncodingError";
+  }
+}
 
 export type MatrixServerManifest = {
   accessToken: string;
@@ -125,6 +135,14 @@ function authorized(request: IncomingMessage, token: string): boolean {
 
 function matrixError(errcode: string, error: string, status: number): Response {
   return jsonResponse({ errcode, error }, status);
+}
+
+function decodeMatrixPathSegment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new InvalidMatrixPathEncodingError();
+  }
 }
 
 function eventId(state: MatrixServerState): string {
@@ -189,6 +207,7 @@ function createRoom(params: {
     lastDroppedTimelineSequence: undefined,
     name: params.name,
     state: [],
+    stateBeforeTimeline: new Map(),
     timeline: [],
     typingTimeouts: new Map(),
     typingUsers: new Set(),
@@ -224,7 +243,14 @@ function createRoom(params: {
       type: "m.room.name",
     }),
   );
+  for (const event of room.state) {
+    room.stateBeforeTimeline.set(matrixStateKey(event), event);
+  }
   return room;
+}
+
+function matrixStateKey(event: MatrixEvent): string {
+  return JSON.stringify([event.type, event.state_key ?? ""]);
 }
 
 function appendTimelineEvent(
@@ -235,6 +261,11 @@ function appendTimelineEvent(
   if (room.timeline.length > MAX_MATRIX_TIMELINE_EVENTS) {
     const dropped = room.timeline.splice(0, room.timeline.length - MAX_MATRIX_TIMELINE_EVENTS);
     room.lastDroppedTimelineSequence = dropped.at(-1)?.sequence;
+    for (const droppedEntry of dropped) {
+      if (droppedEntry.event.state_key !== undefined) {
+        room.stateBeforeTimeline.set(matrixStateKey(droppedEntry.event), droppedEntry.event);
+      }
+    }
   }
 }
 
@@ -264,18 +295,40 @@ function rememberTransaction(
   key: string,
   response: MatrixTransactionResponse,
 ): void {
+  forgetExpiredTransactions(state);
   state.transactions.set(key, response);
+  while (state.transactions.size > MAX_MATRIX_TRANSACTION_RESPONSES) {
+    const oldestKey = state.transactions.keys().next().value;
+    if (oldestKey === undefined) {
+      break;
+    }
+    state.transactions.delete(oldestKey);
+  }
 }
 
-function matrixTransactionCapacityError(): Response {
-  return jsonResponse(
-    {
-      admin_contact: "mailto:admin@example.invalid",
-      errcode: "M_RESOURCE_LIMIT_EXCEEDED",
-      error: "Transaction response capacity has been reached",
-    },
-    503,
-  );
+function forgetExpiredTransactions(state: MatrixServerState): void {
+  const now = Date.now();
+  for (const [key, response] of state.transactions) {
+    if (response.expiresAt > now) {
+      break;
+    }
+    state.transactions.delete(key);
+  }
+}
+
+function transactionResponse(
+  state: MatrixServerState,
+  key: string,
+): MatrixTransactionResponse | undefined {
+  forgetExpiredTransactions(state);
+  const response = state.transactions.get(key);
+  if (!response) {
+    return undefined;
+  }
+  state.transactions.delete(key);
+  response.expiresAt = Date.now() + MATRIX_TRANSACTION_RETENTION_MS;
+  state.transactions.set(key, response);
+  return response;
 }
 
 function readTimelineLimit(filter: Record<string, unknown> | undefined): number | undefined {
@@ -315,6 +368,19 @@ function syncRoom(room: MatrixRoom, since: number | undefined, timelineLimit: nu
   const historyWasTrimmed =
     room.lastDroppedTimelineSequence !== undefined &&
     (since === undefined || since < room.lastDroppedTimelineSequence);
+  const limited = historyWasTrimmed || timeline.length < available.length;
+  const omittedTimeline = available.slice(0, available.length - timeline.length);
+  const omittedState = new Map<string, MatrixEvent>();
+  if (historyWasTrimmed) {
+    for (const [key, event] of room.stateBeforeTimeline) {
+      omittedState.set(key, event);
+    }
+  }
+  for (const entry of omittedTimeline) {
+    if (entry.event.state_key !== undefined) {
+      omittedState.set(matrixStateKey(entry.event), entry.event);
+    }
+  }
   return {
     account_data: { events: [] },
     ephemeral: {
@@ -322,10 +388,17 @@ function syncRoom(room: MatrixRoom, since: number | undefined, timelineLimit: nu
         .filter((entry) => since === undefined || entry.sequence > since)
         .map((entry) => entry.event),
     },
-    state: { events: since === undefined || room.createdSequence > since ? room.state : [] },
+    state: {
+      events:
+        since === undefined || room.createdSequence > since
+          ? room.state
+          : limited
+            ? [...omittedState.values()]
+            : [],
+    },
     timeline: {
       events: timeline.map((entry) => entry.event),
-      limited: historyWasTrimmed || timeline.length < available.length,
+      limited,
       prev_batch: `s${firstSequence === undefined ? (since ?? 0) : firstSequence - 1}`,
     },
     unread_notifications: { highlight_count: 0, notification_count: 0 },
@@ -378,7 +451,7 @@ async function handleSync(url: URL, state: MatrixServerState): Promise<Response>
 }
 
 function findRoom(state: MatrixServerState, encodedRoomId: string): MatrixRoom | undefined {
-  return state.rooms.get(decodeURIComponent(encodedRoomId));
+  return state.rooms.get(decodeMatrixPathSegment(encodedRoomId));
 }
 
 async function handleAdminInbound(params: {
@@ -489,7 +562,7 @@ async function handleMatrixApi(params: {
   }
   let match = /^\/profile\/([^/]+)$/u.exec(relativePath);
   if (params.method === "GET" && match) {
-    const userId = decodeURIComponent(match[1]!);
+    const userId = decodeMatrixPathSegment(match[1]!);
     const member = [...params.state.rooms.values()]
       .map((room) => room.users.get(userId))
       .find((profile) => profile !== undefined);
@@ -510,7 +583,7 @@ async function handleMatrixApi(params: {
 
   match = /^\/user\/([^/]+)\/filter$/u.exec(relativePath);
   if (params.method === "POST" && match) {
-    const userId = decodeURIComponent(match[1]!);
+    const userId = decodeMatrixPathSegment(match[1]!);
     if (userId !== params.state.botUserId) {
       return matrixError("M_FORBIDDEN", "Cannot create a filter for another user", 403);
     }
@@ -521,11 +594,11 @@ async function handleMatrixApi(params: {
 
   match = /^\/user\/([^/]+)\/filter\/([^/]+)$/u.exec(relativePath);
   if (params.method === "GET" && match) {
-    const userId = decodeURIComponent(match[1]!);
+    const userId = decodeMatrixPathSegment(match[1]!);
     if (userId !== params.state.botUserId) {
       return matrixError("M_FORBIDDEN", "Cannot get filters for another user", 403);
     }
-    const filter = params.state.filters.get(decodeURIComponent(match[2]!));
+    const filter = params.state.filters.get(decodeMatrixPathSegment(match[2]!));
     return filter ? jsonResponse(filter) : matrixError("M_NOT_FOUND", "Unknown filter", 404);
   }
 
@@ -543,8 +616,8 @@ async function handleMatrixApi(params: {
     if (!room) {
       return matrixError("M_NOT_FOUND", "Unknown room", 404);
     }
-    const eventType = decodeURIComponent(match[2]!);
-    const stateKey = decodeURIComponent(match[3] ?? "");
+    const eventType = decodeMatrixPathSegment(match[2]!);
+    const stateKey = decodeMatrixPathSegment(match[3] ?? "");
     if (eventType === "m.room.name" && stateKey === "") {
       return jsonResponse({ name: room.name });
     }
@@ -564,18 +637,27 @@ async function handleMatrixApi(params: {
 
   match = /^\/rooms\/([^/]+)\/send\/([^/]+)\/([^/]+)$/u.exec(relativePath);
   if (params.method === "PUT" && match) {
-    const transactionKey = relativePath;
-    const existingResponse = params.state.transactions.get(transactionKey);
+    const roomId = decodeMatrixPathSegment(match[1]!);
+    const eventType = decodeMatrixPathSegment(match[2]!);
+    const transactionId = decodeMatrixPathSegment(match[3]!);
+    const transactionKey = JSON.stringify([
+      params.state.botUserId,
+      roomId,
+      eventType,
+      transactionId,
+    ]);
+    const existingResponse = transactionResponse(params.state, transactionKey);
     if (existingResponse) {
       return jsonResponse(existingResponse.body, existingResponse.status);
     }
-    if (params.state.transactions.size >= MAX_MATRIX_TRANSACTION_RESPONSES) {
-      return matrixTransactionCapacityError();
-    }
-    const room = findRoom(params.state, match[1]!);
+    const room = params.state.rooms.get(roomId);
     if (!room) {
       const body = { errcode: "M_NOT_FOUND", error: "Unknown room" };
-      rememberTransaction(params.state, transactionKey, { body, status: 404 });
+      rememberTransaction(params.state, transactionKey, {
+        body,
+        expiresAt: Date.now() + MATRIX_TRANSACTION_RETENTION_MS,
+        status: 404,
+      });
       return jsonResponse(body, 404);
     }
     const event = createEvent({
@@ -583,12 +665,16 @@ async function handleMatrixApi(params: {
       roomId: room.id,
       sender: params.state.botUserId,
       state: params.state,
-      transactionId: decodeURIComponent(match[3]!),
-      type: decodeURIComponent(match[2]!),
+      transactionId,
+      type: eventType,
     });
     appendTimelineEvent(room, { event, sequence: params.state.nextSequence++ });
     const body = { event_id: event.event_id };
-    rememberTransaction(params.state, transactionKey, { body, status: 200 });
+    rememberTransaction(params.state, transactionKey, {
+      body,
+      expiresAt: Date.now() + MATRIX_TRANSACTION_RETENTION_MS,
+      status: 200,
+    });
     notifySyncWaiters(params.state);
     return jsonResponse(body);
   }
@@ -599,7 +685,7 @@ async function handleMatrixApi(params: {
     if (!room) {
       return matrixError("M_NOT_FOUND", "Unknown room", 404);
     }
-    const userId = decodeURIComponent(match[2]!);
+    const userId = decodeMatrixPathSegment(match[2]!);
     if (userId !== params.state.botUserId) {
       return matrixError("M_FORBIDDEN", "Cannot set typing state for another user", 403);
     }
@@ -649,7 +735,7 @@ async function handleMatrixApi(params: {
     if (!room) {
       return matrixError("M_NOT_FOUND", "Unknown room", 404);
     }
-    const receiptEventId = decodeURIComponent(match[2]!);
+    const receiptEventId = decodeMatrixPathSegment(match[2]!);
     appendEphemeralEvent(room, {
       event: {
         content: {
@@ -716,6 +802,9 @@ export async function startMatrixServer(
       }
       if (error instanceof RequestBodyTooLargeError) {
         return matrixError("M_TOO_LARGE", "Request body is too large", 413);
+      }
+      if (error instanceof InvalidMatrixPathEncodingError) {
+        return matrixError("M_INVALID_PARAM", "Invalid request path encoding", 400);
       }
       return matrixError("M_UNKNOWN", "Internal server error", 500);
     },
