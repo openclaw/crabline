@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
-import { Agent } from "node:http";
+import { Agent, ServerResponse } from "node:http";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { startSignalServer, type StartedSignalServer } from "../src/index.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
@@ -180,6 +180,82 @@ describe("signal local provider server", () => {
       error: "Pending inbound queue is full (1 events)",
       ok: false,
     });
+  });
+
+  it("resumes queued event delivery after SSE backpressure drains", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ sourceNumber: "+15557654321", text }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+    expect((await sendInbound("first queued")).status).toBe(200);
+    expect((await sendInbound("second queued")).status).toBe(200);
+
+    const originalWrite = ServerResponse.prototype.write;
+    let backpressuredResponse: ServerResponse | undefined;
+    const write = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<typeof originalWrite>
+    ) {
+      const accepted = Reflect.apply(originalWrite, this, args) as boolean;
+      if (
+        backpressuredResponse === undefined &&
+        typeof args[0] === "string" &&
+        args[0].startsWith("event:receive")
+      ) {
+        backpressuredResponse = this;
+        return false;
+      }
+      return accepted;
+    });
+    const controller = new AbortController();
+    try {
+      const events = await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: controller.signal,
+      });
+      await vi.waitFor(() => expect(backpressuredResponse).toBeDefined());
+      backpressuredResponse!.emit("drain");
+
+      const reader = events.body!.getReader();
+      const decoder = new TextDecoder();
+      let received = "";
+      while (!received.includes("second queued")) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          break;
+        }
+        received += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(received).toContain("first queued");
+      expect(received).toContain("second queued");
+    } finally {
+      controller.abort();
+      write.mockRestore();
+    }
+  });
+
+  it("bounds concurrent event stream clients", async () => {
+    const server = await startSignalServer({ maxSseClients: 1 });
+    servers.push(server);
+    const controller = new AbortController();
+    const first = await fetch(server.manifest.endpoints.eventsUrl, {
+      signal: controller.signal,
+    });
+    expect(first.status).toBe(200);
+
+    const overloaded = await fetch(server.manifest.endpoints.eventsUrl);
+    expect(overloaded.status).toBe(503);
+    await expect(overloaded.json()).resolves.toEqual({
+      error: "Too many event stream clients",
+      ok: false,
+    });
+    controller.abort();
   });
 
   it("drains unauthenticated admin request bodies", async () => {

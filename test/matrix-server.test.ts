@@ -220,7 +220,7 @@ describe("Matrix local provider server", () => {
     });
     servers.push(server);
 
-    for (const since of ["", "0", "s-1", "snot-a-sequence", `s${"9".repeat(32)}`]) {
+    for (const since of ["", "0", "s-1", "s1", "snot-a-sequence", `s${"9".repeat(32)}`]) {
       const response = await fetch(
         `${server.manifest.endpoints.syncUrl}?since=${encodeURIComponent(since)}`,
         {

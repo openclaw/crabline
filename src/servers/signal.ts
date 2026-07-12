@@ -24,7 +24,9 @@ type SignalServerState = {
   account: string;
   adminToken: string;
   clients: Set<ServerResponse>;
+  drainingClients: WeakSet<ServerResponse>;
   maxPendingInboundEvents: number;
+  maxSseClients: number;
   nextTimestamp: number;
   onEvent: ServerEventObserver | undefined;
   pendingEvents: string[];
@@ -32,6 +34,9 @@ type SignalServerState = {
 };
 
 const SIGNAL_CLI_SSE_KEEPALIVE_MS = 15_000;
+const DEFAULT_MAX_SIGNAL_SSE_CLIENTS = 32;
+const MAX_SIGNAL_SSE_BUFFER_BYTES = 2 * 1024 * 1024;
+type SignalSseWriteResult = "accepted" | "backpressured" | "rejected";
 
 export type SignalServerManifest = {
   account: string;
@@ -62,6 +67,7 @@ export type StartSignalServerParams = {
   port?: number | undefined;
   recorderPath?: string | undefined;
   maxPendingInboundEvents?: number | undefined;
+  maxSseClients?: number | undefined;
 };
 
 async function appendEvent(state: SignalServerState, event: ServerRequestEvent): Promise<void> {
@@ -83,19 +89,91 @@ function rpcError(code: number, message: string, id: unknown = null, status = 40
   );
 }
 
+function evictSignalClient(state: SignalServerState, client: ServerResponse): void {
+  state.clients.delete(client);
+  state.drainingClients.delete(client);
+  client.destroy();
+}
+
+function scheduleSignalDrain(state: SignalServerState, client: ServerResponse): void {
+  if (state.drainingClients.has(client) || client.destroyed || client.writableEnded) {
+    return;
+  }
+  state.drainingClients.add(client);
+  client.once("drain", () => {
+    state.drainingClients.delete(client);
+    flushPendingSignalEvents(state, client);
+  });
+}
+
+function writeSignalSse(
+  state: SignalServerState,
+  client: ServerResponse,
+  event: string,
+): SignalSseWriteResult {
+  if (client.destroyed) {
+    state.clients.delete(client);
+    return "rejected";
+  }
+  if (client.writableEnded) {
+    evictSignalClient(state, client);
+    return "rejected";
+  }
+  const eventBytes = Buffer.byteLength(event);
+  if (eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES) {
+    return "rejected";
+  }
+  if (client.writableNeedDrain) {
+    evictSignalClient(state, client);
+    return "rejected";
+  }
+  if (client.writableLength + eventBytes > MAX_SIGNAL_SSE_BUFFER_BYTES) {
+    evictSignalClient(state, client);
+    return "rejected";
+  }
+  if (!client.write(event)) {
+    scheduleSignalDrain(state, client);
+    return "backpressured";
+  }
+  return "accepted";
+}
+
+function queueSignalEvent(state: SignalServerState, event: string): boolean {
+  if (
+    Buffer.byteLength(event) > MAX_SIGNAL_SSE_BUFFER_BYTES ||
+    state.pendingEvents.length >= state.maxPendingInboundEvents
+  ) {
+    return false;
+  }
+  state.pendingEvents.push(event);
+  return true;
+}
+
+function flushPendingSignalEvents(state: SignalServerState, client: ServerResponse): void {
+  while (state.pendingEvents.length > 0) {
+    const result = writeSignalSse(state, client, state.pendingEvents[0]!);
+    if (result === "accepted") {
+      state.pendingEvents.shift();
+      continue;
+    }
+    if (result === "backpressured") {
+      state.pendingEvents.shift();
+    }
+    break;
+  }
+}
+
 function emitSignalEvent(state: SignalServerState, payload: unknown): boolean {
   const event = `event:receive\ndata:${JSON.stringify(payload)}\n\n`;
   if (state.clients.size === 0) {
-    if (state.pendingEvents.length >= state.maxPendingInboundEvents) {
-      return false;
-    }
-    state.pendingEvents.push(event);
-    return true;
+    return queueSignalEvent(state, event);
   }
+  let delivered = false;
   for (const client of state.clients) {
-    client.write(event);
+    const result = writeSignalSse(state, client, event);
+    delivered = result === "accepted" || result === "backpressured" || delivered;
   }
-  return true;
+  return delivered || queueSignalEvent(state, event);
 }
 
 async function handleAdminInbound(params: {
@@ -162,6 +240,13 @@ async function handleRequest(params: {
 }): Promise<void> {
   const url = new URL(params.request.url ?? "/", "http://localhost");
   if (url.pathname === "/api/v1/events" && params.request.method === "GET") {
+    if (params.state.clients.size >= params.state.maxSseClients) {
+      await writeResponse(
+        params.response,
+        jsonResponse({ error: "Too many event stream clients", ok: false }, 503),
+      );
+      return;
+    }
     await appendEvent(params.state, {
       at: new Date().toISOString(),
       method: "GET",
@@ -175,11 +260,12 @@ async function handleRequest(params: {
       "content-type": "text/event-stream",
     });
     params.response.flushHeaders();
+    params.response.once("close", () => {
+      params.state.clients.delete(params.response);
+      params.state.drainingClients.delete(params.response);
+    });
     params.state.clients.add(params.response);
-    for (const event of params.state.pendingEvents.splice(0)) {
-      params.response.write(event);
-    }
-    params.response.once("close", () => params.state.clients.delete(params.response));
+    flushPendingSignalEvents(params.state, params.response);
     return;
   }
 
@@ -245,7 +331,12 @@ export async function startSignalServer(
     account: params.account ?? "+15550000000",
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     clients: new Set(),
+    drainingClients: new WeakSet(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
+    maxSseClients:
+      Number.isSafeInteger(params.maxSseClients) && (params.maxSseClients ?? 0) > 0
+        ? params.maxSseClients!
+        : DEFAULT_MAX_SIGNAL_SSE_CLIENTS,
     nextTimestamp: Date.now(),
     onEvent: params.onEvent,
     pendingEvents: [],
@@ -280,7 +371,7 @@ export async function startSignalServer(
   });
   const keepalive = setInterval(() => {
     for (const client of state.clients) {
-      client.write(":\n");
+      writeSignalSse(state, client, ":\n");
     }
   }, SIGNAL_CLI_SSE_KEEPALIVE_MS);
   keepalive.unref();

@@ -239,7 +239,7 @@ function parseSyncToken(value: string | null): number | null | undefined {
 
 async function handleSync(url: URL, state: MatrixServerState): Promise<Response> {
   const since = parseSyncToken(url.searchParams.get("since"));
-  if (since === null) {
+  if (since === null || (since !== undefined && since > state.nextSequence - 1)) {
     return matrixError("M_UNKNOWN_POS", "Unknown position", 400);
   }
   const timeout = Math.min(readInteger(url.searchParams.get("timeout")) ?? 0, 1_000);
