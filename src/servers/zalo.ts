@@ -66,6 +66,7 @@ type ZaloServerState = {
   botId: string;
   botName: string;
   botToken: string;
+  closing: boolean;
   maxPendingInboundEvents: number;
   nextMessage: number;
   onEvent: ServerEventObserver | undefined;
@@ -347,6 +348,7 @@ export async function postZaloWebhook(params: {
   activeRequests?: Set<ClientRequest>;
   addresses?: WebhookAddress[] | undefined;
   body: string;
+  shouldCancel?: (() => boolean) | undefined;
   timeoutMs: number;
   url: URL;
   verificationValue: string;
@@ -357,6 +359,9 @@ export async function postZaloWebhook(params: {
     params.addresses && params.addresses.length > 0 ? params.addresses : [undefined];
   let lastError: unknown;
   for (const [index, address] of addresses.entries()) {
+    if (params.shouldCancel?.()) {
+      throw new Error("Webhook delivery cancelled.");
+    }
     const remainingMs = deadlineAt - Date.now();
     if (remainingMs <= 0) {
       throw webhookTimeoutError(params.timeoutMs);
@@ -373,6 +378,9 @@ export async function postZaloWebhook(params: {
         activeRequests,
       );
     } catch (error) {
+      if (params.shouldCancel?.()) {
+        throw error;
+      }
       lastError = error;
       if (
         error instanceof DOMException &&
@@ -492,6 +500,7 @@ async function deliverWebhookUpdate(
       activeRequests: state.activeWebhookRequests,
       addresses: target.addresses,
       body: JSON.stringify({ ok: true, result: update }),
+      shouldCancel: () => state.closing,
       timeoutMs: remainingMs,
       url,
       verificationValue: webhook.secretToken,
@@ -686,6 +695,7 @@ export async function startZaloServer(
     botToken:
       params.botToken ??
       (isLoopbackHost(host) ? "crabline-zalo-bot-token" : randomBytes(32).toString("base64url")),
+    closing: false,
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessage: 1,
     onEvent: params.onEvent,
@@ -744,6 +754,7 @@ export async function startZaloServer(
   };
   return {
     async close() {
+      state.closing = true;
       for (const request of state.activeWebhookRequests) {
         request.destroy(new Error("Zalo server is shutting down."));
       }
