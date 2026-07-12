@@ -8,6 +8,14 @@ describe("nonce + matcher", () => {
     expect(extractNonce(`hello ${nonce}`)).toBe(nonce);
   });
 
+  it("requires boundaries outside the nonce alphabet", () => {
+    const nonce = "mp-demo-abc-1234abcd";
+
+    expect(extractNonce(`(${nonce})`)).toBe(nonce);
+    expect(extractNonce(`prefix-${nonce}`)).toBeNull();
+    expect(extractNonce(`${nonce}-suffix`)).toBeNull();
+  });
+
   it("matches inbound messages with nonce", () => {
     const nonce = "mp-demo-abc-1234abcd";
     expect(
@@ -52,7 +60,7 @@ describe("nonce + matcher", () => {
       matchesInbound(
         {
           ...envelope,
-          text: `ACK ${otherNonce} then malformed ${nonce}0`,
+          text: `ACK ${otherNonce} then malformed ${nonce}-suffix`,
         },
         config,
         nonce,

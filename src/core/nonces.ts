@@ -7,7 +7,7 @@ export function createNonce(fixtureId: string): string {
 }
 
 export function extractNonces(text: string): string[] {
-  return text.match(/\bmp-[a-z0-9-]+-[a-z0-9]+-[a-f0-9]{8}\b/gi) ?? [];
+  return text.match(/(?<![a-z0-9-])mp-[a-z0-9-]+-[a-z0-9]+-[a-f0-9]{8}(?![a-z0-9-])/gi) ?? [];
 }
 
 export function extractNonce(text: string): string | null {
