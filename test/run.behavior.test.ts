@@ -196,6 +196,120 @@ describe("run behavior", () => {
     expect((await run()).failureKind).toBe("inbound");
   });
 
+  it("keeps waiting through unrelated inbound messages without resending", async () => {
+    let sendCalls = 0;
+    let waitCalls = 0;
+    let unrelated:
+      | {
+          author: "assistant";
+          id: string;
+          provider: string;
+          sentAt: string;
+          text: string;
+          threadId: string;
+        }
+      | undefined;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => {
+        sendCalls += 1;
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      waitForInbound: async (context) => {
+        waitCalls += 1;
+        unrelated ??= {
+          author: "assistant",
+          id: "unrelated",
+          provider: "mock",
+          sentAt: new Date().toISOString(),
+          text: "not the requested nonce",
+          threadId: "thread",
+        };
+        if (waitCalls <= 2) {
+          return unrelated;
+        }
+        return {
+          author: "assistant",
+          id: "matched",
+          provider: "mock",
+          sentAt: new Date().toISOString(),
+          text: `ACK ${context.nonce}`,
+          threadId: "thread",
+        };
+      },
+    };
+    const retryingManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, retries: 1, timeoutMs: 100 }],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: retryingManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnostics).toContain("matched inbound matched");
+    expect(sendCalls).toBe(1);
+    expect(waitCalls).toBe(3);
+  });
+
+  it("bounds repeated inbound envelopes by the fixture deadline", async () => {
+    let sendCalls = 0;
+    let waitCalls = 0;
+    const repeated = {
+      author: "assistant" as const,
+      id: "repeated",
+      provider: "mock",
+      sentAt: new Date().toISOString(),
+      text: "not the requested nonce",
+      threadId: "thread",
+    };
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => {
+        sendCalls += 1;
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      waitForInbound: async () => {
+        waitCalls += 1;
+        return repeated;
+      },
+    };
+    const boundedManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, timeoutMs: 35 }],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: boundedManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.failureKind).toBe("timeout");
+    expect(sendCalls).toBe(1);
+    expect(waitCalls).toBeGreaterThan(1);
+    expect(waitCalls).toBeLessThan(10);
+  });
+
   it("fails an otherwise successful fixture when cleanup fails", async () => {
     const provider: ProviderAdapter = {
       id: "mock",
