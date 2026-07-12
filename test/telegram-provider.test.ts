@@ -292,7 +292,7 @@ describe("telegram provider", () => {
   });
 
   it("authenticates webhook requests before parsing", async () => {
-    const config = await createTelegramConfig(0, "telegram-webhook-secret");
+    const config = await createTelegramConfig(0, "test-token-placeholder");
     const provider = new TelegramProviderAdapter("telegram", config, "crabline");
     providers.push(provider);
 
@@ -314,7 +314,7 @@ describe("telegram provider", () => {
       }),
       headers: {
         "content-type": "application/json",
-        "x-telegram-bot-api-secret-token": "telegram-webhook-secret",
+        "x-telegram-bot-api-secret-token": "test-token-placeholder",
       },
       method: "POST",
     });
