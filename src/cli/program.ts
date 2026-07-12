@@ -70,8 +70,8 @@ type ServeParamFactory = (
   commandOptions: ServeCommandOptions,
 ) => StartCrablineServerParams;
 
-const READY_FILE_OPERATION_STALE_MS = 10_000;
-const READY_FILE_LIFECYCLE_STALE_MS = 24 * 60 * 60 * 1_000;
+const READY_FILE_LEASE_STALE_MS = 60_000;
+const READY_FILE_LEASE_UPDATE_MS = 1_000;
 
 const SERVE_PARAM_FACTORIES = {
   mattermost: (shared, commandOptions) => ({
@@ -500,7 +500,7 @@ function sameReadyFileIdentity(left: ReadyFileIdentity, right: ReadyFileIdentity
 }
 
 async function withReadyFileLock<T>(filePath: string, action: () => Promise<T>): Promise<T> {
-  const release = await acquireReadyFileOperationLease(filePath);
+  const release = await acquireReadyFileLease(filePath);
   let actionFailed = false;
   let actionError: unknown;
   let result: T | undefined;
@@ -528,17 +528,6 @@ async function withReadyFileLock<T>(filePath: string, action: () => Promise<T>):
 }
 
 async function acquireReadyFileLease(filePath: string): Promise<() => Promise<void>> {
-  return await acquireReadyFileLock(filePath, READY_FILE_LIFECYCLE_STALE_MS);
-}
-
-async function acquireReadyFileOperationLease(filePath: string): Promise<() => Promise<void>> {
-  return await acquireReadyFileLock(filePath, READY_FILE_OPERATION_STALE_MS);
-}
-
-async function acquireReadyFileLock(
-  filePath: string,
-  staleMs: number,
-): Promise<() => Promise<void>> {
   await fs.mkdir(nodePath.dirname(filePath), { recursive: true });
   return await lock(filePath, {
     realpath: false,
@@ -548,8 +537,8 @@ async function acquireReadyFileLock(
       minTimeout: 10,
       retries: 100,
     },
-    stale: staleMs,
-    update: Math.min(60_000, staleMs / 4),
+    stale: READY_FILE_LEASE_STALE_MS,
+    update: READY_FILE_LEASE_UPDATE_MS,
   });
 }
 
