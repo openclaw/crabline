@@ -310,6 +310,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         })}\n`,
         { mode: 0o600 },
       );
+      await fs.utimes(path.join(lockDirectory, "owner.json"), new Date(1_000), new Date(1_000));
 
       await expect(
         acquireOpenClawCrablineSmokeRunLock(params, {
@@ -357,12 +358,86 @@ describe("OpenClaw smoke lock cleanup", () => {
       await expect(
         acquireOpenClawCrablineSmokeRunLock(params, {
           isProcessAlive: () => true,
+          getProcessStartedAtMs: () => 100,
           leaseMs: 1_000,
           now: () => 10_000,
           pid: 5_252,
           processStartedAtMs: 200,
         }),
       ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("reclaims a pre-heartbeat lock after its PID is reused", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    try {
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(lockDirectory, "owner.json"),
+        `${JSON.stringify({
+          channel: "telegram",
+          createdAtMs: 1_000,
+          pid: 4_242,
+          processStartedAtMs: 100,
+          token: "prior",
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        getProcessStartedAtMs: () => 5_000,
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 1_100,
+        pid: 5_252,
+        processStartedAtMs: 200,
+      });
+
+      await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
+      await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("reclaims an expired legacy lock even when its PID was reused", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    const ownerPath = path.join(lockDirectory, "owner.json");
+    try {
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      await fs.writeFile(
+        ownerPath,
+        `${JSON.stringify({
+          channel: "telegram",
+          pid: 4_242,
+          token: "legacy",
+        })}\n`,
+        { mode: 0o600 },
+      );
+      await fs.utimes(ownerPath, new Date(1_000), new Date(1_000));
+
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 3_001,
+        pid: 5_252,
+        processStartedAtMs: 200,
+      });
+
+      await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
+      await replacementLock.release();
     } finally {
       await disposeTempDir(outputDir);
     }

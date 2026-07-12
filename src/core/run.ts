@@ -23,6 +23,7 @@ export type SuiteRunResult = {
 };
 
 const INBOUND_DEADLINE_REACHED = Symbol("inbound deadline reached");
+const INBOUND_ABORT_GRACE_MS = 250;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,6 +44,18 @@ async function raceInboundDeadline<T>(
       clearTimeout(timer);
     }
   }
+}
+
+async function abortAndDrainInboundWait(
+  operation: Promise<unknown>,
+  controller: AbortController,
+): Promise<boolean> {
+  controller.abort(new Error("Inbound wait deadline reached."));
+  const settled = operation.then(
+    () => true,
+    () => true,
+  );
+  return (await raceInboundDeadline(settled, INBOUND_ABORT_GRACE_MS)) !== INBOUND_DEADLINE_REACHED;
 }
 
 export async function runFixtureCommand(params: {
@@ -116,6 +129,23 @@ export async function runFixtureCommand(params: {
       }
     }
 
+    if (fixture.inboundMatch.strategy === "regex" && fixture.inboundMatch.pattern) {
+      try {
+        RegExp(fixture.inboundMatch.pattern, "u");
+      } catch (error) {
+        return (result = toFailure(
+          fixture.id,
+          fixture.provider,
+          mode,
+          new CrablineError(`Invalid inbound regex: ${ensureErrorMessage(error)}`, {
+            cause: error,
+            kind: "config",
+          }),
+          "config",
+        ));
+      }
+    }
+
     let attempts = 0;
     const maxAttempts = fixture.retries + 1;
     let lastFailure: CommandRunResult | null = null;
@@ -159,19 +189,22 @@ export async function runFixtureCommand(params: {
           while (Date.now() < inboundDeadline) {
             const timeoutMs = inboundDeadline - Date.now();
             const controller = new AbortController();
-            const candidate = await raceInboundDeadline(
-              provider.waitForInbound({
-                ...contextBase,
-                nonce,
-                signal: controller.signal,
-                since,
-                threadId: accepted.threadId,
-                timeoutMs,
-              }),
+            const wait = provider.waitForInbound({
+              ...contextBase,
+              nonce,
+              signal: controller.signal,
+              since,
+              threadId: accepted.threadId,
               timeoutMs,
-            );
+            });
+            const candidate = await raceInboundDeadline(wait, timeoutMs);
             if (candidate === INBOUND_DEADLINE_REACHED) {
-              controller.abort(new Error("Inbound wait deadline reached."));
+              if (!(await abortAndDrainInboundWait(wait, controller))) {
+                throw new CrablineError(
+                  `Provider inbound wait did not settle within ${INBOUND_ABORT_GRACE_MS}ms after abort.`,
+                  { kind: "inbound" },
+                );
+              }
               break;
             }
             if (!candidate) {

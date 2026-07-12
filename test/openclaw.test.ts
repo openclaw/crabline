@@ -1866,6 +1866,35 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
+  it("preserves a frozen smoke failure when lock cleanup also fails", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-frozen-smoke-"));
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    const primaryFailure = Object.freeze(new Error("frozen smoke failure"));
+    try {
+      await expect(
+        runSmokeWithDependencies(
+          { outputDir, selection },
+          {
+            releaseLock: async () => {
+              throw new Error("lock release retries exhausted");
+            },
+            startAdapter: async (params) => {
+              const adapter = await startOpenClawCrablineAdapter(params);
+              return {
+                ...adapter,
+                probe: async () => {
+                  throw primaryFailure;
+                },
+              };
+            },
+          },
+        ),
+      ).rejects.toBe(primaryFailure);
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it("preserves the primary provider probe failure when adapter cleanup also fails", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-probe-errors-"));
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });

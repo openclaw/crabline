@@ -318,16 +318,20 @@ export async function runOpenClawCrablineChannelDriverSmoke(
     if (!outcome.committed) {
       if (outcome.error instanceof Error) {
         const existingCause = outcome.error.cause;
-        Object.defineProperty(outcome.error, "cause", {
-          configurable: true,
-          value:
-            existingCause === undefined
-              ? cleanupError
-              : new AggregateError(
-                  [existingCause, cleanupError],
-                  "OpenClaw Crabline smoke failure cleanup also failed.",
-                ),
-        });
+        try {
+          Object.defineProperty(outcome.error, "cause", {
+            configurable: true,
+            value:
+              existingCause === undefined
+                ? cleanupError
+                : new AggregateError(
+                    [existingCause, cleanupError],
+                    "OpenClaw Crabline smoke failure cleanup also failed.",
+                  ),
+          });
+        } catch {
+          // Some failures are frozen; preserving the primary error is authoritative.
+        }
         throw outcome.error;
       }
       const combinedError = new Error("OpenClaw Crabline smoke and lock cleanup both failed.", {

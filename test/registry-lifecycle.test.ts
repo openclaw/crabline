@@ -390,16 +390,21 @@ describe("lazy provider lifecycle", () => {
     }
   });
 
-  it("does not let an aborted lazy inbound wait block cleanup", async () => {
+  it("tracks an aborted lazy inbound wait until provider work settles", async () => {
     const directory = await createTempDir();
     const recorderPath = path.join(directory, "telegram.jsonl");
     let markWaitStarted: (() => void) | undefined;
     const waitStarted = new Promise<void>((resolve) => {
       markWaitStarted = resolve;
     });
+    let releaseWait: (() => void) | undefined;
+    const waitBlocked = new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    });
     recorderMocks.waitForRecordedInbound.mockImplementationOnce(async () => {
       markWaitStarted?.();
-      return await new Promise<never>(() => undefined);
+      await waitBlocked;
+      return null;
     });
 
     try {
@@ -422,7 +427,46 @@ describe("lazy provider lifecycle", () => {
       controller.abort(abortReason);
 
       await expect(waiting).rejects.toBe(abortReason);
-      await expect(provider.cleanup?.()).resolves.toBeUndefined();
+      let cleanupResolved = false;
+      const cleanup = provider.cleanup?.().then(() => {
+        cleanupResolved = true;
+      });
+      await Promise.resolve();
+      expect(cleanupResolved).toBe(false);
+
+      releaseWait?.();
+      await expect(cleanup).resolves.toBeUndefined();
+    } finally {
+      releaseWait?.();
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("does not invoke a lazy provider for a pre-aborted wait", async () => {
+    const directory = await createTempDir();
+    const recorderPath = path.join(directory, "telegram.jsonl");
+    try {
+      const { context, manifest } = createTelegramManifest(recorderPath);
+      const provider = createRegistry(manifest, context.manifestPath).resolve(
+        "telegram",
+        context.fixture.id,
+      );
+      const controller = new AbortController();
+      const abortReason = new Error("already aborted");
+      controller.abort(abortReason);
+
+      await expect(
+        provider.waitForInbound({
+          ...context,
+          nonce: "pre-aborted",
+          signal: controller.signal,
+          since: new Date().toISOString(),
+          timeoutMs: 100,
+        }),
+      ).rejects.toBe(abortReason);
+
+      expect(recorderMocks.waitForRecordedInbound).not.toHaveBeenCalled();
+      await provider.cleanup?.();
     } finally {
       await disposeTempDir(directory);
     }

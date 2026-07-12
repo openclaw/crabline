@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { isCrablineServerChannel, type CrablineServerChannel } from "../servers/index.js";
@@ -49,6 +50,7 @@ type HeartbeatController = {
 type RemoveLockDirectory = (lockDirectory: string) => Promise<void>;
 type Sleep = (delayMs: number) => Promise<void>;
 type IsProcessAlive = (pid: number) => boolean;
+type GetProcessStartedAtMs = (pid: number) => number | null;
 type StartHeartbeat = (renew: () => Promise<void>, intervalMs: number) => HeartbeatController;
 type BeforeRecoveryClaim = () => Promise<void>;
 type BeforeRecoveryDeleteClaim = () => Promise<void>;
@@ -71,6 +73,7 @@ type DirectoryIdentity = {
 type SmokeLockRuntime = {
   currentPid: number;
   currentProcessStartedAtMs: number;
+  getProcessStartedAtMs: GetProcessStartedAtMs;
   isProcessAlive: IsProcessAlive;
   leaseMs: number;
   now: () => number;
@@ -87,6 +90,7 @@ const LOCK_LEASE_MS = 10 * 60 * 1000;
 const RELEASE_ATTEMPTS = 3;
 const RELEASE_RETRY_DELAY_MS = 10;
 const CURRENT_PROCESS_STARTED_AT_MS = Math.trunc(Date.now() - process.uptime() * 1000);
+const PROCESS_START_TOLERANCE_MS = 2_000;
 
 function parseCommitStagePath(contents: string, token: string): string {
   let value: { path?: unknown; token?: unknown };
@@ -373,20 +377,54 @@ const isProcessAlive: IsProcessAlive = (pid) => {
   }
 };
 
+const getProcessStartedAtMs: GetProcessStartedAtMs = (pid) => {
+  if (pid === process.pid) {
+    return CURRENT_PROCESS_STARTED_AT_MS;
+  }
+  if (process.platform === "win32") {
+    return null;
+  }
+  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    encoding: "utf8",
+    timeout: 1_000,
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  const startedAtMs = Date.parse(result.stdout.trim());
+  return Number.isFinite(startedAtMs) && startedAtMs > 0 ? startedAtMs : null;
+};
+
 function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): boolean {
   const { owner } = record;
   if (!runtime.isProcessAlive(owner.pid)) {
     return false;
   }
-  if (
-    hasProcessIdentity(owner) &&
-    owner.pid === runtime.currentPid &&
-    owner.processStartedAtMs !== runtime.currentProcessStartedAtMs
-  ) {
-    return false;
+  if (hasProcessIdentity(owner)) {
+    const actualProcessStartedAtMs =
+      owner.pid === runtime.currentPid
+        ? runtime.currentProcessStartedAtMs
+        : runtime.getProcessStartedAtMs(owner.pid);
+    if (
+      actualProcessStartedAtMs !== null &&
+      (owner.pid === runtime.currentPid
+        ? owner.processStartedAtMs !== actualProcessStartedAtMs
+        : Math.abs(owner.processStartedAtMs - actualProcessStartedAtMs) >
+          PROCESS_START_TOLERANCE_MS)
+    ) {
+      return false;
+    }
+    if (!isRenewableOwner(owner) && actualProcessStartedAtMs === null) {
+      const ageMs = runtime.now() - Math.max(owner.createdAtMs, record.renewedAtMs);
+      return ageMs <= runtime.leaseMs * 2;
+    }
   }
   if (!isRenewableOwner(owner)) {
-    return true;
+    if (hasProcessIdentity(owner)) {
+      return true;
+    }
+    const ageMs = runtime.now() - record.renewedAtMs;
+    return ageMs <= runtime.leaseMs * 2;
   }
   const ageMs = runtime.now() - Math.max(owner.createdAtMs, record.renewedAtMs);
   return ageMs >= -runtime.leaseMs && ageMs <= runtime.leaseMs;
@@ -813,6 +851,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
   dependencies: {
     afterLockCandidateInstall?: AfterLockDirectoryWrite;
     afterLockOwnerWrite?: AfterLockDirectoryWrite;
+    getProcessStartedAtMs?: GetProcessStartedAtMs;
     isProcessAlive?: IsProcessAlive;
     leaseMs?: number;
     now?: () => number;
@@ -837,6 +876,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
   const runtime: SmokeLockRuntime = {
     currentPid: dependencies.pid ?? process.pid,
     currentProcessStartedAtMs: dependencies.processStartedAtMs ?? CURRENT_PROCESS_STARTED_AT_MS,
+    getProcessStartedAtMs: dependencies.getProcessStartedAtMs ?? getProcessStartedAtMs,
     isProcessAlive: dependencies.isProcessAlive ?? isProcessAlive,
     leaseMs: dependencies.leaseMs ?? LOCK_LEASE_MS,
     now: dependencies.now ?? Date.now,

@@ -41,5 +41,7 @@ describe("errors and reporters", () => {
     expect(stripAnsi(suite)).toContain("  - accepted");
     expect(formatJson({ ok: true })).toContain('"ok": true');
     expect(formatJson(undefined)).toBe("null");
+    expect(formatJson(Symbol("value"))).toBe("null");
+    expect(formatJson(() => undefined)).toBe("null");
   });
 });

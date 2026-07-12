@@ -17,7 +17,7 @@ export function formatRunResultText(result: CommandRunResult | SuiteRunResult): 
 }
 
 export function formatJson(result: unknown): string {
-  return JSON.stringify(result === undefined ? null : result, null, 2);
+  return JSON.stringify(result === undefined ? null : result, null, 2) ?? "null";
 }
 
 function formatSingleResult(result: CommandRunResult): string {
