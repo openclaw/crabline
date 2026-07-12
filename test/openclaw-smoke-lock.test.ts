@@ -379,6 +379,43 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("reclaims a dead pre-heartbeat owner when its start time is unavailable", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    try {
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(lockDirectory, "owner.json"),
+        `${JSON.stringify({
+          channel: "telegram",
+          createdAtMs: 1_000,
+          pid: 4_242,
+          processStartedAtMs: 100,
+          token: "prior",
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        getProcessStartedAtMs: () => null,
+        isProcessAlive: () => false,
+        leaseMs: 1_000,
+        now: () => 1_100,
+        pid: 5_252,
+        processStartedAtMs: 200,
+      });
+
+      await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
+      await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("reclaims a pre-heartbeat lock after its PID is reused", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
