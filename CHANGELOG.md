@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Randomize externally bound provider credentials, preserve Slack MPIM and Matrix sync errors, bound server shutdown, and enforce safe Zalo webhooks.
 - Pin privileged release workflow actions to immutable revisions.
 - Redact inherited secret-named environment values from script diagnostics.
 - Verify production tarballs through their installed npm command shims.
