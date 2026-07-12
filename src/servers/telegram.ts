@@ -49,6 +49,11 @@ type TelegramUpdatePoll = {
 
 type TelegramUpdatePollResult = "conflict" | "shutdown" | "timeout" | "update";
 
+type TelegramGetUpdatesState = Pick<
+  TelegramServerState,
+  "activeUpdatePoll" | "closing" | "updates"
+>;
+
 type TelegramMessage = {
   chat: {
     id: number | string;
@@ -447,51 +452,61 @@ async function handleTelegramApi(params: {
         ? telegramOk(message)
         : telegramError(`Bad Request: chat_id and ${mediaKind} are required`);
     }
-    case "getupdates": {
-      const offset = toIntegerValue(params.body.offset);
-      const limit = toIntegerValue(params.body.limit) ?? 100;
-      const timeout = toIntegerValue(params.body.timeout) ?? 0;
-      if (limit < 1 || limit > 100) {
-        return telegramError("Bad Request: limit must be between 1 and 100");
-      }
-      if (timeout < 0) {
-        return telegramError("Bad Request: timeout must be non-negative");
-      }
-      let updates = takeTelegramUpdates(params.state, offset, limit);
-      const deadline = Date.now() + Math.min(timeout * 1_000, 2_147_483_647);
-      if (updates.length === 0 && timeout > 0) {
-        while (updates.length === 0) {
-          const remainingMs = deadline - Date.now();
-          if (remainingMs <= 0) {
-            break;
-          }
-          const pollResult = await waitForTelegramUpdate(
-            params.state,
-            params.request,
-            remainingMs,
-            () => hasTelegramUpdates(params.state, offset),
-          );
-          if (pollResult === "conflict") {
-            return telegramError(
-              "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running",
-              409,
-            );
-          }
-          if (pollResult !== "update") {
-            break;
-          }
-          updates = takeTelegramUpdates(params.state, offset, limit);
-        }
-      }
-      return telegramOk(updates);
-    }
+    case "getupdates":
+      return await handleTelegramGetUpdates(params);
     default:
       return telegramError(`Not Found: unsupported method ${params.method}`, 404);
   }
 }
 
+/** @internal */
+export async function handleTelegramGetUpdates(params: {
+  body: Record<string, unknown>;
+  request: IncomingMessage;
+  state: TelegramGetUpdatesState;
+}): Promise<Response> {
+  const offset = toIntegerValue(params.body.offset);
+  const limit = toIntegerValue(params.body.limit) ?? 100;
+  const timeout = toIntegerValue(params.body.timeout) ?? 0;
+  if (limit < 1 || limit > 100) {
+    return telegramError("Bad Request: limit must be between 1 and 100");
+  }
+  if (timeout < 0) {
+    return telegramError("Bad Request: timeout must be non-negative");
+  }
+
+  finishTelegramUpdatePoll(params.state, "conflict");
+  let updates = takeTelegramUpdates(params.state, offset, limit);
+  const deadline = Date.now() + Math.min(timeout * 1_000, 2_147_483_647);
+  if (updates.length === 0 && timeout > 0) {
+    while (updates.length === 0) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        break;
+      }
+      const pollResult = await waitForTelegramUpdate(
+        params.state,
+        params.request,
+        remainingMs,
+        () => hasTelegramUpdates(params.state, offset),
+      );
+      if (pollResult === "conflict") {
+        return telegramError(
+          "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running",
+          409,
+        );
+      }
+      if (pollResult !== "update") {
+        break;
+      }
+      updates = takeTelegramUpdates(params.state, offset, limit);
+    }
+  }
+  return telegramOk(updates);
+}
+
 function takeTelegramUpdates(
-  state: TelegramServerState,
+  state: TelegramGetUpdatesState,
   offset: number | undefined,
   limit: number,
 ): TelegramUpdate[] {
@@ -509,7 +524,7 @@ function takeTelegramUpdates(
   return state.updates.slice(0, limit);
 }
 
-function hasTelegramUpdates(state: TelegramServerState, offset: number | undefined): boolean {
+function hasTelegramUpdates(state: TelegramGetUpdatesState, offset: number | undefined): boolean {
   if (offset === undefined || offset < 0) {
     return state.updates.length > 0;
   }
@@ -517,14 +532,14 @@ function hasTelegramUpdates(state: TelegramServerState, offset: number | undefin
 }
 
 function finishTelegramUpdatePoll(
-  state: TelegramServerState,
+  state: TelegramGetUpdatesState,
   result: TelegramUpdatePollResult,
 ): void {
   state.activeUpdatePoll?.finish(result);
 }
 
 async function waitForTelegramUpdate(
-  state: TelegramServerState,
+  state: TelegramGetUpdatesState,
   request: IncomingMessage,
   timeoutMs: number,
   hasUpdate: () => boolean,
