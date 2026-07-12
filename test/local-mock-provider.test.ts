@@ -333,6 +333,63 @@ describe("local mock provider", () => {
     });
   });
 
+  it("never returns outbound sends through inbound wait or watch", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "directions.jsonl");
+    const config = createConfig();
+    config.slack!.recorder.path = recorderPath;
+    const provider = new SlackProviderAdapter("provider-a", config, "crabline");
+    providers.push(provider);
+    const context = createContext(config);
+    context.fixture.mode = "roundtrip";
+    context.fixture.inboundMatch.author = "any";
+    const since = new Date(Date.now() - 1000).toISOString();
+
+    await provider.send({
+      ...context,
+      mode: "roundtrip",
+      nonce: "direction-nonce",
+      text: "hello direction-nonce",
+    });
+
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        nonce: "direction-nonce",
+        since,
+        timeoutMs: 100,
+      }),
+    ).resolves.toMatchObject({
+      author: "assistant",
+      raw: { direction: "mock-reply" },
+    });
+
+    context.fixture.inboundMatch.author = "user";
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        nonce: "direction-nonce",
+        since,
+        timeoutMs: 20,
+      }),
+    ).resolves.toBeNull();
+
+    const watch = provider.watch({
+      ...context,
+      since,
+    });
+    const iterator = watch[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        author: "assistant",
+        raw: { direction: "mock-reply" },
+      },
+    });
+    await iterator.return?.();
+  });
+
   it("bounds successful wait cursors while retaining recent progress", async () => {
     const directory = await createTempDir();
     directories.push(directory);

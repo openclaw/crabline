@@ -65,6 +65,11 @@ describe("loopback chat adapter", () => {
     expect(previous.nextCursor).toBeUndefined();
   });
 
+  it.each([0, -1, 1.5, Number.POSITIVE_INFINITY])("rejects invalid message limits: %s", (limit) => {
+    adapter = new LoopbackChatAdapter("crabline");
+    expect(() => adapter!.fetchMessages("thread-1", { limit })).toThrow(/positive safe integer/u);
+  });
+
   it("isolates stored messages from mutable inputs and returns", async () => {
     adapter = new LoopbackChatAdapter("crabline");
     const threadId = adapter.encodeThreadId({ id: "user-1" });

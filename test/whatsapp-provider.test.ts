@@ -135,6 +135,7 @@ describe("WhatsApp webhook normalizer", () => {
             changes: [
               {
                 value: {
+                  metadata: { phone_number_id: "local-mock-phone" },
                   messages: [
                     { from: "invalid-id", text: { body: "malformed" }, type: "text" },
                     { from: "15550000000", image: { id: "image-1" }, type: "image" },
@@ -174,6 +175,7 @@ describe("WhatsApp webhook normalizer", () => {
     const signingKey = "test-token-placeholder";
     const verificationValue = "test-token-placeholder";
     config.whatsapp!.appSecret = "test-token-placeholder";
+    config.whatsapp!.phoneNumberId = "phone-a";
     config.whatsapp!.verifyToken = "test-token-placeholder";
     const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
     const context = createProviderContext("whatsapp", config, {
@@ -205,6 +207,7 @@ describe("WhatsApp webhook normalizer", () => {
             changes: [
               {
                 value: {
+                  metadata: { phone_number_id: "phone-a" },
                   messages: [
                     {
                       from: "15551234567",
@@ -225,6 +228,23 @@ describe("WhatsApp webhook normalizer", () => {
         method: "POST",
       });
       expect(unsigned.status).toBe(401);
+      await expect(readFile(config.whatsapp!.recorder.path!, "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      const wrongNumberBody = body.replace(
+        '"phone_number_id":"phone-a"',
+        '"phone_number_id":"phone-b"',
+      );
+      const wrongNumber = await fetch(endpoint!, {
+        body: wrongNumberBody,
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": whatsappSignature(wrongNumberBody, signingKey),
+        },
+        method: "POST",
+      });
+      expect(wrongNumber.status).toBe(200);
       await expect(readFile(config.whatsapp!.recorder.path!, "utf8")).rejects.toMatchObject({
         code: "ENOENT",
       });
@@ -421,6 +441,7 @@ runLocalMockProviderContract({
         changes: [
           {
             value: {
+              metadata: { phone_number_id: "local-mock-phone" },
               statuses: [{ id: "wamid.status-only" }],
             },
           },
@@ -430,6 +451,7 @@ runLocalMockProviderContract({
         changes: [
           {
             value: {
+              metadata: { phone_number_id: "local-mock-phone" },
               messages: [
                 {
                   from: "15551234567",

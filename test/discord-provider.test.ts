@@ -1,3 +1,5 @@
+import { generateKeyPairSync, sign } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
@@ -82,6 +84,65 @@ function createContext(config: ProviderConfig): ProviderContext {
 }
 
 describe("discord provider", () => {
+  it("verifies configured signatures and answers PING without recording it", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const config = await createDiscordConfig(0);
+    config.discord!.publicKey = publicKey
+      .export({ format: "der", type: "spki" })
+      .subarray(-32)
+      .toString("hex");
+    const provider = new DiscordProviderAdapter("discord", config, "crabline");
+    providers.push(provider);
+    const endpoint = (await provider.probe(createContext(config))).details
+      .find((detail) => detail.startsWith("interactions endpoint "))
+      ?.replace("interactions endpoint ", "");
+    expect(endpoint).toBeDefined();
+    const body = JSON.stringify({ type: 1 });
+    const timestamp = "1700000000";
+    const signature = sign(null, Buffer.from(timestamp + body), privateKey).toString("hex");
+
+    const unsigned = await fetch(endpoint!, {
+      body,
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(unsigned.status).toBe(401);
+
+    const wrongMediaType = await fetch(endpoint!, {
+      body,
+      headers: {
+        "content-type": "text/application/jsonish",
+        "x-signature-ed25519": signature,
+        "x-signature-timestamp": timestamp,
+      },
+      method: "POST",
+    });
+    expect(wrongMediaType.status).toBe(415);
+
+    const pong = await fetch(endpoint!, {
+      body,
+      headers: {
+        "content-type": "Application/JSON; Charset=UTF-8",
+        "x-signature-ed25519": signature,
+        "x-signature-timestamp": timestamp,
+      },
+      method: "POST",
+    });
+    expect(pong.status).toBe(200);
+    await expect(pong.json()).resolves.toEqual({ type: 1 });
+    await expect(readFile(config.discord!.recorder.path!, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("rejects malformed configured public keys", async () => {
+    const config = await createDiscordConfig(0);
+    config.discord!.publicKey = "not-a-public-key";
+    expect(() => new DiscordProviderAdapter("discord", config, "crabline")).toThrow(
+      /32-byte hexadecimal Ed25519 key/u,
+    );
+  });
+
   it("normalizes native channel and thread targets", async () => {
     const config = await createDiscordConfig(0);
     const provider = new DiscordProviderAdapter("discord", config, "crabline");

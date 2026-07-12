@@ -266,13 +266,14 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     ) {
       return new Response("invalid webhook signature", { status: 401 });
     }
-    if (!request.headers.get("content-type")?.includes("application/json")) {
+    const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+    if (mediaType !== "application/json") {
       return new Response("expected application/json", { status: 415 });
     }
 
     let messages: NormalizedWhatsAppWebhookMessage[];
     try {
-      messages = normalizeWhatsAppWebhookPayload(JSON.parse(rawBody));
+      messages = normalizeWhatsAppWebhookPayload(JSON.parse(rawBody), resolvedConfig.phoneNumberId);
     } catch (error) {
       return new Response(ensureErrorMessage(error), { status: 400 });
     }
@@ -387,6 +388,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
 
 export function normalizeWhatsAppWebhookPayload(
   payload: unknown,
+  expectedPhoneNumberId?: string,
 ): NormalizedWhatsAppWebhookMessage[] {
   if (!isRecord(payload)) {
     throw new CrablineError("WhatsApp webhook payload must be an object", { kind: "inbound" });
@@ -404,6 +406,13 @@ export function normalizeWhatsAppWebhookPayload(
         }
         const value = optionalRecord(change, "value");
         if (!value || !Array.isArray(value.messages)) {
+          continue;
+        }
+        const metadata = optionalRecord(value, "metadata");
+        if (
+          expectedPhoneNumberId !== undefined &&
+          optionalString(metadata ?? {}, "phone_number_id") !== expectedPhoneNumberId
+        ) {
           continue;
         }
         for (const message of value.messages) {

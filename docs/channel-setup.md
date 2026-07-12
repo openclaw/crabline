@@ -78,6 +78,8 @@ execution.
 Optional webhook credentials enforce each provider's native authentication
 header before JSON parsing or recorder writes:
 
+- Discord `publicKey` or `DISCORD_PUBLIC_KEY` verifies
+  `X-Signature-Ed25519` over `X-Signature-Timestamp` plus the raw request body.
 - Slack `signingSecret` or `SLACK_SIGNING_SECRET` verifies
   `X-Slack-Request-Timestamp` and `X-Slack-Signature`.
 - Telegram `secretToken` or `TELEGRAM_WEBHOOK_SECRET_TOKEN` verifies
