@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -76,6 +77,18 @@ function createContext(config: ProviderConfig): ProviderContext {
     providerId: "whatsapp",
     userName: "crabline",
   };
+}
+
+function signedWhatsAppRequest(body: unknown): Request {
+  const rawBody = JSON.stringify(body);
+  return new Request("http://127.0.0.1:43210/whatsapp/webhook", {
+    body: rawBody,
+    headers: {
+      "content-type": "application/json",
+      "x-hub-signature-256": `sha256=${createHmac("sha256", "local-mock-secret").update(rawBody).digest("hex")}`,
+    },
+    method: "POST",
+  });
 }
 
 describe("WhatsApp provider lifecycle", () => {
@@ -251,35 +264,31 @@ describe("WhatsApp provider lifecycle", () => {
       await provider.probe(context);
 
       request = handle!(
-        new Request("http://127.0.0.1:43210/whatsapp/webhook", {
-          body: JSON.stringify({
-            entry: [
-              {
-                changes: [
-                  {
-                    value: {
-                      messages: [
-                        {
-                          from: "15551234567",
-                          id: "wa-cleanup-ingress-1",
-                          text: { body: "finish before cleanup" },
-                          type: "text",
-                        },
-                        {
-                          from: "15551234567",
-                          id: "wa-cleanup-ingress-2",
-                          text: { body: "finish the admitted batch" },
-                          type: "text",
-                        },
-                      ],
-                    },
+        signedWhatsAppRequest({
+          entry: [
+            {
+              changes: [
+                {
+                  value: {
+                    messages: [
+                      {
+                        from: "15551234567",
+                        id: "wa-cleanup-ingress-1",
+                        text: { body: "finish before cleanup" },
+                        type: "text",
+                      },
+                      {
+                        from: "15551234567",
+                        id: "wa-cleanup-ingress-2",
+                        text: { body: "finish the admitted batch" },
+                        type: "text",
+                      },
+                    ],
                   },
-                ],
-              },
-            ],
-          }),
-          headers: { "content-type": "application/json" },
-          method: "POST",
+                },
+              ],
+            },
+          ],
         }),
       );
       await vi.waitFor(() => expect(recorderMocks.appendRecordedInbound).toHaveBeenCalledTimes(1));
