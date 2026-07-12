@@ -285,6 +285,25 @@ export type SecuredPrivateDirectory = {
   directoryPath: string;
 };
 
+export async function captureDirectoryIdentity(
+  directoryPath: string,
+): Promise<SecuredPrivateDirectory> {
+  const handle = await fs.open(directoryPath, "r");
+  try {
+    const identity = await readDirectoryHandleIdentity(handle);
+    const secured: SecuredPrivateDirectory = {
+      async assertIdentityAt(currentPath = directoryPath) {
+        await assertDirectoryPathIdentity(currentPath, identity);
+      },
+      directoryPath,
+    };
+    await secured.assertIdentityAt();
+    return secured;
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function syncParentDirectory(
   filePath: string,
   platform: NodeJS.Platform = process.platform,
@@ -411,7 +430,9 @@ export async function publishPrivateFileAtomically(
   contents: string,
   options: {
     afterRename?: (filePath: string) => Promise<void>;
+    beforeRename?: (temporaryPath: string) => Promise<void>;
     platform?: NodeJS.Platform;
+    removeTemporaryFile?: (temporaryPath: string) => Promise<void>;
     secureWindowsFile?: (temporaryPath: string) => Promise<void>;
     syncParent?: (filePath: string, platform?: NodeJS.Platform) => Promise<void>;
   } = {},
@@ -422,6 +443,8 @@ export async function publishPrivateFileAtomically(
   );
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   let handle: FileHandle | undefined;
+  let publicationFailed = false;
+  let primaryError: unknown;
   try {
     handle = await fs.open(temporaryPath, "wx+", 0o600);
     const identity = await readHandleIdentity(handle);
@@ -435,15 +458,56 @@ export async function publishPrivateFileAtomically(
     await handle.writeFile(contents, "utf8");
     await handle.sync();
     await assertPathIdentity(temporaryPath, identity);
+    await options.beforeRename?.(temporaryPath);
+    await assertPathIdentity(temporaryPath, identity);
     await fs.rename(temporaryPath, filePath);
     await (options.syncParent ?? syncParentDirectory)(filePath, options.platform);
     await options.afterRename?.(filePath);
     await assertPathIdentity(filePath, identity);
-  } finally {
-    try {
-      await handle?.close();
-    } finally {
-      await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  } catch (error) {
+    publicationFailed = true;
+    primaryError = error;
+  }
+
+  const cleanupErrors: unknown[] = [];
+  try {
+    await handle?.close();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  try {
+    await (
+      options.removeTemporaryFile ??
+      ((candidatePath: string) => fs.rm(candidatePath, { force: true }))
+    )(temporaryPath);
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+
+  if (publicationFailed) {
+    if (cleanupErrors.length > 0) {
+      const primaryMessage =
+        primaryError instanceof Error ? primaryError.message : String(primaryError);
+      const aggregateError = new AggregateError(
+        [primaryError, ...cleanupErrors],
+        `${primaryMessage} Private temporary file cleanup also failed.`,
+      );
+      aggregateError.cause = primaryError;
+      const primaryCode =
+        typeof primaryError === "object" && primaryError !== null
+          ? (primaryError as NodeJS.ErrnoException).code
+          : undefined;
+      if (primaryCode) {
+        Object.assign(aggregateError, { code: primaryCode });
+      }
+      throw aggregateError;
     }
+    throw primaryError;
+  }
+  if (cleanupErrors.length === 1) {
+    throw cleanupErrors[0];
+  }
+  if (cleanupErrors.length > 1) {
+    throw new AggregateError(cleanupErrors, "Private temporary file publication cleanup failed.");
   }
 }

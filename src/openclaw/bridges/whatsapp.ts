@@ -35,6 +35,13 @@ function requireWhatsAppTargetKind(
   }
 }
 
+function requireWhatsAppConversationKind(kind: "direct" | "group", targetId: string): void {
+  const nativeKind = targetId.endsWith("@g.us") ? "group" : "direct";
+  if (kind !== nativeKind) {
+    throw new Error("WhatsApp inbound conversation kind does not match the native JID.");
+  }
+}
+
 export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
   provider: "whatsapp",
   createAdapter(whatsapp) {
@@ -112,6 +119,7 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           throw new Error("WhatsApp does not support thread targets.");
         }
         const chatJid = requireWhatsAppJid(input.conversation.id, "WhatsApp conversation");
+        requireWhatsAppConversationKind(input.conversation.kind, chatJid);
         const senderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender", true);
         return {
           ...createAdminInboundRequest(whatsapp),

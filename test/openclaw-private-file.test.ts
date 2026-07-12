@@ -237,6 +237,85 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
+  it("surfaces credential-bearing temporary file cleanup failures", async () => {
+    const directory = await createTempDir();
+    const publicationError = new Error("publication failed");
+    const cleanupError = new Error("temporary cleanup failed");
+    let temporaryPath: string | undefined;
+    try {
+      const failure = await publishPrivateFileAtomically(
+        path.join(directory, "manifest.json"),
+        "private credential\n",
+        {
+          beforeRename: async (candidatePath) => {
+            temporaryPath = candidatePath;
+            throw publicationError;
+          },
+          removeTemporaryFile: async () => {
+            throw cleanupError;
+          },
+        },
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).errors).toEqual([publicationError, cleanupError]);
+      expect((failure as Error).message).toContain("Private temporary file cleanup also failed.");
+      expect(temporaryPath).toBeDefined();
+      await expect(fs.readFile(temporaryPath!, "utf8")).resolves.toBe("private credential\n");
+    } finally {
+      if (temporaryPath) {
+        await fs.rm(temporaryPath, { force: true });
+      }
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("preserves undefined and null publication rejection reasons", async () => {
+    const directory = await createTempDir();
+    try {
+      for (const rejectionReason of [undefined, null]) {
+        let rejected = false;
+        let receivedReason: unknown = Symbol("unrejected");
+        await publishPrivateFileAtomically(
+          path.join(directory, `manifest-${String(rejectionReason)}.json`),
+          "private credential\n",
+          {
+            beforeRename: async () => {
+              throw rejectionReason;
+            },
+          },
+        ).then(
+          () => undefined,
+          (error: unknown) => {
+            rejected = true;
+            receivedReason = error;
+          },
+        );
+        expect(rejected).toBe(true);
+        expect(receivedReason).toBe(rejectionReason);
+      }
+
+      const cleanupError = new Error("temporary cleanup failed");
+      const failure = await publishPrivateFileAtomically(
+        path.join(directory, "manifest-null-cleanup.json"),
+        "private credential\n",
+        {
+          beforeRename: async () => {
+            throw null;
+          },
+          removeTemporaryFile: async (temporaryPath) => {
+            await fs.rm(temporaryPath, { force: true });
+            throw cleanupError;
+          },
+        },
+      ).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).errors).toEqual([null, cleanupError]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
   it("preserves a replacement installed after the atomic rename", async () => {
     const directory = await createTempDir();
     try {

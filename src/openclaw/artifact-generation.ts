@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { CrablineServerManifest } from "../servers/index.js";
 import {
+  captureDirectoryIdentity,
   publishPrivateFileAtomically,
   removeSecuredPrivateDirectory,
   securePrivateDirectory,
@@ -213,6 +214,8 @@ export async function publishOpenClawCrablineArtifactGeneration(
   const providerReadinessArtifactPath = resolveProviderReadinessArtifactPath(params.selection);
   const outputDir = path.resolve(params.outputDir);
   await fs.mkdir(outputDir, { recursive: true });
+  const output = await captureDirectoryIdentity(outputDir);
+  await output.assertIdentityAt();
   const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
   const directoryOptions = {
     ...(dependencies.platform ? { platform: dependencies.platform } : {}),
@@ -221,10 +224,16 @@ export async function publishOpenClawCrablineArtifactGeneration(
       : {}),
   };
   const store = await securePrivateDirectory(storePath, directoryOptions);
+  await output.assertIdentityAt();
+  await store.assertIdentityAt();
   await params.lock.assertOwned();
   const currentPointer = await readOpenClawCrablineArtifactPointer(outputDir);
+  await output.assertIdentityAt();
+  await store.assertIdentityAt();
   if (currentPointer) {
     await assertCurrentGenerationExists(outputDir, currentPointer);
+    await output.assertIdentityAt();
+    await store.assertIdentityAt();
   }
   await pruneArtifactStore({
     directoryOptions,
@@ -232,6 +241,8 @@ export async function publishOpenClawCrablineArtifactGeneration(
     pointer: currentPointer,
     store,
   });
+  await output.assertIdentityAt();
+  await store.assertIdentityAt();
 
   const generationId = dependencies.createGenerationId?.() ?? randomUUID();
   const generation = `generation-${generationId}`;
@@ -241,6 +252,9 @@ export async function publishOpenClawCrablineArtifactGeneration(
   const stagingPath = path.join(storePath, `.staging-${generationId}`);
   const generationPath = path.join(storePath, generation);
   const staging = await securePrivateDirectory(stagingPath, directoryOptions);
+  await output.assertIdentityAt();
+  await store.assertIdentityAt();
+  await staging.assertIdentityAt();
   const publishPrivateFile = dependencies.publishPrivateFile ?? publishPrivateFileAtomically;
   const fileOptions = {
     ...(dependencies.platform ? { platform: dependencies.platform } : {}),
@@ -313,30 +327,44 @@ export async function publishOpenClawCrablineArtifactGeneration(
 
     await params.lock.assertOwned();
     for (const artifact of artifactContents) {
+      await output.assertIdentityAt();
+      await store.assertIdentityAt();
       await staging.assertIdentityAt();
       await publishPrivateFile(
         path.join(stagingPath, artifact.fileName),
         artifact.contents,
         fileOptions,
       );
+      await output.assertIdentityAt();
+      await store.assertIdentityAt();
       await staging.assertIdentityAt();
     }
     await params.lock.assertOwned();
+    await output.assertIdentityAt();
+    await store.assertIdentityAt();
     await fs.rename(stagingPath, generationPath);
     installed = true;
     await (dependencies.syncParent ?? syncParentDirectory)(generationPath, dependencies.platform);
+    await output.assertIdentityAt();
     await staging.assertIdentityAt(generationPath);
     await store.assertIdentityAt();
 
     await dependencies.beforePointerSwitch?.(pointer);
+    await output.assertIdentityAt();
+    await store.assertIdentityAt();
+    await staging.assertIdentityAt(generationPath);
     await params.lock.commitFileAtomically({
       contents: `${JSON.stringify(pointer, null, 2)}\n`,
       destinationPath: path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH),
       stageDirectory: store.directoryPath,
       stageFile: async (filePath, contents) => {
+        await output.assertIdentityAt();
         await store.assertIdentityAt();
+        await staging.assertIdentityAt(generationPath);
         await publishPrivateFile(filePath, contents, fileOptions);
+        await output.assertIdentityAt();
         await store.assertIdentityAt();
+        await staging.assertIdentityAt(generationPath);
       },
     });
     committed = true;
