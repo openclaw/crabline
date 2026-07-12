@@ -1,7 +1,13 @@
 import type { IncomingMessage } from "node:http";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { readBody, RequestBodyTooLargeError, startHttpJsonServer } from "../src/servers/http.js";
+import {
+  drainRequestBody,
+  readBody,
+  readInteger,
+  RequestBodyTooLargeError,
+  startHttpJsonServer,
+} from "../src/servers/http.js";
 
 type TestRequest = IncomingMessage & PassThrough;
 
@@ -32,6 +38,18 @@ describe("server HTTP body reader", () => {
     const declared = createRequest({ "content-length": "5" });
     await expect(readBody(declared, 4)).rejects.toBeInstanceOf(RequestBodyTooLargeError);
     expectLateErrorHandled(declared);
+
+    const destroyed = createRequest();
+    destroyed.destroy();
+    drainRequestBody(destroyed);
+    expect(() => destroyed.emit("error", new Error("post-destroy error"))).not.toThrow();
+  });
+
+  it("accepts only safe integer values", () => {
+    expect(readInteger(Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(readInteger(String(Number.MIN_SAFE_INTEGER))).toBe(Number.MIN_SAFE_INTEGER);
+    expect(readInteger(String(Number.MAX_SAFE_INTEGER + 1))).toBeUndefined();
+    expect(readInteger("-9007199254740992")).toBeUndefined();
   });
 
   it("does not expose unexpected exception details", async () => {

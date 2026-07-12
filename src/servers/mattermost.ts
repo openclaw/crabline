@@ -22,6 +22,17 @@ import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 import { closeWebSocketServer } from "./websocket.js";
 
 const DEFAULT_WEBSOCKET_AUTHENTICATION_TIMEOUT_MS = 5_000;
+const DEFAULT_MAX_WEBSOCKET_BUFFERED_BYTES = 1024 * 1024;
+
+function resolveMaxWebSocketBufferedBytes(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_MAX_WEBSOCKET_BUFFERED_BYTES;
+  }
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error("maxWebSocketBufferedBytes must be a positive safe integer.");
+  }
+  return value;
+}
 
 type MattermostPost = {
   channel_id: string;
@@ -51,6 +62,7 @@ type MattermostServerState = {
   botUsername: string;
   channels: Map<string, { id: string; name: string; display_name: string; type: string }>;
   maxPendingInboundEvents: number;
+  maxWebSocketBufferedBytes: number;
   nextPost: number;
   onEvent: ServerEventObserver | undefined;
   pendingEvents: MattermostWebSocketEvent[];
@@ -94,6 +106,7 @@ export type StartMattermostServerParams = {
   port?: number | undefined;
   recorderPath?: string | undefined;
   maxPendingInboundEvents?: number | undefined;
+  maxWebSocketBufferedBytes?: number | undefined;
   websocketAuthenticationTimeoutMs?: number | undefined;
 };
 
@@ -159,26 +172,44 @@ function sendEvent(
   state: MattermostServerState,
   client: WebSocket,
   event: MattermostWebSocketEvent,
-) {
+): boolean {
   const seq = state.websocketClients.get(client);
   if (seq === undefined || client.readyState !== WebSocket.OPEN) {
-    return;
+    state.websocketClients.delete(client);
+    return false;
   }
-  client.send(JSON.stringify({ ...event, seq }));
+  const payload = JSON.stringify({ ...event, seq });
+  if (
+    client.bufferedAmount + Buffer.byteLength(payload, "utf8") >
+    state.maxWebSocketBufferedBytes
+  ) {
+    state.websocketClients.delete(client);
+    client.close(1013, "client too slow");
+    return false;
+  }
+  try {
+    client.send(payload);
+  } catch {
+    state.websocketClients.delete(client);
+    client.terminate();
+    return false;
+  }
   state.websocketClients.set(client, seq + 1);
+  return true;
 }
 
 function broadcast(state: MattermostServerState, event: MattermostWebSocketEvent): boolean {
-  if (state.websocketClients.size === 0) {
-    if (state.pendingEvents.length >= state.maxPendingInboundEvents) {
-      return false;
-    }
-    state.pendingEvents.push(event);
+  let delivered = false;
+  for (const client of state.websocketClients.keys()) {
+    delivered = sendEvent(state, client, event) || delivered;
+  }
+  if (delivered) {
     return true;
   }
-  for (const client of state.websocketClients.keys()) {
-    sendEvent(state, client, event);
+  if (state.pendingEvents.length >= state.maxPendingInboundEvents) {
+    return false;
   }
+  state.pendingEvents.push(event);
   return true;
 }
 
@@ -498,8 +529,12 @@ function attachWebSocketServer(params: {
           },
           event: "hello",
         });
-        for (const event of params.state.pendingEvents.splice(0)) {
-          sendEvent(params.state, client, event);
+        const pending = params.state.pendingEvents.splice(0);
+        for (const [index, event] of pending.entries()) {
+          if (!sendEvent(params.state, client, event)) {
+            params.state.pendingEvents.unshift(...pending.slice(index));
+            break;
+          }
         }
         return;
       }
@@ -557,6 +592,7 @@ export async function startMattermostServer(
     botUsername,
     channels: new Map(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
+    maxWebSocketBufferedBytes: resolveMaxWebSocketBufferedBytes(params.maxWebSocketBufferedBytes),
     nextPost: 1,
     onEvent: params.onEvent,
     pendingEvents: [],

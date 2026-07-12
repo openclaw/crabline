@@ -45,6 +45,16 @@ describe("release workflow", () => {
       tag: "v1.2.3",
       version: "1.2.3",
     });
+    await expect(
+      runResolveTag(resolveStep, "v1.2.3", {
+        eventName: "workflow_dispatch",
+        refName: "main",
+        refType: "branch",
+      }),
+    ).resolves.toEqual({
+      tag: "v1.2.3",
+      version: "1.2.3",
+    });
     await expect(runResolveTag(resolveStep, "v1.2.3-beta.1")).rejects.toThrow(/Command failed/u);
     await expect(runResolveTag(resolveStep, "v1.2.3.preview")).rejects.toThrow(/Command failed/u);
     await expect(
@@ -87,7 +97,32 @@ describe("release workflow", () => {
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity');
     expect(publishStep).toContain('npm publish "$PACKAGE_TARBALL" --access public --provenance');
     expect(releaseStep).toContain('gh release view "$RELEASE_TAG"');
+    expect(releaseStep).toContain("--json isDraft,isPrerelease");
     expect(releaseStep).toContain("--verify-tag");
+  });
+
+  it("accepts only published stable GitHub releases as existing", async () => {
+    const workflow = await readWorkflow();
+    const releaseStep = jobSteps(workflow, "github-release").find(
+      (step) => step.name === "Create GitHub release",
+    )?.run;
+    if (!releaseStep) {
+      throw new Error("Release workflow is missing its GitHub release step.");
+    }
+
+    const stableCalls = await runGithubReleaseStep(releaseStep, "stable");
+    expect(stableCalls).toHaveLength(1);
+    expect(stableCalls[0]).toContain("release view v1.2.3");
+
+    for (const state of ["draft", "prerelease"]) {
+      await expect(runGithubReleaseStep(releaseStep, state)).rejects.toThrow(
+        "exists but is draft or prerelease",
+      );
+    }
+
+    const missingCalls = await runGithubReleaseStep(releaseStep, "missing");
+    expect(missingCalls).toHaveLength(2);
+    expect(missingCalls[1]).toContain("release create v1.2.3");
   });
 
   it("pins privileged release actions to immutable revisions", async () => {
@@ -255,7 +290,10 @@ async function runMetadataCheck(script: string, changelog: string): Promise<void
 async function runResolveTag(
   script: string | undefined,
   tag: string,
-  ref: { refName: string; refType: string } = { refName: tag, refType: "tag" },
+  ref: { eventName?: string; refName: string; refType: string } = {
+    refName: tag,
+    refType: "tag",
+  },
 ): Promise<Record<string, string>> {
   if (!script) {
     throw new Error("Release workflow is missing its tag resolution step.");
@@ -266,6 +304,7 @@ async function runResolveTag(
     await execFileWithOutput("bash", ["-c", script], {
       env: {
         ...process.env,
+        GITHUB_EVENT_NAME: ref.eventName ?? "push",
         GITHUB_OUTPUT: outputPath,
         GITHUB_REF_NAME: ref.refName,
         GITHUB_REF_TYPE: ref.refType,
@@ -278,6 +317,45 @@ async function runResolveTag(
         .split("\n")
         .map((line) => line.split("=", 2)),
     );
+  } finally {
+    await fs.rm(tempDir, { force: true, recursive: true });
+  }
+}
+
+async function runGithubReleaseStep(script: string, state: string): Promise<string[]> {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-github-release-"));
+  const binDir = path.join(tempDir, "bin");
+  const logPath = path.join(tempDir, "gh.log");
+  try {
+    await fs.mkdir(binDir);
+    await writeExecutable(
+      path.join(binDir, "gh"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "$MOCK_LOG"
+if [[ "$1 $2" == "release view" ]]; then
+  case "$MOCK_RELEASE_STATE" in
+    stable) printf 'false\\tfalse\\n' ;;
+    draft) printf 'true\\tfalse\\n' ;;
+    prerelease) printf 'false\\ttrue\\n' ;;
+    missing) exit 1 ;;
+    *) exit 2 ;;
+  esac
+fi
+`,
+    );
+    await execFileWithOutput("bash", ["-c", script], {
+      cwd: tempDir,
+      env: {
+        ...process.env,
+        GITHUB_REPOSITORY: "openclaw/crabline",
+        MOCK_LOG: logPath,
+        MOCK_RELEASE_STATE: state,
+        PATH: `${binDir}:${process.env.PATH}`,
+        RELEASE_TAG: "v1.2.3",
+      },
+    });
+    return (await fs.readFile(logPath, "utf8")).trim().split("\n");
   } finally {
     await fs.rm(tempDir, { force: true, recursive: true });
   }

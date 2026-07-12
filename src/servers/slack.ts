@@ -45,6 +45,12 @@ type SlackServerState = {
   botId: string;
   botToken: string;
   botUserId: string;
+  chatPostMessageRateLimit:
+    | {
+        remaining: number;
+        retryAfterSeconds: number;
+      }
+    | undefined;
   eventsRequestUrl: string | undefined;
   nextDmIndex: number;
   nextMpimIndex: number;
@@ -87,6 +93,12 @@ export type StartSlackServerParams = {
   botId?: string | undefined;
   botToken?: string | undefined;
   botUserId?: string | undefined;
+  chatPostMessageRateLimit?:
+    | {
+        remaining: number;
+        retryAfterSeconds: number;
+      }
+    | undefined;
   eventsRequestUrl?: string | undefined;
   host?: string | undefined;
   onEvent?: ServerEventObserver | undefined;
@@ -111,6 +123,21 @@ function slackRateLimited(retryAfterSeconds = 1): Response {
     },
     status: 429,
   });
+}
+
+function resolveChatPostMessageRateLimit(
+  value: StartSlackServerParams["chatPostMessageRateLimit"],
+): SlackServerState["chatPostMessageRateLimit"] {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(value.remaining) || value.remaining < 0) {
+    throw new Error("chatPostMessageRateLimit.remaining must be a non-negative safe integer.");
+  }
+  if (!Number.isSafeInteger(value.retryAfterSeconds) || value.retryAfterSeconds < 1) {
+    throw new Error("chatPostMessageRateLimit.retryAfterSeconds must be a positive safe integer.");
+  }
+  return { ...value };
 }
 
 function requireSlackToken(
@@ -385,6 +412,7 @@ async function deliverSlackEvent(
       method: "POST",
       signal: AbortSignal.timeout(3_000),
     });
+    await response.body?.cancel();
     if (!response.ok) {
       return slackError("event_delivery_failed", 502);
     }
@@ -419,8 +447,12 @@ async function handleSlackApi(params: {
         user_id: params.state.botUserId,
       });
     case "chat.postMessage": {
-      if (readBoolean(params.body.simulate_rate_limit) === true) {
-        return slackRateLimited(readInteger(params.body.retry_after) ?? 1);
+      const rateLimit = params.state.chatPostMessageRateLimit;
+      if (rateLimit && rateLimit.remaining <= 0) {
+        return slackRateLimited(rateLimit.retryAfterSeconds);
+      }
+      if (rateLimit) {
+        rateLimit.remaining -= 1;
       }
       const channel = requireSlackSendTargetId(params.body.channel);
       if (channel instanceof Response) {
@@ -696,6 +728,7 @@ export async function startSlackServer(
     botId: params.botId ?? "BCRABLINE",
     botToken: params.botToken ?? "xoxb-crabline-slack-token",
     botUserId: params.botUserId ?? "UCRABBOT",
+    chatPostMessageRateLimit: resolveChatPostMessageRateLimit(params.chatPostMessageRateLimit),
     eventsRequestUrl: params.eventsRequestUrl,
     nextDmIndex: 1,
     nextMpimIndex: 1,
