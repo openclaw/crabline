@@ -67,7 +67,6 @@ type MatrixServerState = {
 };
 
 const MAX_MATRIX_TIMELINE_EVENTS = 1_000;
-// Preserve idempotency within a bounded replay window instead of retaining every transaction.
 const MAX_MATRIX_TRANSACTION_RESPONSES = 1_000;
 const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
 
@@ -266,12 +265,17 @@ function rememberTransaction(
   response: MatrixTransactionResponse,
 ): void {
   state.transactions.set(key, response);
-  if (state.transactions.size > MAX_MATRIX_TRANSACTION_RESPONSES) {
-    const oldest = state.transactions.keys().next().value;
-    if (oldest !== undefined) {
-      state.transactions.delete(oldest);
-    }
-  }
+}
+
+function matrixTransactionCapacityError(): Response {
+  return jsonResponse(
+    {
+      admin_contact: "mailto:admin@example.invalid",
+      errcode: "M_RESOURCE_LIMIT_EXCEEDED",
+      error: "Transaction response capacity has been reached",
+    },
+    503,
+  );
 }
 
 function readTimelineLimit(filter: Record<string, unknown> | undefined): number | undefined {
@@ -566,6 +570,9 @@ async function handleMatrixApi(params: {
     const existingResponse = params.state.transactions.get(transactionKey);
     if (existingResponse) {
       return jsonResponse(existingResponse.body, existingResponse.status);
+    }
+    if (params.state.transactions.size >= MAX_MATRIX_TRANSACTION_RESPONSES) {
+      return matrixTransactionCapacityError();
     }
     const room = findRoom(params.state, match[1]!);
     if (!room) {
