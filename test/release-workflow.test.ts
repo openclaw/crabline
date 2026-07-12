@@ -41,8 +41,8 @@ describe("release workflow", () => {
       tag: "v1.2.3",
       version: "1.2.3",
     });
-    await expect(runResolveTag(resolveStep, "v1.2.3-beta.1")).rejects.toThrow();
-    await expect(runResolveTag(resolveStep, "v1.2.3.preview")).rejects.toThrow();
+    await expect(runResolveTag(resolveStep, "v1.2.3-beta.1")).rejects.toThrow(/Command failed/u);
+    await expect(runResolveTag(resolveStep, "v1.2.3.preview")).rejects.toThrow(/Command failed/u);
     expect(checkoutStep?.with?.ref).toBe("refs/tags/${{ steps.release.outputs.tag }}");
   });
 
