@@ -777,6 +777,45 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("does not reclaim a live owner after a forward clock jump when its heartbeat advances", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    let now = 1_000;
+    let renew: (() => Promise<void>) | undefined;
+    try {
+      const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => now,
+        pid: 4_242,
+        processStartedAtMs: 100,
+        startHeartbeat: (heartbeat) => {
+          renew = heartbeat;
+          return disableHeartbeat(heartbeat, 333);
+        },
+      });
+
+      now = 100_000;
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(params, {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 5_252,
+          processStartedAtMs: 200,
+          sleep: async () => {
+            await renew!();
+          },
+          startHeartbeat: disableHeartbeat,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+
+      await firstLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("retries strict owner parsing failures during release", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };

@@ -74,6 +74,7 @@ type SmokeLockRuntime = {
   isProcessAlive: IsProcessAlive;
   leaseMs: number;
   now: () => number;
+  sleep: Sleep;
 };
 
 const LOCK_OWNER_FILE = "owner.json";
@@ -391,6 +392,36 @@ function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): 
   return ageMs >= -runtime.leaseMs && ageMs <= runtime.leaseMs;
 }
 
+function needsLiveOwnerConfirmation(record: SmokeLockRecord, runtime: SmokeLockRuntime): boolean {
+  return (
+    isRenewableOwner(record.owner) &&
+    runtime.isProcessAlive(record.owner.pid) &&
+    !(
+      record.owner.pid === runtime.currentPid &&
+      record.owner.processStartedAtMs !== runtime.currentProcessStartedAtMs
+    ) &&
+    !isLockOwnerActive(record, runtime)
+  );
+}
+
+async function observedOwnerChangedDuringConfirmation(
+  lockDirectory: string,
+  observed: SmokeLockRecord,
+  runtime: SmokeLockRuntime,
+): Promise<boolean> {
+  if (!needsLiveOwnerConfirmation(observed, runtime)) {
+    return false;
+  }
+  await runtime.sleep(Math.max(1, Math.ceil(runtime.leaseMs / 3)));
+  const revalidated = await readLockRecord(lockDirectory);
+  return (
+    revalidated.kind === "record" &&
+    (revalidated.record.owner.token !== observed.owner.token ||
+      revalidated.record.renewedAtMs !== observed.renewedAtMs ||
+      isLockOwnerActive(revalidated.record, runtime))
+  );
+}
+
 function activeRunError(params: {
   cause?: unknown;
   channel?: CrablineServerChannel;
@@ -619,6 +650,16 @@ async function resolveLockClaim(params: {
       requestedChannel: params.requestedChannel,
     });
   }
+  if (
+    await observedOwnerChangedDuringConfirmation(
+      params.claim.directoryPath,
+      observed.record,
+      params.runtime,
+    )
+  ) {
+    await resolveLockClaim(params);
+    return;
+  }
 
   const revalidated = await readLockRecord(params.claim.directoryPath);
   if (revalidated.kind === "missing") {
@@ -678,6 +719,17 @@ async function resolveLockContention(params: {
       outputDir: params.outputDir,
       requestedChannel: params.requestedChannel,
     });
+  }
+  if (
+    observed.kind === "record" &&
+    (await observedOwnerChangedDuringConfirmation(
+      params.lockDirectory,
+      observed.record,
+      params.runtime,
+    ))
+  ) {
+    await resolveLockContention(params);
+    return;
   }
 
   await params.beforeRecoveryClaim();
@@ -775,6 +827,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     beforeRecoveryClaim?: BeforeRecoveryClaim;
     beforeReleaseClaim?: BeforeReleaseClaim;
     removeDirectory?: RemoveLockDirectory;
+    sleep?: Sleep;
     startHeartbeat?: StartHeartbeat;
   } = {},
 ): Promise<OpenClawCrablineSmokeRunLock> {
@@ -787,6 +840,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     isProcessAlive: dependencies.isProcessAlive ?? isProcessAlive,
     leaseMs: dependencies.leaseMs ?? LOCK_LEASE_MS,
     now: dependencies.now ?? Date.now,
+    sleep: dependencies.sleep ?? sleep,
   };
   const createdAtMs = runtime.now();
   if (
