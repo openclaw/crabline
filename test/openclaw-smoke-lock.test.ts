@@ -185,14 +185,14 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("renews a live lock before its lease expires", async () => {
+  it("does not renew a lock after a recovery claimant moves it", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
       path.resolve(outputDir),
       `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
     );
-    const recoveryDirectory = `${lockDirectory}.recovering`;
+    const recoveryDirectory = `${lockDirectory}.recovering.11111111-1111-4111-8111-111111111111`;
     let now = 1_000;
     let renew: (() => Promise<void>) | undefined;
     const stop = vi.fn(async () => undefined);
@@ -214,20 +214,75 @@ describe("OpenClaw smoke lock cleanup", () => {
       await renew!();
       await fs.rename(lockDirectory, recoveryDirectory);
       now = 2_600;
-      await renew!();
-      now = 3_500;
+      await expect(renew!()).rejects.toThrow("smoke lock ownership was lost");
       await expect(
         acquireOpenClawCrablineSmokeRunLock(params, {
           isProcessAlive: () => true,
           leaseMs: 1_000,
-          now: () => now,
+          now: () => 2_600,
           pid: 5_252,
           processStartedAtMs: 200,
         }),
       ).rejects.toThrow("OpenClaw Crabline smoke is already running");
 
+      expect(await fs.stat(lockDirectory)).toBeDefined();
+      await expect(fs.stat(recoveryDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        (await fs.readdir(outputDir)).filter((entry) => entry.includes(".recovering")),
+      ).toEqual([]);
       await lock.release();
       expect(stop).toHaveBeenCalledTimes(1);
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("revalidates a stale owner after claiming recovery before deletion", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    const recoveryDirectory = `${lockDirectory}.recovering`;
+    let now = 1_000;
+    let renew: (() => Promise<void>) | undefined;
+    try {
+      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => now,
+        pid: 4_242,
+        processStartedAtMs: 100,
+        startHeartbeat: (heartbeat) => {
+          renew = heartbeat;
+          return disableHeartbeat(heartbeat, 333);
+        },
+      });
+
+      now = 2_001;
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(params, {
+          beforeRecoveryClaim: async () => {
+            now = 1_999;
+            await renew!();
+            now = 2_001;
+          },
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 5_252,
+          processStartedAtMs: 200,
+          startHeartbeat: disableHeartbeat,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+
+      expect(await fs.stat(lockDirectory)).toBeDefined();
+      await expect(fs.stat(recoveryDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        (await fs.readdir(outputDir)).filter((entry) => entry.includes(".recovering")),
+      ).toEqual([]);
+      await lock.release();
     } finally {
       await disposeTempDir(outputDir);
     }

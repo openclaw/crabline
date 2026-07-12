@@ -43,6 +43,7 @@ type RemoveLockDirectory = (lockDirectory: string) => Promise<void>;
 type Sleep = (delayMs: number) => Promise<void>;
 type IsProcessAlive = (pid: number) => boolean;
 type StartHeartbeat = (renew: () => Promise<void>, intervalMs: number) => HeartbeatController;
+type BeforeRecoveryClaim = () => Promise<void>;
 
 type SmokeLockRuntime = {
   currentPid: number;
@@ -53,6 +54,8 @@ type SmokeLockRuntime = {
 };
 
 const LOCK_OWNER_FILE = "owner.json";
+const LOCK_LEASE_FILE_PREFIX = "lease.";
+const LEGACY_RECOVERY_SUFFIX = ".recovering";
 const LOCK_LEASE_MS = 10 * 60 * 1000;
 const RELEASE_ATTEMPTS = 3;
 const RELEASE_RETRY_DELAY_MS = 10;
@@ -180,6 +183,10 @@ function parseLockOwner(contents: string): SmokeLockOwner {
   };
 }
 
+function leaseFileName(token: string): string {
+  return `${LOCK_LEASE_FILE_PREFIX}${token}.json`;
+}
+
 async function readLockRecordFromHandle(handle: FileHandle): Promise<SmokeLockRecord> {
   const owner = parseLockOwner(await handle.readFile("utf8"));
   const stats = await handle.stat();
@@ -199,7 +206,22 @@ async function readLockRecord(lockDirectory: string): Promise<LockRecordReadResu
   let handle: FileHandle | undefined;
   try {
     handle = await fs.open(path.join(lockDirectory, LOCK_OWNER_FILE), "r");
-    return { kind: "record", record: await readLockRecordFromHandle(handle) };
+    const record = await readLockRecordFromHandle(handle);
+    if (isRenewableOwner(record.owner)) {
+      try {
+        const leaseStats = await fs.stat(
+          path.join(lockDirectory, leaseFileName(record.owner.token)),
+        );
+        if (Number.isFinite(leaseStats.mtimeMs) && leaseStats.mtimeMs > 0) {
+          record.renewedAtMs = Math.max(record.renewedAtMs, leaseStats.mtimeMs);
+        }
+      } catch (error) {
+        if (!isMissingPathError(error)) {
+          throw error;
+        }
+      }
+    }
+    return { kind: "record", record };
   } catch (error) {
     if (isMissingPathError(error)) {
       return { kind: "missing" };
@@ -281,16 +303,36 @@ async function renewOwnedLock(
   token: string,
   renewedAtMs: number,
 ): Promise<boolean> {
-  let handle: FileHandle | undefined;
+  const temporaryLeasePath = path.join(
+    lockDirectory,
+    `.${leaseFileName(token)}.${randomUUID()}.tmp`,
+  );
   try {
-    handle = await fs.open(path.join(lockDirectory, LOCK_OWNER_FILE), "r+");
-    const record = await readLockRecordFromHandle(handle);
-    if (record.owner.token !== token || !isRenewableOwner(record.owner)) {
+    const observed = await readLockRecord(lockDirectory);
+    if (
+      observed.kind === "missing" ||
+      observed.record.owner.token !== token ||
+      !isRenewableOwner(observed.record.owner)
+    ) {
       return false;
     }
+    await fs.writeFile(temporaryLeasePath, `${JSON.stringify({ renewedAtMs, token })}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await fs.chmod(temporaryLeasePath, 0o600);
     const renewedAt = new Date(renewedAtMs);
-    await handle.utimes(renewedAt, renewedAt);
-    await handle.sync();
+    await fs.utimes(temporaryLeasePath, renewedAt, renewedAt);
+    const revalidated = await readLockRecord(lockDirectory);
+    if (
+      revalidated.kind === "missing" ||
+      revalidated.record.owner.token !== token ||
+      !isRenewableOwner(revalidated.record.owner)
+    ) {
+      return false;
+    }
+    await fs.rename(temporaryLeasePath, path.join(lockDirectory, leaseFileName(token)));
     return true;
   } catch (error) {
     if (isMissingPathError(error)) {
@@ -298,40 +340,139 @@ async function renewOwnedLock(
     }
     throw error;
   } finally {
-    await handle?.close();
+    await fs.rm(temporaryLeasePath, { force: true }).catch(() => undefined);
   }
 }
 
-async function resolveRecoveryDirectory(params: {
+function recoveryClaimPrefix(lockDirectory: string): string {
+  return `${path.basename(lockDirectory)}${LEGACY_RECOVERY_SUFFIX}.`;
+}
+
+async function listRecoveryClaimDirectories(lockDirectory: string): Promise<string[]> {
+  const directory = path.dirname(lockDirectory);
+  const prefix = recoveryClaimPrefix(lockDirectory);
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const claims: string[] = [];
+  for (const entry of entries) {
+    if (!entry.name.startsWith(prefix)) {
+      continue;
+    }
+    if (!entry.isDirectory()) {
+      throw new Error("OpenClaw Crabline smoke recovery claim is not a directory.");
+    }
+    claims.push(path.join(directory, entry.name));
+  }
+  return claims.sort();
+}
+
+async function claimLegacyRecoveryDirectory(
+  lockDirectory: string,
+  expectedToken?: string,
+): Promise<void> {
+  const legacyRecoveryDirectory = `${lockDirectory}${LEGACY_RECOVERY_SUFFIX}`;
+  if (!(await pathExists(legacyRecoveryDirectory))) {
+    return;
+  }
+  if (expectedToken !== undefined) {
+    const observed = await readLockRecord(legacyRecoveryDirectory);
+    if (observed.kind === "missing" || observed.record.owner.token !== expectedToken) {
+      return;
+    }
+  }
+  try {
+    await fs.rename(
+      legacyRecoveryDirectory,
+      `${lockDirectory}${LEGACY_RECOVERY_SUFFIX}.${randomUUID()}`,
+    );
+  } catch (error) {
+    if (!isMissingPathError(error)) {
+      throw error;
+    }
+  }
+}
+
+async function resolveRecoveryClaim(params: {
+  claimDirectory: string;
+  lockDirectory: string;
   outputDir: string;
-  recoveryDirectory: string;
   requestedChannel: CrablineServerChannel;
   runtime: SmokeLockRuntime;
 }): Promise<void> {
-  const result = await readLockRecord(params.recoveryDirectory);
-  if (result.kind === "record" && isLockOwnerActive(result.record, params.runtime)) {
+  const observed = await readLockRecord(params.claimDirectory);
+  if (observed.kind === "missing") {
+    const discardDirectory = `${params.lockDirectory}.discard.${randomUUID()}`;
+    try {
+      await fs.rename(params.claimDirectory, discardDirectory);
+    } catch (error) {
+      if (isMissingPathError(error)) {
+        return;
+      }
+      throw error;
+    }
+    const claimed = await readLockRecord(discardDirectory);
+    if (claimed.kind === "record") {
+      await fs.rename(discardDirectory, params.claimDirectory);
+      await resolveRecoveryClaim(params);
+      return;
+    }
+    await fs.rm(discardDirectory, { force: true, recursive: true });
+    return;
+  }
+  if (isLockOwnerActive(observed.record, params.runtime)) {
+    try {
+      await fs.rename(params.claimDirectory, params.lockDirectory);
+    } catch (error) {
+      if (!(await pathExists(params.lockDirectory))) {
+        throw error;
+      }
+    }
     throw activeRunError({
-      channel: result.record.owner.channel,
+      channel: observed.record.owner.channel,
       outputDir: params.outputDir,
       requestedChannel: params.requestedChannel,
     });
   }
-  await fs.rm(params.recoveryDirectory, { force: true, recursive: true });
+
+  const revalidated = await readLockRecord(params.claimDirectory);
+  if (revalidated.kind === "missing") {
+    await resolveRecoveryClaim(params);
+    return;
+  }
+  if (
+    revalidated.record.owner.token !== observed.record.owner.token ||
+    isLockOwnerActive(revalidated.record, params.runtime)
+  ) {
+    await resolveRecoveryClaim(params);
+    return;
+  }
+  if (!(await removeOwnedLock(params.claimDirectory, revalidated.record.owner.token))) {
+    await resolveRecoveryClaim(params);
+  }
+}
+
+async function resolveRecoveryClaims(params: {
+  lockDirectory: string;
+  outputDir: string;
+  requestedChannel: CrablineServerChannel;
+  runtime: SmokeLockRuntime;
+}): Promise<void> {
+  await claimLegacyRecoveryDirectory(params.lockDirectory);
+  for (const claimDirectory of await listRecoveryClaimDirectories(params.lockDirectory)) {
+    await resolveRecoveryClaim({
+      ...params,
+      claimDirectory,
+    });
+  }
 }
 
 async function resolveLockContention(params: {
   cause: unknown;
   lockDirectory: string;
   outputDir: string;
-  recoveryDirectory: string;
   requestedChannel: CrablineServerChannel;
   runtime: SmokeLockRuntime;
+  beforeRecoveryClaim: BeforeRecoveryClaim;
 }): Promise<void> {
-  if (await pathExists(params.recoveryDirectory)) {
-    await resolveRecoveryDirectory(params);
-    return;
-  }
-
   const observed = await readLockRecord(params.lockDirectory);
   if (observed.kind === "record" && isLockOwnerActive(observed.record, params.runtime)) {
     throw activeRunError({
@@ -342,23 +483,22 @@ async function resolveLockContention(params: {
     });
   }
 
+  await params.beforeRecoveryClaim();
+  const claimDirectory = `${params.lockDirectory}${LEGACY_RECOVERY_SUFFIX}.${randomUUID()}`;
   try {
-    await fs.rename(params.lockDirectory, params.recoveryDirectory);
+    await fs.rename(params.lockDirectory, claimDirectory);
   } catch (error) {
-    if (
-      !(await pathExists(params.lockDirectory)) &&
-      !(await pathExists(params.recoveryDirectory))
-    ) {
-      return;
-    }
-    if (await pathExists(params.recoveryDirectory)) {
-      await resolveRecoveryDirectory(params);
+    if (!(await pathExists(params.lockDirectory))) {
+      await resolveRecoveryClaims(params);
       return;
     }
     throw error;
   }
 
-  await resolveRecoveryDirectory(params);
+  await resolveRecoveryClaim({
+    ...params,
+    claimDirectory,
+  });
 }
 
 async function createLockCandidate(params: {
@@ -376,8 +516,20 @@ async function createLockCandidate(params: {
       mode: 0o600,
     });
     await fs.chmod(ownerPath, 0o600);
+    const leasePath = path.join(candidateDirectory, leaseFileName(params.owner.token));
+    await fs.writeFile(
+      leasePath,
+      `${JSON.stringify({ renewedAtMs: params.owner.createdAtMs, token: params.owner.token })}\n`,
+      {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      },
+    );
+    await fs.chmod(leasePath, 0o600);
     const createdAt = new Date(params.owner.createdAtMs);
     await fs.utimes(ownerPath, createdAt, createdAt);
+    await fs.utimes(leasePath, createdAt, createdAt);
     return candidateDirectory;
   } catch (error) {
     await fs.rm(candidateDirectory, { force: true, recursive: true }).catch(() => undefined);
@@ -396,13 +548,13 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     now?: () => number;
     pid?: number;
     processStartedAtMs?: number;
+    beforeRecoveryClaim?: BeforeRecoveryClaim;
     removeDirectory?: RemoveLockDirectory;
     startHeartbeat?: StartHeartbeat;
   } = {},
 ): Promise<OpenClawCrablineSmokeRunLock> {
   const outputDir = path.resolve(params.outputDir);
   const lockDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
-  const recoveryDirectory = `${lockDirectory}.recovering`;
   const token = randomUUID();
   const runtime: SmokeLockRuntime = {
     currentPid: dependencies.pid ?? process.pid,
@@ -431,10 +583,14 @@ export async function acquireOpenClawCrablineSmokeRunLock(
 
   await fs.mkdir(outputDir, { recursive: true });
   for (;;) {
-    if (await pathExists(recoveryDirectory)) {
-      await resolveRecoveryDirectory({
+    const recoveryClaims = await listRecoveryClaimDirectories(lockDirectory);
+    if (
+      recoveryClaims.length > 0 ||
+      (await pathExists(`${lockDirectory}${LEGACY_RECOVERY_SUFFIX}`))
+    ) {
+      await resolveRecoveryClaims({
+        lockDirectory,
         outputDir,
-        recoveryDirectory,
         requestedChannel: params.channel,
         runtime,
       });
@@ -453,15 +609,24 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         cause: error,
         lockDirectory,
         outputDir,
-        recoveryDirectory,
         requestedChannel: params.channel,
         runtime,
+        beforeRecoveryClaim: dependencies.beforeRecoveryClaim ?? (async () => undefined),
       });
       continue;
     }
 
-    if (await pathExists(recoveryDirectory)) {
+    if (
+      (await listRecoveryClaimDirectories(lockDirectory)).length > 0 ||
+      (await pathExists(`${lockDirectory}${LEGACY_RECOVERY_SUFFIX}`))
+    ) {
       await removeOwnedLock(lockDirectory, token);
+      await resolveRecoveryClaims({
+        lockDirectory,
+        outputDir,
+        requestedChannel: params.channel,
+        runtime,
+      });
       continue;
     }
     const installed = await readLockRecord(lockDirectory);
@@ -472,10 +637,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     let heartbeat: HeartbeatController;
     const renew = async () => {
       const renewedAtMs = runtime.now();
-      if (
-        !(await renewOwnedLock(lockDirectory, token, renewedAtMs)) &&
-        !(await renewOwnedLock(recoveryDirectory, token, renewedAtMs))
-      ) {
+      if (!(await renewOwnedLock(lockDirectory, token, renewedAtMs))) {
         throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
       }
     };
@@ -520,7 +682,10 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           heartbeatStopped = true;
         }
         await removeOwnedLock(lockDirectory, token, dependencies.removeDirectory);
-        await removeOwnedLock(recoveryDirectory, token, dependencies.removeDirectory);
+        await claimLegacyRecoveryDirectory(lockDirectory, token);
+        for (const claimDirectory of await listRecoveryClaimDirectories(lockDirectory)) {
+          await removeOwnedLock(claimDirectory, token, dependencies.removeDirectory);
+        }
         released = true;
       },
     };
