@@ -5,6 +5,7 @@ import { parse } from "yaml";
 type WorkflowStep = {
   run?: string;
   uses?: string;
+  with?: Record<string, unknown>;
 };
 
 type Workflow = {
@@ -35,5 +36,14 @@ describe("CI workflow hardening", () => {
     for (const actionRef of actionRefs) {
       expect(actionRef).toMatch(/^[^@]+@[0-9a-f]{40}$/u);
     }
+  });
+
+  it("exempts security pull requests from stale automation", async () => {
+    const workflow = await readWorkflow(".github/workflows/stale.yml");
+    const staleStep = Object.values(workflow.jobs ?? {})
+      .flatMap((job) => job.steps ?? [])
+      .find((step) => step.uses?.startsWith("actions/stale@"));
+
+    expect(String(staleStep?.with?.["exempt-pr-labels"]).split(",")).toContain("security");
   });
 });

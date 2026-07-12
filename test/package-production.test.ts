@@ -84,7 +84,6 @@ describe("production package", () => {
         }
       }),
     );
-
     const installRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-production-install-"));
     const packDirectory = path.join(installRoot, "pack");
     const consumerDirectory = path.join(installRoot, "consumer");
@@ -185,6 +184,28 @@ describe("production package", () => {
       await fs.rm(installRoot, { force: true, recursive: true });
     }
   }, 120_000);
+
+  it("embeds source contents in published JavaScript source maps", async () => {
+    const root = process.cwd();
+    const pack = await npmPackDryRun(root);
+    const sourceMaps = pack.files
+      .map((file) => file.path)
+      .filter((file) => file.startsWith("dist/") && file.endsWith(".js.map"));
+
+    expect(sourceMaps).not.toEqual([]);
+    await Promise.all(
+      sourceMaps.map(async (file) => {
+        const sourceMap = JSON.parse(await fs.readFile(path.join(root, file), "utf8")) as {
+          sources?: unknown[];
+          sourcesContent?: unknown[];
+        };
+        expect(sourceMap.sourcesContent, `${file} is missing inline source contents`).toHaveLength(
+          sourceMap.sources?.length ?? 0,
+        );
+        expect(sourceMap.sourcesContent?.every((source) => typeof source === "string")).toBe(true);
+      }),
+    );
+  });
 
   it("uses portable cleanup scripts", async () => {
     const root = process.cwd();

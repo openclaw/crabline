@@ -966,6 +966,181 @@ describe("cli", () => {
     expect(process.listenerCount("SIGTERM")).toBe(baseline);
   });
 
+  it("waits for stdout backpressure while watching", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  local:",
+        "    adapter: loopback",
+        "fixtures:",
+        "  - id: watched",
+        "    provider: local",
+        "    mode: agent",
+        "    target:",
+        "      id: echo-bot",
+      ].join("\n"),
+    );
+    const cleanup = vi.fn(async () => undefined);
+    const provider = {
+      cleanup,
+      async *watch() {
+        yield {
+          author: "assistant",
+          id: "message",
+          provider: "local",
+          sentAt: new Date().toISOString(),
+          text: "payload",
+          threadId: "thread",
+        };
+      },
+    };
+    let completeWrite: ((error?: Error | null) => void) | undefined;
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(((
+      _chunk: string | Uint8Array,
+      encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+      callback?: (error?: Error | null) => void,
+    ) => {
+      completeWrite = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      return false;
+    }) as typeof process.stdout.write);
+    const program = createProgram(() => undefined, {
+      createRegistry: () =>
+        ({
+          resolve: () => provider,
+        }) as never,
+    });
+    let settled = false;
+
+    try {
+      const running = program
+        .parseAsync(["node", "crabline", "--config", configPath, "watch", "watched"])
+        .finally(() => {
+          settled = true;
+        });
+      await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+      completeWrite?.(null);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      process.stdout.emit("drain");
+      await running;
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a closed watch stdout pipe as graceful shutdown", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  local:",
+        "    adapter: loopback",
+        "fixtures:",
+        "  - id: watched",
+        "    provider: local",
+        "    mode: agent",
+        "    target:",
+        "      id: echo-bot",
+      ].join("\n"),
+    );
+    const cleanup = vi.fn(async () => undefined);
+    const provider = {
+      cleanup,
+      async *watch() {
+        yield {
+          author: "assistant",
+          id: "message",
+          provider: "local",
+          sentAt: new Date().toISOString(),
+          text: "payload",
+          threadId: "thread",
+        };
+      },
+    };
+    const write = vi.spyOn(process.stdout, "write").mockImplementation((() => {
+      queueMicrotask(() => {
+        process.stdout.emit("error", Object.assign(new Error("broken pipe"), { code: "EPIPE" }));
+      });
+      return false;
+    }) as typeof process.stdout.write);
+    const program = createProgram(() => undefined, {
+      createRegistry: () =>
+        ({
+          resolve: () => provider,
+        }) as never,
+    });
+
+    try {
+      await expect(
+        program.parseAsync(["node", "crabline", "--config", configPath, "watch", "watched"]),
+      ).resolves.toBe(program);
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("sanitizes terminal controls in watch text output", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  local:",
+        "    adapter: loopback",
+        "fixtures:",
+        "  - id: watched",
+        "    provider: local",
+        "    mode: agent",
+        "    target:",
+        "      id: echo-bot",
+      ].join("\n"),
+    );
+    const captured = captureWrites();
+    const provider = {
+      async *watch() {
+        yield {
+          author: "assistant",
+          id: "message",
+          provider: "local",
+          sentAt: "now",
+          text: "first\u001b[2J\nsecond",
+          threadId: "thread",
+        };
+      },
+    };
+    const program = createProgram(() => undefined, {
+      createRegistry: () =>
+        ({
+          resolve: () => provider,
+        }) as never,
+    });
+
+    try {
+      await program.parseAsync(["node", "crabline", "--config", configPath, "watch", "watched"]);
+    } finally {
+      captured.restore();
+    }
+
+    expect(captured.stdout.join("")).toContain(String.raw`first\x1b[2J\nsecond`);
+    expect(captured.stdout.join("")).not.toContain("\u001b");
+  });
+
   it("preserves shutdown and ready-file cleanup failures", async () => {
     const directory = await createTempDir();
     directories.push(directory);

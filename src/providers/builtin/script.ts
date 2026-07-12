@@ -1,5 +1,6 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
 import path from "node:path";
+import type { Readable, Writable } from "node:stream";
 import { z } from "zod";
 import { CrablineError, ensureErrorMessage } from "../../core/errors.js";
 import type {
@@ -13,6 +14,7 @@ import type {
 
 const MAX_SCRIPT_OUTPUT_BYTES = 1024 * 1024;
 const SCRIPT_WAIT_EXIT_GRACE_MS = 250;
+const WINDOWS_TERMINATION_TIMEOUT_MS = 5_000;
 
 type ScriptWatchIterator = AsyncIterableIterator<InboundEnvelope> & {
   [Symbol.asyncIterator](): ScriptWatchIterator;
@@ -28,6 +30,13 @@ type ScriptPayload = {
     manifestPath: string;
   };
 };
+
+type ScriptDiagnosticsSnapshot = {
+  configuredCommands: string[];
+  sensitiveEnvironmentValues: string[];
+};
+
+type SpawnedScriptChild = ChildProcessByStdio<Writable, Readable, Readable>;
 
 const ScriptMessageSchema = z.object({
   author: z.enum(["assistant", "system", "user"]),
@@ -61,12 +70,35 @@ const ScriptInboundResultSchema = z
     { message: "result must contain either a message or timeout: true" },
   );
 
-function terminateChild(child: ChildProcess): void {
+async function terminateChild(child: ChildProcess): Promise<void> {
   if (process.platform === "win32" && child.pid) {
-    spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
-      stdio: "ignore",
-      timeout: 5000,
-      windowsHide: true,
+    await new Promise<void>((resolve) => {
+      let taskkill: ChildProcess;
+      try {
+        taskkill = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+      } catch {
+        resolve();
+        return;
+      }
+      let settled = false;
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = setTimeout(() => {
+        taskkill.kill("SIGKILL");
+        finish();
+      }, WINDOWS_TERMINATION_TIMEOUT_MS);
+      timeout.unref();
+      taskkill.once("close", finish);
+      taskkill.once("error", finish);
     });
   } else if (child.pid) {
     try {
@@ -114,8 +146,8 @@ function commandContainsSensitiveValue(command: string): boolean {
   );
 }
 
-function redactSensitiveEnvironmentValues(detail: string): string {
-  let redacted = detail;
+function snapshotSensitiveEnvironmentValues(): string[] {
+  const representations = new Set<string>();
   const values = Object.entries(process.env)
     .filter(
       ([name, value]) =>
@@ -123,15 +155,21 @@ function redactSensitiveEnvironmentValues(detail: string): string {
     )
     .map(([, value]) => value!)
     .sort((left, right) => right.length - left.length);
+  for (const value of values) {
+    representations.add(value);
+    representations.add(JSON.stringify(value));
+    representations.add(JSON.stringify(value).slice(1, -1));
+  }
+  return [...representations].sort((left, right) => right.length - left.length);
+}
 
-  for (const value of new Set(values)) {
-    for (const representation of [
-      value,
-      JSON.stringify(value),
-      JSON.stringify(value).slice(1, -1),
-    ]) {
-      redacted = redacted.split(representation).join("[redacted environment value]");
-    }
+function redactSensitiveEnvironmentValues(
+  detail: string,
+  sensitiveEnvironmentValues: string[],
+): string {
+  let redacted = detail;
+  for (const representation of sensitiveEnvironmentValues) {
+    redacted = redacted.split(representation).join("[redacted environment value]");
   }
   return redacted;
 }
@@ -196,6 +234,7 @@ function formatScriptError(
   summary: string,
   detail: string,
   command: string,
+  diagnostics: ScriptDiagnosticsSnapshot,
   payload?: unknown,
 ): string {
   if (!detail.trim()) {
@@ -204,16 +243,41 @@ function formatScriptError(
   if (commandContainsSensitiveValue(command)) {
     return `${summary}\n[script diagnostics redacted]`;
   }
-  const withoutCommand = detail.split(command).join("[configured script command]");
+  let withoutCommands = detail;
+  for (const configuredCommand of diagnostics.configuredCommands) {
+    withoutCommands = withoutCommands.split(configuredCommand).join("[configured script command]");
+  }
   const redacted = redactSensitivePayloadValues(
-    redactSensitiveEnvironmentValues(withoutCommand),
+    redactSensitiveEnvironmentValues(withoutCommands, diagnostics.sensitiveEnvironmentValues),
     payload,
   ).trim();
   return redacted ? `${summary}\n${redacted}` : summary;
 }
 
+function createScriptDiagnosticsSnapshot(
+  command: string,
+  payload: unknown,
+): ScriptDiagnosticsSnapshot {
+  const configuredCommands = new Set([command]);
+  const commands = (
+    payload as {
+      provider?: { config?: { script?: { commands?: Record<string, unknown> } } };
+    }
+  ).provider?.config?.script?.commands;
+  for (const configuredCommand of Object.values(commands ?? {})) {
+    if (typeof configuredCommand === "string" && configuredCommand.length > 0) {
+      configuredCommands.add(configuredCommand);
+    }
+  }
+  return {
+    configuredCommands: [...configuredCommands].sort((left, right) => right.length - left.length),
+    sensitiveEnvironmentValues: snapshotSensitiveEnvironmentValues(),
+  };
+}
+
 function parseScriptJson<T>(params: {
   command: string;
+  diagnostics: ScriptDiagnosticsSnapshot;
   output: string;
   payload?: unknown;
   schema: z.ZodType<T>;
@@ -227,6 +291,7 @@ function parseScriptJson<T>(params: {
         "Script command did not return valid JSON.",
         ensureErrorMessage(error),
         params.command,
+        params.diagnostics,
         params.payload,
       ),
       { kind: "config" },
@@ -257,14 +322,32 @@ function runScript<T>(params: {
   if (params.signal?.aborted) {
     return Promise.reject(params.signal.reason ?? new Error("Script command aborted."));
   }
+  const diagnostics = createScriptDiagnosticsSnapshot(params.command, params.payload);
   return new Promise((resolve, reject) => {
-    const child = spawn(params.command, {
-      cwd: params.cwd ? path.resolve(params.cwd) : process.cwd(),
-      env: process.env,
-      shell: params.shell ?? true,
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    let child: SpawnedScriptChild;
+    try {
+      child = spawn(params.command, {
+        cwd: params.cwd ? path.resolve(params.cwd) : process.cwd(),
+        env: process.env,
+        shell: params.shell ?? true,
+        detached: process.platform !== "win32",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (error) {
+      reject(
+        new CrablineError(
+          formatScriptError(
+            "Script command failed to start.",
+            ensureErrorMessage(error),
+            params.command,
+            diagnostics,
+            params.payload,
+          ),
+          { kind: "connectivity" },
+        ),
+      );
+      return;
+    }
 
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
@@ -274,7 +357,7 @@ function runScript<T>(params: {
     let timeoutGrace: NodeJS.Timeout | undefined;
     const abort = () => {
       finish(() => {
-        terminateChild(child);
+        void terminateChild(child);
         reject(params.signal?.reason ?? new Error("Script command aborted."));
       });
     };
@@ -292,7 +375,7 @@ function runScript<T>(params: {
 
     const failForOutputLimit = () => {
       finish(() => {
-        terminateChild(child);
+        void terminateChild(child);
         reject(
           new CrablineError(`Script command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of output.`, {
             kind: "connectivity",
@@ -332,6 +415,7 @@ function runScript<T>(params: {
               "Script command failed to start.",
               ensureErrorMessage(error),
               params.command,
+              diagnostics,
               params.payload,
             ),
             { kind: "connectivity" },
@@ -350,6 +434,7 @@ function runScript<T>(params: {
                 `Script command failed${signal ? ` (${signal})` : ""}.`,
                 stderrText.trim() ? stderrText : stdoutText,
                 params.command,
+                diagnostics,
                 params.payload,
               ),
               { kind: "connectivity" },
@@ -361,6 +446,7 @@ function runScript<T>(params: {
         try {
           const result = parseScriptJson({
             command: params.command,
+            diagnostics,
             output: stdoutText,
             payload: params.payload,
             schema: params.schema,
@@ -382,7 +468,7 @@ function runScript<T>(params: {
 
     const failForTimeout = () => {
       finish(() => {
-        terminateChild(child);
+        void terminateChild(child);
         reject(
           new CrablineError(`Script command timed out after ${params.timeoutMs}ms.`, {
             kind: "timeout",
@@ -434,19 +520,36 @@ function watchScript(params: {
         target: params.normalizeTarget(params.context.fixture.target),
       },
     };
-    const child = spawn(params.command, {
-      cwd: params.cwd ? path.resolve(params.cwd) : process.cwd(),
-      env: process.env,
-      shell: params.shell ?? true,
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const diagnostics = createScriptDiagnosticsSnapshot(params.command, payload);
+    let child: SpawnedScriptChild;
+    try {
+      child = spawn(params.command, {
+        cwd: params.cwd ? path.resolve(params.cwd) : process.cwd(),
+        env: process.env,
+        shell: params.shell ?? true,
+        detached: process.platform !== "win32",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (error) {
+      throw new CrablineError(
+        formatScriptError(
+          "Script watch command failed to start.",
+          ensureErrorMessage(error),
+          params.command,
+          diagnostics,
+          payload,
+        ),
+        { kind: "connectivity" },
+      );
+    }
 
     let buffer = "";
     let stderr = "";
     let childError: unknown;
     let outputLimitError: CrablineError | undefined;
-    const stopChild = () => terminateChild(child);
+    const stopChild = () => {
+      void terminateChild(child);
+    };
     params.cancelSignal.addEventListener("abort", stopChild, { once: true });
     params.context.signal?.addEventListener("abort", stopChild, { once: true });
     if (params.cancelSignal.aborted || params.context.signal?.aborted) {
@@ -467,7 +570,7 @@ function watchScript(params: {
           `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of stderr.`,
           { kind: "connectivity" },
         );
-        terminateChild(child);
+        void terminateChild(child);
       }
     });
     child.once("error", (error) => {
@@ -507,6 +610,7 @@ function watchScript(params: {
           }
           const parsed = parseScriptJson({
             command: params.command,
+            diagnostics,
             output: line,
             payload,
             schema: ScriptMessageSchema,
@@ -527,6 +631,7 @@ function watchScript(params: {
       if (buffer.trim()) {
         const parsed = parseScriptJson({
           command: params.command,
+          diagnostics,
           output: buffer,
           payload,
           schema: ScriptMessageSchema,
@@ -547,6 +652,7 @@ function watchScript(params: {
             "Script watch command failed to start.",
             ensureErrorMessage(childError),
             params.command,
+            diagnostics,
             payload,
           ),
           { kind: "connectivity" },
@@ -558,6 +664,7 @@ function watchScript(params: {
             `Script watch command failed${exit.signal ? ` (${exit.signal})` : ""}.`,
             stderr,
             params.command,
+            diagnostics,
             payload,
           ),
           { kind: "connectivity" },
@@ -576,6 +683,7 @@ function watchScript(params: {
             "Script watch command failed to start.",
             ensureErrorMessage(childError),
             params.command,
+            diagnostics,
             payload,
           ),
           { kind: "connectivity" },
@@ -587,7 +695,7 @@ function watchScript(params: {
       params.context.signal?.removeEventListener("abort", stopChild);
       child.stdin.destroy();
       if (!childCloseObserved) {
-        terminateChild(child);
+        await terminateChild(child);
       }
       await childClosed;
     }

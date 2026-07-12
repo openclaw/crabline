@@ -164,6 +164,30 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("rolls back the installed generation when parent sync fails", async () => {
+    const outputDir = await createTempDir();
+    const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
+    const generationPath = path.join(storePath, "generation-11111111-1111-4111-8111-111111111111");
+    const syncFailure = new Error("directory sync failed");
+    try {
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+          createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+          syncParent: async (filePath) => {
+            if (filePath === generationPath) {
+              throw syncFailure;
+            }
+          },
+        }),
+      ).rejects.toBe(syncFailure);
+
+      await expect(fs.stat(generationPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.readdir(storePath)).resolves.toEqual([]);
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("preserves a generation retained as a successor pointer rollback", async () => {
     const outputDir = await createTempDir();
     const lock = createLock();

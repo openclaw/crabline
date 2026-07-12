@@ -7,6 +7,7 @@ import {
   isProcessAlive,
   processIdentityFromDarwin,
   processIdentityFromLinuxStat,
+  processStartedAtMsFromTimeOrigin,
   releaseOpenClawCrablineSmokeRunLock,
 } from "../src/openclaw/smoke-lock.js";
 import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "../src/openclaw/shared.js";
@@ -37,6 +38,13 @@ describe("OpenClaw smoke lock cleanup", () => {
       ),
     ).toBe("darwin:1783864000.123456:Sun Jul 12 16:04:00 2026");
     expect(processIdentityFromDarwin("", "{ sec = 1, usec = 2 }")).toBeNull();
+  });
+
+  it("preserves sub-second process start identity from the runtime time origin", () => {
+    expect(processStartedAtMsFromTimeOrigin(1_783_864_000_123.875)).toBe(1_783_864_000_123);
+    expect(() => processStartedAtMsFromTimeOrigin(Number.NaN)).toThrow(
+      "Process time origin is invalid.",
+    );
   });
 
   it("uses a canonical environment for Darwin process start times", () => {

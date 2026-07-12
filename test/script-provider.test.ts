@@ -469,6 +469,87 @@ describe("script provider", () => {
     }
   });
 
+  it("redacts every configured command from diagnostics", async () => {
+    const context = await createContext();
+    const configuredWatchCommand = "node /private/watch-command.mjs --opaque-value";
+    const failingScript = path.join(path.dirname(context.manifestPath), "send-other-command.mjs");
+    await writeText(
+      failingScript,
+      `process.stderr.write(${JSON.stringify(configuredWatchCommand)});process.exitCode=7;`,
+    );
+    context.config.script!.commands.send = `node ${JSON.stringify(failingScript)}`;
+    context.config.script!.commands.watch = configuredWatchCommand;
+    const provider = new ScriptProviderAdapter(context);
+
+    const failure = await provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+
+    expect(ensureErrorMessage(failure)).toContain("[configured script command]");
+    expect(inspect(failure, { depth: null })).not.toContain(configuredWatchCommand);
+  });
+
+  it("redacts the sensitive environment snapshot used for a subprocess", async () => {
+    const context = await createContext();
+    const envName = ["CRABLINE", "ACCESS", "TOKEN"].join("_");
+    const originalValue = process.env[envName];
+    const inheritedValue = "inherited-before-spawn";
+    const replacementValue = "changed-after-spawn";
+    const failingScript = path.join(path.dirname(context.manifestPath), "send-delayed-env.mjs");
+    await writeText(
+      failingScript,
+      `setTimeout(()=>{process.stderr.write(process.env[${JSON.stringify(envName)}]);process.exitCode=7;},25);`,
+    );
+    context.config.script!.commands.send = `node ${JSON.stringify(failingScript)}`;
+    const provider = new ScriptProviderAdapter(context);
+    process.env[envName] = inheritedValue;
+
+    try {
+      const pending = provider.send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      });
+      process.env[envName] = replacementValue;
+      const failure = await pending.catch((error: unknown) => error);
+
+      expect(ensureErrorMessage(failure)).toContain("[redacted environment value]");
+      expect(inspect(failure, { depth: null })).not.toContain(inheritedValue);
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env[envName];
+      } else {
+        process.env[envName] = originalValue;
+      }
+    }
+  });
+
+  it("wraps synchronous spawn validation failures", async () => {
+    const context = await createContext();
+    const command = "node private-command.mjs";
+    context.config.script!.commands.send = command;
+    context.config.script!.shell = "invalid\u0000shell";
+    const provider = new ScriptProviderAdapter(context);
+
+    const failure = await provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+
+    expect(ensureErrorMessage(failure)).toContain("Script command failed to start");
+    expect(inspect(failure, { depth: null })).not.toContain(command);
+  });
+
   it("validates watched JSON message contracts", async () => {
     const context = await createContext();
     const watchScript = path.join(path.dirname(context.manifestPath), "watch-invalid.mjs");

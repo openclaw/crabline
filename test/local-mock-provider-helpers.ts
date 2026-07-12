@@ -3,7 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BuiltinAdapterId, ProviderConfig, ProviderPlatform } from "../src/config/schema.js";
 import type { ProviderAdapter, ProviderContext } from "../src/providers/types.js";
-import { createTempDir, disposeTempDir } from "./test-helpers.js";
+import { createTempDir, disposeTempDir, settleCleanup } from "./test-helpers.js";
 
 type ProviderCtor = new (
   id: string,
@@ -43,8 +43,10 @@ const directories: string[] = [];
 const providers: ProviderAdapter[] = [];
 
 afterEach(async () => {
-  await Promise.all(providers.splice(0).map((provider) => provider.cleanup?.()));
-  await Promise.all(directories.splice(0).map(disposeTempDir));
+  await settleCleanup([
+    ...providers.splice(0).map(async (provider) => provider.cleanup?.()),
+    ...directories.splice(0).map(disposeTempDir),
+  ]);
 });
 
 export async function createLocalMockConfig(

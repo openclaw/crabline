@@ -371,6 +371,27 @@ describe("manifest schema", () => {
     expect(manifest.providers.slack?.script?.commands.waitForInbound).toBe("wait");
   });
 
+  it("rejects whitespace-only script commands", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          slack: {
+            adapter: "script",
+            capabilities: ["send"],
+            platform: "slack",
+            script: {
+              commands: {
+                send: " \t\n ",
+              },
+            },
+          },
+        },
+      }),
+    ).toThrow(/script command must not be blank/u);
+  });
+
   it("rejects adapter config blocks for a different built-in adapter", () => {
     expect(() =>
       ManifestSchema.parse({

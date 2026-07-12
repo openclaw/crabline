@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { isCrablineServerChannel, type CrablineServerChannel } from "../servers/index.js";
 import { resolveWindowsPowerShellPath, securePrivateDirectory } from "./private-file.js";
 import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "./shared.js";
@@ -93,7 +94,18 @@ const LOCK_LEASE_MS = 10 * 60 * 1000;
 const RELEASE_ATTEMPTS = 3;
 const RELEASE_RETRY_DELAY_MS = 10;
 const MAX_PROCESS_ID = 2_147_483_647;
-const CURRENT_PROCESS_STARTED_AT_MS = Math.trunc(Date.now() - process.uptime() * 1000);
+const CURRENT_PROCESS_STARTED_AT_MS = processStartedAtMsFromTimeOrigin(performance.timeOrigin);
+
+export function processStartedAtMsFromTimeOrigin(timeOrigin: number): number {
+  if (
+    !Number.isFinite(timeOrigin) ||
+    timeOrigin <= 0 ||
+    !Number.isSafeInteger(Math.trunc(timeOrigin))
+  ) {
+    throw new Error("Process time origin is invalid.");
+  }
+  return Math.trunc(timeOrigin);
+}
 
 function parseCommitStagePath(contents: string, token: string): string {
   let value: { path?: unknown; token?: unknown };

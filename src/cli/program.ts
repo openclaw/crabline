@@ -6,7 +6,7 @@ import nodePath from "node:path";
 import { lock } from "proper-lockfile";
 import { loadManifest } from "../config/load.js";
 import { createRegistry } from "../providers/registry.js";
-import { formatJson, formatRunResultText } from "../core/reporters.js";
+import { formatJson, formatRunResultText, sanitizeTerminalText } from "../core/reporters.js";
 import { computeExitCode, runFixtureCommand, runSuite } from "../core/run.js";
 import { CrablineError, ensureErrorMessage } from "../core/errors.js";
 import {
@@ -127,6 +127,56 @@ const SERVE_PARAM_FACTORIES = {
 
 function print(value: string): void {
   process.stdout.write(`${value}\n`);
+}
+
+async function printWatchLine(value: string): Promise<boolean> {
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let drained = false;
+      let written = false;
+      const cleanup = () => {
+        process.stdout.off("drain", onDrain);
+        process.stdout.off("error", onError);
+      };
+      const finish = () => {
+        if (drained && written) {
+          cleanup();
+          resolve();
+        }
+      };
+      const onDrain = () => {
+        drained = true;
+        finish();
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      process.stdout.once("error", onError);
+      const hasCapacity = process.stdout.write(`${value}\n`, (error) => {
+        if (error) {
+          process.stdout.once("error", () => undefined);
+          onError(error);
+          return;
+        }
+        written = true;
+        finish();
+      });
+      if (hasCapacity) {
+        drained = true;
+        finish();
+      } else {
+        process.stdout.once("drain", onDrain);
+      }
+    });
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function withManifest<T>(
@@ -296,11 +346,14 @@ export function createProgram(
               break;
             }
             const message = result.value;
-            print(
+            const written = await printWatchLine(
               options.json
                 ? formatJson(message)
-                : `${message.sentAt} ${message.author} ${message.text}`,
+                : `${sanitizeTerminalText(message.sentAt, true)} ${sanitizeTerminalText(message.author, true)} ${sanitizeTerminalText(message.text, true)}`,
             );
+            if (!written) {
+              break;
+            }
           }
         } catch (error) {
           lifecycleErrors.push(error);
