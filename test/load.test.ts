@@ -101,6 +101,27 @@ describe("config load", () => {
     await expect(loadManifest(configPath)).rejects.toThrow(/valid Unicode regular expression/u);
   });
 
+  it("omits malformed YAML source lines from load errors", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    const secret = "sentinel-secret-value";
+    await writeText(configPath, `accessToken: ${secret}: invalid\n`);
+
+    let failure: unknown;
+    try {
+      await loadManifest(configPath);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("YAML parse error");
+    expect((failure as Error).message).toContain("line 1, column");
+    expect((failure as Error).message).not.toContain(secret);
+    expect((failure as Error).message).not.toContain("accessToken");
+  });
+
   it("resolves default config names from cwd", async () => {
     const directory = await createTempDir();
     directories.push(directory);
