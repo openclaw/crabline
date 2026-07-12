@@ -147,7 +147,7 @@ describe("script provider", () => {
     const watchScript = path.join(path.dirname(context.manifestPath), "watch-split-stderr.mjs");
     await writeText(
       watchScript,
-      'process.stderr.write(Buffer.from([0xf0,0x9f]));setTimeout(()=>{process.stderr.write(Buffer.from([0xa6,0x8a]));process.exitCode=7;},25);',
+      "process.stderr.write(Buffer.from([0xf0,0x9f]));setTimeout(()=>{process.stderr.write(Buffer.from([0xa6,0x8a]));process.exitCode=7;},25);",
     );
     context.config.script!.commands.watch = `node ${watchScript}`;
     const provider = new ScriptProviderAdapter(context);
