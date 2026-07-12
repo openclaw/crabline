@@ -1794,6 +1794,37 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
+  it("preserves the primary smoke failure when lock cleanup also fails", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-errors-"));
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    const primaryFailure = new Error("probe failed");
+    const cleanupFailure = new Error("lock release retries exhausted");
+    try {
+      await expect(
+        runSmokeWithDependencies(
+          { outputDir, selection },
+          {
+            releaseLock: async () => {
+              throw cleanupFailure;
+            },
+            startAdapter: async (params) => {
+              const adapter = await startOpenClawCrablineAdapter(params);
+              return {
+                ...adapter,
+                probe: async () => {
+                  throw primaryFailure;
+                },
+              };
+            },
+          },
+        ),
+      ).rejects.toBe(primaryFailure);
+      expect(primaryFailure.cause).toBe(cleanupFailure);
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it.each(["setup", "probe", "cleanup"] as const)(
     "preserves the complete prior artifact generation on %s failure",
     async (failureStage) => {
