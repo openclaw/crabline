@@ -430,12 +430,13 @@ describe("script provider", () => {
   it("redacts configured command text from script errors", async () => {
     const context = await createContext();
     const sentinel = "redact-me";
+    const inlineEnvName = ["DB", "PWD"].join("");
     const failingScript = path.join(path.dirname(context.manifestPath), "send-secret.mjs");
     await writeText(
       failingScript,
-      "process.stderr.write(process.env.CRABLINE_PRIVATE_VALUE);process.exitCode=7;",
+      'process.stderr.write(process.env[["DB","PWD"].join("")]);process.exitCode=7;',
     );
-    const command = `CRABLINE_PRIVATE_VALUE=${sentinel} node ${JSON.stringify(failingScript)}`;
+    const command = `${inlineEnvName}+=${sentinel} node ${JSON.stringify(failingScript)}`;
     context.config.script!.commands.send = command;
     const provider = new ScriptProviderAdapter(context);
 
@@ -457,11 +458,8 @@ describe("script provider", () => {
     expect(ensureErrorMessage(sendError)).not.toContain(sentinel);
 
     const watchScript = path.join(path.dirname(context.manifestPath), "watch-secret.mjs");
-    await writeText(
-      watchScript,
-      "process.stderr.write(process.env.CRABLINE_PRIVATE_VALUE);process.exitCode=8;",
-    );
-    const watchCommand = `CRABLINE_PRIVATE_VALUE=${sentinel} node ${JSON.stringify(watchScript)}`;
+    await writeText(watchScript, "process.stderr.write(process.argv[2]);process.exitCode=8;");
+    const watchCommand = `node ${JSON.stringify(watchScript)} "--access-token=${sentinel}"`;
     context.config.script!.commands.watch = watchCommand;
 
     let watchError: unknown;
@@ -475,6 +473,105 @@ describe("script provider", () => {
     expect(ensureErrorMessage(watchError)).toContain("[script diagnostics redacted]");
     expect(ensureErrorMessage(watchError)).not.toContain(watchCommand);
     expect(ensureErrorMessage(watchError)).not.toContain(sentinel);
+
+    const powershellCommand =
+      `node ${JSON.stringify(watchScript)} ${sentinel} ` +
+      `'${"${env:"}${inlineEnvName}}=${sentinel}'`;
+    context.config.script!.commands.watch = powershellCommand;
+
+    let powershellError: unknown;
+    try {
+      await provider.watch(context).next();
+    } catch (error) {
+      powershellError = error;
+    }
+
+    expect(ensureErrorMessage(powershellError)).toContain("[script diagnostics redacted]");
+    expect(ensureErrorMessage(powershellError)).not.toContain(sentinel);
+  });
+
+  it("redacts inherited secret values from script diagnostics", async () => {
+    const context = await createContext();
+    const sentinel = "fixture-redaction-value\nsecond-line\n";
+    const envName = ["GITHUB", "PAT"].join("");
+    const keySentinel = "fixture-key-value";
+    const keyEnvName = ["SIGNING", "KEY"].join("_");
+    const compoundSentinel = "fixture-compound-value";
+    const compoundEnvName = ["ACCESS", "TOKEN"].join("");
+    const shortSentinel = "123";
+    const shortEnvName = ["DB", "PWD"].join("_");
+    const originalValues = new Map([
+      [envName, process.env[envName]],
+      [keyEnvName, process.env[keyEnvName]],
+      [compoundEnvName, process.env[compoundEnvName]],
+      [shortEnvName, process.env[shortEnvName]],
+    ]);
+    process.env[envName] = sentinel;
+    process.env[keyEnvName] = keySentinel;
+    process.env[compoundEnvName] = compoundSentinel;
+    process.env[shortEnvName] = shortSentinel;
+
+    try {
+      const failingScript = path.join(path.dirname(context.manifestPath), "send-env-secret.mjs");
+      await writeText(
+        failingScript,
+        'process.stderr.write(`failed: ${process.env[["GITHUB","PAT"].join("")]} ${process.env[["SIGNING","KEY"].join("_")]} ${process.env[["ACCESS","TOKEN"].join("")]} ${process.env[["DB","PWD"].join("_")]}`);process.exitCode=7;',
+      );
+      context.config.script!.commands.send = `node ${JSON.stringify(failingScript)}`;
+      const provider = new ScriptProviderAdapter(context);
+
+      let sendError: unknown;
+      try {
+        await provider.send({
+          ...context,
+          mode: "send",
+          nonce: "nonce",
+          text: "payload",
+        });
+      } catch (error) {
+        sendError = error;
+      }
+
+      expect(ensureErrorMessage(sendError)).toContain(
+        "failed: [redacted environment value] [redacted environment value] [redacted environment value] [redacted environment value]",
+      );
+      expect(ensureErrorMessage(sendError)).not.toContain("fixture-redaction-value");
+      expect(ensureErrorMessage(sendError)).not.toContain("second-line");
+      expect(ensureErrorMessage(sendError)).not.toContain(keySentinel);
+      expect(ensureErrorMessage(sendError)).not.toContain(compoundSentinel);
+      expect(ensureErrorMessage(sendError)).not.toContain(shortSentinel);
+
+      const watchScript = path.join(path.dirname(context.manifestPath), "watch-env-secret.mjs");
+      await writeText(
+        watchScript,
+        'process.stderr.write(`watch: ${process.env[["GITHUB","PAT"].join("")]} ${process.env[["SIGNING","KEY"].join("_")]} ${process.env[["ACCESS","TOKEN"].join("")]} ${process.env[["DB","PWD"].join("_")]}`);process.exitCode=8;',
+      );
+      context.config.script!.commands.watch = `node ${JSON.stringify(watchScript)}`;
+
+      let watchError: unknown;
+      try {
+        await provider.watch(context).next();
+      } catch (error) {
+        watchError = error;
+      }
+
+      expect(ensureErrorMessage(watchError)).toContain(
+        "watch: [redacted environment value] [redacted environment value] [redacted environment value] [redacted environment value]",
+      );
+      expect(ensureErrorMessage(watchError)).not.toContain("fixture-redaction-value");
+      expect(ensureErrorMessage(watchError)).not.toContain("second-line");
+      expect(ensureErrorMessage(watchError)).not.toContain(keySentinel);
+      expect(ensureErrorMessage(watchError)).not.toContain(compoundSentinel);
+      expect(ensureErrorMessage(watchError)).not.toContain(shortSentinel);
+    } finally {
+      for (const [name, originalValue] of originalValues) {
+        if (originalValue === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = originalValue;
+        }
+      }
+    }
   });
 
   it("uses stdout diagnostics when stderr is only whitespace", async () => {
@@ -495,6 +592,50 @@ describe("script provider", () => {
         text: "payload",
       }),
     ).rejects.toThrow(/useful failure/u);
+  });
+
+  it("preserves inherited path values in script diagnostics", async () => {
+    const context = await createContext();
+    const envName = ["GO", "PATH"].join("");
+    const pathValue = "/tmp/crabline-go-path";
+    const extensionEnvName = ["PATH", "EXT"].join("");
+    const extensionValue = ".COM;.EXE";
+    const previousDirectoryEnvName = ["OLD", "PWD"].join("");
+    const originalValues = new Map([
+      [envName, process.env[envName]],
+      [extensionEnvName, process.env[extensionEnvName]],
+    ]);
+    process.env[envName] = pathValue;
+    process.env[extensionEnvName] = extensionValue;
+
+    try {
+      const failingScript = path.join(path.dirname(context.manifestPath), "send-path-error.mjs");
+      await writeText(
+        failingScript,
+        'process.stderr.write(`path: ${process.env[["GO","PATH"].join("")]} ${process.env[["PATH","EXT"].join("")]}`);process.exitCode=7;',
+      );
+      context.config.script!.commands.send =
+        `${previousDirectoryEnvName}=/tmp/previous-directory ` +
+        `node ${JSON.stringify(failingScript)} "--path-prefix=/tmp"`;
+      const provider = new ScriptProviderAdapter(context);
+
+      await expect(
+        provider.send({
+          ...context,
+          mode: "send",
+          nonce: "nonce",
+          text: "payload",
+        }),
+      ).rejects.toThrow(`path: ${pathValue} ${extensionValue}`);
+    } finally {
+      for (const [name, originalValue] of originalValues) {
+        if (originalValue === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = originalValue;
+        }
+      }
+    }
   });
 
   it("fails when required commands are missing", async () => {
