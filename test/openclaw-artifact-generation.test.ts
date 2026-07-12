@@ -6,6 +6,7 @@ import {
   readOpenClawCrablineArtifactPointer,
 } from "../src/openclaw/artifact-generation.js";
 import {
+  OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
   resolveOpenClawCrablineChannelDriverSelection,
   type CrablineServerManifest,
@@ -335,6 +336,43 @@ describe("OpenClaw artifact generation publication", () => {
         second.generation,
       );
     } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("does not commit a pointer after the verified artifact store is replaced", async () => {
+    const outputDir = await createTempDir();
+    const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
+    const displacedStorePath = `${storePath}.displaced`;
+    let lock: OpenClawCrablineSmokeRunLock | undefined;
+    try {
+      lock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          beforeCommitFileRename: async () => {
+            await fs.rename(storePath, displacedStorePath);
+            await fs.mkdir(storePath, { mode: 0o700 });
+          },
+        },
+      );
+
+      await expect(
+        publishOpenClawCrablineArtifactGeneration({
+          capabilityReport: { result: { ok: true } },
+          lock,
+          manifest,
+          outputDir,
+          selection: resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" }),
+          smoke: { result: { ok: true } },
+        }),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+
+      await expect(
+        fs.access(path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH)),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.readdir(storePath)).resolves.toEqual([]);
+    } finally {
+      await lock?.release();
       await disposeTempDir(outputDir);
     }
   });

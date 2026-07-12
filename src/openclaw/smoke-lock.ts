@@ -35,6 +35,7 @@ export type OpenClawCrablineSmokeRunLock = {
   commitFileAtomically(params: {
     contents: string;
     destinationPath: string;
+    stageDirectory?: string;
     stageFile(filePath: string, contents: string): Promise<void>;
   }): Promise<void>;
   release(): Promise<void>;
@@ -803,7 +804,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         await renew();
         heartbeat.assertHealthy();
       },
-      async commitFileAtomically({ contents, destinationPath, stageFile }) {
+      async commitFileAtomically({ contents, destinationPath, stageDirectory, stageFile }) {
         if (released) {
           throw new Error("OpenClaw Crabline smoke lock has already been released.");
         }
@@ -815,63 +816,74 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         heartbeat.assertHealthy();
 
         const stagedFileName = `.commit-file.${token}.${randomUUID()}.tmp`;
-        const stagedFilePath = path.join(lockDirectory, stagedFileName);
-        await stageFile(stagedFilePath, contents);
-        heartbeat.assertHealthy();
-        await renew();
-        heartbeat.assertHealthy();
-
-        const observedIdentity = await readDirectoryIdentity(lockDirectory);
-        const observed = await readLockRecord(lockDirectory);
-        if (
-          observedIdentity === null ||
-          observed.kind === "missing" ||
-          observed.record.owner.token !== token
-        ) {
-          throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
-        }
-
-        const commitClaim = `${lockDirectory}${COMMIT_CLAIM_SUFFIX}.${token}.${randomUUID()}`;
+        const stagedFilePath = path.join(stageDirectory ?? lockDirectory, stagedFileName);
+        let committed = false;
         try {
-          await fs.rename(lockDirectory, commitClaim);
-        } catch (error) {
-          if (isMissingPathError(error)) {
-            throw new Error("OpenClaw Crabline smoke lock ownership was lost.", {
-              cause: error,
-            });
-          }
-          throw error;
-        }
-        ownedDirectory = commitClaim;
+          await stageFile(stagedFilePath, contents);
+          heartbeat.assertHealthy();
+          await renew();
+          heartbeat.assertHealthy();
 
-        const claimed = await readLockRecord(commitClaim);
-        const claimedIdentity = await readDirectoryIdentity(commitClaim);
-        if (
-          claimed.kind === "missing" ||
-          claimed.record.owner.token !== token ||
-          !hasSameDirectoryIdentity(observedIdentity, claimedIdentity)
-        ) {
-          if (!(await pathExists(lockDirectory))) {
-            try {
-              await fs.rename(commitClaim, lockDirectory);
-              ownedDirectory = lockDirectory;
-            } catch (error) {
-              if (!isMissingPathError(error)) {
-                throw error;
+          const observedIdentity = await readDirectoryIdentity(lockDirectory);
+          const observed = await readLockRecord(lockDirectory);
+          if (
+            observedIdentity === null ||
+            observed.kind === "missing" ||
+            observed.record.owner.token !== token
+          ) {
+            throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
+          }
+
+          const commitClaim = `${lockDirectory}${COMMIT_CLAIM_SUFFIX}.${token}.${randomUUID()}`;
+          try {
+            await fs.rename(lockDirectory, commitClaim);
+          } catch (error) {
+            if (isMissingPathError(error)) {
+              throw new Error("OpenClaw Crabline smoke lock ownership was lost.", {
+                cause: error,
+              });
+            }
+            throw error;
+          }
+          ownedDirectory = commitClaim;
+
+          const claimed = await readLockRecord(commitClaim);
+          const claimedIdentity = await readDirectoryIdentity(commitClaim);
+          if (
+            claimed.kind === "missing" ||
+            claimed.record.owner.token !== token ||
+            !hasSameDirectoryIdentity(observedIdentity, claimedIdentity)
+          ) {
+            if (!(await pathExists(lockDirectory))) {
+              try {
+                await fs.rename(commitClaim, lockDirectory);
+                ownedDirectory = lockDirectory;
+              } catch (error) {
+                if (!isMissingPathError(error)) {
+                  throw error;
+                }
               }
             }
+            throw new Error("OpenClaw Crabline smoke lock commit fence was lost.");
           }
-          throw new Error("OpenClaw Crabline smoke lock commit fence was lost.");
-        }
 
-        await dependencies.beforeCommitFileRename?.();
-        heartbeat.assertHealthy();
-        await renew();
-        heartbeat.assertHealthy();
-        await heartbeat.stop();
-        heartbeatStopped = true;
-        heartbeat.assertHealthy();
-        await fs.rename(path.join(commitClaim, stagedFileName), destinationPath);
+          await dependencies.beforeCommitFileRename?.();
+          heartbeat.assertHealthy();
+          await renew();
+          heartbeat.assertHealthy();
+          await heartbeat.stop();
+          heartbeatStopped = true;
+          heartbeat.assertHealthy();
+          await fs.rename(
+            stageDirectory ? stagedFilePath : path.join(commitClaim, stagedFileName),
+            destinationPath,
+          );
+          committed = true;
+        } finally {
+          if (!committed && stageDirectory) {
+            await fs.rm(stagedFilePath, { force: true }).catch(() => undefined);
+          }
+        }
       },
       async release() {
         if (released) {

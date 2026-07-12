@@ -245,8 +245,11 @@ export async function publishOpenClawCrablineArtifactGeneration(
   await params.lock.commitFileAtomically({
     contents: `${JSON.stringify(pointer, null, 2)}\n`,
     destinationPath: path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH),
+    stageDirectory: store.directoryPath,
     stageFile: async (filePath, contents) => {
+      await store.assertIdentityAt();
       await publishPrivateFile(filePath, contents, fileOptions);
+      await store.assertIdentityAt();
     },
   });
   await store.assertIdentityAt();
