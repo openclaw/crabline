@@ -1,4 +1,4 @@
-import { Agent, createServer } from "node:http";
+import { Agent, createServer, type ClientRequest } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -399,6 +399,52 @@ describe("Zalo local provider server", () => {
       ).resolves.toBe(200);
       expect(received).toEqual(['{"ok":true}']);
     } finally {
+      await new Promise<void>((resolve, reject) =>
+        webhook.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("does not try another webhook address after cancellation", async () => {
+    let requests = 0;
+    let observeRequest!: () => void;
+    const requestObserved = new Promise<void>((resolve) => {
+      observeRequest = resolve;
+    });
+    const webhook = createServer(() => {
+      requests += 1;
+      observeRequest();
+    });
+    await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+    const address = webhook.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve webhook test server address.");
+    }
+    const activeRequests = new Set<ClientRequest>();
+    let cancelled = false;
+    try {
+      const delivery = postZaloWebhook({
+        activeRequests,
+        addresses: [
+          { address: "127.0.0.1", family: 4 },
+          { address: "127.0.0.1", family: 4 },
+        ],
+        body: '{"ok":true}',
+        shouldCancel: () => cancelled,
+        timeoutMs: 1_000,
+        url: new URL(`http://webhook.test:${address.port}/zalo`),
+        verificationValue: "secret",
+      });
+      await requestObserved;
+      cancelled = true;
+      for (const request of activeRequests) {
+        request.destroy(new Error("test cancellation"));
+      }
+      await expect(delivery).rejects.toThrow("test cancellation");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(requests).toBe(1);
+    } finally {
+      webhook.closeAllConnections();
       await new Promise<void>((resolve, reject) =>
         webhook.close((error) => (error ? reject(error) : resolve())),
       );
