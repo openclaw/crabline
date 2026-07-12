@@ -37,6 +37,7 @@ export type OpenClawCrablineChannelDriverSmokeResult = {
   manifestPath: string;
   smoke: unknown;
   smokeArtifactPath: string;
+  warnings?: string[];
 };
 
 export type OpenClawCrablineConversation = {
