@@ -18,6 +18,7 @@ import {
   type ServerRequestEvent,
 } from "./http.js";
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import { closeWebSocketServer } from "./websocket.js";
 
 type MattermostPost = {
   channel_id: string;
@@ -473,12 +474,7 @@ function attachWebSocketServer(params: {
   });
   return async () => {
     params.server.off("upgrade", onUpgrade);
-    for (const client of websocketServer.clients) {
-      client.close();
-    }
-    await new Promise<void>((resolve, reject) =>
-      websocketServer.close((error) => (error ? reject(error) : resolve())),
-    );
+    await closeWebSocketServer(websocketServer);
   };
 }
 
