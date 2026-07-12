@@ -75,11 +75,12 @@ export function resolveWhatsAppAdapterConfig(
   };
 }
 
+type ResolvedWhatsAppAdapterConfig = ReturnType<typeof resolveWhatsAppAdapterConfig>;
+
 export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
-  readonly #challengeValue: string;
+  readonly #config: ProviderConfig;
   readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
-  readonly #signingKey: string;
   readonly #webhook: LocalMockWebhookConfig | undefined;
   #cleanedUp = false;
   #cleanupBegun = false;
@@ -91,7 +92,6 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   #serverStarting: Promise<StartedWebhookServer> | null = null;
 
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
-    const resolvedConfig = resolveWhatsAppAdapterConfig(config);
     super({
       codec: getBuiltinTargetCodec("whatsapp"),
       config,
@@ -108,13 +108,12 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
         webhook: config.whatsapp?.webhook,
       },
     });
-    this.#signingKey = resolvedConfig.appSecret;
+    this.#config = config;
     this.#publicUrl = config.whatsapp?.webhook.publicUrl;
     this.#recorderPath = config.whatsapp?.recorder.path
       ? path.resolve(config.whatsapp.recorder.path)
       : path.resolve(".crabline", "recorders", `${id}.jsonl`);
     this.#webhook = config.whatsapp?.webhook;
-    this.#challengeValue = resolvedConfig.verifyToken;
   }
 
   override async probe(context: ProviderContext): Promise<ProbeResult> {
@@ -204,11 +203,14 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     await this.#cleanupPromise;
   }
 
-  #handleWebhookRequest(request: Request): Promise<Response> {
+  #handleWebhookRequest(
+    request: Request,
+    resolvedConfig: ResolvedWhatsAppAdapterConfig,
+  ): Promise<Response> {
     if (this.#cleanupBegun) {
       return Promise.resolve(this.#cleanedUpResponse());
     }
-    const handling = this.#handleWebhook(request);
+    const handling = this.#handleWebhook(request, resolvedConfig);
     this.#inFlightWebhookRequests.add(handling);
     void handling.then(
       () => this.#inFlightWebhookRequests.delete(handling),
@@ -217,13 +219,20 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     return handling;
   }
 
-  async #handleWebhook(request: Request): Promise<Response> {
+  async #handleWebhook(
+    request: Request,
+    resolvedConfig: ResolvedWhatsAppAdapterConfig,
+  ): Promise<Response> {
     if (request.method === "GET") {
       const url = new URL(request.url);
       const mode = url.searchParams.get("hub.mode");
       const providedValue = url.searchParams.get("hub.verify_token");
       const challenge = url.searchParams.get("hub.challenge");
-      if (mode === "subscribe" && providedValue === this.#challengeValue && challenge !== null) {
+      if (
+        mode === "subscribe" &&
+        providedValue === resolvedConfig.verifyToken &&
+        challenge !== null
+      ) {
         return new Response(challenge, {
           headers: { "content-type": "text/plain; charset=utf-8" },
           status: 200,
@@ -237,7 +246,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       !hasValidWhatsAppSignature(
         rawBody,
         request.headers.get("x-hub-signature-256"),
-        this.#signingKey,
+        resolvedConfig.appSecret,
       )
     ) {
       return new Response("invalid webhook signature", { status: 401 });
@@ -294,6 +303,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       return await this.#serverStarting;
     }
 
+    const resolvedConfig = resolveWhatsAppAdapterConfig(this.#config);
     const host = this.#webhook?.host ?? DEFAULT_WHATSAPP_WEBHOOK.host;
     const port = this.#webhook?.port ?? DEFAULT_WHATSAPP_WEBHOOK.port;
     const webhookPath = this.#webhook?.path ?? DEFAULT_WHATSAPP_WEBHOOK.path;
@@ -301,7 +311,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       let server: StartedWebhookServer;
       try {
         server = await startWebhookServer({
-          handle: (request) => this.#handleWebhookRequest(request),
+          handle: (request) => this.#handleWebhookRequest(request, resolvedConfig),
           host,
           methods: ["GET", "POST"],
           path: webhookPath,

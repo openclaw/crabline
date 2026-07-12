@@ -243,14 +243,29 @@ describe("WhatsApp webhook normalizer", () => {
     }
   });
 
-  it("requires explicit webhook authentication configuration", async () => {
+  it("requires explicit authentication only when starting the webhook", async () => {
     const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
     delete config.whatsapp!.appSecret;
     delete config.whatsapp!.verifyToken;
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
 
-    expect(() => new WhatsAppProviderAdapter("whatsapp", config, "crabline")).toThrow(
-      "requires appSecret and verifyToken",
-    );
+    try {
+      await expect(
+        provider.send({
+          ...context,
+          mode: "send",
+          nonce: "outbound-only",
+          text: "outbound without webhook credentials",
+        }),
+      ).resolves.toMatchObject({ accepted: true });
+      await expect(provider.probe(context)).rejects.toThrow("requires appSecret and verifyToken");
+    } finally {
+      await provider.cleanup();
+    }
   });
 
   it("rejects a secondary probe when the webhook listener is occupied", async () => {
