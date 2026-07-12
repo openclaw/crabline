@@ -120,7 +120,8 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         };
       },
       createAgentDelivery(parsed) {
-        const chatId = normalizeTelegramChatId(parsed.kind, parsed.id);
+        const kind = parsed.native && /^-\d+$/u.test(parsed.id.trim()) ? "group" : parsed.kind;
+        const chatId = normalizeTelegramChatId(kind, parsed.id);
         const threadId = parseTelegramThreadTargetId(parsed.threadId);
         const to = telegramTargetKey(chatId, threadId);
         return {
