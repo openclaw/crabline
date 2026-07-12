@@ -112,6 +112,8 @@ describe("release workflow", () => {
     expect(packageStep).toContain("Packed artifact is missing the crabline CLI");
     expect(packageStep).toContain('execFileSync("tar", ["-xzf", tarballPath');
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity');
+    expect(publishStep).toContain('npm view "$PACKAGE_NAME@latest" version');
+    expect(publishStep).toContain("Refusing to publish ${release} because npm latest is newer");
     expect(publishStep).toContain('npm publish "$PACKAGE_TARBALL" --access public --provenance');
     expect(releaseStep).toContain('gh release view "$RELEASE_TAG"');
     expect(releaseStep).toContain("--json isDraft,isPrerelease");
@@ -257,11 +259,25 @@ describe("release workflow", () => {
     });
     expect(racedCalls).toEqual([
       "view @openclaw/crabline@1.2.3 dist.integrity",
+      "view @openclaw/crabline@latest version",
       expect.stringMatching(
         /publish .*\/release\/crabline-1\.2\.3\.tgz --access public --provenance$/u,
       ),
       "view @openclaw/crabline@1.2.3 dist.integrity",
     ]);
+
+    await expect(
+      runPublishStep(publishStep, {
+        MOCK_LATEST_VERSION: "1.2.4",
+      }),
+    ).rejects.toThrow("Refusing to publish 1.2.3 because npm latest is newer at 1.2.4.");
+    await expect(
+      runPublishStep(publishStep, {
+        MOCK_LATEST_STATUS: "1",
+      }),
+    ).rejects.toThrow(
+      "::error::Unable to resolve the current npm latest version for @openclaw/crabline.",
+    );
   });
 });
 
@@ -452,6 +468,13 @@ set -euo pipefail
 echo "$*" >> "$MOCK_LOG"
 if [[ "$1" == "publish" ]]; then
   exit "\${MOCK_PUBLISH_STATUS:-0}"
+fi
+if [[ "$2" == "$PACKAGE_NAME@latest" ]]; then
+  if [[ "\${MOCK_LATEST_STATUS:-0}" -ne 0 ]]; then
+    exit "$MOCK_LATEST_STATUS"
+  fi
+  echo "\${MOCK_LATEST_VERSION:-1.2.2}"
+  exit 0
 fi
 count=0
 if [[ -f "$MOCK_VIEW_COUNT" ]]; then

@@ -116,11 +116,16 @@ const InboundMatchSchema = z
     }
   });
 
+const ScriptCommandSchema = z
+  .string()
+  .min(1)
+  .refine((value) => value.trim().length > 0, "script command must not be blank");
+
 const ScriptCommandsSchema = z.strictObject({
-  probe: z.string().min(1).optional(),
-  send: z.string().min(1).optional(),
-  waitForInbound: z.string().min(1).optional(),
-  watch: z.string().min(1).optional(),
+  probe: ScriptCommandSchema.optional(),
+  send: ScriptCommandSchema.optional(),
+  waitForInbound: ScriptCommandSchema.optional(),
+  watch: ScriptCommandSchema.optional(),
 });
 
 const LoopbackConfigSchema = z.strictObject({

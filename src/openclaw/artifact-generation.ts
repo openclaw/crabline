@@ -303,8 +303,8 @@ export async function publishOpenClawCrablineArtifactGeneration(
     }
     await params.lock.assertOwned();
     await fs.rename(stagingPath, generationPath);
-    await (dependencies.syncParent ?? syncParentDirectory)(generationPath, dependencies.platform);
     installed = true;
+    await (dependencies.syncParent ?? syncParentDirectory)(generationPath, dependencies.platform);
     await staging.assertIdentityAt(generationPath);
     await store.assertIdentityAt();
 

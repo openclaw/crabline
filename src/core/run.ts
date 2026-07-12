@@ -78,33 +78,6 @@ export async function runFixtureCommand(params: {
   const diagnostics: string[] = [];
   let abortDrainFailed = false;
 
-  if (!provider.supports.includes(mode)) {
-    return {
-      diagnostics: [`provider ${fixture.provider} does not support mode ${mode}`],
-      failureKind: "config",
-      fixtureId: fixture.id,
-      mode,
-      ok: false,
-      providerId: fixture.provider,
-    };
-  }
-
-  for (const envName of [
-    ...fixture.env,
-    ...(params.manifest.providers[fixture.provider]?.env ?? []),
-  ]) {
-    if (!process.env[envName]) {
-      return {
-        diagnostics: [`missing env: ${envName}`],
-        failureKind: "config",
-        fixtureId: fixture.id,
-        mode,
-        ok: false,
-        providerId: fixture.provider,
-      };
-    }
-  }
-
   const contextBase = {
     config: params.manifest.providers[fixture.provider]!,
     fixture,
@@ -115,6 +88,33 @@ export async function runFixtureCommand(params: {
 
   let result: CommandRunResult | undefined;
   try {
+    if (!provider.supports.includes(mode)) {
+      return (result = {
+        diagnostics: [`provider ${fixture.provider} does not support mode ${mode}`],
+        failureKind: "config",
+        fixtureId: fixture.id,
+        mode,
+        ok: false,
+        providerId: fixture.provider,
+      });
+    }
+
+    for (const envName of [
+      ...fixture.env,
+      ...(params.manifest.providers[fixture.provider]?.env ?? []),
+    ]) {
+      if (!process.env[envName]) {
+        return (result = {
+          diagnostics: [`missing env: ${envName}`],
+          failureKind: "config",
+          fixtureId: fixture.id,
+          mode,
+          ok: false,
+          providerId: fixture.provider,
+        });
+      }
+    }
+
     if (mode === "probe") {
       try {
         const probeResult = await provider.probe(contextBase);
@@ -173,6 +173,19 @@ export async function runFixtureCommand(params: {
           });
         } catch (error) {
           lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "outbound", nonce);
+          continue;
+        }
+        if (!accepted.accepted) {
+          lastFailure = toFailure(
+            fixture.id,
+            fixture.provider,
+            mode,
+            new CrablineError(`Provider rejected outbound message ${accepted.messageId}.`, {
+              kind: "outbound",
+            }),
+            "outbound",
+            nonce,
+          );
           continue;
         }
         diagnostics.push(`accepted message ${accepted.messageId}`);
@@ -276,7 +289,12 @@ export async function runFixtureCommand(params: {
       providerId: fixture.provider,
     });
   } finally {
-    let cleanupError: unknown;
+    const cleanupErrors: unknown[] = [];
+    try {
+      provider.beginCleanup?.();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
     try {
       const cleanup = provider.cleanup?.();
       if (cleanup) {
@@ -284,8 +302,10 @@ export async function runFixtureCommand(params: {
           abortDrainFailed &&
           (await raceInboundDeadline(cleanup, INBOUND_ABORT_GRACE_MS)) === INBOUND_DEADLINE_REACHED
         ) {
-          cleanupError = new Error(
-            `Provider cleanup did not settle within ${INBOUND_ABORT_GRACE_MS}ms after an aborted inbound wait.`,
+          cleanupErrors.push(
+            new Error(
+              `Provider cleanup did not settle within ${INBOUND_ABORT_GRACE_MS}ms after an aborted inbound wait.`,
+            ),
           );
         }
         if (!abortDrainFailed) {
@@ -293,9 +313,16 @@ export async function runFixtureCommand(params: {
         }
       }
     } catch (error) {
-      cleanupError = error;
+      cleanupErrors.push(error);
     }
-    if (cleanupError !== undefined) {
+    if (cleanupErrors.length > 0) {
+      const cleanupError =
+        cleanupErrors.length === 1
+          ? cleanupErrors[0]
+          : new AggregateError(
+              cleanupErrors,
+              cleanupErrors.map((error) => ensureErrorMessage(error)).join("; "),
+            );
       const diagnostic = `cleanup failed: ${ensureErrorMessage(cleanupError)}`;
       if (result) {
         result.diagnostics.push(diagnostic);

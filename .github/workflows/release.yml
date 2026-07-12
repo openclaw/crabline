@@ -264,6 +264,34 @@ jobs:
             return 0
           }
 
+          guard_latest_version() {
+            local latest_version
+            if ! latest_version="$(npm view "$PACKAGE_NAME@latest" version 2>/dev/null)"; then
+              echo "::error::Unable to resolve the current npm latest version for $PACKAGE_NAME."
+              return 1
+            fi
+            node --input-type=module -e '
+              const [release, latest] = process.argv.slice(1);
+              const parse = (value) => {
+                const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
+                if (!match) {
+                  throw new Error(`Expected a stable semantic version, got ${value}.`);
+                }
+                return match.slice(1).map(BigInt);
+              };
+              const releaseParts = parse(release);
+              const latestParts = parse(latest);
+              for (let index = 0; index < releaseParts.length; index += 1) {
+                if (releaseParts[index] > latestParts[index]) process.exit(0);
+                if (releaseParts[index] < latestParts[index]) {
+                  throw new Error(
+                    `Refusing to publish ${release} because npm latest is newer at ${latest}.`,
+                  );
+                }
+              }
+            ' "$RELEASE_VERSION" "$latest_version"
+          }
+
           if check_existing_package; then
             echo "$PACKAGE_NAME@$RELEASE_VERSION is already published with the expected integrity."
             exit 0
@@ -274,6 +302,7 @@ jobs:
             fi
           fi
 
+          guard_latest_version
           if npm publish "$PACKAGE_TARBALL" --access public --provenance; then
             exit 0
           else

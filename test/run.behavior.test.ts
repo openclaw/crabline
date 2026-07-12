@@ -343,6 +343,96 @@ describe("run behavior", () => {
     expect((await run()).failureKind).toBe("inbound");
   });
 
+  it("retries rejected outbound results and fails when rejection persists", async () => {
+    let sendCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => {
+        sendCalls += 1;
+        return {
+          accepted: sendCalls > 1,
+          messageId: `sent-${sendCalls}`,
+          threadId: "thread",
+        };
+      },
+      waitForInbound: async (context) => ({
+        author: "assistant",
+        id: "inbound",
+        provider: "mock",
+        sentAt: new Date().toISOString(),
+        text: `ACK ${context.nonce}`,
+        threadId: "thread",
+      }),
+    };
+    const retryingManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, retries: 1 }],
+    });
+
+    const recovered = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: retryingManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+    expect(recovered.ok).toBe(true);
+    expect(sendCalls).toBe(2);
+
+    sendCalls = 0;
+    provider.send = async () => {
+      sendCalls += 1;
+      return { accepted: false, messageId: `rejected-${sendCalls}`, threadId: "thread" };
+    };
+    const rejected = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: retryingManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+    expect(rejected).toMatchObject({ failureKind: "outbound", ok: false });
+    expect(rejected.diagnostics).toContain("Provider rejected outbound message rejected-2.");
+    expect(sendCalls).toBe(2);
+  });
+
+  it("begins cleanup before cleanup on preflight failures", async () => {
+    const events: string[] = [];
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => ({ accepted: true, messageId: "sent", threadId: "thread" }),
+      waitForInbound: async () => null,
+      beginCleanup() {
+        events.push("begin");
+      },
+      async cleanup() {
+        events.push("cleanup");
+      },
+    };
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: withAllCapabilities(manifest),
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result).toMatchObject({ failureKind: "config", ok: false });
+    expect(events).toEqual(["begin", "cleanup"]);
+  });
+
   it("keeps waiting through unrelated inbound messages without resending", async () => {
     let sendCalls = 0;
     let waitCalls = 0;

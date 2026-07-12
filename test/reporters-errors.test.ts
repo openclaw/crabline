@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CrablineError, ensureErrorMessage } from "../src/core/errors.js";
 import { EXIT_CODES } from "../src/core/exit-codes.js";
-import { formatJson, formatRunResultText } from "../src/core/reporters.js";
+import { formatJson, formatRunResultText, sanitizeTerminalText } from "../src/core/reporters.js";
 
 const ansiPattern = new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, "g");
 
@@ -43,5 +43,23 @@ describe("errors and reporters", () => {
     expect(formatJson(undefined)).toBe("null");
     expect(formatJson(Symbol("value"))).toBe("null");
     expect(formatJson(() => undefined)).toBe("null");
+  });
+
+  it("neutralizes terminal controls in text output", () => {
+    const output = formatRunResultText({
+      diagnostics: ["first\u001b[2J\rsecond\nthird\u202e"],
+      fixtureId: "fixture\u001b]0;owned\u0007",
+      mode: "send",
+      ok: false,
+      providerId: "local",
+    });
+
+    expect(output).not.toContain("\u001b");
+    expect(output).not.toContain("\u0007");
+    expect(output).not.toContain("\r");
+    expect(stripAnsi(output)).toContain(String.raw`fixture\x1b]0;owned\x07`);
+    expect(output).toContain(String.raw`first\x1b[2J\rsecond`);
+    expect(output).toContain("  - third\\u202e");
+    expect(sanitizeTerminalText("line\nbreak", true)).toBe(String.raw`line\nbreak`);
   });
 });

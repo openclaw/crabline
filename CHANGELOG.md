@@ -10,6 +10,7 @@
 - Enforce safe Telegram identities while acknowledging valid unsupported updates.
 - Align Slack callback, thread-history, and message-text behavior with its native protocol.
 - Canonicalize WhatsApp identities and accepted-send evidence, publish webhook batches atomically with bounded retry deduplication, and preserve Zalo updates across disconnects and concurrent polls.
+- Harden shared runtime cleanup, terminal and script diagnostics, smoke artifact rollback, test helpers, source maps, and stable release publication.
 - Harden release, CI, config, CLI, package, and OpenClaw artifact and process-identity boundaries.
 - Restore provider-native callbacks and authentication, preserve conversation targets and recorder progress, and harden local mock lifecycle and parsing.
 - Preserve native server sync, webhook, request-validation, backpressure, and shutdown semantics across Matrix, Mattermost, Signal, Slack, Telegram, and Zalo.

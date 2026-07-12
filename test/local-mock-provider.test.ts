@@ -14,7 +14,7 @@ import {
 import { appendRecordedInbound } from "../src/providers/recorder.js";
 import type { Registry } from "../src/providers/registry.js";
 import type { ProviderAdapter, ProviderContext } from "../src/providers/types.js";
-import { createTempDir, disposeTempDir } from "./test-helpers.js";
+import { createTempDir, disposeTempDir, settleCleanup } from "./test-helpers.js";
 
 const webhookMocks = vi.hoisted(() => ({
   startWebhookServer: vi.fn(),
@@ -36,8 +36,10 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await Promise.all(providers.splice(0).map((provider) => provider.cleanup?.()));
-  await Promise.all(directories.splice(0).map(disposeTempDir));
+  await settleCleanup([
+    ...providers.splice(0).map(async (provider) => provider.cleanup?.()),
+    ...directories.splice(0).map(disposeTempDir),
+  ]);
 });
 
 function sleep(ms: number): Promise<void> {
