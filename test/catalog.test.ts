@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ManifestSchema } from "../src/config/schema.js";
+import { BUILTIN_ADAPTERS, ManifestSchema } from "../src/config/schema.js";
 import { OPENCLAW_SUPPORT_CATALOG } from "../src/providers/catalog.js";
 
 describe("support catalog", () => {
@@ -13,6 +13,15 @@ describe("support catalog", () => {
     expect(OPENCLAW_SUPPORT_CATALOG.find((entry) => entry.platform === "discord")?.status).toBe(
       "ready",
     );
+  });
+
+  it("keeps ready catalog platforms equal to schema built-ins", () => {
+    const readyPlatforms = OPENCLAW_SUPPORT_CATALOG.filter((entry) => entry.status === "ready")
+      .map((entry) => entry.platform)
+      .sort();
+    const builtinPlatforms = BUILTIN_ADAPTERS.filter((adapter) => adapter !== "script").sort();
+
+    expect(readyPlatforms).toEqual(builtinPlatforms);
   });
 
   it("accepts every catalog platform in the manifest schema", () => {

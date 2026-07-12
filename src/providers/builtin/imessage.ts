@@ -50,11 +50,17 @@ export function matchesIMessageThread(
   candidateThreadId: string,
   expectedThreadId: string | undefined,
   target: { id: string },
+  raw?: unknown,
 ): boolean {
+  const rawPayload = isRecord(raw) ? raw : undefined;
+  const data = rawPayload ? (optionalRecord(rawPayload, "data") ?? rawPayload) : undefined;
+  const recipientAlias = data ? optionalString(data, "chatIdentifier") : undefined;
   return (
     expectedThreadId === undefined ||
     candidateThreadId === expectedThreadId ||
-    candidateThreadId === target.id
+    candidateThreadId === target.id ||
+    recipientAlias === expectedThreadId ||
+    recipientAlias === target.id
   );
 }
 

@@ -60,9 +60,9 @@ export function genericMockPayloadWithNativeThread(params: {
   threadRule: NativeIdRule;
 }) {
   const message = optionalRecord(params.payload, "message");
-  const threadId = message
-    ? optionalString(message, "threadId")
-    : optionalString(params.payload, "threadId");
+  const threadId =
+    (message ? optionalString(message, "threadId") : undefined) ??
+    optionalString(params.payload, "threadId");
   if (!threadId) {
     return {
       ...(normalizeAuthor(params.payload.author)

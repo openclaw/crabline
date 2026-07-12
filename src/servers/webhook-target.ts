@@ -15,9 +15,13 @@ export type ValidatedWebhookTarget =
   | { addresses: WebhookAddress[] | undefined }
   | { error: WebhookTargetError };
 
-const BLOCKED_WEBHOOK_ADDRESSES = createBlockedWebhookAddresses();
+const BLOCKED_IPV4_ADDRESSES = createBlockedIpv4Addresses();
+const BLOCKED_IPV6_ADDRESSES = createBlockedIpv6Addresses();
+const GLOBAL_IPV4_EXCEPTIONS = createGlobalIpv4Exceptions();
+const GLOBAL_IPV6_EXCEPTIONS = createGlobalIpv6Exceptions();
+const GLOBAL_IPV6_RANGES = createGlobalIpv6Ranges();
 
-function createBlockedWebhookAddresses(): BlockList {
+function createBlockedIpv4Addresses(): BlockList {
   const blockList = new BlockList();
   for (const [address, prefix] of [
     ["0.0.0.0", 8],
@@ -26,19 +30,34 @@ function createBlockedWebhookAddresses(): BlockList {
     ["127.0.0.0", 8],
     ["169.254.0.0", 16],
     ["172.16.0.0", 12],
+    ["192.0.0.0", 24],
+    ["192.0.2.0", 24],
+    ["192.88.99.0", 24],
     ["192.168.0.0", 16],
+    ["198.18.0.0", 15],
+    ["198.51.100.0", 24],
+    ["203.0.113.0", 24],
     ["224.0.0.0", 4],
     ["240.0.0.0", 4],
   ] as const) {
     blockList.addSubnet(address, prefix, "ipv4");
-    const octets = address.split(".").map(Number);
-    const high = ((octets[0] ?? 0) << 8) | (octets[1] ?? 0);
-    const low = ((octets[2] ?? 0) << 8) | (octets[3] ?? 0);
-    blockList.addSubnet(`::ffff:${high.toString(16)}:${low.toString(16)}`, 96 + prefix, "ipv6");
   }
+  return blockList;
+}
+
+function createBlockedIpv6Addresses(): BlockList {
+  const blockList = new BlockList();
   for (const [address, prefix] of [
-    ["::", 128],
-    ["::1", 128],
+    ["::", 96],
+    ["::ffff:0:0", 96],
+    ["64:ff9b:1::", 48],
+    ["100::", 64],
+    ["100:0:0:1::", 64],
+    ["2001::", 23],
+    ["2001:db8::", 32],
+    ["2002::", 16],
+    ["3fff::", 20],
+    ["5f00::", 16],
     ["fc00::", 7],
     ["fe80::", 10],
     ["ff00::", 8],
@@ -48,22 +67,62 @@ function createBlockedWebhookAddresses(): BlockList {
   return blockList;
 }
 
+function createGlobalIpv4Exceptions(): BlockList {
+  const blockList = new BlockList();
+  // These are globally reachable assignments inside 192.0.0.0/24.
+  for (const address of ["192.0.0.9", "192.0.0.10"] as const) {
+    blockList.addAddress(address, "ipv4");
+  }
+  return blockList;
+}
+
+function createGlobalIpv6Exceptions(): BlockList {
+  const blockList = new BlockList();
+  // These are globally reachable assignments inside 2001::/23.
+  for (const [address, prefix] of [
+    ["2001:1::1", 128],
+    ["2001:1::2", 128],
+    ["2001:1::3", 128],
+    ["2001:3::", 32],
+    ["2001:4:112::", 48],
+    ["2001:20::", 28],
+    ["2001:30::", 28],
+  ] as const) {
+    blockList.addSubnet(address, prefix, "ipv6");
+  }
+  return blockList;
+}
+
+function createGlobalIpv6Ranges(): BlockList {
+  const blockList = new BlockList();
+  blockList.addSubnet("2000::", 3, "ipv6");
+  blockList.addSubnet("64:ff9b::", 96, "ipv6");
+  return blockList;
+}
+
 function normalizeHostname(hostname: string): string {
   return hostname.replace(/^\[(.*)\]$/u, "$1").replace(/%25/gu, "%");
 }
 
 function isBlockedWebhookAddress(address: string): boolean {
   const normalized = normalizeHostname(address);
-  const mappedIpv4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/iu.exec(normalized)?.[1];
-  if (mappedIpv4) {
-    return BLOCKED_WEBHOOK_ADDRESSES.check(mappedIpv4, "ipv4");
-  }
   const family = isIP(normalized);
-  return family === 4
-    ? BLOCKED_WEBHOOK_ADDRESSES.check(normalized, "ipv4")
-    : family === 6
-      ? BLOCKED_WEBHOOK_ADDRESSES.check(normalized, "ipv6")
-      : false;
+  if (family === 4) {
+    return (
+      !GLOBAL_IPV4_EXCEPTIONS.check(normalized, "ipv4") &&
+      BLOCKED_IPV4_ADDRESSES.check(normalized, "ipv4")
+    );
+  }
+  if (family === 6) {
+    if (GLOBAL_IPV6_EXCEPTIONS.check(normalized, "ipv6")) {
+      return false;
+    }
+    return (
+      BLOCKED_IPV6_ADDRESSES.check(normalized, "ipv6") ||
+      !GLOBAL_IPV6_RANGES.check(normalized, "ipv6")
+    );
+  }
+  return false;
 }
 
 async function resolveWebhookAddresses(hostname: string): Promise<WebhookAddress[]> {
