@@ -35,6 +35,7 @@ import {
   publishOpenClawCrablineArtifactGeneration,
   readOpenClawCrablineArtifactPointer,
 } from "../src/openclaw/artifact-generation.js";
+import { parseQaTarget } from "../src/openclaw/shared.js";
 
 type SmokeRunTestDependencies = {
   acquireLock?: () => Promise<{
@@ -399,6 +400,11 @@ describe("OpenClaw local provider bridge", () => {
     expect(() => resolveOpenClawCrablineChannelDriverSelection({ channel: "discord" })).toThrow(
       '--channel must be one of mattermost, matrix, signal, slack, telegram, whatsapp, zalo for --channel-driver crabline, got "discord"',
     );
+    for (const channel of ["", "   "]) {
+      expect(() => resolveOpenClawCrablineChannelDriverSelection({ channel })).toThrow(
+        /--channel must be one of mattermost, matrix, signal, slack, telegram, whatsapp, zalo for --channel-driver crabline/u,
+      );
+    }
   });
 
   it("maps a Zalo local provider into OpenClaw config and runtime env", () => {
@@ -1618,6 +1624,25 @@ describe("OpenClaw local provider bridge", () => {
         kind: "group",
       },
       threadId: "$root:matrix.test",
+    });
+
+    const slashThreadInbound = createOpenClawCrablineInbound({
+      manifest: matrixManifest,
+      input: {
+        conversation: { id: `${roomId}/archive`, kind: "group" },
+        senderId: "@alice:matrix.test",
+        text: "threaded Matrix message",
+        threadId: "$root/child:matrix.test",
+      },
+    });
+    expect(slashThreadInbound.qaTarget).toBe(
+      `thread:${roomId}%2Farchive/$root%2Fchild:matrix.test`,
+    );
+    expect(parseQaTarget(slashThreadInbound.qaTarget)).toEqual({
+      id: `${roomId}/archive`,
+      kind: "group",
+      native: false,
+      threadId: "$root/child:matrix.test",
     });
 
     const binding = createOpenClawCrablineProviderBinding(matrixManifest);

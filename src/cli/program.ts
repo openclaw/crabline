@@ -578,19 +578,50 @@ async function publishReadyFileUnlocked(
     nodePath.dirname(filePath),
     `.${nodePath.basename(filePath)}.${suffix}`,
   );
+  const backupPath = `${temporaryPath}.backup`;
   let manifestPublished = false;
+  let destinationBackedUp = false;
   try {
     await fs.writeFile(temporaryPath, contents, {
       encoding: "utf8",
       flag: "wx",
       mode: 0o600,
     });
+    try {
+      await fs.rename(filePath, backupPath);
+      destinationBackedUp = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
     await fs.rename(temporaryPath, filePath);
     manifestPublished = true;
-    return await readReadyFileIdentity(filePath);
+    const identity = await readReadyFileIdentity(filePath);
+    if (destinationBackedUp) {
+      await fs.rm(backupPath);
+      destinationBackedUp = false;
+    }
+    return identity;
   } catch (error) {
+    const recoveryErrors: unknown[] = [];
     if (manifestPublished) {
-      await fs.rm(filePath, { force: true }).catch(() => undefined);
+      await fs.rm(filePath, { force: true }).catch((cleanupError: unknown) => {
+        recoveryErrors.push(cleanupError);
+      });
+    }
+    if (destinationBackedUp) {
+      await fs.rename(backupPath, filePath).catch((restoreError: unknown) => {
+        recoveryErrors.push(restoreError);
+      });
+    }
+    if (recoveryErrors.length > 0) {
+      const aggregateError = new AggregateError(
+        [error, ...recoveryErrors],
+        `Ready-file replacement and recovery both failed for "${filePath}".`,
+      );
+      aggregateError.cause = error;
+      throw aggregateError;
     }
     throw error;
   } finally {

@@ -425,6 +425,23 @@ describe("cli", () => {
     await expect(fs.readFile(readyFile, "utf8")).resolves.toBe("stale\n");
   });
 
+  it("restores an existing ready file when replacement verification fails", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const readyFile = path.join(directory, "server.json");
+    await writeText(readyFile, "stale\n");
+    const identityError = new Error("identity read failed");
+    const statSpy = vi.spyOn(fs, "stat").mockRejectedValueOnce(identityError);
+
+    try {
+      await expect(publishReadyFile(readyFile, "replacement\n")).rejects.toBe(identityError);
+    } finally {
+      statSpy.mockRestore();
+    }
+
+    await expect(fs.readFile(readyFile, "utf8")).resolves.toBe("stale\n");
+  });
+
   it("does not recursively remove a stale non-lock directory", async () => {
     const directory = await createTempDir();
     directories.push(directory);

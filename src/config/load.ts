@@ -30,6 +30,14 @@ function formatYamlParseError(error: unknown): string {
   return `YAML parse error${code}${location}.`;
 }
 
+function formatJsonParseError(error: unknown): string {
+  if (!(error instanceof SyntaxError)) {
+    return "JSON parse failed.";
+  }
+  const position = /\bposition (\d+)\b/u.exec(error.message)?.[1];
+  return position ? `JSON parse error at position ${position}.` : "JSON parse error.";
+}
+
 export async function resolveConfigPath(explicitPath?: string): Promise<string> {
   if (explicitPath) {
     return path.resolve(explicitPath);
@@ -76,13 +84,9 @@ export async function loadManifest(
     parsed = resolvedPath.endsWith(".json") ? JSON.parse(raw) : YAML.parse(raw, { merge: true });
   } catch (error) {
     const detail = resolvedPath.endsWith(".json")
-      ? ensureErrorMessage(error)
+      ? formatJsonParseError(error)
       : formatYamlParseError(error);
-    throw configLoadError(
-      resolvedPath,
-      resolvedPath.endsWith(".json") ? error : new Error(detail),
-      detail,
-    );
+    throw configLoadError(resolvedPath, new Error(detail), detail);
   }
 
   try {
