@@ -162,6 +162,29 @@ describe("recorder", () => {
     ).resolves.toEqual(second);
   });
 
+  it("deduplicates recent appended retries without rescanning consumed records", async () => {
+    const filePath = await createRecorderPath();
+    const cursor = createRecordedInboundCursor();
+    const duplicate = {
+      author: "assistant" as const,
+      id: "duplicate",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "duplicate",
+      threadId: "slack:C123",
+    };
+    const first = await appendRecordedInbound(filePath, duplicate);
+    await appendRecordedInbound(filePath, duplicate);
+    const next = await appendRecordedInbound(filePath, { ...duplicate, id: "next", text: "next" });
+
+    await expect(
+      waitForRecordedInbound({ cursor, filePath, matches: () => true, timeoutMs: 30 }),
+    ).resolves.toEqual(first);
+    await expect(
+      waitForRecordedInbound({ cursor, filePath, matches: () => true, timeoutMs: 30 }),
+    ).resolves.toEqual(next);
+  });
+
   it("retains incremental wait progress across large recorder histories", async () => {
     const filePath = await createRecorderPath();
     const cursor = createRecordedInboundCursor();

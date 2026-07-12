@@ -22,6 +22,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 const pendingAppends = new Map<string, Promise<void>>();
+const MAX_RECENT_RECORD_KEYS = 4096;
 
 type IncrementalReadState = {
   continuity: Buffer;
@@ -38,6 +39,7 @@ type IncrementalReadState = {
 export type RecordedInboundCursor = {
   buffered: RecordedInboundEnvelope[];
   readState: IncrementalReadState;
+  seen: Set<string>;
 };
 
 const CONTINUITY_BYTES = 4096;
@@ -55,7 +57,20 @@ export function createRecordedInboundCursor(): RecordedInboundCursor {
   return {
     buffered: [],
     readState: createIncrementalReadState(),
+    seen: new Set(),
   };
+}
+
+function rememberRecentRecord(seen: Set<string>, event: InboundEnvelope): boolean {
+  const key = JSON.stringify([event.provider, event.threadId, event.id]);
+  if (seen.has(key)) {
+    return false;
+  }
+  seen.add(key);
+  if (seen.size > MAX_RECENT_RECORD_KEYS) {
+    seen.delete(seen.values().next().value!);
+  }
+  return true;
 }
 
 function resetIncrementalReadState(state: IncrementalReadState): void {
@@ -239,6 +254,10 @@ export async function waitForRecordedInbound(params: {
         ? cursor.buffered.splice(0)
         : await readRecordedInboundAppend(params.filePath, cursor.readState);
     for (const [index, event] of events.entries()) {
+      // Incremental read state owns progress; this bounded window only filters appended retries.
+      if (!rememberRecentRecord(cursor.seen, event)) {
+        continue;
+      }
       if (params.since && new Date(event.sentAt).getTime() < new Date(params.since).getTime()) {
         continue;
       }
@@ -267,6 +286,7 @@ export async function* watchRecordedInbound(params: {
   since?: string | undefined;
 }): AsyncIterable<RecordedInboundEnvelope> {
   const state = createIncrementalReadState();
+  const seen = new Set<string>();
 
   while (!params.signal?.aborted) {
     const events = await readRecordedInboundAppend(params.filePath, state);
@@ -276,6 +296,9 @@ export async function* watchRecordedInbound(params: {
     for (const event of events) {
       if (params.signal?.aborted) {
         return;
+      }
+      if (!rememberRecentRecord(seen, event)) {
+        continue;
       }
       if (params.since && new Date(event.sentAt).getTime() < new Date(params.since).getTime()) {
         continue;
