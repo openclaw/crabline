@@ -37,7 +37,9 @@ import { publishPrivateFileAtomically } from "./openclaw/private-file.js";
 import {
   acquireOpenClawCrablineSmokeRunLock,
   releaseOpenClawCrablineSmokeRunLock,
+  type OpenClawCrablineSmokeRunLock,
 } from "./openclaw/smoke-lock.js";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -178,19 +180,112 @@ export async function startOpenClawCrablineAdapter(
   };
 }
 
-export async function runOpenClawCrablineChannelDriverSmoke(params: {
+type SmokeArtifact = {
+  contents: string;
+  filePath: string;
+};
+
+type SmokeRunDependencies = {
+  acquireLock?: typeof acquireOpenClawCrablineSmokeRunLock;
+  publishFile?: typeof publishPrivateFileAtomically;
+  releaseLock?: typeof releaseOpenClawCrablineSmokeRunLock;
+  startAdapter?: typeof startOpenClawCrablineAdapter;
+};
+
+function isMissingPathError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+async function publishSmokeArtifactSet(params: {
+  artifacts: readonly SmokeArtifact[];
+  lock: OpenClawCrablineSmokeRunLock;
+  publishFile: typeof publishPrivateFileAtomically;
+  releaseLock: typeof releaseOpenClawCrablineSmokeRunLock;
+}): Promise<void> {
+  const transactionId = randomUUID();
+  const backups = params.artifacts.map(({ filePath }) => ({
+    backupPath: path.join(
+      path.dirname(filePath),
+      `.${path.basename(filePath)}.${process.pid}.${transactionId}.backup`,
+    ),
+    filePath,
+    moved: false,
+  }));
+  let generationInstalled = false;
+
+  try {
+    await params.lock.assertOwned();
+    for (const backup of backups) {
+      try {
+        await fs.rename(backup.filePath, backup.backupPath);
+        backup.moved = true;
+      } catch (error) {
+        if (!isMissingPathError(error)) {
+          throw error;
+        }
+      }
+    }
+    for (const artifact of params.artifacts) {
+      await params.publishFile(artifact.filePath, artifact.contents);
+    }
+    await params.lock.prepareForRelease();
+    await params.releaseLock(params.lock);
+    generationInstalled = true;
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+    for (const artifact of params.artifacts) {
+      await fs.rm(artifact.filePath, { force: true }).catch((rollbackError: unknown) => {
+        rollbackErrors.push(rollbackError);
+      });
+    }
+    for (const backup of backups) {
+      if (!backup.moved) {
+        continue;
+      }
+      await fs.rename(backup.backupPath, backup.filePath).catch((rollbackError: unknown) => {
+        rollbackErrors.push(rollbackError);
+      });
+    }
+    if (rollbackErrors.length > 0) {
+      const rollbackFailure = new Error("OpenClaw Crabline smoke artifact rollback failed.", {
+        cause: error,
+      });
+      Object.assign(rollbackFailure, { rollbackErrors });
+      throw rollbackFailure;
+    }
+    throw error;
+  } finally {
+    if (generationInstalled) {
+      await Promise.all(
+        backups.map(({ backupPath }) => fs.rm(backupPath, { force: true }).catch(() => undefined)),
+      );
+    }
+  }
+}
+
+export function runOpenClawCrablineChannelDriverSmoke(params: {
   outputDir: string;
   selection: OpenClawCrablineChannelDriverSelection;
-}): Promise<OpenClawCrablineChannelDriverSmokeResult> {
+}): Promise<OpenClawCrablineChannelDriverSmokeResult>;
+export async function runOpenClawCrablineChannelDriverSmoke(
+  params: {
+    outputDir: string;
+    selection: OpenClawCrablineChannelDriverSelection;
+  },
+  dependencies: SmokeRunDependencies = {},
+): Promise<OpenClawCrablineChannelDriverSmokeResult> {
   const outputDir = path.resolve(params.outputDir);
-  const smokeLock = await acquireOpenClawCrablineSmokeRunLock({
+  const releaseLock = dependencies.releaseLock ?? releaseOpenClawCrablineSmokeRunLock;
+  const smokeLock = await (dependencies.acquireLock ?? acquireOpenClawCrablineSmokeRunLock)({
     channel: params.selection.channel,
     outputDir,
   });
-  let lockTransferred = false;
+  let lockReleased = false;
 
   try {
     const manifestPath = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
+    const capabilityMatrixPath = path.join(outputDir, params.selection.capabilityMatrixPath);
+    const smokeArtifactPath = path.join(outputDir, params.selection.smokeArtifactPath);
     const recorderPath = path.join(
       outputDir,
       "artifacts",
@@ -198,49 +293,86 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
       `${params.selection.channel}-fake-provider.jsonl`,
     );
     await fs.mkdir(path.dirname(recorderPath), { recursive: true });
-    const adapter = await startOpenClawCrablineAdapter({
+    const adapter = await (dependencies.startAdapter ?? startOpenClawCrablineAdapter)({
       channel: params.selection.channel,
       openclawConfig: {},
       recorderPath,
     });
-    let result: OpenClawCrablineChannelDriverSmokeResult;
+    let probe: unknown;
     try {
-      await publishPrivateFileAtomically(
-        manifestPath,
-        `${JSON.stringify(adapter.manifest, null, 2)}\n`,
-      );
-      const probe = await adapter.probe();
-      result = {
-        capabilityReport: {
-          result: {
-            driver: "crabline",
-            selectedChannel: params.selection.channel,
-            supportedChannels: [...CRABLINE_SERVER_CHANNELS],
-          },
-        },
-        manifestPath: path.basename(manifestPath),
-        release: async () => {
-          await releaseOpenClawCrablineSmokeRunLock(smokeLock);
-        },
-        smoke: {
-          manifestPath: path.basename(manifestPath),
-          result: {
-            ok: true,
-            probe,
-            provider: adapter.manifest.provider,
-            endpoints: adapter.manifest.endpoints,
-            recorderPath: path.relative(outputDir, adapter.manifest.recorderPath),
-          },
-        },
-      };
+      probe = await adapter.probe();
     } finally {
       await adapter.close();
     }
-    lockTransferred = true;
-    return result;
+
+    const manifestName = path.basename(manifestPath);
+    const capabilityReport = {
+      result: {
+        driver: "crabline",
+        selectedChannel: params.selection.channel,
+        supportedChannels: [...CRABLINE_SERVER_CHANNELS],
+      },
+    };
+    const smoke = {
+      manifestPath: manifestName,
+      result: {
+        ok: true,
+        probe,
+        provider: adapter.manifest.provider,
+        endpoints: adapter.manifest.endpoints,
+        recorderPath: path.relative(outputDir, adapter.manifest.recorderPath),
+      },
+    };
+    await publishSmokeArtifactSet({
+      artifacts: [
+        {
+          contents: `${JSON.stringify(adapter.manifest, null, 2)}\n`,
+          filePath: manifestPath,
+        },
+        {
+          contents: `${JSON.stringify(
+            {
+              version: 1,
+              source: "openclaw/crabline",
+              channelDriver: params.selection.channelDriver,
+              selectedChannel: params.selection.channel,
+              manifestPath: manifestName,
+              report: capabilityReport,
+            },
+            null,
+            2,
+          )}\n`,
+          filePath: capabilityMatrixPath,
+        },
+        {
+          contents: `${JSON.stringify(
+            {
+              version: 1,
+              source: "openclaw/crabline",
+              channelDriver: params.selection.channelDriver,
+              selectedChannel: params.selection.channel,
+              manifestPath: manifestName,
+              smoke,
+            },
+            null,
+            2,
+          )}\n`,
+          filePath: smokeArtifactPath,
+        },
+      ],
+      lock: smokeLock,
+      publishFile: dependencies.publishFile ?? publishPrivateFileAtomically,
+      releaseLock,
+    });
+    lockReleased = true;
+    return {
+      capabilityMatrixPath: path.basename(capabilityMatrixPath),
+      manifestPath: manifestName,
+      smokeArtifactPath: path.basename(smokeArtifactPath),
+    };
   } finally {
-    if (!lockTransferred) {
-      await releaseOpenClawCrablineSmokeRunLock(smokeLock);
+    if (!lockReleased) {
+      await releaseLock(smokeLock);
     }
   }
 }

@@ -28,10 +28,9 @@ export type OpenClawCrablineChannelDriverSelection = {
 };
 
 export type OpenClawCrablineChannelDriverSmokeResult = {
-  capabilityReport: unknown;
+  capabilityMatrixPath: string;
   manifestPath: string;
-  release(): Promise<void>;
-  smoke: unknown;
+  smokeArtifactPath: string;
 };
 
 export type OpenClawCrablineConversation = {
