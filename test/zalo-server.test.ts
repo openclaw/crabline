@@ -1,9 +1,9 @@
-import { createServer } from "node:http";
+import { Agent, createServer } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startZaloServer, type StartedZaloServer } from "../src/index.js";
-import { createTempDir, disposeTempDir } from "./test-helpers.js";
+import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedZaloServer[] = [];
 const directories: string[] = [];
@@ -48,6 +48,47 @@ describe("Zalo local provider server", () => {
     });
     expect(invalidJson.status).toBe(400);
     await expect(invalidJson.json()).resolves.toEqual({
+      description: "Bad Request: can't parse JSON object",
+      error_code: 400,
+      ok: false,
+    });
+
+    for (const scalarBody of ["null", '"scalar"', "42", "true", "[]"]) {
+      const invalidBody = await fetch(`${server.manifest.baseUrl}/botzalo-token/sendMessage`, {
+        body: scalarBody,
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(invalidBody.status).toBe(400);
+      await expect(invalidBody.json()).resolves.toEqual({
+        description: "Bad Request: can't parse JSON object",
+        error_code: 400,
+        ok: false,
+      });
+    }
+
+    const oversized = await requestHttp({
+      headers: {
+        "content-length": String(1024 * 1024 + 1),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      url: `${server.manifest.baseUrl}/botzalo-token/sendMessage`,
+    });
+    expect(oversized.status).toBe(413);
+    expect(JSON.parse(oversized.body)).toEqual({
+      description: "Request Entity Too Large",
+      error_code: 413,
+      ok: false,
+    });
+
+    const invalidAdminBody = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: "[]",
+      headers: adminHeaders(server),
+      method: "POST",
+    });
+    expect(invalidAdminBody.status).toBe(400);
+    await expect(invalidAdminBody.json()).resolves.toEqual({
       description: "Bad Request: can't parse JSON object",
       error_code: 400,
       ok: false,
@@ -233,5 +274,43 @@ describe("Zalo local provider server", () => {
       method: "POST",
     });
     expect(inbound.status).toBe(401);
+  });
+
+  it("drains request bodies rejected by admin and bot authentication", async () => {
+    const server = await startZaloServer({
+      adminToken: "admin",
+      botToken: "zalo-token",
+    });
+    servers.push(server);
+
+    for (const url of [
+      server.manifest.endpoints.adminInboundUrl,
+      `${server.manifest.baseUrl}/botwrong/sendMessage`,
+    ]) {
+      const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+      try {
+        const body = JSON.stringify({ chat_id: "chat-1", text: "rejected" });
+        const rejected = await requestHttp({
+          agent,
+          body,
+          headers: {
+            "content-length": String(Buffer.byteLength(body)),
+            "content-type": "application/json",
+          },
+          method: "POST",
+          url,
+        });
+        expect(rejected.status).toBe(401);
+
+        const accepted = await requestHttp({
+          agent,
+          method: "GET",
+          url: `${server.manifest.baseUrl}/botzalo-token/getMe`,
+        });
+        expect(accepted.status).toBe(200);
+      } finally {
+        agent.destroy();
+      }
+    }
   });
 });

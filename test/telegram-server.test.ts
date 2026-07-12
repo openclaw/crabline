@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { request as httpRequest } from "node:http";
+import { Agent, request as httpRequest } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startTelegramServer, type StartedTelegramServer } from "../src/index.js";
@@ -184,6 +184,46 @@ describe("telegram local provider server", () => {
       },
     });
 
+    for (const [method, field] of [
+      ["sendPhoto", "photo"],
+      ["sendVideo", "video"],
+      ["sendDocument", "document"],
+      ["sendAudio", "audio"],
+    ] as const) {
+      const missingMedia = await fetch(
+        `${server.manifest.baseUrl}/bot123456:fake-token/${method}`,
+        {
+          body: JSON.stringify({ chat_id: "-1001234567890" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(missingMedia.status).toBe(400);
+      await expect(missingMedia.json()).resolves.toEqual({
+        description: `Bad Request: chat_id and ${field} are required`,
+        error_code: 400,
+        ok: false,
+      });
+    }
+
+    const sendAudio = await fetch(`${server.manifest.baseUrl}/bot123456:fake-token/sendAudio`, {
+      body: JSON.stringify({
+        audio: "fixture.mp3",
+        caption: "hello fake telegram audio",
+        chat_id: "-1001234567890",
+        duration: 7,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(sendAudio.json()).resolves.toMatchObject({
+      ok: true,
+      result: {
+        audio: { duration: 7, file_name: "fixture.mp3" },
+        caption: "hello fake telegram audio",
+      },
+    });
+
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
         chatId: "-1001234567890",
@@ -252,6 +292,44 @@ describe("telegram local provider server", () => {
       ok: true,
       update: { message: { text: "accepted" } },
     });
+  });
+
+  it("drains request bodies rejected by admin and bot authentication", async () => {
+    const server = await startTelegramServer({
+      adminToken: "admin",
+      botToken: "123:fake",
+    });
+    servers.push(server);
+
+    for (const url of [
+      server.manifest.endpoints.adminInboundUrl,
+      `${server.manifest.baseUrl}/botwrong-token/sendMessage`,
+    ]) {
+      const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+      try {
+        const body = JSON.stringify({ chat_id: "123", text: "rejected" });
+        const rejected = await requestHttp({
+          agent,
+          body,
+          headers: {
+            "content-length": String(Buffer.byteLength(body)),
+            "content-type": "application/json",
+          },
+          method: "POST",
+          url,
+        });
+        expect([401, 404]).toContain(rejected.status);
+
+        const accepted = await requestHttp({
+          agent,
+          method: "GET",
+          url: `${server.manifest.baseUrl}/bot123:fake/getMe`,
+        });
+        expect(accepted.status).toBe(200);
+      } finally {
+        agent.destroy();
+      }
+    }
   });
 
   it("keeps generated inbound IDs above explicit IDs", async () => {

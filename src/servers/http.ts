@@ -32,7 +32,10 @@ export function jsonResponse(value: unknown, status = 200): Response {
   return Response.json(value, { status });
 }
 
-function drainRejectedRequest(request: IncomingMessage): void {
+export function drainRequestBody(request: IncomingMessage): void {
+  if (request.destroyed || request.readableEnded) {
+    return;
+  }
   const ignoreError = () => {};
   const cleanup = () => {
     request.off("close", cleanup);
@@ -57,7 +60,7 @@ export async function readBody(
   if (contentLengthValue && /^\d+$/u.test(contentLengthValue)) {
     const contentLength = Number(contentLengthValue);
     if (!Number.isSafeInteger(contentLength) || contentLength > maxBytes) {
-      drainRejectedRequest(request);
+      drainRequestBody(request);
       throw new RequestBodyTooLargeError(maxBytes);
     }
   }
@@ -78,7 +81,7 @@ export async function readBody(
         return;
       }
       settled = true;
-      drainRejectedRequest(request);
+      drainRequestBody(request);
       cleanup();
       reject(error);
     };

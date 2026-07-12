@@ -18,15 +18,18 @@ export const writeText = async (filePath: string, value: string): Promise<void> 
 };
 
 export async function requestHttp(params: {
+  agent?: import("node:http").Agent;
   body?: Buffer | string;
   headers?: Record<string, string>;
   method: string;
+  timeoutMs?: number;
   url: string;
 }): Promise<{ body: string; headers: import("node:http").IncomingHttpHeaders; status: number }> {
   return await new Promise((resolve, reject) => {
     const request = httpRequest(
       params.url,
       {
+        agent: params.agent,
         headers: params.headers,
         method: params.method,
       },
@@ -43,6 +46,9 @@ export async function requestHttp(params: {
       },
     );
     request.once("error", reject);
+    request.setTimeout(params.timeoutMs ?? 2_000, () => {
+      request.destroy(new Error(`HTTP request timed out after ${params.timeoutMs ?? 2_000} ms.`));
+    });
     if (params.body !== undefined) {
       request.write(params.body);
     }
