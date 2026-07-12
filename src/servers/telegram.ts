@@ -507,8 +507,6 @@ async function flushTelegramWebhookUpdates(
         state.updates.splice(deliveredIndex, 1);
       }
       if (state.webhook === webhook) {
-        delete webhook.lastErrorDate;
-        delete webhook.lastErrorMessage;
         state.webhookRetryAttempts = 0;
       }
     } catch {

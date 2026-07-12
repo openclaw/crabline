@@ -119,6 +119,26 @@ describe("signal local provider server", () => {
       jsonrpc: "2.0",
       result: { timestamp: expect.any(Number) },
     });
+    for (const [method, params] of [
+      ["send", { attachments: ["/tmp/test-attachment-placeholder"], recipient: ["+15551234567"] }],
+      ["sendReceipt", { targetTimestamps: [1_700_000_000_000], usernames: ["alice"] }],
+    ] as const) {
+      const nativeAlternative = await fetch(server.manifest.endpoints.rpcUrl, {
+        body: JSON.stringify({
+          id: `native-${method}`,
+          jsonrpc: "2.0",
+          method,
+          params,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      await expect(nativeAlternative.json()).resolves.toMatchObject({
+        id: `native-${method}`,
+        jsonrpc: "2.0",
+        result: expect.anything(),
+      });
+    }
 
     for (const [method, params] of [
       ["send", {}],
@@ -263,12 +283,13 @@ describe("signal local provider server", () => {
         signal: controller.signal,
       });
       await vi.waitFor(() => expect(backpressuredResponse).toBeDefined());
+      expect((await sendInbound("fourth queued")).status).toBe(200);
       backpressuredResponse!.emit("drain");
 
       const reader = events.body!.getReader();
       const decoder = new TextDecoder();
       let received = "";
-      while (!received.includes("third queued")) {
+      while (!received.includes("fourth queued")) {
         const chunk = await reader.read();
         if (chunk.done) {
           break;
@@ -278,6 +299,8 @@ describe("signal local provider server", () => {
       expect(received).toContain("first queued");
       expect(received).toContain("second queued");
       expect(received).toContain("third queued");
+      expect(received).toContain("fourth queued");
+      expect(received.indexOf("third queued")).toBeLessThan(received.indexOf("fourth queued"));
     } finally {
       controller.abort();
       write.mockRestore();

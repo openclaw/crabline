@@ -635,8 +635,13 @@ describe("Matrix local provider server", () => {
     });
     servers.push(server);
     const roomId = "!rename:matrix.test";
-    for (const senderName of ["Alice", "Alicia"]) {
-      const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+    const initial = (await (
+      await fetch(server.manifest.endpoints.syncUrl, {
+        headers: auth("test-token-placeholder"),
+      })
+    ).json()) as { next_batch: string };
+    const sendInbound = (senderName: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
         body: JSON.stringify({
           roomId,
           senderId: "@alice:matrix.test",
@@ -649,8 +654,20 @@ describe("Matrix local provider server", () => {
         },
         method: "POST",
       });
-      expect(response.status).toBe(200);
-    }
+    expect((await sendInbound("Alice")).status).toBe(200);
+    const firstSync = (await (
+      await fetch(`${server.manifest.endpoints.syncUrl}?since=${initial.next_batch}`, {
+        headers: auth("test-token-placeholder"),
+      })
+    ).json()) as {
+      rooms: { join: Record<string, { timeline: { events: Array<{ type: string }> } }> };
+    };
+    expect(
+      firstSync.rooms.join[roomId]?.timeline.events.filter(
+        (event) => event.type === "m.room.member",
+      ),
+    ).toHaveLength(1);
+    expect((await sendInbound("Alicia")).status).toBe(200);
 
     const membership = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent(roomId)}/state/m.room.member/${encodeURIComponent("@alice:matrix.test")}`,

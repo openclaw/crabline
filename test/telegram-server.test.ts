@@ -650,6 +650,46 @@ describe("telegram local provider server", () => {
     });
   });
 
+  it("retains the most recent webhook error after a successful retry", async () => {
+    let attempts = 0;
+    const webhook = createServer((_request, response) => {
+      attempts += 1;
+      response.statusCode = attempts === 1 ? 503 : 200;
+      response.end();
+    });
+    await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+    const address = webhook.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve Telegram webhook receiver.");
+    }
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    try {
+      await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`, {
+        body: JSON.stringify({ url: `http://127.0.0.1:${address.port}/telegram` }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect((await injectUpdate(server, { chatId: 42, text: "recover me" })).status).toBe(502);
+      await expect.poll(() => attempts).toBe(2);
+
+      const info = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/getWebhookInfo`,
+      );
+      await expect(info.json()).resolves.toMatchObject({
+        result: {
+          last_error_date: expect.any(Number),
+          last_error_message: "Wrong response from the webhook: 503",
+          pending_update_count: 0,
+        },
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        webhook.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("rejects unauthenticated inbound updates", async () => {
     const directory = await createTempDir();
     directories.push(directory);
