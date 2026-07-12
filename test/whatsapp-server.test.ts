@@ -11,6 +11,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { startWhatsAppServer, type StartedWhatsAppServer } from "../src/index.js";
+import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedWhatsAppServer[] = [];
@@ -470,6 +471,41 @@ describe("whatsapp local provider server", () => {
     });
     expect(inbound.status).toBe(500);
     await expect(inbound.json()).resolves.toMatchObject({ ok: false });
+  });
+
+  it("accepts legacy group JIDs and rejects inbound before recording when the queue is full", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startWhatsAppServer({
+      adminToken: "admin",
+      maxPendingInboundMessages: 1,
+      recorderPath: path.join(directory, "whatsapp.jsonl"),
+    });
+    servers.push(server);
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          chatJid: "15551234567-1234567890@g.us",
+          senderJid: "15551234567@s.whatsapp.net",
+          text,
+        }),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+
+    const accepted = await sendInbound("accepted legacy group message");
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toMatchObject({ delivery: "queued", ok: true });
+
+    const rejected = await sendInbound("rejected overflow message");
+    expect(rejected.status).toBe(503);
+    await expect(rejected.json()).resolves.toMatchObject({ error: { code: 4 } });
+    const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
+    expect(recorder).toContain("accepted legacy group message");
+    expect(recorder).not.toContain("rejected overflow message");
   });
 
   it("rejects Baileys WebSocket upgrades without the local provider access token", async () => {

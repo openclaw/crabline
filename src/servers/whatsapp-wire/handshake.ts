@@ -153,6 +153,9 @@ class ProtoReader {
       if (byte === undefined) {
         throw new Error("Unexpected end of WhatsApp handshake protobuf.");
       }
+      if (shift === 28 && byte > 0x0f) {
+        throw new Error("Invalid WhatsApp handshake varint.");
+      }
       value |= (byte & 0x7f) << shift;
       if ((byte & 0x80) === 0) {
         return value >>> 0;

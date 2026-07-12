@@ -18,12 +18,13 @@ import {
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 import {
   attachWhatsAppBaileysWebSocketServer,
+  type PreparedWhatsAppBaileysInboundDelivery,
   type WhatsAppBaileysInboundMessage,
 } from "./whatsapp-baileys-websocket.js";
 
 const WHATSAPP_USER_JID_RE = /^\d{7,15}(?::\d+)?@s\.whatsapp\.net$/iu;
 const WHATSAPP_LEGACY_USER_JID_RE = /^\d{7,15}@c\.us$/iu;
-const WHATSAPP_GROUP_JID_RE = /^\d{5,}@g\.us$/iu;
+const WHATSAPP_GROUP_JID_RE = /^\d{5,}(?:-\d{5,})?@g\.us$/iu;
 const WHATSAPP_LID_RE = /^\d{7,15}@lid$/iu;
 const WHATSAPP_CLOUD_RECIPIENT_RE = /^\d{7,15}$/u;
 const WHATSAPP_GRAPH_VERSION_RE = /^v\d+\.\d+$/u;
@@ -33,7 +34,9 @@ type WhatsAppServerState = {
   accessToken: string;
   adminToken: string;
   displayPhoneNumber: string;
-  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): "delivered" | "queued";
+  prepareInboundMessage(
+    message: WhatsAppBaileysInboundMessage,
+  ): PreparedWhatsAppBaileysInboundDelivery | undefined;
   graphVersion: string;
   nextMessageId: number;
   onEvent: ServerEventObserver | undefined;
@@ -81,6 +84,7 @@ export type StartWhatsAppServerParams = {
   displayPhoneNumber?: string | undefined;
   graphVersion?: string | undefined;
   host?: string | undefined;
+  maxPendingInboundMessages?: number | undefined;
   onEvent?: ServerEventObserver | undefined;
   phoneNumberId?: string | undefined;
   port?: number | undefined;
@@ -408,11 +412,24 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       type: "admin",
     };
     if (result.message) {
+      const preparedDelivery = params.state.prepareInboundMessage(result.message);
+      if (!preparedDelivery) {
+        return graphError({
+          code: 4,
+          details: "The pending WhatsApp inbound queue is full.",
+          message: "(#4) Application request limit reached.",
+          status: 503,
+          type: "OAuthException",
+        });
+      }
       event.message = result.message;
-    }
-    await appendEvent(params.state, event);
-    if (result.message) {
-      const delivery = params.state.deliverInboundMessage(result.message);
+      try {
+        await appendEvent(params.state, event);
+      } catch (error) {
+        preparedDelivery.cancel();
+        throw error;
+      }
+      const delivery = preparedDelivery.commit();
       return whatsappOk({ delivery, message: result.message, webhook: result.webhook });
     }
     return graphParameterError("(#100) Invalid inbound WhatsApp event");
@@ -487,7 +504,7 @@ export async function startWhatsAppServer(
         ? "crabline-whatsapp-access-token"
         : `EAA${randomBytes(24).toString("base64url")}`),
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
-    deliverInboundMessage: () => "queued",
+    prepareInboundMessage: () => undefined,
     displayPhoneNumber: params.displayPhoneNumber ?? "15550000000",
     graphVersion,
     nextMessageId: 1,
@@ -531,10 +548,11 @@ export async function startWhatsAppServer(
     accessToken: state.accessToken,
     appendEvent: (event) => appendEvent(state, event),
     httpServer: httpServer.server,
+    maxPendingInboundMessages: params.maxPendingInboundMessages,
     path: "/ws/chat",
     selfJid: state.selfJid,
   });
-  state.deliverInboundMessage = (message) => baileysWebSocketServer.deliverInboundMessage(message);
+  state.prepareInboundMessage = (message) => baileysWebSocketServer.prepareInboundMessage(message);
   return {
     async close() {
       await baileysWebSocketServer.close();
