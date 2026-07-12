@@ -333,6 +333,78 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("restores a stale commit claim when its owner renews before deletion", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const destinationPath = path.join(outputDir, "current.json");
+    let allowCommit: (() => void) | undefined;
+    let commitClaimed: (() => void) | undefined;
+    let renew: (() => Promise<void>) | undefined;
+    const allowCommitPromise = new Promise<void>((resolve) => {
+      allowCommit = resolve;
+    });
+    const commitClaimedPromise = new Promise<void>((resolve) => {
+      commitClaimed = resolve;
+    });
+    let now = 1_000;
+    let commitPromise: Promise<void> | undefined;
+    try {
+      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        beforeCommitFileRename: async () => {
+          commitClaimed?.();
+          await allowCommitPromise;
+        },
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => now,
+        pid: 4_242,
+        processStartedAtMs: 100,
+        startHeartbeat: (heartbeat) => {
+          renew = heartbeat;
+          return disableHeartbeat(heartbeat, 333);
+        },
+      });
+      commitPromise = lock.commitFileAtomically({
+        contents: "{}\n",
+        destinationPath,
+        stageFile: async (filePath, contents) => {
+          await fs.writeFile(filePath, contents);
+        },
+      });
+      await commitClaimedPromise;
+
+      now = 2_001;
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(params, {
+          beforeRecoveryDeleteClaim: async () => {
+            now = 1_999;
+            await renew!();
+            now = 2_001;
+          },
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 5_252,
+          processStartedAtMs: 200,
+          startHeartbeat: disableHeartbeat,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+
+      const lockClaims = (await fs.readdir(outputDir)).filter((entry) => entry.includes(".lock."));
+      expect(lockClaims.filter((entry) => entry.includes(".commit."))).toHaveLength(1);
+      expect(lockClaims.filter((entry) => entry.includes(".release."))).toEqual([]);
+
+      allowCommit?.();
+      await expect(commitPromise).resolves.toBeUndefined();
+      await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe("{}\n");
+      await lock.release();
+    } finally {
+      allowCommit?.();
+      await commitPromise?.catch(() => undefined);
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("expires an old lock whose PID now belongs to another live process", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
