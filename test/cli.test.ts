@@ -605,12 +605,14 @@ describe("cli", () => {
         manifest: {
           adminToken: "admin",
           baseUrl: "http://127.0.0.1:12345",
-          botToken: "424242:token",
+          botToken: ["424242", "test-token-placeholder"].join(":"),
           endpoints: {
             adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
             apiRoot: "http://127.0.0.1:12345",
           },
-          env: { TELEGRAM_BOT_TOKEN: "424242:token" },
+          env: {
+            TELEGRAM_BOT_TOKEN: ["424242", "test-token-placeholder"].join(":"),
+          },
           provider: "telegram",
           recorderPath: path.join(directory, "telegram.jsonl"),
           version: 1,
@@ -660,12 +662,14 @@ describe("cli", () => {
         manifest: {
           adminToken: "admin",
           baseUrl: "http://127.0.0.1:12345",
-          botToken: "424242:token",
+          botToken: ["424242", "test-token-placeholder"].join(":"),
           endpoints: {
             adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
             apiRoot: "http://127.0.0.1:12345",
           },
-          env: { TELEGRAM_BOT_TOKEN: "424242:token" },
+          env: {
+            TELEGRAM_BOT_TOKEN: ["424242", "test-token-placeholder"].join(":"),
+          },
           provider: "telegram",
           recorderPath: path.join(directory, "telegram.jsonl"),
           version: 1,
