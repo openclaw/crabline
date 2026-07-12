@@ -609,7 +609,7 @@ describe("cli", () => {
           "--admin-token",
           "test-admin-token",
           "--bot-token",
-          "test-zalo-token",
+          "test-token-placeholder",
           "--recorder",
           path.join(directory, "zalo.jsonl"),
         ]),
@@ -627,14 +627,14 @@ describe("cli", () => {
     };
     expect(manifest.provider).toBe("zalo");
     expect(manifest.adminToken).toBe("test-admin-token");
-    expect(manifest.botToken).toBe("test-zalo-token");
+    expect(manifest.botToken).toBe("test-token-placeholder");
     expect(manifest.endpoints?.apiRoot).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
     expect(manifest.endpoints?.adminInboundUrl).toMatch(
       /^http:\/\/127\.0\.0\.1:\d+\/crabline\/zalo\/inbound$/u,
     );
     expect(manifest.env).toMatchObject({
       ZALO_API_URL: manifest.endpoints?.apiRoot,
-      ZALO_BOT_TOKEN: "test-zalo-token",
+      ZALO_BOT_TOKEN: "test-token-placeholder",
     });
     await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
