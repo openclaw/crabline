@@ -382,6 +382,71 @@ describe("signal local provider server", () => {
     }
   });
 
+  it("restores buffered events when a newer SSE client remains connected", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const originalWrite = ServerResponse.prototype.write;
+    let backpressuredResponse: ServerResponse | undefined;
+    const write = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<typeof originalWrite>
+    ) {
+      const accepted = Reflect.apply(originalWrite, this, args) as boolean;
+      if (
+        backpressuredResponse === undefined &&
+        typeof args[0] === "string" &&
+        args[0].includes("first event")
+      ) {
+        backpressuredResponse = this;
+        return false;
+      }
+      return accepted;
+    });
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    try {
+      const firstEvents = await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: firstController.signal,
+      });
+      const sendInbound = (text: string) =>
+        fetch(server.manifest.endpoints.adminInboundUrl, {
+          body: JSON.stringify({ sourceNumber: "+15557654321", text }),
+          headers: {
+            "content-type": "application/json",
+            "x-crabline-admin-token": "admin",
+          },
+          method: "POST",
+        });
+      expect((await sendInbound("first event")).status).toBe(200);
+      await vi.waitFor(() => expect(backpressuredResponse).toBeDefined());
+      expect((await sendInbound("buffered event")).status).toBe(200);
+
+      const secondEvents = await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: secondController.signal,
+      });
+      expect((await sendInbound("shared event")).status).toBe(200);
+      firstController.abort();
+      await firstEvents.body?.cancel().catch(() => undefined);
+
+      const reader = secondEvents.body!.getReader();
+      const decoder = new TextDecoder();
+      let received = "";
+      while (!received.includes("buffered event")) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          break;
+        }
+        received += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(received).toContain("buffered event");
+      expect(received.match(/shared event/gu)).toHaveLength(1);
+    } finally {
+      firstController.abort();
+      secondController.abort();
+      write.mockRestore();
+    }
+  });
+
   it("bounds pending events together with reconnectable client buffers", async () => {
     const server = await startSignalServer({
       adminToken: "admin",

@@ -259,7 +259,7 @@ async function appendEvent(state: TelegramServerState, event: TelegramServerEven
   await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
-function redactTelegramBody(body: Record<string, unknown>): Record<string, unknown> {
+function redactTelegramSecrets<T>(body: Record<string, T>): Record<string, T | string> {
   return Object.fromEntries(
     Object.entries(body).map(([key, value]) => [
       key,
@@ -900,10 +900,10 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
   }
   await appendEvent(params.state, {
     at: new Date().toISOString(),
-    body: redactTelegramBody(body),
+    body: redactTelegramSecrets(body),
     method: requestMethod,
     path: `/bot<redacted>/${botPath.method}`,
-    query: queryRecord(url),
+    query: redactTelegramSecrets(queryRecord(url)),
     type: "api",
   });
   return handleTelegramApi({
