@@ -238,6 +238,28 @@ describe("cli", () => {
     });
   });
 
+  it("normalizes missing-command exit codes independently of process state", async () => {
+    process.exitCode = 10;
+    const captured = captureWrites();
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli(["node", "crabline", "--json"]);
+    } finally {
+      captured.restore();
+    }
+
+    expect(exitCode!).toBe(1);
+    expect(JSON.parse(captured.stderr.join(""))).toEqual({
+      error: {
+        code: "commander.help",
+        exitCode: 1,
+        message: "No command specified.",
+      },
+      ok: false,
+    });
+  });
+
   it("does not treat --json option values or positional arguments as the global flag", async () => {
     const configPath = await createConfig();
     const captured = captureWrites();
