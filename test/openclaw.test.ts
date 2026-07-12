@@ -529,9 +529,18 @@ describe("OpenClaw local provider bridge", () => {
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:bob" }).to).not.toBe(
       symbolicDelivery.to,
     );
-    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "group:alice" }).to).toMatch(
-      /^-\d+$/u,
-    );
+    const symbolicGroupDelivery = createOpenClawCrablineAgentDelivery({
+      manifest,
+      target: "group:alice",
+    });
+    expect(symbolicGroupDelivery.to).toMatch(/^-100\d+$/u);
+    expect(Number.isSafeInteger(Number(symbolicGroupDelivery.to))).toBe(true);
+    expect(
+      createOpenClawCrablineAgentDelivery({
+        manifest,
+        target: "thread:alice/42",
+      }).to,
+    ).toBe(`${symbolicGroupDelivery.to}:topic:42`);
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:42424242" }).to).toBe(
       "42424242",
     );
@@ -565,6 +574,21 @@ describe("OpenClaw local provider bridge", () => {
         id: symbolicDelivery.to,
         kind: "direct",
       },
+    });
+
+    expect(
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
+          conversation: { id: "alice", kind: "group" },
+          senderId: "alice",
+          text: "topic message",
+          threadId: "42",
+        },
+      }).providerBody,
+    ).toMatchObject({
+      chatId: expect.stringMatching(/^-100\d+$/u),
+      messageThreadId: 42,
     });
 
     const paddedText = "  hello from qa\n";

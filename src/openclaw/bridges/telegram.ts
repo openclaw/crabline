@@ -10,8 +10,10 @@ import {
   readString,
 } from "../shared.js";
 
-const TELEGRAM_SYMBOLIC_CHAT_ID_BASE = 1n << 51n;
-const TELEGRAM_SYMBOLIC_CHAT_ID_MASK = TELEGRAM_SYMBOLIC_CHAT_ID_BASE - 1n;
+const TELEGRAM_SYMBOLIC_DIRECT_ID_BASE = 1n << 51n;
+const TELEGRAM_SYMBOLIC_DIRECT_ID_MASK = TELEGRAM_SYMBOLIC_DIRECT_ID_BASE - 1n;
+const TELEGRAM_SYMBOLIC_GROUP_ID_BASE = 1_000_000_000_000n;
+const TELEGRAM_SYMBOLIC_GROUP_ID_RANGE = 10_000_000_000n;
 const TELEGRAM_OUTBOUND_METHOD_RE =
   /\/(sendAnimation|sendDocument|sendMessage|sendPhoto|sendVideo)$/u;
 
@@ -23,11 +25,11 @@ function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
   if (/^-?\d+$/u.test(value)) {
     return value;
   }
-  const hash =
-    createHash("sha256").update(`${kind}:${value}`).digest().readBigUInt64BE() &
-    TELEGRAM_SYMBOLIC_CHAT_ID_MASK;
-  const numericId = TELEGRAM_SYMBOLIC_CHAT_ID_BASE + hash;
-  return String(kind === "group" ? -numericId : numericId);
+  const hash = createHash("sha256").update(`${kind}:${value}`).digest().readBigUInt64BE();
+  if (kind === "group") {
+    return String(-(TELEGRAM_SYMBOLIC_GROUP_ID_BASE + (hash % TELEGRAM_SYMBOLIC_GROUP_ID_RANGE)));
+  }
+  return String(TELEGRAM_SYMBOLIC_DIRECT_ID_BASE + (hash & TELEGRAM_SYMBOLIC_DIRECT_ID_MASK));
 }
 
 function telegramTargetKey(chatId: string, threadId?: number) {
