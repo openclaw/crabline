@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { isCrablineServerChannel, type CrablineServerChannel } from "../servers/index.js";
@@ -14,6 +15,7 @@ type LegacySmokeLockOwner = {
 
 type ProcessIdentifiedSmokeLockOwner = LegacySmokeLockOwner & {
   createdAtMs: number;
+  processIdentity?: string;
   processStartedAtMs: number;
 };
 
@@ -50,7 +52,7 @@ type HeartbeatController = {
 type RemoveLockDirectory = (lockDirectory: string) => Promise<void>;
 type Sleep = (delayMs: number) => Promise<void>;
 type IsProcessAlive = (pid: number) => boolean;
-type GetProcessStartedAtMs = (pid: number) => number | null;
+type GetProcessIdentity = (pid: number) => string | null;
 type StartHeartbeat = (renew: () => Promise<void>, intervalMs: number) => HeartbeatController;
 type BeforeRecoveryClaim = () => Promise<void>;
 type BeforeRecoveryDeleteClaim = () => Promise<void>;
@@ -71,9 +73,10 @@ type DirectoryIdentity = {
 };
 
 type SmokeLockRuntime = {
+  currentProcessIdentity: string | null;
   currentPid: number;
   currentProcessStartedAtMs: number;
-  getProcessStartedAtMs: GetProcessStartedAtMs;
+  getProcessIdentity: GetProcessIdentity;
   isProcessAlive: IsProcessAlive;
   leaseMs: number;
   now: () => number;
@@ -90,7 +93,6 @@ const LOCK_LEASE_MS = 10 * 60 * 1000;
 const RELEASE_ATTEMPTS = 3;
 const RELEASE_RETRY_DELAY_MS = 10;
 const CURRENT_PROCESS_STARTED_AT_MS = Math.trunc(Date.now() - process.uptime() * 1000);
-const PROCESS_START_TOLERANCE_MS = 2_000;
 
 function parseCommitStagePath(contents: string, token: string): string {
   let value: { path?: unknown; token?: unknown };
@@ -280,7 +282,11 @@ function parseLockOwner(contents: string): SmokeLockOwner {
   }
   if (
     !isPositiveSafeInteger(owner.createdAtMs) ||
-    !isPositiveSafeInteger(owner.processStartedAtMs)
+    !isPositiveSafeInteger(owner.processStartedAtMs) ||
+    (owner.processIdentity !== undefined &&
+      (typeof owner.processIdentity !== "string" ||
+        owner.processIdentity.length === 0 ||
+        owner.processIdentity.length > 256))
   ) {
     throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.");
   }
@@ -289,6 +295,7 @@ function parseLockOwner(contents: string): SmokeLockOwner {
       channel: owner.channel,
       createdAtMs: owner.createdAtMs,
       pid: owner.pid,
+      ...(owner.processIdentity ? { processIdentity: owner.processIdentity } : {}),
       processStartedAtMs: owner.processStartedAtMs,
       token: owner.token,
     };
@@ -301,6 +308,7 @@ function parseLockOwner(contents: string): SmokeLockOwner {
     createdAtMs: owner.createdAtMs,
     leaseVersion: owner.leaseVersion,
     pid: owner.pid,
+    ...(owner.processIdentity ? { processIdentity: owner.processIdentity } : {}),
     processStartedAtMs: owner.processStartedAtMs,
     token: owner.token,
   };
@@ -377,58 +385,65 @@ const isProcessAlive: IsProcessAlive = (pid) => {
   }
 };
 
-const getProcessStartedAtMs: GetProcessStartedAtMs = (pid) => {
-  if (pid === process.pid) {
-    return CURRENT_PROCESS_STARTED_AT_MS;
-  }
-  const result =
-    process.platform === "win32"
-      ? spawnSync(
-          "powershell.exe",
-          [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
-          ],
-          { encoding: "utf8", timeout: 1_000, windowsHide: true },
-        )
-      : spawnSync("ps", ["-o", "etime=", "-p", String(pid)], {
-          encoding: "utf8",
-          timeout: 1_000,
-        });
-  if (result.status !== 0) {
+export function processIdentityFromLinuxStat(value: string): string | null {
+  const commandEnd = value.lastIndexOf(") ");
+  if (commandEnd < 0) {
     return null;
   }
-  const startedAtMs =
-    process.platform === "win32"
-      ? Date.parse(result.stdout.trim())
-      : processStartedAtMsFromElapsed(result.stdout, Date.now());
-  return startedAtMs !== null && Number.isFinite(startedAtMs) && startedAtMs > 0
-    ? startedAtMs
-    : null;
+  const fields = value
+    .slice(commandEnd + 2)
+    .trim()
+    .split(/\s+/u);
+  const startTicks = fields[19];
+  if (!startTicks || !/^\d+$/u.test(startTicks)) {
+    return null;
+  }
+  return `linux:${startTicks}`;
+}
+
+const getProcessIdentity: GetProcessIdentity = (pid) => {
+  if (process.platform === "linux") {
+    try {
+      return processIdentityFromLinuxStat(readFileSync(`/proc/${pid}/stat`, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+  if (process.platform !== "win32") {
+    return null;
+  }
+  const result = spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks.ToString()`,
+    ],
+    { encoding: "utf8", timeout: 1_000, windowsHide: true },
+  );
+  const ticks = result.status === 0 ? result.stdout.trim() : "";
+  return /^\d+$/u.test(ticks) ? `windows:${ticks}` : null;
 };
 
-export function processStartedAtMsFromElapsed(value: string, nowMs: number): number | null {
-  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d{2}):(\d{2})$/u.exec(value.trim());
-  if (!match) {
-    return null;
+function hasExactProcessIdentity(owner: SmokeLockOwner): owner is (
+  | ProcessIdentifiedSmokeLockOwner
+  | RenewableSmokeLockOwner
+) & {
+  processIdentity: string;
+} {
+  return hasProcessIdentity(owner) && typeof owner.processIdentity === "string";
+}
+
+function hasProcessIdentityMismatch(owner: SmokeLockOwner, runtime: SmokeLockRuntime): boolean {
+  if (!hasExactProcessIdentity(owner)) {
+    return false;
   }
-  const [, daysText, hoursText, minutesText, secondsText] = match;
-  const days = Number(daysText ?? 0);
-  const hours = Number(hoursText ?? 0);
-  const minutes = Number(minutesText);
-  const seconds = Number(secondsText);
-  if (
-    ![days, hours, minutes, seconds].every(Number.isSafeInteger) ||
-    hours > 23 ||
-    minutes > 59 ||
-    seconds > 59
-  ) {
-    return null;
-  }
-  const elapsedSeconds = ((days * 24 + hours) * 60 + minutes) * 60 + seconds;
-  return Math.trunc(nowMs - elapsedSeconds * 1_000);
+  const actualProcessIdentity =
+    owner.pid === runtime.currentPid
+      ? runtime.currentProcessIdentity
+      : runtime.getProcessIdentity(owner.pid);
+  return actualProcessIdentity !== null && owner.processIdentity !== actualProcessIdentity;
 }
 
 function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): boolean {
@@ -436,23 +451,8 @@ function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): 
   if (!runtime.isProcessAlive(owner.pid)) {
     return false;
   }
-  if (hasProcessIdentity(owner)) {
-    const actualProcessStartedAtMs =
-      owner.pid === runtime.currentPid
-        ? runtime.currentProcessStartedAtMs
-        : runtime.getProcessStartedAtMs(owner.pid);
-    if (
-      actualProcessStartedAtMs !== null &&
-      (owner.pid === runtime.currentPid
-        ? owner.processStartedAtMs !== actualProcessStartedAtMs
-        : Math.abs(owner.processStartedAtMs - actualProcessStartedAtMs) >
-          PROCESS_START_TOLERANCE_MS)
-    ) {
-      return false;
-    }
-    if (!isRenewableOwner(owner) && actualProcessStartedAtMs === null) {
-      return true;
-    }
+  if (hasProcessIdentityMismatch(owner, runtime)) {
+    return false;
   }
   if (!isRenewableOwner(owner)) {
     return true;
@@ -465,10 +465,7 @@ function needsLiveOwnerConfirmation(record: SmokeLockRecord, runtime: SmokeLockR
   return (
     isRenewableOwner(record.owner) &&
     runtime.isProcessAlive(record.owner.pid) &&
-    !(
-      record.owner.pid === runtime.currentPid &&
-      record.owner.processStartedAtMs !== runtime.currentProcessStartedAtMs
-    ) &&
+    !hasProcessIdentityMismatch(record.owner, runtime) &&
     !isLockOwnerActive(record, runtime)
   );
 }
@@ -882,11 +879,12 @@ export async function acquireOpenClawCrablineSmokeRunLock(
   dependencies: {
     afterLockCandidateInstall?: AfterLockDirectoryWrite;
     afterLockOwnerWrite?: AfterLockDirectoryWrite;
-    getProcessStartedAtMs?: GetProcessStartedAtMs;
+    getProcessIdentity?: GetProcessIdentity;
     isProcessAlive?: IsProcessAlive;
     leaseMs?: number;
     now?: () => number;
     pid?: number;
+    processIdentity?: string | null;
     processStartedAtMs?: number;
     platform?: NodeJS.Platform;
     secureWindowsDirectory?: SecureWindowsDirectory;
@@ -904,10 +902,16 @@ export async function acquireOpenClawCrablineSmokeRunLock(
   const outputDir = path.resolve(params.outputDir);
   const lockDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
   const token = randomUUID();
+  const currentPid = dependencies.pid ?? process.pid;
+  const getRuntimeProcessIdentity = dependencies.getProcessIdentity ?? getProcessIdentity;
   const runtime: SmokeLockRuntime = {
-    currentPid: dependencies.pid ?? process.pid,
+    currentPid,
+    currentProcessIdentity:
+      dependencies.processIdentity === undefined
+        ? getRuntimeProcessIdentity(currentPid)
+        : dependencies.processIdentity,
     currentProcessStartedAtMs: dependencies.processStartedAtMs ?? CURRENT_PROCESS_STARTED_AT_MS,
-    getProcessStartedAtMs: dependencies.getProcessStartedAtMs ?? getProcessStartedAtMs,
+    getProcessIdentity: getRuntimeProcessIdentity,
     isProcessAlive: dependencies.isProcessAlive ?? isProcessAlive,
     leaseMs: dependencies.leaseMs ?? LOCK_LEASE_MS,
     now: dependencies.now ?? Date.now,
@@ -916,6 +920,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(
   const createdAtMs = runtime.now();
   if (
     !isPositiveSafeInteger(runtime.currentPid) ||
+    (runtime.currentProcessIdentity !== null &&
+      (runtime.currentProcessIdentity.length === 0 ||
+        runtime.currentProcessIdentity.length > 256)) ||
     !isPositiveSafeInteger(runtime.currentProcessStartedAtMs) ||
     !isPositiveSafeInteger(runtime.leaseMs) ||
     !isPositiveSafeInteger(createdAtMs)
@@ -927,6 +934,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     createdAtMs,
     leaseVersion: 1,
     pid: runtime.currentPid,
+    ...(runtime.currentProcessIdentity ? { processIdentity: runtime.currentProcessIdentity } : {}),
     processStartedAtMs: runtime.currentProcessStartedAtMs,
     token,
   };
