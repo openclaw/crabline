@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Pin privileged release workflow actions to immutable revisions.
 - Serialize WhatsApp Noise frames per session and reject invalid X25519 peer keys.
 - Serialize recorder persistence and reject overlapping OpenClaw smoke artifact runs.
 - Make CLI failures machine-readable, preserve stage-specific failure contracts, validate fixture provider references, redact script commands, and verify production-only tarball installs.
