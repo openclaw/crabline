@@ -109,6 +109,7 @@ export async function startWebhookServer(params: {
   host: string;
   maxBodyBytes?: number;
   methods?: readonly string[] | undefined;
+  onError?: ((error: unknown) => void) | undefined;
   path: string;
   port: number;
 }): Promise<StartedWebhookServer> {
@@ -125,11 +126,19 @@ export async function startWebhookServer(params: {
 
       await writeFetchResponse(response, await params.handle(fetchRequest));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       const status = error instanceof RequestBodyTooLargeError ? 413 : 500;
+      if (status === 500) {
+        try {
+          params.onError?.(error);
+        } catch {
+          // Error reporting must not change the public response.
+        }
+      }
       await writeFetchResponse(
         response,
-        new Response(status === 413 ? "request body too large" : message, { status }),
+        new Response(status === 413 ? "request body too large" : "internal server error", {
+          status,
+        }),
       );
     }
   });

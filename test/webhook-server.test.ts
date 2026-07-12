@@ -93,11 +93,13 @@ describe("webhook server", () => {
   });
 
   it("returns 500 when the handler throws", async () => {
+    const observedErrors: unknown[] = [];
     const server = await startWebhookServer({
       async handle() {
-        throw new Error("boom");
+        throw new Error("sensitive internal detail");
       },
       host: "127.0.0.1",
+      onError: (error) => observedErrors.push(error),
       path: "/slack/events",
       port: 0,
     });
@@ -106,7 +108,10 @@ describe("webhook server", () => {
     const response = await fetch(server.endpointUrl, { method: "POST" });
 
     expect(response.status).toBe(500);
-    await expect(response.text()).resolves.toContain("boom");
+    await expect(response.text()).resolves.toBe("internal server error");
+    expect(observedErrors).toEqual([
+      expect.objectContaining({ message: "sensitive internal detail" }),
+    ]);
   });
 
   it("returns 413 for oversized request bodies without invoking the handler", async () => {
