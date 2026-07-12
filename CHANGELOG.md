@@ -7,6 +7,7 @@
 - Harden CLI lifecycle cleanup, ready-file publication, run diagnostics, and config validation.
 - Harden script provider subprocess limits and result validation, recorder polling and JSONL parsing, and local webhook startup and IPv6 URLs.
 - Fix provider normalization for loopback pagination and thread codecs, Telegram edited channel posts, Feishu and Matrix thread roots, and complete WhatsApp webhook batches.
+- Harden provider server fidelity with idempotent Matrix send transactions, valid Telegram IPv6 URLs, provider-native malformed JSON errors, signed Slack Events API delivery, and bounded Zalo webhook delivery.
 
 ## 0.1.9 - 2026-07-03
 
