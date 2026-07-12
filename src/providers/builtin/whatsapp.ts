@@ -1,5 +1,6 @@
 import path from "node:path";
 import { CrablineError, ensureErrorMessage } from "../../core/errors.js";
+import { matchesInbound } from "../../core/matcher.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter, type LocalMockWebhookConfig } from "../local-mock.js";
 import {
@@ -104,7 +105,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   override async probe(context: ProviderContext): Promise<ProbeResult> {
-    const server = await this.#ensureWebhookServer(true);
+    const server = await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
     const details = [
       "whatsapp local mock ready",
@@ -125,7 +126,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   override async waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
-    await this.#ensureWebhookServer(true);
+    await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
     return await waitForRecordedInbound({
       filePath: this.#recorderPath,
@@ -142,7 +143,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   override async *watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
-    await this.#ensureWebhookServer(false);
+    await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
     for await (const event of watchRecordedInbound({
       filePath: this.#recorderPath,
@@ -205,7 +206,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     );
   }
 
-  async #ensureWebhookServer(allowExisting: boolean): Promise<StartedWebhookServer> {
+  async #ensureWebhookServer(): Promise<StartedWebhookServer> {
     if (this.#server) {
       return this.#server;
     }
@@ -222,13 +223,6 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       });
       return this.#server;
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (allowExisting && code === "EADDRINUSE") {
-        return {
-          async close() {},
-          endpointUrl: `http://${host}:${port}${webhookPath}`,
-        };
-      }
       throw new CrablineError(
         `whatsapp local mock webhook server failed: ${ensureErrorMessage(error)}`,
         { cause: error, kind: "connectivity" },
@@ -398,6 +392,9 @@ function isAddressInChannel(threadId: string, channelId?: string): boolean {
 
 function matchesWaitCandidate(event: InboundEnvelope, context: WaitContext): boolean {
   const config = context.fixture.inboundMatch;
+  if (config.nonce === "exact") {
+    return matchesInbound(event, config, context.nonce);
+  }
   if (config.author !== "any" && event.author !== config.author) {
     return false;
   }

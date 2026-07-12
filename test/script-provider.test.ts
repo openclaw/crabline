@@ -240,6 +240,46 @@ describe("script provider", () => {
     ).rejects.toThrow(/timed out after 100ms/u);
   });
 
+  it("allows wait commands to report timeout at their documented deadline", async () => {
+    const context = await createContext();
+    const waitScript = path.join(path.dirname(context.manifestPath), "wait-timeout.mjs");
+    await writeText(
+      waitScript,
+      'let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{const input=JSON.parse(raw);setTimeout(()=>process.stdout.write(JSON.stringify({timeout:true})),input.wait.timeoutMs);});',
+    );
+    context.config.script!.commands.waitForInbound = `node ${waitScript}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        nonce: "nonce",
+        since: new Date().toISOString(),
+        timeoutMs: 50,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("rejects inbound messages returned during the wait exit grace", async () => {
+    const context = await createContext();
+    const waitScript = path.join(path.dirname(context.manifestPath), "wait-late-message.mjs");
+    await writeText(
+      waitScript,
+      'let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{const input=JSON.parse(raw);setTimeout(()=>process.stdout.write(JSON.stringify({message:{author:"assistant",id:"late-inbound",sentAt:new Date().toISOString(),text:`ACK ${input.wait.nonce}`,threadId:input.wait.target.id}})),input.wait.timeoutMs+50);});',
+    );
+    context.config.script!.commands.waitForInbound = `node ${waitScript}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        nonce: "nonce",
+        since: new Date().toISOString(),
+        timeoutMs: 50,
+      }),
+    ).rejects.toThrow(/timed out after 50ms/u);
+  });
+
   it("rejects commands that exceed the output limit", async () => {
     const context = await createContext();
     const sendScript = path.join(path.dirname(context.manifestPath), "send-noisy.mjs");
