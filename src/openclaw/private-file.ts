@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
+import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -112,6 +112,34 @@ export async function applyOwnerOnlyWindowsAcl(
   }
 }
 
+type FileIdentity = {
+  device: bigint;
+  inode: bigint;
+};
+
+async function readHandleIdentity(handle: FileHandle): Promise<FileIdentity> {
+  const stats = await handle.stat({ bigint: true });
+  if (stats.ino <= 0n) {
+    throw new Error("The filesystem did not provide a stable private file identity.");
+  }
+  return {
+    device: stats.dev,
+    inode: stats.ino,
+  };
+}
+
+async function assertPathIdentity(filePath: string, expected: FileIdentity): Promise<void> {
+  try {
+    const stats = await fs.stat(filePath, { bigint: true });
+    if (stats.dev === expected.device && stats.ino === expected.inode) {
+      return;
+    }
+  } catch (error) {
+    throw new Error("Private file path identity changed during publication.", { cause: error });
+  }
+  throw new Error("Private file path identity changed during publication.");
+}
+
 export async function publishPrivateFileAtomically(
   filePath: string,
   contents: string,
@@ -125,27 +153,32 @@ export async function publishPrivateFileAtomically(
     `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
   );
   await fs.mkdir(path.dirname(filePath), { recursive: true });
+  let handle: FileHandle | undefined;
   try {
-    await fs.writeFile(temporaryPath, "", {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
+    handle = await fs.open(temporaryPath, "wx+", 0o600);
+    const identity = await readHandleIdentity(handle);
     if ((options.platform ?? process.platform) === "win32") {
       await (options.secureWindowsFile ?? applyOwnerOnlyWindowsAcl)(temporaryPath);
     } else {
-      await fs.chmod(temporaryPath, 0o600);
+      await handle.chmod(0o600);
     }
 
-    const handle = await fs.open(temporaryPath, "r+");
-    try {
-      await handle.writeFile(contents, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+    await assertPathIdentity(temporaryPath, identity);
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+    await assertPathIdentity(temporaryPath, identity);
     await fs.rename(temporaryPath, filePath);
+    try {
+      await assertPathIdentity(filePath, identity);
+    } catch (error) {
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
+      throw error;
+    }
   } finally {
-    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    try {
+      await handle?.close();
+    } finally {
+      await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
   }
 }
