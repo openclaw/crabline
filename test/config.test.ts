@@ -608,7 +608,7 @@ describe("manifest schema", () => {
           feishu: {
             appId: "feishu-app",
             encryptKey: "feishu-encrypt-key",
-            verificationToken: "feishu-verification-token",
+            verificationToken: "sample",
           },
         },
         googlechat: {

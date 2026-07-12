@@ -77,7 +77,7 @@ providers:
   feishu:
     adapter: feishu
     feishu:
-      # verificationToken: verification-token-placeholder
+      # verificationToken: sample
       # encryptKey: encrypt-key-placeholder
       recorder:
         path: ./.crabline/recorders/feishu.jsonl
