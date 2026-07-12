@@ -1,7 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { readBody, RequestBodyTooLargeError } from "../src/servers/http.js";
+import { readBody, RequestBodyTooLargeError, startHttpJsonServer } from "../src/servers/http.js";
 
 type TestRequest = IncomingMessage & PassThrough;
 
@@ -32,5 +32,27 @@ describe("server HTTP body reader", () => {
     const declared = createRequest({ "content-length": "5" });
     await expect(readBody(declared, 4)).rejects.toBeInstanceOf(RequestBodyTooLargeError);
     expectLateErrorHandled(declared);
+  });
+
+  it("does not expose unexpected exception details", async () => {
+    const server = await startHttpJsonServer({
+      async handle() {
+        throw new Error("sensitive shared server detail");
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const response = await fetch(server.baseUrl);
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        error: "internal server error",
+        ok: false,
+      });
+    } finally {
+      await server.close();
+    }
   });
 });
