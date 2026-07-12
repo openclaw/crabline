@@ -658,6 +658,12 @@ describe("OpenClaw local provider bridge", () => {
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:42424242" }).to).toBe(
       "42424242",
     );
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "group:-100123" }).to).toBe(
+      "-100123",
+    );
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "thread:-100123/42" }).to).toBe(
+      "-100123:topic:42",
+    );
 
     const inbound = createOpenClawCrablineInbound({
       manifest,
@@ -716,6 +722,7 @@ describe("OpenClaw local provider bridge", () => {
     expect(normalizedTopicInbound).toMatchObject({
       providerBody: { messageThreadId: 42 },
       providerTargetKey: `${symbolicGroupDelivery.to}:topic:42`,
+      qaTarget: "thread:alice/42",
       threadId: "42",
     });
 
@@ -804,6 +811,49 @@ describe("OpenClaw local provider bridge", () => {
     });
   });
 
+  it("rejects blank and malformed reserved QA targets", () => {
+    const invalidTargets = [
+      "",
+      " ",
+      "dm",
+      "dm:",
+      "dm: ",
+      "dm :alice",
+      "DM:alice",
+      "group",
+      "group:",
+      "channel",
+      "channel:",
+      "thread",
+      "thread:",
+      "thread:alice",
+      "thread:/42",
+      "thread:alice/",
+      "thread:alice/42/extra",
+    ];
+
+    for (const target of invalidTargets) {
+      expect(() => createOpenClawCrablineAgentDelivery({ manifest, target })).toThrow(
+        "OpenClaw Crabline target must be a non-blank native id or a valid",
+      );
+    }
+
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: " dm:alice " }).to).toBe(
+      createOpenClawCrablineAgentDelivery({ manifest, target: "dm:alice" }).to,
+    );
+    expect(
+      createOpenClawCrablineAgentDelivery({ manifest, target: " thread:alice / 42 " }).to,
+    ).toBe(createOpenClawCrablineAgentDelivery({ manifest, target: "thread:alice/42" }).to);
+  });
+
+  it("validates Telegram numeric target signs by declared kind", () => {
+    for (const target of ["dm:0", "dm:-1", "group:0", "group:-0", "group:1", "thread:1/42"]) {
+      expect(() => createOpenClawCrablineAgentDelivery({ manifest, target })).toThrow(
+        "Telegram numeric target sign does not match the declared target kind.",
+      );
+    }
+  });
+
   it("validates explicit Telegram thread target ids", () => {
     const symbolicGroup = createOpenClawCrablineAgentDelivery({
       manifest,
@@ -820,7 +870,6 @@ describe("OpenClaw local provider bridge", () => {
     }
 
     for (const threadId of [
-      "",
       "not-a-number",
       "-1",
       String(Number.MAX_SAFE_INTEGER + 1),
@@ -1374,6 +1423,39 @@ describe("OpenClaw local provider bridge", () => {
       senderName: "OpenClaw QA",
       text: "hello from OpenClaw",
       to: `group:${roomId}`,
+    });
+
+    for (const malformedPath of [
+      "/_matrix/client/v3/rooms/%ZZ/send/m.room.message/txn-1",
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/%ZZ/txn-1`,
+    ]) {
+      expect(
+        createOpenClawCrablineOutboundFromRecorderEvent({
+          manifest: matrixManifest,
+          targetByProviderTarget: new Map(),
+          event: {
+            body: { body: "malformed path", msgtype: "m.text" },
+            method: "PUT",
+            path: malformedPath,
+            type: "api",
+          },
+        }),
+      ).toBeNull();
+    }
+
+    const threadedInbound = createOpenClawCrablineInbound({
+      manifest: matrixManifest,
+      input: {
+        conversation: { id: ` ${roomId} `, kind: "group" },
+        senderId: "@alice:matrix.test",
+        text: "threaded Matrix message",
+        threadId: " $root:matrix.test ",
+      },
+    });
+    expect(threadedInbound).toMatchObject({
+      providerTargetKey: `${roomId}:thread:$root:matrix.test`,
+      qaTarget: `thread:${roomId}/$root:matrix.test`,
+      threadId: "$root:matrix.test",
     });
 
     const binding = createOpenClawCrablineProviderBinding(matrixManifest);

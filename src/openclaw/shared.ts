@@ -233,35 +233,55 @@ export function readInteger(value: unknown): number | undefined {
 
 export function parseQaTarget(target: string): ParsedQaTarget {
   const trimmed = target.trim();
+  const invalidTarget = () => {
+    throw new Error(
+      "OpenClaw Crabline target must be a non-blank native id or a valid dm:<id>, group:<id>, channel:<id>, or thread:<id>/<thread-id> target.",
+    );
+  };
+  if (!trimmed) {
+    return invalidTarget();
+  }
   if (trimmed.startsWith("thread:")) {
     const rest = trimmed.slice("thread:".length);
     const slash = rest.indexOf("/");
-    if (slash > 0) {
-      return { kind: "group", id: rest.slice(0, slash), threadId: rest.slice(slash + 1) };
+    if (slash <= 0 || slash !== rest.lastIndexOf("/")) {
+      return invalidTarget();
     }
+    const id = rest.slice(0, slash).trim();
+    const threadId = rest.slice(slash + 1).trim();
+    if (!id || !threadId) {
+      return invalidTarget();
+    }
+    return { kind: "group", id, threadId };
   }
   if (trimmed.startsWith("channel:")) {
-    return { kind: "group", id: trimmed.slice("channel:".length) };
+    const id = trimmed.slice("channel:".length).trim();
+    return id ? { kind: "group", id } : invalidTarget();
   }
   if (trimmed.startsWith("group:")) {
-    return { kind: "group", id: trimmed.slice("group:".length) };
+    const id = trimmed.slice("group:".length).trim();
+    return id ? { kind: "group", id } : invalidTarget();
   }
   if (trimmed.startsWith("dm:")) {
-    return { kind: "direct", id: trimmed.slice("dm:".length) };
+    const id = trimmed.slice("dm:".length).trim();
+    return id ? { kind: "direct", id } : invalidTarget();
+  }
+  if (/^(?:dm|group|channel|thread)(?=\s*:|$)/iu.test(trimmed)) {
+    return invalidTarget();
   }
   return { kind: "direct", id: trimmed };
 }
 
 export function qaTargetForInbound(input: OpenClawCrablineInboundInput) {
+  const conversationId = input.conversation.id.trim();
+  const threadId = input.threadId?.trim();
   const prefix =
     input.conversation.kind === "direct"
       ? "dm"
       : input.conversation.kind === "channel"
         ? "channel"
         : "group";
-  return input.threadId
-    ? `thread:${input.conversation.id}/${input.threadId}`
-    : `${prefix}:${input.conversation.id}`;
+  return threadId ? `thread:${conversationId}/${threadId}` : `${prefix}:${conversationId}`;
 }
 
 export function createAdminInboundRequest(manifest: CrablineServerManifest) {

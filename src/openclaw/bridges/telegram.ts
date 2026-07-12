@@ -22,6 +22,10 @@ function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
     throw new Error("Telegram target is required.");
   }
   if (/^-?\d+$/u.test(value)) {
+    const numericId = BigInt(value);
+    if (numericId === 0n || (kind === "direct" ? numericId < 0n : numericId > 0n)) {
+      throw new Error("Telegram numeric target sign does not match the declared target kind.");
+    }
     return value;
   }
   const hash = createHash("sha256").update(`${kind}:${value}`).digest().readBigUInt64BE();

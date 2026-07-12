@@ -9,7 +9,7 @@
 - Preserve recorder continuity across file replacement, keep fixture waits on one outbound until a match, and require canonical nonce tokens.
 - Enforce provider capability and adapter-config contracts, share native target normalization across lazy adapters, and make WhatsApp cleanup terminal.
 - Serialize WhatsApp Noise frames per session and reject invalid X25519 peer keys.
-- Serialize recorder persistence, lock OpenClaw smoke artifacts across processes, and publish private manifests atomically.
+- Serialize recorder persistence, secure OpenClaw smoke artifacts across processes, and enforce strict QA target and recorder normalization.
 - Make CLI failures machine-readable, preserve stage-specific failure contracts, validate fixture provider references, redact script commands, and verify production-only tarball installs.
 - Normalize provider bridge thread IDs and round-trip canonical Telegram topic targets.
 - Drain authentication-rejected provider bodies, bound Zalo parsing, and enforce Telegram media fields.

@@ -127,8 +127,14 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         if (!match) {
           return null;
         }
-        const roomId = decodeURIComponent(match[1]!);
-        const eventType = decodeURIComponent(match[2]!);
+        let roomId: string;
+        let eventType: string;
+        try {
+          roomId = decodeURIComponent(match[1]!);
+          eventType = decodeURIComponent(match[2]!);
+        } catch {
+          return null;
+        }
         if (eventType !== "m.room.message") {
           return null;
         }
