@@ -103,7 +103,7 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
-  it("fences an expired owner before cleaning a successor's uncommitted generation", async () => {
+  it("fences an expired owner without touching a successor's uncommitted generation", async () => {
     const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const successorGeneration = "generation-22222222-2222-4222-8222-222222222222";
@@ -339,7 +339,7 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
-  it("recovers abandoned staging and installed-but-uncommitted generations", async () => {
+  it("preserves owner-only crash leftovers while publishing a new generation", async () => {
     const outputDir = await createTempDir();
     const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
     const abandonedGeneration = "generation-22222222-2222-4222-8222-222222222222";
@@ -367,12 +367,10 @@ describe("OpenClaw artifact generation publication", () => {
         createGenerationId: () => "44444444-4444-4444-8444-444444444444",
       });
 
-      await expect(fs.stat(path.join(storePath, abandonedGeneration))).rejects.toMatchObject({
-        code: "ENOENT",
-      });
+      await expect(fs.stat(path.join(storePath, abandonedGeneration))).resolves.toBeDefined();
       await expect(
         fs.stat(path.join(storePath, ".staging-33333333-3333-4333-8333-333333333333")),
-      ).rejects.toMatchObject({ code: "ENOENT" });
+      ).resolves.toBeDefined();
       expect((await readOpenClawCrablineArtifactPointer(outputDir))?.generation).toBe(
         third.generation,
       );
