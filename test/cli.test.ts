@@ -455,15 +455,15 @@ describe("cli", () => {
         await fs.writeFile(readyFile, replacement);
       },
       manifest: {
-        adminToken: "admin",
+        adminToken: "fake",
         baseUrl: "http://127.0.0.1:12345",
-        botToken: "424242:token",
+        botToken: "sample",
         endpoints: {
           adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
           apiRoot: "http://127.0.0.1:12345",
         },
         env: {
-          TELEGRAM_BOT_TOKEN: "424242:token",
+          TELEGRAM_BOT_TOKEN: "sample",
         },
         provider: "telegram",
         recorderPath: path.join(directory, "telegram.jsonl"),
@@ -507,9 +507,9 @@ describe("cli", () => {
           "telegram",
           "--once",
           "--admin-token",
-          "redacted-admin-value",
+          "fake",
           "--bot-token",
-          "redacted-bot-value",
+          "sample",
           "--recorder",
           path.join(directory, "redacted.jsonl"),
         ]),
@@ -523,9 +523,9 @@ describe("cli", () => {
           "--once",
           "--show-secrets",
           "--admin-token",
-          "shown-admin-value",
+          "example",
           "--bot-token",
-          "shown-bot-value",
+          "placeholder",
           "--recorder",
           path.join(directory, "visible.jsonl"),
         ]),
@@ -535,12 +535,12 @@ describe("cli", () => {
     }
 
     const stdout = captured.stdout.join("");
-    expect(stdout).not.toContain("redacted-admin-value");
-    expect(stdout).not.toContain("redacted-bot-value");
+    expect(stdout).not.toContain("adminToken: fake");
+    expect(stdout).not.toContain("botToken: sample");
     expect(stdout).toContain("adminToken: <redacted>");
     expect(stdout).toContain("botToken: <redacted>");
-    expect(stdout).toContain("adminToken: shown-admin-value");
-    expect(stdout).toContain("botToken: shown-bot-value");
+    expect(stdout).toContain("adminToken: example");
+    expect(stdout).toContain("botToken: placeholder");
   });
 
   it("prints a Telegram server runtime manifest", async () => {
