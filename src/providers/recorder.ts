@@ -29,7 +29,30 @@ type IncrementalReadState = {
   pending: Buffer;
 };
 
+export type RecordedInboundCursor = {
+  buffered: RecordedInboundEnvelope[];
+  readState: IncrementalReadState;
+  seen: Set<string>;
+};
+
 const CONTINUITY_BYTES = 4096;
+
+function createIncrementalReadState(): IncrementalReadState {
+  return {
+    continuity: Buffer.alloc(0),
+    identity: undefined,
+    offset: 0,
+    pending: Buffer.alloc(0),
+  };
+}
+
+export function createRecordedInboundCursor(): RecordedInboundCursor {
+  return {
+    buffered: [],
+    readState: createIncrementalReadState(),
+    seen: new Set(),
+  };
+}
 
 function resetIncrementalReadState(state: IncrementalReadState): void {
   state.continuity = Buffer.alloc(0);
@@ -193,6 +216,7 @@ export async function readRecordedInbound(filePath: string): Promise<RecordedInb
 }
 
 export async function waitForRecordedInbound(params: {
+  cursor?: RecordedInboundCursor | undefined;
   filePath: string;
   matches: (event: RecordedInboundEnvelope) => boolean;
   pollMs?: number;
@@ -200,28 +224,26 @@ export async function waitForRecordedInbound(params: {
   timeoutMs: number;
 }): Promise<RecordedInboundEnvelope | null> {
   const deadline = Date.now() + params.timeoutMs;
-  const state: IncrementalReadState = {
-    continuity: Buffer.alloc(0),
-    identity: undefined,
-    offset: 0,
-    pending: Buffer.alloc(0),
-  };
-  const seen = new Set<string>();
+  const cursor = params.cursor ?? createRecordedInboundCursor();
 
   while (Date.now() <= deadline) {
-    const events = await readRecordedInboundAppend(params.filePath, state);
-    for (const event of events) {
+    const events =
+      cursor.buffered.length > 0
+        ? cursor.buffered.splice(0)
+        : await readRecordedInboundAppend(params.filePath, cursor.readState);
+    for (const [index, event] of events.entries()) {
       const key = toRecordKey(event);
-      if (seen.has(key)) {
+      if (cursor.seen.has(key)) {
         continue;
       }
-      seen.add(key);
+      cursor.seen.add(key);
 
       if (params.since && new Date(event.sentAt).getTime() < new Date(params.since).getTime()) {
         continue;
       }
 
       if (params.matches(event)) {
+        cursor.buffered.push(...events.slice(index + 1));
         return event;
       }
     }
@@ -242,12 +264,7 @@ export async function* watchRecordedInbound(params: {
   pollMs?: number;
   since?: string | undefined;
 }): AsyncIterable<RecordedInboundEnvelope> {
-  const state: IncrementalReadState = {
-    continuity: Buffer.alloc(0),
-    identity: undefined,
-    offset: 0,
-    pending: Buffer.alloc(0),
-  };
+  const state = createIncrementalReadState();
   const seen = new Set<string>();
 
   while (true) {
