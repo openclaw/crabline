@@ -57,7 +57,7 @@ describe("Mattermost local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startMattermostServer({
-      botToken: "bot-secret",
+      botToken: "fake",
       recorderPath: path.join(directory, "mattermost-bodies.jsonl"),
     });
     servers.push(server);
@@ -66,7 +66,7 @@ describe("Mattermost local provider server", () => {
     for (const scalarBody of ["null", '"scalar"', "42", "true", "[]"]) {
       const invalid = await fetch(postsUrl, {
         body: scalarBody,
-        headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+        headers: { authorization: "Bearer fake", "content-type": "application/json" },
         method: "POST",
       });
       expect(invalid.status).toBe(400);
@@ -78,7 +78,7 @@ describe("Mattermost local provider server", () => {
 
     const malformed = await fetch(postsUrl, {
       body: "{",
-      headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+      headers: { authorization: "Bearer fake", "content-type": "application/json" },
       method: "POST",
     });
     expect(malformed.status).toBe(400);
@@ -90,7 +90,7 @@ describe("Mattermost local provider server", () => {
     const oversized = await requestHttp({
       body: Buffer.alloc(1024 * 1024 + 1, 0x20),
       headers: {
-        authorization: "Bearer bot-secret",
+        authorization: "Bearer fake",
         "content-length": String(1024 * 1024 + 1),
         "content-type": "application/json",
       },
@@ -109,8 +109,8 @@ describe("Mattermost local provider server", () => {
     directories.push(directory);
     const recorderPath = path.join(directory, "mattermost.jsonl");
     const server = await startMattermostServer({
-      adminToken: "admin-secret",
-      botToken: "bot-secret",
+      adminToken: "test-auth-token",
+      botToken: "fake",
       recorderPath,
     });
     servers.push(server);
@@ -119,7 +119,7 @@ describe("Mattermost local provider server", () => {
     expect(unauthorized.status).toBe(401);
 
     const me = await fetch(`${server.manifest.endpoints.apiRoot}/users/me`, {
-      headers: { authorization: "Bearer bot-secret" },
+      headers: { authorization: "Bearer fake" },
     });
     await expect(me.json()).resolves.toMatchObject({
       id: server.manifest.botUserId,
@@ -132,7 +132,7 @@ describe("Mattermost local provider server", () => {
     socket.send(
       JSON.stringify({
         action: "authentication_challenge",
-        data: { token: "bot-secret" },
+        data: { token: "fake" },
         seq: 1,
       }),
     );
@@ -180,7 +180,7 @@ describe("Mattermost local provider server", () => {
       }),
       headers: {
         "content-type": "application/json",
-        "x-crabline-admin-token": "admin-secret",
+        "x-crabline-admin-token": "test-auth-token",
       },
       method: "POST",
     });
@@ -203,7 +203,7 @@ describe("Mattermost local provider server", () => {
         channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
         message: "assistant nonce-1",
       }),
-      headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+      headers: { authorization: "Bearer fake", "content-type": "application/json" },
       method: "POST",
     });
     expect(send.status).toBe(201);
@@ -221,7 +221,7 @@ describe("Mattermost local provider server", () => {
 
     const direct = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
       body: JSON.stringify([server.manifest.botUserId, "bbbbbbbbbbbbbbbbbbbbbbbbbb"]),
-      headers: { authorization: "bearer bot-secret", "content-type": "application/json" },
+      headers: { authorization: "bearer fake", "content-type": "application/json" },
       method: "POST",
     });
     expect(direct.status).toBe(201);
@@ -232,7 +232,7 @@ describe("Mattermost local provider server", () => {
     const editedEvent = nextMessage(socket);
     const edited = await fetch(`${server.manifest.endpoints.apiRoot}/posts/${postId}`, {
       body: JSON.stringify({ message: "assistant edited" }),
-      headers: { authorization: "Bearer bot-secret", "content-type": "application/json" },
+      headers: { authorization: "Bearer fake", "content-type": "application/json" },
       method: "PUT",
     });
     expect(edited.status).toBe(200);
@@ -240,7 +240,7 @@ describe("Mattermost local provider server", () => {
 
     const deletedEvent = nextMessage(socket);
     const deleted = await fetch(`${server.manifest.endpoints.apiRoot}/posts/${postId}`, {
-      headers: { authorization: "Bearer bot-secret" },
+      headers: { authorization: "Bearer fake" },
       method: "DELETE",
     });
     expect(deleted.status).toBe(204);
@@ -355,7 +355,7 @@ describe("Mattermost local provider server", () => {
   it("drains request bodies rejected by REST and admin authentication", async () => {
     const server = await startMattermostServer({
       adminToken: "admin",
-      botToken: "bot-secret",
+      botToken: "fake",
     });
     servers.push(server);
 
@@ -380,7 +380,7 @@ describe("Mattermost local provider server", () => {
 
         const accepted = await requestHttp({
           agent,
-          headers: { authorization: "Bearer bot-secret" },
+          headers: { authorization: "Bearer fake" },
           method: "GET",
           url: `${server.manifest.endpoints.apiRoot}/users/me`,
         });

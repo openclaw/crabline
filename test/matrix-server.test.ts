@@ -23,8 +23,8 @@ describe("Matrix local provider server", () => {
     directories.push(directory);
     const recorderPath = path.join(directory, "matrix.jsonl");
     const server = await startMatrixServer({
-      accessToken: "matrix-token",
-      adminToken: "admin-secret",
+      accessToken: "test-token-placeholder",
+      adminToken: "test-auth-token",
       recorderPath,
       roomId: "!qa:matrix.test",
     });
@@ -41,7 +41,7 @@ describe("Matrix local provider server", () => {
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!qa:matrix.test")}/send/m.room.message/invalid-json`,
       {
         body: "{",
-        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
         method: "PUT",
       },
     );
@@ -52,7 +52,7 @@ describe("Matrix local provider server", () => {
     });
 
     const whoami = await fetch(`${server.manifest.endpoints.clientApiRoot}/account/whoami`, {
-      headers: auth("matrix-token"),
+      headers: auth("test-token-placeholder"),
     });
     await expect(whoami.json()).resolves.toMatchObject({
       device_id: "CRABLINE",
@@ -63,14 +63,14 @@ describe("Matrix local provider server", () => {
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!qa:matrix.test")}/send/m.room.message/txn-1`,
       {
         body: JSON.stringify({ body: "hello Matrix", msgtype: "m.text" }),
-        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
         method: "PUT",
       },
     );
     await expect(sent.json()).resolves.toMatchObject({ event_id: expect.stringMatching(/^\$/u) });
 
     const sync = await fetch(`${server.manifest.endpoints.syncUrl}?timeout=0`, {
-      headers: auth("matrix-token"),
+      headers: auth("test-token-placeholder"),
     });
     const syncBody = (await sync.json()) as {
       rooms: { join: Record<string, { timeline: { events: unknown[] } }> };
@@ -179,7 +179,7 @@ describe("Matrix local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startMatrixServer({
-      accessToken: "matrix-token",
+      accessToken: "test-token-placeholder",
       recorderPath: path.join(directory, "matrix-filter-owner.jsonl"),
     });
     servers.push(server);
@@ -188,7 +188,7 @@ describe("Matrix local provider server", () => {
       `${server.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent(server.manifest.botUserId)}/filter`,
       {
         body: JSON.stringify(filter),
-        headers: { ...auth("matrix-token"), "content-type": "application/json" },
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
         method: "POST",
       },
     );
@@ -196,13 +196,13 @@ describe("Matrix local provider server", () => {
 
     const owned = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent(server.manifest.botUserId)}/filter/${createdBody.filter_id}`,
-      { headers: auth("matrix-token") },
+      { headers: auth("test-token-placeholder") },
     );
     await expect(owned.json()).resolves.toEqual(filter);
 
     const forged = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent("@other:matrix.test")}/filter/${createdBody.filter_id}`,
-      { headers: auth("matrix-token") },
+      { headers: auth("test-token-placeholder") },
     );
     expect(forged.status).toBe(403);
     await expect(forged.json()).resolves.toEqual({
@@ -248,7 +248,7 @@ describe("Matrix local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startMatrixServer({
-      accessToken: "matrix-token",
+      accessToken: "test-token-placeholder",
       onEvent() {
         throw new Error("sensitive Matrix observer detail");
       },
@@ -257,7 +257,7 @@ describe("Matrix local provider server", () => {
     servers.push(server);
 
     const response = await fetch(`${server.manifest.endpoints.clientApiRoot}/account/whoami`, {
-      headers: auth("matrix-token"),
+      headers: auth("test-token-placeholder"),
     });
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toEqual({
@@ -270,8 +270,8 @@ describe("Matrix local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startMatrixServer({
-      accessToken: "matrix-token",
-      adminToken: "admin-secret",
+      accessToken: "test-token-placeholder",
+      adminToken: "test-auth-token",
       recorderPath: path.join(directory, "matrix-sdk.jsonl"),
       roomId: "!qa:matrix.test",
     });
@@ -316,7 +316,7 @@ describe("Matrix local provider server", () => {
         }),
         headers: {
           "content-type": "application/json",
-          "x-crabline-admin-token": "admin-secret",
+          "x-crabline-admin-token": "test-auth-token",
         },
         method: "POST",
       });
@@ -364,7 +364,7 @@ describe("Matrix local provider server", () => {
       expect(secondRetry.event_id).toBe(firstRetry.event_id);
 
       const retrySync = await fetch(`${server.manifest.endpoints.syncUrl}?timeout=0`, {
-        headers: auth("matrix-token"),
+        headers: auth("test-token-placeholder"),
       });
       const retrySyncBody = (await retrySync.json()) as {
         rooms: {
@@ -443,8 +443,8 @@ describe("Matrix local provider server", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startMatrixServer({
-      accessToken: "matrix-token",
-      adminToken: "admin-secret",
+      accessToken: "test-token-placeholder",
+      adminToken: "test-auth-token",
       recorderPath: path.join(directory, "matrix-direct.jsonl"),
     });
     servers.push(server);
@@ -459,7 +459,7 @@ describe("Matrix local provider server", () => {
       }),
       headers: {
         "content-type": "application/json",
-        "x-crabline-admin-token": "admin-secret",
+        "x-crabline-admin-token": "test-auth-token",
       },
       method: "POST",
     });
@@ -467,7 +467,7 @@ describe("Matrix local provider server", () => {
 
     const members = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent(roomId)}/joined_members`,
-      { headers: auth("matrix-token") },
+      { headers: auth("test-token-placeholder") },
     );
     await expect(members.json()).resolves.toEqual({
       joined: {
@@ -477,7 +477,7 @@ describe("Matrix local provider server", () => {
     });
     const botMembership = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent(roomId)}/state/m.room.member/${encodeURIComponent(server.manifest.botUserId)}`,
-      { headers: auth("matrix-token") },
+      { headers: auth("test-token-placeholder") },
     );
     await expect(botMembership.json()).resolves.toMatchObject({
       displayname: "OpenClaw QA",
