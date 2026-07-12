@@ -344,6 +344,55 @@ describe("recorder", () => {
     });
   });
 
+  it("preserves the offset when atomic replacement retains recorder history", async () => {
+    const filePath = await createRecorderPath();
+    const now = new Date().toISOString();
+    const history = Array.from(
+      { length: 4097 },
+      (_, index) =>
+        `${JSON.stringify({
+          author: "assistant",
+          id: `history-${index}`,
+          provider: "slack",
+          recordedAt: now,
+          sentAt: now,
+          text: "history",
+          threadId: "slack:C123",
+        })}\n`,
+    ).join("");
+    await writeFile(filePath, history, "utf8");
+
+    const iterator = watchRecordedInbound({
+      filePath,
+      matches: (event) => event.id === "history-4096" || event.id === "after-history-replacement",
+      pollMs: 10,
+    })[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { id: "history-4096" },
+    });
+
+    const replacementPath = `${filePath}.replacement`;
+    await writeFile(
+      replacementPath,
+      `${history}${JSON.stringify({
+        author: "assistant",
+        id: "after-history-replacement",
+        provider: "slack",
+        recordedAt: now,
+        sentAt: now,
+        text: "new tail",
+        threadId: "slack:C123",
+      })}\n`,
+      "utf8",
+    );
+    await rename(replacementPath, filePath);
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { id: "after-history-replacement" },
+    });
+    await iterator.return?.();
+  });
+
   it("resets partial state when a recorder is truncated and regrown past the offset", async () => {
     const filePath = await createRecorderPath();
     const now = new Date().toISOString();
