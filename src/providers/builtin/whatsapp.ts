@@ -68,10 +68,10 @@ export function resolveWhatsAppAdapterConfig(
 }
 
 export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
-  readonly #appSecret: string;
+  readonly #challengeValue: string;
   readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
-  readonly #verifyToken: string;
+  readonly #signingKey: string;
   readonly #webhook: LocalMockWebhookConfig | undefined;
   #cleanedUp = false;
   #cleanupBegun = false;
@@ -100,13 +100,13 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
         webhook: config.whatsapp?.webhook,
       },
     });
-    this.#appSecret = resolvedConfig.appSecret;
+    this.#signingKey = resolvedConfig.appSecret;
     this.#publicUrl = config.whatsapp?.webhook.publicUrl;
     this.#recorderPath = config.whatsapp?.recorder.path
       ? path.resolve(config.whatsapp.recorder.path)
       : path.resolve(".crabline", "recorders", `${id}.jsonl`);
     this.#webhook = config.whatsapp?.webhook;
-    this.#verifyToken = resolvedConfig.verifyToken;
+    this.#challengeValue = resolvedConfig.verifyToken;
   }
 
   override async probe(context: ProviderContext): Promise<ProbeResult> {
@@ -213,9 +213,9 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     if (request.method === "GET") {
       const url = new URL(request.url);
       const mode = url.searchParams.get("hub.mode");
-      const token = url.searchParams.get("hub.verify_token");
+      const providedValue = url.searchParams.get("hub.verify_token");
       const challenge = url.searchParams.get("hub.challenge");
-      if (mode === "subscribe" && token === this.#verifyToken && challenge !== null) {
+      if (mode === "subscribe" && providedValue === this.#challengeValue && challenge !== null) {
         return new Response(challenge, {
           headers: { "content-type": "text/plain; charset=utf-8" },
           status: 200,
@@ -229,7 +229,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       !hasValidWhatsAppSignature(
         rawBody,
         request.headers.get("x-hub-signature-256"),
-        this.#appSecret,
+        this.#signingKey,
       )
     ) {
       return new Response("invalid webhook signature", { status: 401 });
@@ -496,7 +496,7 @@ function createMessageId(): string {
 function hasValidWhatsAppSignature(
   rawBody: string,
   signatureHeader: string | null,
-  appSecret: string,
+  signingKey: string,
 ): boolean {
   if (!signatureHeader?.startsWith("sha256=")) {
     return false;
@@ -505,7 +505,7 @@ function hasValidWhatsAppSignature(
   if (!/^[a-f0-9]{64}$/iu.test(signature)) {
     return false;
   }
-  const expected = createHmac("sha256", appSecret).update(rawBody).digest();
+  const expected = createHmac("sha256", signingKey).update(rawBody).digest();
   const actual = Buffer.from(signature, "hex");
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
