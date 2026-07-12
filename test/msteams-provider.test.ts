@@ -1,18 +1,21 @@
 import { MsTeamsProviderAdapter } from "../src/providers/builtin/msteams.js";
 import { runLocalMockProviderContract } from "./local-mock-provider-helpers.js";
 
+const conversationId = "a:opaque-conversation-id";
+
 runLocalMockProviderContract({
   Adapter: MsTeamsProviderAdapter,
   endpointPath: "/msteams/webhook",
-  expectedChannelId: "19:meeting_abc123@thread.v2",
+  expectedChannelId: conversationId,
+  invalidTargets: [{ id: "", metadata: {} }],
   platform: "msteams",
-  target: { id: "19:meeting_abc123@thread.v2", metadata: {} },
+  target: { id: conversationId, metadata: {} },
   webhookExpected: { author: "user", id: "teams-activity-1", text: "reply nonce-2" },
   webhookPayload: {
-    conversation: { id: "19:meeting_abc123@thread.v2" },
+    conversation: { id: conversationId },
     from: { role: "user" },
     id: "teams-activity-1",
     text: "reply nonce-2",
   },
-  webhookThreadId: "19:meeting_abc123@thread.v2",
+  webhookThreadId: conversationId,
 });
