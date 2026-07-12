@@ -206,7 +206,7 @@ describe("Matrix local provider server", () => {
         };
       };
       const retryEvents = retrySyncBody.rooms.join[dynamicRoomId]?.timeline.events.filter(
-        (event) => event.event_id === firstRetry.event_id,
+        (timelineEvent) => timelineEvent.event_id === firstRetry.event_id,
       );
       expect(retryEvents).toHaveLength(1);
       expect(retryEvents?.[0]?.content).toMatchObject({ body: "idempotent send" });
