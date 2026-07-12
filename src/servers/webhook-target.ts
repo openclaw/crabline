@@ -122,9 +122,14 @@ function createAllocatedGlobalIpv6Ranges(): BlockList {
     ["2001:b000::", 20],
     ["2003::", 18],
     ["2400::", 12],
+    ["2410::", 12],
     ["2600::", 12],
+    ["2610::", 23],
+    ["2620::", 23],
+    ["2630::", 12],
     ["2800::", 12],
     ["2a00::", 12],
+    ["2a10::", 12],
     ["2c00::", 12],
   ] as const) {
     blockList.addSubnet(address, prefix, "ipv6");
