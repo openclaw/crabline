@@ -86,6 +86,7 @@ function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {
     ? {
         ...normalizedRecord,
         raw,
+        threadId: `${canonicalTopic.chatId}:${canonicalTopic.topicId}`,
         message: {
           ...(isRecord(normalizedRecord.message) ? normalizedRecord.message : {}),
           threadId: `${canonicalTopic.chatId}:${canonicalTopic.topicId}`,
@@ -149,11 +150,22 @@ export function normalizeTelegramWebhookPayload(payload: unknown) {
 
 export class TelegramProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string) {
+    const resolvedConfig = resolveTelegramAdapterConfig(config);
     super({
       codec: getBuiltinTargetCodec("telegram"),
       config,
       id,
       options: {
+        ...(resolvedConfig.secretToken
+          ? {
+              authenticateWebhookRequest(request: Request) {
+                return request.headers.get("x-telegram-bot-api-secret-token") ===
+                  resolvedConfig.secretToken
+                  ? undefined
+                  : new Response("unauthorized", { status: 401 });
+              },
+            }
+          : {}),
         defaultWebhook: {
           host: "127.0.0.1",
           path: "/telegram/webhook",

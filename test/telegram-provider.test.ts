@@ -17,7 +17,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
-async function createTelegramConfig(port: number): Promise<ProviderConfig> {
+async function createTelegramConfig(port: number, secretToken?: string): Promise<ProviderConfig> {
   const directory = await createTempDir();
   directories.push(directory);
 
@@ -30,6 +30,7 @@ async function createTelegramConfig(port: number): Promise<ProviderConfig> {
     telegram: {
       mode: "webhook",
       recorder: { path: path.join(directory, "telegram.jsonl") },
+      ...(secretToken ? { secretToken } : {}),
       webhook: {
         host: "127.0.0.1",
         path: "/telegram/webhook",
@@ -189,6 +190,7 @@ describe("telegram provider", () => {
     };
     expect(normalizeTelegramWebhookPayload(nested)).toMatchObject({
       raw: nested,
+      threadId: "-100123:42",
       message: {
         id: "generic-2",
         text: "nested topic reply",
@@ -287,6 +289,36 @@ describe("telegram provider", () => {
       id: "1",
       text: "ACK nonce-2",
     });
+  });
+
+  it("authenticates webhook requests before parsing", async () => {
+    const config = await createTelegramConfig(0, "telegram-webhook-secret");
+    const provider = new TelegramProviderAdapter("telegram", config, "crabline");
+    providers.push(provider);
+
+    const probe = await provider.probe(createContext(config));
+    const endpoint = probe.details.find((detail) => detail.startsWith("webhook endpoint "));
+    expect(endpoint).toBeDefined();
+    const url = endpoint!.replace("webhook endpoint ", "");
+
+    const rejected = await fetch(url, {
+      body: "{malformed",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(rejected.status).toBe(401);
+
+    const accepted = await fetch(url, {
+      body: JSON.stringify({
+        message: { chat: { id: 123456789 }, message_id: 3, text: "authenticated" },
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "telegram-webhook-secret",
+      },
+      method: "POST",
+    });
+    expect(accepted.status).toBe(200);
   });
 
   it("returns channel-like webhook errors for malformed inbound events", async () => {

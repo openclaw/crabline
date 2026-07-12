@@ -31,6 +31,10 @@ export type LocalMockWebhookConfig = {
 };
 
 export type LocalMockAdapterOptions = {
+  authenticateWebhookRequest?: (
+    request: Request,
+    rawBody: string,
+  ) => Promise<Response | undefined> | Response | undefined;
   defaultWebhook: Required<Pick<LocalMockWebhookConfig, "host" | "path" | "port">>;
   endpointLabel: string;
   matchesThread?: (
@@ -44,6 +48,8 @@ export type LocalMockAdapterOptions = {
   recorderPath?: string | undefined;
   webhook?: LocalMockWebhookConfig | undefined;
 };
+
+const MAX_WAIT_CURSORS = 64;
 
 export type LocalMockTargetCodec = {
   normalize(target: ProviderContext["fixture"]["target"]): NormalizedTarget;
@@ -211,8 +217,18 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     const expectedAuthor = context.fixture.inboundMatch.author;
     const channelId = context.threadId ?? target.threadId ?? target.channelId;
     const cursorKey = JSON.stringify([context.nonce, context.since, channelId]);
-    const cursor = this.#waitCursors.get(cursorKey) ?? createRecordedInboundCursor();
+    const existingCursor = this.#waitCursors.get(cursorKey);
+    if (existingCursor) {
+      this.#waitCursors.delete(cursorKey);
+    }
+    const cursor = existingCursor ?? createRecordedInboundCursor();
     this.#waitCursors.set(cursorKey, cursor);
+    while (this.#waitCursors.size > MAX_WAIT_CURSORS) {
+      const oldestKey = this.#waitCursors.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.#waitCursors.delete(oldestKey);
+      }
+    }
 
     try {
       const event = await waitForRecordedInbound({
@@ -283,7 +299,15 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     }
     let payload: MockWebhookPayload;
     try {
-      const rawPayload = await request.json();
+      const rawBody = await request.text();
+      const authenticationFailure = await this.#options.authenticateWebhookRequest?.(
+        request,
+        rawBody,
+      );
+      if (authenticationFailure) {
+        return authenticationFailure;
+      }
+      const rawPayload = JSON.parse(rawBody) as unknown;
       payload = normalizeWebhookPayload(
         this.#options.normalizeWebhookPayload
           ? this.#options.normalizeWebhookPayload(rawPayload)

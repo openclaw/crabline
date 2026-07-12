@@ -25,7 +25,7 @@ function toRecordKey(event: InboundEnvelope): string {
   return JSON.stringify([event.provider, event.threadId, event.id]);
 }
 
-const MAX_WATCH_SEEN_KEYS = 4096;
+const MAX_SEEN_KEYS = 4096;
 const pendingAppends = new Map<string, Promise<void>>();
 
 type IncrementalReadState = {
@@ -63,6 +63,17 @@ export function createRecordedInboundCursor(): RecordedInboundCursor {
     readState: createIncrementalReadState(),
     seen: new Set(),
   };
+}
+
+function rememberSeenKey(seen: Set<string>, key: string): void {
+  seen.add(key);
+  if (seen.size <= MAX_SEEN_KEYS) {
+    return;
+  }
+  const oldest = seen.values().next().value;
+  if (oldest !== undefined) {
+    seen.delete(oldest);
+  }
 }
 
 function resetIncrementalReadState(state: IncrementalReadState): void {
@@ -250,7 +261,7 @@ export async function waitForRecordedInbound(params: {
       if (cursor.seen.has(key)) {
         continue;
       }
-      cursor.seen.add(key);
+      rememberSeenKey(cursor.seen, key);
 
       if (params.since && new Date(event.sentAt).getTime() < new Date(params.since).getTime()) {
         continue;
@@ -295,13 +306,7 @@ export async function* watchRecordedInbound(params: {
       if (seen.has(key)) {
         continue;
       }
-      seen.add(key);
-      if (seen.size > MAX_WATCH_SEEN_KEYS) {
-        const oldest = seen.values().next().value;
-        if (oldest !== undefined) {
-          seen.delete(oldest);
-        }
-      }
+      rememberSeenKey(seen, key);
 
       if (params.since && new Date(event.sentAt).getTime() < new Date(params.since).getTime()) {
         continue;

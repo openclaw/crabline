@@ -162,6 +162,41 @@ describe("recorder", () => {
     ).resolves.toEqual(second);
   });
 
+  it("bounds remembered wait cursor records", async () => {
+    const filePath = await createRecorderPath();
+    const cursor = createRecordedInboundCursor();
+    const now = new Date().toISOString();
+    const eventCount = 4100;
+    await writeFile(
+      filePath,
+      Array.from(
+        { length: eventCount },
+        (_, index) =>
+          `${JSON.stringify({
+            author: "assistant",
+            id: `bounded-${index}`,
+            provider: "slack",
+            recordedAt: now,
+            sentAt: now,
+            text: "bounded",
+            threadId: "slack:C123",
+          })}\n`,
+      ).join(""),
+      "utf8",
+    );
+
+    await expect(
+      waitForRecordedInbound({
+        cursor,
+        filePath,
+        matches: (event) => event.id === `bounded-${eventCount - 1}`,
+        timeoutMs: 30,
+      }),
+    ).resolves.toMatchObject({ id: `bounded-${eventCount - 1}` });
+    expect(cursor.seen.size).toBe(4096);
+    expect(cursor.seen.has(JSON.stringify(["slack", "slack:C123", "bounded-0"]))).toBe(false);
+  });
+
   it("does not collapse distinct records whose fields contain delimiters", async () => {
     const filePath = await createRecorderPath();
     await appendRecordedInbound(filePath, {

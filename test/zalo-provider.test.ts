@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { normalizeZaloWebhookPayload, ZaloProviderAdapter } from "../src/providers/builtin/zalo.js";
-import { runLocalMockProviderContract } from "./local-mock-provider-helpers.js";
+import {
+  createLocalMockConfig,
+  createProviderContext,
+  runLocalMockProviderContract,
+} from "./local-mock-provider-helpers.js";
 
 describe("Zalo webhook normalizer", () => {
   it("normalizes text messages with the provider message id", () => {
@@ -46,6 +50,43 @@ describe("Zalo webhook normalizer", () => {
       raw: payload,
       threadId: "123456789012",
     });
+  });
+
+  it("requires the configured webhook secret before parsing", async () => {
+    const config = await createLocalMockConfig("zalo", "/zalo/webhook");
+    config.zalo!.webhookSecret = "zalo-webhook-secret";
+    const provider = new ZaloProviderAdapter("zalo", config, "crabline");
+    try {
+      const probe = await provider.probe(
+        createProviderContext("zalo", config, { id: "123456789012", metadata: {} }),
+      );
+      const endpoint = probe.details
+        .find((detail) => detail.includes("http://"))
+        ?.replace(/^.*?(https?:\/\/\S+)$/u, "$1");
+      expect(endpoint).toBeDefined();
+
+      const rejected = await fetch(endpoint!, {
+        body: "{malformed",
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(rejected.status).toBe(401);
+
+      const accepted = await fetch(endpoint!, {
+        body: JSON.stringify({
+          message: { msg_id: "zalo-auth-1", text: "authenticated" },
+          sender: { id: "123456789012" },
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-bot-api-secret-token": "zalo-webhook-secret",
+        },
+        method: "POST",
+      });
+      expect(accepted.status).toBe(200);
+    } finally {
+      await provider.cleanup();
+    }
   });
 });
 

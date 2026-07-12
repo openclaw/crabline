@@ -2,7 +2,7 @@ import type { BuiltinAdapterId, FixtureDefinition, ProviderPlatform } from "../c
 import { CrablineError } from "../core/errors.js";
 import type { LocalMockTargetCodec } from "./local-mock.js";
 import type { NativeIdRule } from "./native-ids.js";
-import { slackTargetKey, SLACK_CHANNEL_ID_RULE, SLACK_TS_RULE } from "./slack-ids.js";
+import { slackTargetKey, SLACK_SEND_TARGET_ID_RULE, SLACK_TS_RULE } from "./slack-ids.js";
 import type { NormalizedTarget } from "./types.js";
 
 export type BuiltinProviderAdapterId = Exclude<BuiltinAdapterId, "script">;
@@ -166,10 +166,10 @@ export function createGenericLocalMockTargetCodec(
   };
 }
 
-function requireSlackChannelId(value: string, label: string): string {
-  if (!SLACK_CHANNEL_ID_RULE.pattern.test(value)) {
+function requireSlackSendTargetId(value: string, label: string): string {
+  if (!SLACK_SEND_TARGET_ID_RULE.pattern.test(value)) {
     throw new CrablineError(
-      `Slack ${label} must be a native Slack conversation id such as C1234567890, G1234567890, or D1234567890.`,
+      `Slack ${label} must be a native Slack conversation or user id such as C1234567890, G1234567890, D1234567890, U1234567890, or W1234567890.`,
       { kind: "config" },
     );
   }
@@ -187,7 +187,7 @@ function requireSlackThreadTs(value: string, label: string): string {
 
 const SLACK_TARGET_CODEC: LocalMockTargetCodec = {
   normalize(target): NormalizedTarget {
-    const channelId = requireSlackChannelId(target.channelId ?? target.id, "channelId");
+    const channelId = requireSlackSendTargetId(target.channelId ?? target.id, "channelId");
     const normalized: NormalizedTarget = {
       channelId,
       id: target.id,
