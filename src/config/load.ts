@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
 import { CrablineError, ensureErrorMessage } from "../core/errors.js";
@@ -14,8 +14,9 @@ export async function resolveConfigPath(explicitPath?: string): Promise<string> 
   for (const candidate of DEFAULT_CONFIG_CANDIDATES) {
     const resolved = path.resolve(candidate);
     try {
-      await access(resolved);
-      return resolved;
+      if ((await stat(resolved)).isFile()) {
+        return resolved;
+      }
     } catch (error) {
       if (
         typeof error === "object" &&

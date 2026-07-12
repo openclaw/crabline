@@ -26,6 +26,34 @@ describe("manifest schema", () => {
     }
   });
 
+  it("rejects duplicate fixture ids", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [
+          {
+            id: "duplicate",
+            mode: "send",
+            provider: "local",
+            target: { id: "first" },
+          },
+          {
+            id: "duplicate",
+            mode: "send",
+            provider: "local",
+            target: { id: "second" },
+          },
+        ],
+        providers: {
+          local: {
+            adapter: "loopback",
+            platform: "loopback",
+          },
+        },
+      }),
+    ).toThrow(/duplicate fixture id: duplicate/u);
+  });
+
   it("parses a valid loopback fixture", () => {
     const manifest = ManifestSchema.parse({
       configVersion: 1,

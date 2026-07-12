@@ -15,6 +15,7 @@
     "crabline": "dist/src/bin/crabline.js"
   },
   "files": [
+    "assets/crabline-banner.svg",
     "dist/src",
     "README.md",
     "docs/channel-setup.md",
@@ -49,6 +50,7 @@
     "check": "pnpm verify"
   },
   "dependencies": {
+    "@types/node": "^26.1.0",
     "commander": "^15.0.0",
     "curve25519-js": "^0.0.4",
     "picocolors": "^1.1.1",
@@ -57,7 +59,6 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^26.1.0",
     "@types/ws": "^8.18.1",
     "@typescript/native": "npm:typescript@^7.0.2",
     "@vitest/coverage-v8": "^4.1.10",

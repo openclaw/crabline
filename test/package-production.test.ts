@@ -30,6 +30,9 @@ describe("production package", () => {
       types?: string;
     };
 
+    expect(pkg.dependencies?.["@types/node"]).toBeDefined();
+    expect(pkg.devDependencies?.["@types/node"]).toBeUndefined();
+
     for (const packageName of DEV_ONLY_RUNTIME_PACKAGES) {
       expect(pkg.dependencies?.[packageName]).toBeUndefined();
       expect(pkg.optionalDependencies?.[packageName]).toBeUndefined();
@@ -52,6 +55,7 @@ describe("production package", () => {
     expect(files).toContain(cliPath);
     expect(files).toContain(mainPath);
     expect(files).toContain(typesPath);
+    expect(files).toContain("assets/crabline-banner.svg");
     expect(files.some((file) => file.startsWith("node_modules/"))).toBe(false);
     expect(files.some((file) => file.startsWith("test/"))).toBe(false);
     expect(files.some((file) => /(^|\/)baileys(\/|$)/u.test(file))).toBe(false);
