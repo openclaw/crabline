@@ -55,8 +55,11 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
   provider: "telegram",
   createAdapter(telegram) {
     return {
-      async probe() {
-        const response = await fetch(`${telegram.endpoints.apiRoot}/bot${telegram.botToken}/getMe`);
+      async probe(signal) {
+        const response = await fetch(
+          `${telegram.endpoints.apiRoot}/bot${telegram.botToken}/getMe`,
+          signal ? { signal } : {},
+        );
         if (!response.ok) {
           throw new Error(`Crabline Telegram getMe probe failed with HTTP ${response.status}.`);
         }

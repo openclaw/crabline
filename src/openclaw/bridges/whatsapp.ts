@@ -24,11 +24,12 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
   createAdapter(whatsapp) {
     const messagesPath = new URL(whatsapp.endpoints.messagesUrl).pathname;
     return {
-      async probe() {
+      async probe(signal) {
         const response = await fetch(whatsapp.endpoints.phoneNumberUrl, {
           headers: {
             authorization: `Bearer ${whatsapp.accessToken}`,
           },
+          ...(signal ? { signal } : {}),
         });
         if (!response.ok) {
           throw new Error(`Crabline WhatsApp probe failed with HTTP ${response.status}.`);

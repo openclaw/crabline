@@ -30,8 +30,10 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
   provider: "signal",
   createAdapter(signal) {
     return {
-      async probe() {
-        const response = await fetch(`${signal.baseUrl}/api/v1/check`);
+      async probe(abortSignal) {
+        const response = await fetch(`${signal.baseUrl}/api/v1/check`, {
+          ...(abortSignal ? { signal: abortSignal } : {}),
+        });
         if (!response.ok) {
           throw new Error(`Crabline Signal check probe failed with HTTP ${response.status}.`);
         }

@@ -79,7 +79,8 @@ function createOpenClawCrablineProviderAdapter(
     const adapter = bridge.createAdapterFromManifest(manifest);
     return {
       ...adapter,
-      probe: () => runOpenClawCrablineProviderProbe(manifest.provider, () => adapter.probe()),
+      probe: () =>
+        runOpenClawCrablineProviderProbe(manifest.provider, (signal) => adapter.probe(signal)),
     };
   }
   throw new Error("Unsupported OpenClaw provider binding.");

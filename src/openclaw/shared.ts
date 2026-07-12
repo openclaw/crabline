@@ -99,7 +99,7 @@ export type StartedOpenClawCrablineAdapter = OpenClawCrablineGatewayBinding & {
     targetByProviderTarget: ReadonlyMap<string, string>;
   }): OpenClawCrablineOutboundMessage | null;
   manifest: CrablineServerManifest;
-  probe(): Promise<unknown>;
+  probe(signal?: AbortSignal): Promise<unknown>;
 };
 
 export type ParsedQaTarget = {
@@ -116,7 +116,7 @@ export type OpenClawCrablineProviderAdapter = {
     event: unknown;
     targetByProviderTarget: ReadonlyMap<string, string>;
   }): OpenClawCrablineOutboundMessage | null;
-  probe(): Promise<unknown>;
+  probe(signal?: AbortSignal): Promise<unknown>;
 };
 
 export type OpenClawCrablineProviderBridge<
@@ -171,7 +171,7 @@ export function createOpenClawCrablineProviderBridge<
 
 export async function runOpenClawCrablineProviderProbe<T>(
   provider: CrablineServerManifest["provider"],
-  probe: () => Promise<T>,
+  probe: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const signal = AbortSignal.timeout(OPENCLAW_CRABLINE_PROVIDER_PROBE_TIMEOUT_MS);
   const timeoutError = (cause: unknown) =>
@@ -189,7 +189,7 @@ export async function runOpenClawCrablineProviderProbe<T>(
     signal.addEventListener("abort", onAbort, { once: true });
   });
   const probeResult = Promise.resolve()
-    .then(probe)
+    .then(() => probe(signal))
     .catch((error: unknown) => {
       if (signal.aborted) {
         throw timeoutError(error);

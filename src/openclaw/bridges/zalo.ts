@@ -20,9 +20,10 @@ export const ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProv
   provider: "zalo",
   createAdapter(zalo) {
     return {
-      async probe() {
+      async probe(signal) {
         const response = await fetch(`${zalo.endpoints.apiRoot}/bot${zalo.botToken}/getMe`, {
           method: "POST",
+          ...(signal ? { signal } : {}),
         });
         if (!response.ok) {
           throw new Error(`Crabline Zalo getMe probe failed with HTTP ${response.status}.`);
