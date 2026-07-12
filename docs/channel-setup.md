@@ -75,6 +75,11 @@ Provider credential fields such as `botToken`, `accessToken`, `baseURL`, or
 `serverUrl` are optional mock metadata. They are not required for local mock
 execution.
 
+The built-in `whatsapp` adapter implements Meta's GET verification challenge
+and requires `X-Hub-Signature-256` on POST requests. Set `whatsapp.appSecret`
+and `whatsapp.verifyToken` (or `WHATSAPP_APP_SECRET` and
+`WHATSAPP_VERIFY_TOKEN`) to override the local mock defaults.
+
 ## Script Bridge Config
 
 Script providers use only the `script:` config block. Their required `platform`

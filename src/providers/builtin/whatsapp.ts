@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import { CrablineError, ensureErrorMessage } from "../../core/errors.js";
 import { matchesInbound } from "../../core/matcher.js";
@@ -67,8 +68,10 @@ export function resolveWhatsAppAdapterConfig(
 }
 
 export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
+  readonly #appSecret: string;
   readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
+  readonly #verifyToken: string;
   readonly #webhook: LocalMockWebhookConfig | undefined;
   #cleanedUp = false;
   #cleanupBegun = false;
@@ -80,6 +83,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   #serverStarting: Promise<StartedWebhookServer> | null = null;
 
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
+    const resolvedConfig = resolveWhatsAppAdapterConfig(config);
     super({
       codec: getBuiltinTargetCodec("whatsapp"),
       config,
@@ -96,11 +100,13 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
         webhook: config.whatsapp?.webhook,
       },
     });
+    this.#appSecret = resolvedConfig.appSecret;
     this.#publicUrl = config.whatsapp?.webhook.publicUrl;
     this.#recorderPath = config.whatsapp?.recorder.path
       ? path.resolve(config.whatsapp.recorder.path)
       : path.resolve(".crabline", "recorders", `${id}.jsonl`);
     this.#webhook = config.whatsapp?.webhook;
+    this.#verifyToken = resolvedConfig.verifyToken;
   }
 
   override async probe(context: ProviderContext): Promise<ProbeResult> {
@@ -204,13 +210,37 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   async #handleWebhook(request: Request): Promise<Response> {
+    if (request.method === "GET") {
+      const url = new URL(request.url);
+      const mode = url.searchParams.get("hub.mode");
+      const token = url.searchParams.get("hub.verify_token");
+      const challenge = url.searchParams.get("hub.challenge");
+      if (mode === "subscribe" && token === this.#verifyToken && challenge !== null) {
+        return new Response(challenge, {
+          headers: { "content-type": "text/plain; charset=utf-8" },
+          status: 200,
+        });
+      }
+      return new Response("forbidden", { status: 403 });
+    }
+
+    const rawBody = await request.text();
+    if (
+      !hasValidWhatsAppSignature(
+        rawBody,
+        request.headers.get("x-hub-signature-256"),
+        this.#appSecret,
+      )
+    ) {
+      return new Response("invalid webhook signature", { status: 401 });
+    }
     if (!request.headers.get("content-type")?.includes("application/json")) {
       return new Response("expected application/json", { status: 415 });
     }
 
     let messages: NormalizedWhatsAppWebhookMessage[];
     try {
-      messages = normalizeWhatsAppWebhookPayload(await request.json());
+      messages = normalizeWhatsAppWebhookPayload(JSON.parse(rawBody));
     } catch (error) {
       return new Response(ensureErrorMessage(error), { status: 400 });
     }
@@ -265,6 +295,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
         server = await startWebhookServer({
           handle: (request) => this.#handleWebhookRequest(request),
           host,
+          methods: ["GET", "POST"],
           path: webhookPath,
           port,
         });
@@ -329,7 +360,6 @@ export function normalizeWhatsAppWebhookPayload(
   }
 
   const normalized: NormalizedWhatsAppWebhookMessage[] = [];
-  let firstMalformedMessageError: unknown;
   if (Array.isArray(payload.entry)) {
     for (const entry of payload.entry) {
       if (!isRecord(entry) || !Array.isArray(entry.changes)) {
@@ -345,27 +375,18 @@ export function normalizeWhatsAppWebhookPayload(
         }
         for (const message of value.messages) {
           if (!isRecord(message)) {
-            continue;
+            throw new CrablineError("WhatsApp webhook messages[] entries must be objects", {
+              kind: "inbound",
+            });
           }
-          try {
-            const normalizedMessage = normalizeWhatsAppMessage(message);
-            if (normalizedMessage) {
-              normalized.push(normalizedMessage);
-            }
-          } catch (error) {
-            firstMalformedMessageError ??= error;
+          const normalizedMessage = normalizeWhatsAppMessage(message);
+          if (normalizedMessage) {
+            normalized.push(normalizedMessage);
           }
         }
       }
     }
-
-    if (normalized.length > 0) {
-      return normalized;
-    }
-    if (firstMalformedMessageError) {
-      throw firstMalformedMessageError;
-    }
-    return [];
+    return normalized;
   }
 
   const fallback = genericMockPayloadWithNativeThread({
@@ -470,6 +491,23 @@ function authorFromPayload(payload: NormalizedWhatsAppWebhookMessage): InboundEn
 
 function createMessageId(): string {
   return `whatsapp-mock-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function hasValidWhatsAppSignature(
+  rawBody: string,
+  signatureHeader: string | null,
+  appSecret: string,
+): boolean {
+  if (!signatureHeader?.startsWith("sha256=")) {
+    return false;
+  }
+  const signature = signatureHeader.slice("sha256=".length);
+  if (!/^[a-f0-9]{64}$/iu.test(signature)) {
+    return false;
+  }
+  const expected = createHmac("sha256", appSecret).update(rawBody).digest();
+  const actual = Buffer.from(signature, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 function isAddressInChannel(threadId: string, channelId?: string): boolean {

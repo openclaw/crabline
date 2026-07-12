@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   normalizeWhatsAppWebhookPayload,
@@ -9,6 +11,10 @@ import {
   createProviderContext,
   runLocalMockProviderContract,
 } from "./local-mock-provider-helpers.js";
+
+function whatsappSignature(body: string, secret = "local-mock-secret"): string {
+  return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+}
 
 describe("WhatsApp webhook normalizer", () => {
   it("normalizes text messages with the provider message id", () => {
@@ -107,7 +113,7 @@ describe("WhatsApp webhook normalizer", () => {
     ]);
   });
 
-  it("preserves all valid messages after malformed and unsupported batch items", async () => {
+  it("rejects a malformed batch without recording valid siblings", async () => {
     const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
     const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
     const context = createProviderContext("whatsapp", config, {
@@ -123,87 +129,112 @@ describe("WhatsApp webhook normalizer", () => {
         .find((detail) => detail.startsWith("webhook endpoint "))
         ?.replace("webhook endpoint ", "");
       expect(endpoint).toBeDefined();
-      const since = new Date(Date.now() - 1000).toISOString();
-
+      const body = JSON.stringify({
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  messages: [
+                    { from: "invalid-id", text: { body: "malformed" }, type: "text" },
+                    { from: "15550000000", image: { id: "image-1" }, type: "image" },
+                    {
+                      from: "15551234567",
+                      id: "wamid.first",
+                      text: { body: `first valid ${nonce}` },
+                      type: "text",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      });
       const response = await fetch(endpoint!, {
-        body: JSON.stringify({
-          entry: [
-            {
-              changes: [
-                {
-                  value: {
-                    messages: [
-                      { from: "invalid-id", text: { body: "malformed" }, type: "text" },
-                      { from: "15550000000", image: { id: "image-1" }, type: "image" },
-                      {
-                        from: "15551234567",
-                        id: "wamid.unrelated",
-                        text: { body: "unrelated valid" },
-                        type: "text",
-                      },
-                      {
-                        from: "15551234567",
-                        id: "wamid.first",
-                        text: { body: `first valid ${nonce}` },
-                        type: "text",
-                      },
-                    ],
-                  },
-                },
-              ],
-            },
-            {
-              changes: [
-                {
-                  value: {
-                    messages: [
-                      { from: "15550000001", text: {}, type: "text" },
-                      {
-                        from: "15557654321",
-                        id: "wamid.second",
-                        text: { body: `second valid ${nonce}` },
-                        type: "text",
-                      },
-                    ],
-                  },
-                },
-              ],
-            },
-          ],
-        }),
-        headers: { "content-type": "application/json" },
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": whatsappSignature(body),
+        },
         method: "POST",
       });
 
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({
-        ids: ["wamid.unrelated", "wamid.first", "wamid.second"],
-        ok: true,
+      expect(response.status).toBe(400);
+      await expect(readFile(config.whatsapp!.recorder.path!, "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
       });
-      await expect(
-        provider.waitForInbound({
-          ...context,
-          nonce,
-          since,
-          threadId: "15551234567",
-          timeoutMs: 500,
-        }),
-      ).resolves.toMatchObject({
-        id: "wamid.first",
-        text: `first valid ${nonce}`,
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
+  it("verifies webhook subscriptions and POST signatures", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    config.whatsapp!.appSecret = "configured-app-secret";
+    config.whatsapp!.verifyToken = "configured-verify-token";
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
+
+    try {
+      const endpoint = (await provider.probe(context)).details
+        .find((detail) => detail.startsWith("webhook endpoint "))
+        ?.replace("webhook endpoint ", "");
+      expect(endpoint).toBeDefined();
+
+      const verified = await fetch(
+        `${endpoint}?hub.mode=subscribe&hub.verify_token=configured-verify-token&hub.challenge=challenge-123`,
+      );
+      expect(verified.status).toBe(200);
+      await expect(verified.text()).resolves.toBe("challenge-123");
+
+      const forbidden = await fetch(
+        `${endpoint}?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=challenge-123`,
+      );
+      expect(forbidden.status).toBe(403);
+
+      const body = JSON.stringify({
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  messages: [
+                    {
+                      from: "15551234567",
+                      id: "wamid.signed",
+                      text: { body: "signed webhook" },
+                      type: "text",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
       });
-      await expect(
-        provider.waitForInbound({
-          ...context,
-          nonce,
-          since,
-          threadId: "15557654321",
-          timeoutMs: 500,
-        }),
-      ).resolves.toMatchObject({
-        id: "wamid.second",
-        text: `second valid ${nonce}`,
+      const unsigned = await fetch(endpoint!, {
+        body,
+        headers: { "content-type": "application/json" },
+        method: "POST",
       });
+      expect(unsigned.status).toBe(401);
+      await expect(readFile(config.whatsapp!.recorder.path!, "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      const signed = await fetch(endpoint!, {
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": whatsappSignature(body, "configured-app-secret"),
+        },
+        method: "POST",
+      });
+      expect(signed.status).toBe(200);
     } finally {
       await provider.cleanup();
     }

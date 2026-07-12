@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BuiltinAdapterId, ProviderConfig, ProviderPlatform } from "../src/config/schema.js";
@@ -103,6 +104,20 @@ function endpointFromDetails(details: string[]): string {
   return detail.replace(/^.*?(https?:\/\/\S+)$/u, "$1");
 }
 
+function webhookHeaders(
+  platform: ProviderPlatform,
+  config: ProviderConfig,
+  body: string,
+): Record<string, string> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (platform === "whatsapp") {
+    const appSecret = config.whatsapp?.appSecret ?? "local-mock-secret";
+    headers["x-hub-signature-256"] =
+      `sha256=${createHmac("sha256", appSecret).update(body).digest("hex")}`;
+  }
+  return headers;
+}
+
 export function runLocalMockProviderContract(options: ContractOptions): void {
   describe(`${options.platform} local mock provider`, () => {
     it("normalizes native channel targets and rejects synthetic local ids", async () => {
@@ -188,16 +203,18 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       const endpoint = endpointFromDetails((await provider.probe(context)).details);
 
       const since = new Date(Date.now() - 1000).toISOString();
+      const malformedBody = JSON.stringify({ text: "missing thread" });
       const malformed = await fetch(endpoint, {
-        body: JSON.stringify({ text: "missing thread" }),
-        headers: { "content-type": "application/json" },
+        body: malformedBody,
+        headers: webhookHeaders(options.platform, config, malformedBody),
         method: "POST",
       });
       expect(malformed.status).toBe(400);
 
+      const webhookBody = JSON.stringify(options.webhookPayload);
       const response = await fetch(endpoint, {
-        body: JSON.stringify(options.webhookPayload),
-        headers: { "content-type": "application/json" },
+        body: webhookBody,
+        headers: webhookHeaders(options.platform, config, webhookBody),
         method: "POST",
       });
       expect(response.status).toBe(200);
@@ -233,16 +250,17 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       const endpoint = endpointFromDetails((await provider.probe(context)).details);
       const since = new Date(Date.now() - 1000).toISOString();
 
+      const webhookBody = JSON.stringify({
+        message: {
+          author: "user",
+          id: `${options.platform}-user-inbound`,
+          text: `user ${nonce}`,
+          threadId: options.expectedChannelId,
+        },
+      });
       const response = await fetch(endpoint, {
-        body: JSON.stringify({
-          message: {
-            author: "user",
-            id: `${options.platform}-user-inbound`,
-            text: `user ${nonce}`,
-            threadId: options.expectedChannelId,
-          },
-        }),
-        headers: { "content-type": "application/json" },
+        body: webhookBody,
+        headers: webhookHeaders(options.platform, config, webhookBody),
         method: "POST",
       });
       expect(response.status).toBe(200);
