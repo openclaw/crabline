@@ -159,6 +159,14 @@ describe("WhatsApp binary nodes", () => {
     );
   });
 
+  it("rejects trailing bytes after a compressed node stream", async () => {
+    const compressed = deflateSync(encodeBinaryNode({ attrs: {}, tag: "message" }).subarray(1));
+
+    await expect(
+      decodeBinaryNode(Buffer.concat([Buffer.from([2]), compressed, Buffer.from([0xff])])),
+    ).rejects.toThrow("Compressed WhatsApp binary node frame contains trailing data.");
+  });
+
   it("rejects child lists that cannot be represented by LIST_16", () => {
     const child: BinaryNode = { attrs: {}, tag: "child" };
     const node: BinaryNode = {

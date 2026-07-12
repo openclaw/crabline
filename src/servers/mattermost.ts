@@ -182,6 +182,16 @@ function broadcast(state: MattermostServerState, event: MattermostWebSocketEvent
   return true;
 }
 
+function pendingQueueFullResponse(state: MattermostServerState): Response {
+  return jsonResponse(
+    {
+      error: `Pending inbound queue is full (${state.maxPendingInboundEvents} events)`,
+      ok: false,
+    },
+    503,
+  );
+}
+
 function createPost(params: {
   channelId: string;
   message: string;
@@ -217,13 +227,7 @@ async function handleAdminInbound(params: {
     params.state.websocketClients.size === 0 &&
     params.state.pendingEvents.length >= params.state.maxPendingInboundEvents
   ) {
-    return jsonResponse(
-      {
-        error: `Pending inbound queue is full (${params.state.maxPendingInboundEvents} events)`,
-        ok: false,
-      },
-      503,
-    );
+    return pendingQueueFullResponse(params.state);
   }
   const senderName = readTrimmedString(params.body.senderName) ?? senderId;
   const channelType = readTrimmedString(params.body.channelType) ?? "D";
@@ -241,7 +245,10 @@ async function handleAdminInbound(params: {
     state: params.state,
     userId: senderId,
   });
-  broadcast(params.state, postEvent("posted", post, senderName, channelType));
+  if (!broadcast(params.state, postEvent("posted", post, senderName, channelType))) {
+    params.state.posts.delete(post.id);
+    return pendingQueueFullResponse(params.state);
+  }
   return jsonResponse({ ok: true, post });
 }
 
@@ -289,20 +296,24 @@ async function handleApi(params: {
     if (!channelId) {
       return mattermostError("channel_id is required", 400);
     }
-    broadcast(state, {
-      broadcast: eventBroadcast({
-        channelId,
-        omitUsers: { [state.botUserId]: true },
-      }),
-      data: {
-        channel_id: channelId,
-        ...(readTrimmedString(body.parent_id)
-          ? { parent_id: readTrimmedString(body.parent_id) }
-          : {}),
-        user_id: state.botUserId,
-      },
-      event: "typing",
-    });
+    if (
+      !broadcast(state, {
+        broadcast: eventBroadcast({
+          channelId,
+          omitUsers: { [state.botUserId]: true },
+        }),
+        data: {
+          channel_id: channelId,
+          ...(readTrimmedString(body.parent_id)
+            ? { parent_id: readTrimmedString(body.parent_id) }
+            : {}),
+          user_id: state.botUserId,
+        },
+        event: "typing",
+      })
+    ) {
+      return pendingQueueFullResponse(state);
+    }
     return jsonResponse({});
   }
   if (method === "POST" && apiPath === "/posts") {
@@ -319,7 +330,10 @@ async function handleApi(params: {
       userId: state.botUserId,
     });
     const channelType = state.channels.get(channelId)?.type ?? "O";
-    broadcast(state, postEvent("posted", post, state.botUsername, channelType));
+    if (!broadcast(state, postEvent("posted", post, state.botUsername, channelType))) {
+      state.posts.delete(post.id);
+      return pendingQueueFullResponse(state);
+    }
     return jsonResponse(post, 201);
   }
   const postMatch = /^\/posts\/([^/]+)$/u.exec(apiPath);
@@ -330,15 +344,20 @@ async function handleApi(params: {
     }
     const updated = { ...post, message: readTrimmedString(body.message) ?? post.message };
     state.posts.set(updated.id, updated);
-    broadcast(
-      state,
-      postEvent(
-        "post_edited",
-        updated,
-        state.botUsername,
-        state.channels.get(updated.channel_id)?.type ?? "O",
-      ),
-    );
+    if (
+      !broadcast(
+        state,
+        postEvent(
+          "post_edited",
+          updated,
+          state.botUsername,
+          state.channels.get(updated.channel_id)?.type ?? "O",
+        ),
+      )
+    ) {
+      state.posts.set(post.id, post);
+      return pendingQueueFullResponse(state);
+    }
     return jsonResponse(updated);
   }
   if (postMatch?.[1] && method === "DELETE") {
@@ -347,15 +366,20 @@ async function handleApi(params: {
       return mattermostError("Post not found", 404);
     }
     state.posts.delete(post.id);
-    broadcast(
-      state,
-      postEvent(
-        "post_deleted",
-        post,
-        state.botUsername,
-        state.channels.get(post.channel_id)?.type ?? "O",
-      ),
-    );
+    if (
+      !broadcast(
+        state,
+        postEvent(
+          "post_deleted",
+          post,
+          state.botUsername,
+          state.channels.get(post.channel_id)?.type ?? "O",
+        ),
+      )
+    ) {
+      state.posts.set(post.id, post);
+      return pendingQueueFullResponse(state);
+    }
     return new Response(null, { status: 204 });
   }
   return mattermostError("Not found", 404);
@@ -424,7 +448,9 @@ function attachWebSocketServer(params: {
   };
   params.server.on("upgrade", onUpgrade);
   websocketServer.on("connection", (client) => {
+    let authenticationOpen = true;
     const authenticationTimeout = setTimeout(() => {
+      authenticationOpen = false;
       client.close(4001, "authentication timeout");
     }, params.authenticationTimeoutMs);
     authenticationTimeout.unref();
@@ -442,6 +468,9 @@ function attachWebSocketServer(params: {
       }
       const seq = message.seq ?? 0;
       if (!params.state.websocketClients.has(client)) {
+        if (!authenticationOpen || client.readyState !== WebSocket.OPEN) {
+          return;
+        }
         if (
           message.action !== "authentication_challenge" ||
           message.data?.token !== params.state.botToken
@@ -453,10 +482,12 @@ function attachWebSocketServer(params: {
               status: "FAIL",
             }),
           );
+          authenticationOpen = false;
           client.close(4001, "authentication failed");
           return;
         }
         clearTimeout(authenticationTimeout);
+        authenticationOpen = false;
         params.state.websocketClients.set(client, 0);
         client.send(JSON.stringify({ seq_reply: seq, status: "OK" }));
         sendEvent(params.state, client, {
@@ -500,6 +531,7 @@ function attachWebSocketServer(params: {
       );
     });
     client.once("close", () => {
+      authenticationOpen = false;
       clearTimeout(authenticationTimeout);
       params.state.websocketClients.delete(client);
     });

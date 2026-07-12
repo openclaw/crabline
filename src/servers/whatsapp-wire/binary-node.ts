@@ -1,5 +1,4 @@
 import { Buffer } from "node:buffer";
-import { promisify } from "node:util";
 import { inflate } from "node:zlib";
 
 export type BinaryNode = {
@@ -12,10 +11,23 @@ export const WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES = 1024 * 1024;
 export const WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES = 8 * 1024 * 1024;
 export const WHATSAPP_BINARY_NODE_MAX_DEPTH = 128;
 
-const inflateAsync = promisify(inflate) as (
+function inflateWithInfo(
   buffer: Uint8Array,
-  options: { maxOutputLength: number },
-) => Promise<Buffer>;
+): Promise<{ buffer: Buffer; engine: { bytesWritten: number } }> {
+  return new Promise((resolve, reject) => {
+    inflate(
+      buffer,
+      { info: true, maxOutputLength: WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES },
+      (error, result) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve(result as unknown as { buffer: Buffer; engine: { bytesWritten: number } });
+        }
+      },
+    );
+  });
+}
 
 const TAGS = {
   AD_JID: 247,
@@ -149,9 +161,12 @@ async function decompressIfRequired(buffer: Buffer): Promise<Buffer> {
       throw new Error(`Compressed WhatsApp binary node frame is too large: ${buffer.length}.`);
     }
     try {
-      return await inflateAsync(buffer.subarray(1), {
-        maxOutputLength: WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES,
-      });
+      const compressed = buffer.subarray(1);
+      const inflated = await inflateWithInfo(compressed);
+      if (inflated.engine.bytesWritten !== compressed.length) {
+        throw new Error("Compressed WhatsApp binary node frame contains trailing data.");
+      }
+      return inflated.buffer;
     } catch (error) {
       if (
         error instanceof RangeError ||
