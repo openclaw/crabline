@@ -4,6 +4,7 @@
 
 - Bound signed-JWT key refreshes and authenticate, decode, or suppress Google Chat, Teams, Feishu, and Discord webhook ingress according to provider contracts.
 - Bound recorder tail memory, harden shared provider cleanup and inbound matching, and reject non-global webhook targets.
+- Recover backpressured Signal events without recording rejected RPC calls.
 - Preserve bounded Matrix transaction replay and limited-sync state, and honor environment identity.
 - Harden release, CI, config, CLI, package, and OpenClaw artifact and process-identity boundaries.
 - Restore provider-native callbacks and authentication, preserve conversation targets and recorder progress, and harden local mock lifecycle and parsing.
