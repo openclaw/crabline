@@ -118,7 +118,7 @@ export function createCurve(nativeBackend: NativeCurveBackend = nativeCurveBacke
       }
       if (nativeAvailable) {
         try {
-          return nativeBackend.sharedKey(privateKey, rawPublicKey);
+          return requireValidX25519SharedKey(nativeBackend.sharedKey(privateKey, rawPublicKey));
         } catch (error) {
           if (!isUnsupportedNativeCurveError(error)) {
             throw error;
@@ -126,13 +126,23 @@ export function createCurve(nativeBackend: NativeCurveBackend = nativeCurveBacke
           nativeAvailable = false;
         }
       }
-      return Buffer.from(curve25519.sharedKey(Buffer.from(privateKey), rawPublicKey));
+      return requireValidX25519SharedKey(
+        curve25519.sharedKey(Buffer.from(privateKey), rawPublicKey),
+      );
     },
 
     sign(privateKey: Uint8Array, message: Uint8Array): Buffer {
       return Buffer.from(curve25519.sign(Buffer.from(privateKey), Buffer.from(message)));
     },
   };
+}
+
+function requireValidX25519SharedKey(sharedKey: Uint8Array): Buffer {
+  const result = Buffer.from(sharedKey);
+  if (result.every((byte) => byte === 0)) {
+    throw new Error("X25519 failed during derivation for an invalid peer key.");
+  }
+  return result;
 }
 
 export const Curve = createCurve();

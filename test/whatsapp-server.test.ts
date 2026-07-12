@@ -177,6 +177,9 @@ afterEach(async () => {
 
 describe("whatsapp local provider server", () => {
   it("validates inbound queue limits before binding the HTTP port", async () => {
+    await expect(startWhatsAppServer({ accessToken: "" })).rejects.toThrow(
+      "accessToken must not be empty",
+    );
     const port = await resolveFreePort();
     await expect(startWhatsAppServer({ maxPendingInboundMessages: 0, port })).rejects.toThrow(
       "must be a positive safe integer",
@@ -206,7 +209,7 @@ describe("whatsapp local provider server", () => {
     expect(baileysWebSocketUrl.searchParams.get("access_token")).toBe("fake-whatsapp-token");
     expect(server.manifest.endpoints.messagesUrl).toMatch(/\/v25\.0\/100000000000000\/messages$/u);
     const phoneNumber = await fetch(server.manifest.endpoints.phoneNumberUrl, {
-      headers: { authorization: "Bearer fake-whatsapp-token" },
+      headers: { authorization: "bearer fake-whatsapp-token" },
     });
     await expect(phoneNumber.json()).resolves.toMatchObject({
       display_phone_number: "15550000000",
@@ -271,6 +274,25 @@ describe("whatsapp local provider server", () => {
           messaging_product: "whatsapp",
         },
         type: "OAuthException",
+      },
+    });
+
+    const missingType = await fetch(server.manifest.endpoints.messagesUrl, {
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        text: { body: "missing type" },
+        to: "15551234567",
+      }),
+      headers: {
+        authorization: "Bearer fake-whatsapp-token",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(missingType.status).toBe(400);
+    await expect(missingType.json()).resolves.toMatchObject({
+      error: {
+        message: "(#100) Missing required parameter: type",
       },
     });
 
@@ -399,6 +421,74 @@ describe("whatsapp local provider server", () => {
     const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
     expect(recorder).not.toContain("forged user nonce");
     expect(recorder).toContain('"path":"/_crabline/admin/whatsapp/inbound"');
+  });
+
+  it("enforces sender and chat JID roles for admin inbound messages", async () => {
+    const server = await startWhatsAppServer({ adminToken: "admin" });
+    servers.push(server);
+    const sendInbound = (body: Record<string, unknown>) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ text: "identity check", ...body }),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: "admin",
+        },
+        method: "POST",
+      });
+
+    const groupSender = await sendInbound({
+      chatJid: "120363001234567890@g.us",
+      senderJid: "120363009876543210@g.us",
+    });
+    expect(groupSender.status).toBe(400);
+    await expect(groupSender.json()).resolves.toMatchObject({
+      error: { message: "(#100) Invalid parameter: senderJid" },
+    });
+
+    const mismatchedDirectSender = await sendInbound({
+      chatJid: "15551234567@s.whatsapp.net",
+      senderJid: "15557654321@s.whatsapp.net",
+    });
+    expect(mismatchedDirectSender.status).toBe(400);
+    await expect(mismatchedDirectSender.json()).resolves.toMatchObject({
+      error: { message: "(#100) Invalid parameter: senderJid" },
+    });
+
+    const mismatchedLidSender = await sendInbound({
+      chatJid: "15551234567@lid",
+      senderJid: "15551234567@s.whatsapp.net",
+    });
+    expect(mismatchedLidSender.status).toBe(400);
+
+    const direct = await sendInbound({
+      chatJid: "15551234567@c.us",
+      senderJid: "15551234567:2@s.whatsapp.net",
+    });
+    expect(direct.status).toBe(200);
+    const directBody = (await direct.json()) as {
+      message: { key: Record<string, unknown> };
+    };
+    expect(directBody).toMatchObject({
+      message: {
+        key: {
+          remoteJid: "15551234567@c.us",
+        },
+      },
+      webhook: {
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  messages: [{ from: "15551234567" }],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(directBody.message.key).not.toHaveProperty("participant");
   });
 
   it("authenticates Graph requests before reading or recording their bodies", async () => {
@@ -767,7 +857,7 @@ describe("whatsapp local provider server", () => {
     }
   });
 
-  it("releases inbound capacity when a live Baileys delivery throws", async () => {
+  it("queues inbound when a live Baileys delivery throws", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const server = await startWhatsAppServer({
@@ -811,7 +901,8 @@ describe("whatsapp local provider server", () => {
       });
 
       const failed = await sendInbound("failed live delivery");
-      expect(failed.status).toBe(500);
+      expect(failed.status).toBe(200);
+      await expect(failed.json()).resolves.toMatchObject({ delivery: "queued", ok: true });
       send.mockRestore();
       socket.end(undefined);
       await waitForCondition(
@@ -825,9 +916,8 @@ describe("whatsapp local provider server", () => {
         "Baileys connection close",
       );
 
-      const accepted = await sendInbound("accepted after failure");
-      expect(accepted.status).toBe(200);
-      await expect(accepted.json()).resolves.toMatchObject({ delivery: "queued", ok: true });
+      const rejected = await sendInbound("rejected after failure");
+      expect(rejected.status).toBe(503);
     } finally {
       socket.end(undefined);
     }
