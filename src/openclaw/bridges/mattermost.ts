@@ -26,6 +26,11 @@ function targetKey(channelId: string, rootId?: string): string {
   return rootId ? `${channelId}:thread:${rootId}` : channelId;
 }
 
+function threadRootId(channelId: string, value: string): string {
+  const trimmed = value.trim();
+  return /^[a-z0-9]{26}$/u.test(trimmed) ? trimmed : mattermostId(`thread:${channelId}:${trimmed}`);
+}
+
 export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
   provider: "mattermost",
   createAdapter(mattermost) {
@@ -90,7 +95,7 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
           kind === "direct"
             ? directChannelId(mattermost.botUserId, senderId)
             : nativeId(conversationId);
-        const rootId = input.threadId ? nativeId(input.threadId) : undefined;
+        const rootId = input.threadId ? threadRootId(channelId, input.threadId) : undefined;
         return {
           ...createAdminInboundRequest(mattermost),
           providerBody: {
@@ -123,12 +128,16 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
         if (!channelId || !text) {
           return null;
         }
+        const target = targetByProviderTarget.get(targetKey(channelId, rootId));
+        if (!target) {
+          return null;
+        }
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           senderId: mattermost.botUserId,
           senderName: "OpenClaw QA",
           text,
-          to: targetByProviderTarget.get(targetKey(channelId, rootId)) ?? channelId,
+          to: target,
         };
       },
     };

@@ -580,6 +580,39 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")(
+    "rejects output directory replacement before publishing secret artifacts",
+    async () => {
+      const outputDir = await createTempDir();
+      const displacedOutputDir = `${outputDir}.displaced`;
+      const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
+      try {
+        await expect(
+          publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+            createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+            platform: "win32",
+            secureWindowsDirectory: async (directoryPath) => {
+              if (directoryPath !== storePath) {
+                return;
+              }
+              await fs.rename(outputDir, displacedOutputDir);
+              await fs.symlink(displacedOutputDir, outputDir, "dir");
+            },
+            secureWindowsFile: async () => undefined,
+          }),
+        ).rejects.toThrow("Private directory path identity changed during publication.");
+
+        await expect(
+          fs.readdir(path.join(displacedOutputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY)),
+        ).resolves.toEqual([]);
+      } finally {
+        await fs.rm(outputDir, { force: true });
+        await fs.rename(displacedOutputDir, outputDir).catch(() => undefined);
+        await disposeTempDir(outputDir);
+      }
+    },
+  );
+
   it("removes failed staging and retains only the current and previous generations", async () => {
     const outputDir = await createTempDir();
     const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);

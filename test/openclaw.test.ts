@@ -38,6 +38,8 @@ import {
   publishOpenClawCrablineArtifactGeneration,
   readOpenClawCrablineArtifactPointer,
 } from "../src/openclaw/artifact-generation.js";
+import { MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/matrix.js";
+import { SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/signal.js";
 import { isRecord, parseQaTarget } from "../src/openclaw/shared.js";
 
 type ProviderReadinessTestDependencies = {
@@ -321,6 +323,46 @@ describe("OpenClaw local provider bridge", () => {
     try {
       await expect(probeOpenClawCrablineProvider(manifest)).rejects.toThrow(
         "Crabline Telegram getMe probe failed: Unauthorized.",
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it.each([
+    { ok: true },
+    { ok: true, result: null },
+    { ok: true, result: { first_name: "Crabline", id: 424_242, is_bot: false } },
+    {
+      ok: true,
+      result: { first_name: "Crabline", id: 424_242, is_bot: true, username: "abc" },
+    },
+  ])("rejects malformed Telegram getMe success payloads: %j", async (payload) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(payload), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+    try {
+      await expect(probeOpenClawCrablineProvider(manifest)).rejects.toThrow(
+        "Crabline Telegram getMe probe failed: invalid response.",
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("requires Matrix whoami to identify the configured bot user", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ user_id: "@other:matrix.test" }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+    try {
+      await expect(probeOpenClawCrablineProvider(matrixManifest)).rejects.toThrow(
+        "Crabline Matrix whoami probe returned an unexpected user.",
       );
     } finally {
       fetchMock.mockRestore();
@@ -749,7 +791,7 @@ describe("OpenClaw local provider bridge", () => {
 
   it("closes a started server when adapter construction fails", async () => {
     const startupError = new Error("adapter construction failed");
-    const close = vi.fn(async () => undefined);
+    const close = vi.fn<() => Promise<void>>(async () => undefined);
 
     await expect(
       startOpenClawCrablineAdapter(
@@ -798,7 +840,13 @@ describe("OpenClaw local provider bridge", () => {
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:42424242" }).to).toBe(
       "42424242",
     );
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:00042424242" }).to).toBe(
+      "42424242",
+    );
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "group:-100123" }).to).toBe(
+      "-100123",
+    );
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "group:-000100123" }).to).toBe(
       "-100123",
     );
     expect(
@@ -810,6 +858,12 @@ describe("OpenClaw local provider bridge", () => {
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "-100123" }).to).toBe("-100123");
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "thread:-100123/42" }).to).toBe(
       "-100123:topic:42",
+    );
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@tiny" }).to).toBe(
+      "@tiny",
+    );
+    expect(() => createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@abc" })).toThrow(
+      "Telegram usernames must contain 4-32 letters, digits, or underscores.",
     );
 
     const inbound = createOpenClawCrablineInbound({
@@ -841,6 +895,20 @@ describe("OpenClaw local provider bridge", () => {
         id: symbolicDelivery.to,
         kind: "direct",
       },
+    });
+    expect(
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
+          conversation: { id: "00042424242", kind: "direct" },
+          senderId: "00042424242",
+          text: "canonical numeric ids",
+        },
+      }),
+    ).toMatchObject({
+      providerBody: { chatId: "42424242", fromId: 42_424_242 },
+      providerTargetKey: "42424242",
+      stateConversation: { id: "42424242", kind: "direct" },
     });
 
     expect(
@@ -978,6 +1046,21 @@ describe("OpenClaw local provider bridge", () => {
       text: "  hello\n",
       to: "dm:alice",
     });
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest,
+        targetByProviderTarget: new Map([["42424242", "dm:canonical"]]),
+        event: {
+          type: "api",
+          method: "POST",
+          path: "/bot<redacted>/sendMessage",
+          body: {
+            chat_id: "00042424242",
+            text: "canonical outbound id",
+          },
+        },
+      }),
+    ).toMatchObject({ to: "dm:canonical" });
 
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
@@ -1206,6 +1289,26 @@ describe("OpenClaw local provider bridge", () => {
         },
       }),
     ).toThrow("WhatsApp does not support thread targets.");
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest: whatsappManifest,
+        input: {
+          conversation: { id: "120363001234567890@g.us", kind: "direct" },
+          senderId: "15551234567@s.whatsapp.net",
+          text: "mismatched kind",
+        },
+      }),
+    ).toThrow("WhatsApp inbound conversation kind does not match the native JID.");
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest: whatsappManifest,
+        input: {
+          conversation: { id: "15551234567@s.whatsapp.net", kind: "group" },
+          senderId: "15557654321@s.whatsapp.net",
+          text: "mismatched kind",
+        },
+      }),
+    ).toThrow("WhatsApp inbound conversation kind does not match the native JID.");
 
     const inbound = createOpenClawCrablineInbound({
       manifest: whatsappManifest,
@@ -1331,12 +1434,43 @@ describe("OpenClaw local provider bridge", () => {
       replyChannel: "slack",
       replyTo: "C1234567890:thread:1700000000.000100",
     });
+    expect(
+      createOpenClawCrablineAgentDelivery({
+        manifest: slackManifest,
+        target: "thread:D1234567890/1700000000.000100",
+      }),
+    ).toEqual({
+      channel: "slack",
+      to: "D1234567890",
+      replyChannel: "slack",
+      replyTo: "D1234567890:thread:1700000000.000100",
+    });
     expect(() =>
       createOpenClawCrablineAgentDelivery({
         manifest: slackManifest,
         target: "dm:C1234567890",
       }),
     ).toThrow("Slack target kind does not match the native conversation id.");
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest: slackManifest,
+        input: {
+          conversation: { id: "D1234567890", kind: "group" },
+          senderId: "U1234567890",
+          text: "mismatched kind",
+        },
+      }),
+    ).toThrow("Slack inbound conversation kind does not match the native channel id.");
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest: slackManifest,
+        input: {
+          conversation: { id: "C1234567890", kind: "direct" },
+          senderId: "U1234567890",
+          text: "mismatched kind",
+        },
+      }),
+    ).toThrow("Slack inbound conversation kind does not match the native channel id.");
     expect(() =>
       createOpenClawCrablineAgentDelivery({
         manifest: slackManifest,
@@ -1400,6 +1534,52 @@ describe("OpenClaw local provider bridge", () => {
       text: "hello from openclaw",
       to: "thread:qa/parent",
     });
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: slackManifest,
+        targetByProviderTarget: new Map([["C1234567890", "group:qa"]]),
+        event: {
+          type: "api",
+          method: "POST",
+          path: "/api/chat.postMessage",
+          body: {
+            blocks: [{ text: { text: "block fallback", type: "mrkdwn" }, type: "section" }],
+            channel: "C1234567890",
+          },
+        },
+      }),
+    ).toMatchObject({ text: "block fallback", to: "group:qa" });
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: slackManifest,
+        targetByProviderTarget: new Map([["C1234567890", "group:qa"]]),
+        event: {
+          type: "api",
+          method: "POST",
+          path: "/api/chat.postMessage",
+          body: {
+            attachments: JSON.stringify([{ fallback: "attachment fallback" }]),
+            channel: "C1234567890",
+          },
+        },
+      }),
+    ).toMatchObject({ text: "attachment fallback", to: "group:qa" });
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: slackManifest,
+        targetByProviderTarget: new Map(),
+        event: {
+          type: "api",
+          method: "POST",
+          path: "/api/chat.postMessage",
+          body: {
+            blocks: [{ text: { text: "must not replace whitespace", type: "plain_text" } }],
+            channel: "C1234567890",
+            text: " \n\t",
+          },
+        },
+      }),
+    ).toBeNull();
   });
 
   it("maps Signal QA targets, inbound messages, and recorder events", () => {
@@ -1433,7 +1613,35 @@ describe("OpenClaw local provider bridge", () => {
       manifest: signalManifest,
       target: "dm:qa-operator",
     });
-    expect(directDelivery.to).toMatch(/^\+1555\d{7}$/u);
+    expect(directDelivery.to).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(
+      createOpenClawCrablineAgentDelivery({
+        manifest: signalManifest,
+        target: "dm:+15551234567",
+      }).to,
+    ).toBe("+15551234567");
+    const firstSignalAdapter =
+      SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE.createAdapterFromManifest(signalManifest);
+    const firstRecipient = firstSignalAdapter.createAgentDelivery(
+      parseQaTarget("dm:recipient-1719"),
+    ).to;
+    const secondRecipient = firstSignalAdapter.createAgentDelivery(
+      parseQaTarget("dm:recipient-5529"),
+    ).to;
+    const secondSignalAdapter =
+      SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE.createAdapterFromManifest(signalManifest);
+    expect(secondSignalAdapter.createAgentDelivery(parseQaTarget("dm:recipient-5529")).to).toBe(
+      secondRecipient,
+    );
+    expect(secondSignalAdapter.createAgentDelivery(parseQaTarget("dm:recipient-1719")).to).toBe(
+      firstRecipient,
+    );
+    expect(firstRecipient).not.toBe(secondRecipient);
+    expect(firstRecipient).not.toBe(
+      firstSignalAdapter.createAgentDelivery(parseQaTarget("dm:+15551234567")).to,
+    );
 
     const directInbound = createOpenClawCrablineInbound({
       manifest: signalManifest,
@@ -1443,7 +1651,7 @@ describe("OpenClaw local provider bridge", () => {
         text: "hello",
       },
     });
-    expect(directInbound.providerBody).toMatchObject({ sourceNumber: directDelivery.to });
+    expect(directInbound.providerBody).toMatchObject({ sourceUuid: directDelivery.to });
     expect(directInbound.providerTargetKey).toBe(directDelivery.to);
 
     expect(
@@ -1461,6 +1669,52 @@ describe("OpenClaw local provider bridge", () => {
         },
       }),
     ).toMatchObject({ text: "direct reply", to: "dm:qa-operator" });
+
+    for (const testCase of [
+      { params: { recipient: directDelivery.to }, providerTarget: directDelivery.to },
+      { params: { recipients: [directDelivery.to] }, providerTarget: directDelivery.to },
+      { params: { groupIds: ["group-1"] }, providerTarget: "group:group-1" },
+      { params: { username: "alice.01" }, providerTarget: "alice.01" },
+      { params: { usernames: ["alice.01"] }, providerTarget: "alice.01" },
+      { params: { noteToSelf: true }, providerTarget: signalManifest.account },
+    ]) {
+      expect(
+        createOpenClawCrablineOutboundFromRecorderEvent({
+          manifest: signalManifest,
+          targetByProviderTarget: new Map([[testCase.providerTarget, "dm:mapped"]]),
+          event: {
+            body: {
+              method: "send",
+              params: { message: "recipient form", ...testCase.params },
+            },
+            method: "POST",
+            path: "/api/v1/rpc",
+            type: "api",
+          },
+        }),
+      ).toMatchObject({ text: "recipient form", to: "dm:mapped" });
+    }
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: signalManifest,
+        targetByProviderTarget: new Map([
+          [directDelivery.to, "dm:first"],
+          ["+15557654321", "dm:second"],
+        ]),
+        event: {
+          body: {
+            method: "send",
+            params: {
+              message: "fan-out cannot be represented",
+              recipients: [directDelivery.to, "+15557654321"],
+            },
+          },
+          method: "POST",
+          path: "/api/v1/rpc",
+          type: "api",
+        },
+      }),
+    ).toBeNull();
 
     expect(
       createOpenClawCrablineInbound({
@@ -1591,18 +1845,22 @@ describe("OpenClaw local provider bridge", () => {
 
     for (const testCase of cases) {
       const text = `  ${testCase.name} reply\n`;
+      const targetByProviderTarget =
+        testCase.manifest.provider === "mattermost"
+          ? new Map([["aaaaaaaaaaaaaaaaaaaaaaaaaa", "group:qa"]])
+          : new Map<string, string>();
       expect(
         createOpenClawCrablineOutboundFromRecorderEvent({
           event: testCase.event(text),
           manifest: testCase.manifest,
-          targetByProviderTarget: new Map(),
+          targetByProviderTarget,
         }),
       ).toMatchObject({ text });
       expect(
         createOpenClawCrablineOutboundFromRecorderEvent({
           event: testCase.event(" \n\t"),
           manifest: testCase.manifest,
-          targetByProviderTarget: new Map(),
+          targetByProviderTarget,
         }),
       ).toBeNull();
     }
@@ -1682,11 +1940,15 @@ describe("OpenClaw local provider bridge", () => {
     ];
 
     for (const testCase of cases) {
+      const targetByProviderTarget =
+        testCase.manifest.provider === "mattermost"
+          ? new Map([["aaaaaaaaaaaaaaaaaaaaaaaaaa", "group:qa"]])
+          : new Map<string, string>();
       const translate = (event: unknown) =>
         translateOpenClawCrablineOutbound({
           event,
           manifest: testCase.manifest,
-          targetByProviderTarget: new Map(),
+          targetByProviderTarget,
         });
 
       expect(translate({ ...testCase.event, accepted: true })).not.toBeNull();
@@ -1783,6 +2045,18 @@ describe("OpenClaw local provider bridge", () => {
       text: "hello from openclaw",
       to: "dm:alice",
     });
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: mattermostManifest,
+        targetByProviderTarget: new Map(),
+        event: {
+          body: { channel_id: inbound.providerTargetKey, message: "unmapped reply" },
+          method: "POST",
+          path: "/api/v4/posts",
+          type: "api",
+        },
+      }),
+    ).toBeNull();
 
     const binding = createOpenClawCrablineProviderBinding(mattermostManifest);
     expect(binding).toMatchObject({
@@ -1804,6 +2078,28 @@ describe("OpenClaw local provider bridge", () => {
     });
     expect(threadInbound.providerTargetKey).toMatch(/:thread:[a-z0-9]{26}$/u);
     expect(threadInbound.threadId).toBe(threadInbound.providerBody.rootId);
+    const otherThreadInbound = createOpenClawCrablineInbound({
+      manifest: mattermostManifest,
+      input: {
+        conversation: { id: "random", kind: "group" },
+        senderId: "alice",
+        text: "same symbolic thread in another channel",
+        threadId: "parent",
+      },
+    });
+    expect(otherThreadInbound.providerBody.rootId).not.toBe(threadInbound.providerBody.rootId);
+    const nativeRootId = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
+    expect(
+      createOpenClawCrablineInbound({
+        manifest: mattermostManifest,
+        input: {
+          conversation: { id: "general", kind: "group" },
+          senderId: "alice",
+          text: "real root",
+          threadId: nativeRootId,
+        },
+      }).providerBody.rootId,
+    ).toBe(nativeRootId);
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
         manifest: mattermostManifest,
@@ -1887,6 +2183,40 @@ describe("OpenClaw local provider bridge", () => {
       text: "hello from OpenClaw",
       to: `group:${roomId}`,
     });
+    const matrixAdapter =
+      MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE.createAdapterFromManifest(matrixManifest);
+    const transactionEvent = {
+      accepted: true,
+      body: { body: "first delivery", msgtype: "m.text" },
+      method: "PUT",
+      path: `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/stable-transaction`,
+      type: "api",
+    };
+    expect(
+      matrixAdapter.createOutboundFromRecorderEvent({
+        event: transactionEvent,
+        targetByProviderTarget: new Map([[roomId, `group:${roomId}`]]),
+      }),
+    ).toMatchObject({ text: "first delivery", to: `group:${roomId}` });
+    expect(
+      matrixAdapter.createOutboundFromRecorderEvent({
+        event: {
+          ...transactionEvent,
+          body: { body: "replayed body must not deliver", msgtype: "m.text" },
+        },
+        targetByProviderTarget: new Map([[roomId, `group:${roomId}`]]),
+      }),
+    ).toBeNull();
+    expect(
+      matrixAdapter.createOutboundFromRecorderEvent({
+        event: {
+          ...transactionEvent,
+          path: `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/replayed-marker`,
+          replayed: true,
+        },
+        targetByProviderTarget: new Map([[roomId, `group:${roomId}`]]),
+      }),
+    ).toBeNull();
 
     for (const malformedPath of [
       "/_matrix/client/v3/rooms/%ZZ/send/m.room.message/txn-1",
@@ -2242,7 +2572,7 @@ describe("OpenClaw local provider bridge", () => {
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const cleanupFailure = new Error("lock release retries exhausted");
     let pointerAtCleanup: Awaited<ReturnType<typeof readOpenClawCrablineArtifactPointer>> = null;
-    const releaseLock = vi.fn(async () => {
+    const releaseLock = vi.fn<() => Promise<void>>(async () => {
       pointerAtCleanup = await readOpenClawCrablineArtifactPointer(outputDir);
       throw cleanupFailure;
     });
@@ -2487,7 +2817,7 @@ describe("OpenClaw local provider bridge", () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-heartbeat-"));
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const failure = new Error("heartbeat renewal failed");
-    const release = vi.fn(async () => undefined);
+    const release = vi.fn<() => Promise<void>>(async () => undefined);
     try {
       const prior = await runOpenClawCrablineProviderReadiness({ outputDir, selection });
       const priorGeneration = await readPublishedArtifactGeneration(outputDir, prior);

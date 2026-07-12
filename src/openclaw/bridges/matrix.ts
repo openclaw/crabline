@@ -26,9 +26,12 @@ function eventThreadId(content: Record<string, unknown>): string | undefined {
   return relation?.rel_type === "m.thread" ? readString(relation.event_id) : undefined;
 }
 
+const MAX_DELIVERED_MATRIX_TRANSACTIONS = 1_000;
+
 export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
   provider: "matrix",
   createAdapter(matrix) {
+    const deliveredTransactions = new Set<string>();
     return {
       async probe(signal) {
         const response = await fetch(`${matrix.endpoints.clientApiRoot}/account/whoami`, {
@@ -38,7 +41,11 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         if (!response.ok) {
           throw new Error(`Crabline Matrix probe failed with HTTP ${response.status}.`);
         }
-        return await response.json();
+        const payload: unknown = await response.json();
+        if (!isRecord(payload) || readString(payload.user_id) !== matrix.botUserId) {
+          throw new Error("Crabline Matrix whoami probe returned an unexpected user.");
+        }
+        return payload;
       },
       createBinding() {
         return {
@@ -118,21 +125,25 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           !isRecord(event) ||
           event.type !== "api" ||
           event.method !== "PUT" ||
+          event.replayed === true ||
           !isRecord(event.body)
         ) {
           return null;
         }
-        const match = /^\/_matrix\/client\/(?:v3|r0)\/rooms\/([^/]+)\/send\/([^/]+)\/[^/]+$/u.exec(
-          readString(event.path) ?? "",
-        );
+        const match =
+          /^\/_matrix\/client\/(?:v3|r0)\/rooms\/([^/]+)\/send\/([^/]+)\/([^/]+)$/u.exec(
+            readString(event.path) ?? "",
+          );
         if (!match) {
           return null;
         }
         let roomId: string;
         let eventType: string;
+        let transactionId: string;
         try {
           roomId = decodeURIComponent(match[1]!);
           eventType = decodeURIComponent(match[2]!);
+          transactionId = decodeURIComponent(match[3]!);
         } catch {
           return null;
         }
@@ -143,7 +154,15 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         if (!text) {
           return null;
         }
+        const transactionKey = JSON.stringify([roomId, eventType, transactionId]);
+        if (deliveredTransactions.has(transactionKey)) {
+          return null;
+        }
         const threadId = eventThreadId(event.body);
+        deliveredTransactions.add(transactionKey);
+        if (deliveredTransactions.size > MAX_DELIVERED_MATRIX_TRANSACTIONS) {
+          deliveredTransactions.delete(deliveredTransactions.values().next().value!);
+        }
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           senderId: matrix.botUserId,

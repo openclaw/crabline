@@ -15,6 +15,7 @@ const TELEGRAM_SYMBOLIC_GROUP_ID_BASE = 1_000_000_000_000n;
 const TELEGRAM_SYMBOLIC_GROUP_ID_RANGE = 10_000_000_000n;
 const TELEGRAM_OUTBOUND_METHOD_RE =
   /\/(sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/u;
+const TELEGRAM_USERNAME_RE = /^@[A-Za-z][A-Za-z0-9_]{3,31}$/u;
 
 function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
   const value = id.trim();
@@ -32,10 +33,13 @@ function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
     ) {
       throw new Error("Telegram numeric target must be a safe integer.");
     }
+    return numericId.toString();
+  }
+  if (kind === "group" && TELEGRAM_USERNAME_RE.test(value)) {
     return value;
   }
-  if (kind === "group" && /^@[A-Za-z][A-Za-z0-9_]{4,31}$/u.test(value)) {
-    return value;
+  if (value.startsWith("@")) {
+    throw new Error("Telegram usernames must contain 4-32 letters, digits, or underscores.");
   }
   const hash = createHash("sha256").update(`${kind}:${value}`).digest().readBigUInt64BE();
   if (kind === "group") {
@@ -46,6 +50,25 @@ function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
 
 function telegramTargetKey(chatId: string, threadId?: number) {
   return threadId === undefined ? chatId : `${chatId}:topic:${threadId}`;
+}
+
+function canonicalTelegramRecorderChatId(value: unknown): string | undefined {
+  const chatId = readString(value);
+  if (!chatId) {
+    return undefined;
+  }
+  if (/^-?\d+$/u.test(chatId)) {
+    const numericId = BigInt(chatId);
+    if (
+      numericId === 0n ||
+      numericId < BigInt(Number.MIN_SAFE_INTEGER) ||
+      numericId > BigInt(Number.MAX_SAFE_INTEGER)
+    ) {
+      return undefined;
+    }
+    return numericId.toString();
+  }
+  return TELEGRAM_USERNAME_RE.test(chatId) ? chatId : undefined;
 }
 
 function telegramBotCommandEntity(text: string, commandName: string) {
@@ -97,7 +120,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (!response.ok) {
           throw new Error(`Crabline Telegram getMe probe failed with HTTP ${response.status}.`);
         }
-        const payload = await response.json();
+        const payload: unknown = await response.json();
         if (!isRecord(payload) || payload.ok !== true) {
           const errorCode = readString(isRecord(payload) ? payload.error_code : undefined);
           const description = readNonBlankString(
@@ -105,6 +128,20 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           );
           const detail = description ?? (errorCode ? `error ${errorCode}` : "invalid response");
           throw new Error(`Crabline Telegram getMe probe failed: ${detail}.`);
+        }
+        const result = payload.result;
+        if (
+          !isRecord(result) ||
+          typeof result.id !== "number" ||
+          !Number.isSafeInteger(result.id) ||
+          result.id <= 0 ||
+          result.is_bot !== true ||
+          !readNonBlankString(result.first_name) ||
+          (result.username !== undefined &&
+            (typeof result.username !== "string" ||
+              !TELEGRAM_USERNAME_RE.test(`@${result.username}`)))
+        ) {
+          throw new Error("Crabline Telegram getMe probe failed: invalid response.");
         }
         return payload;
       },
@@ -162,8 +199,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
       createAgentDelivery(parsed) {
         const kind =
           parsed.native &&
-          (/^-\d+$/u.test(parsed.id.trim()) ||
-            /^@[A-Za-z][A-Za-z0-9_]{4,31}$/u.test(parsed.id.trim()))
+          (/^-\d+$/u.test(parsed.id.trim()) || TELEGRAM_USERNAME_RE.test(parsed.id.trim()))
             ? "group"
             : parsed.kind;
         const chatId = normalizeTelegramChatId(kind, parsed.id);
@@ -211,7 +247,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (!method || !isRecord(event.body)) {
           return null;
         }
-        const chatId = readString(event.body.chat_id);
+        const chatId = canonicalTelegramRecorderChatId(event.body.chat_id);
         const text =
           method === "sendMessage"
             ? readNonBlankString(event.body.text)

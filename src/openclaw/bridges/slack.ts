@@ -24,10 +24,10 @@ function requireSlackSendTargetId(value: string, label: string): string {
 }
 
 function requireSlackTargetKind(
-  parsed: { kind: "direct" | "group"; native: boolean },
+  parsed: { kind: "direct" | "group"; native: boolean; threadId?: string },
   targetId: string,
 ): void {
-  if (parsed.native) {
+  if (parsed.native || parsed.threadId !== undefined) {
     return;
   }
   const nativeKind = /^[DUW]/u.test(targetId) ? "direct" : "group";
@@ -61,6 +61,64 @@ function requireSlackThreadTs(value: string | undefined, label: string): string 
     throw new Error(`${label} must be a native Slack timestamp.`);
   }
   return trimmed;
+}
+
+function slackConversationKind(channel: string): "direct" | "group" {
+  return channel.startsWith("D") ? "direct" : "group";
+}
+
+function structuredSlackValues(value: unknown): unknown[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return [];
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function collectSlackFallbackText(value: unknown, output: string[]): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectSlackFallbackText(entry, output);
+    }
+    return;
+  }
+  if (!isRecord(value)) {
+    return;
+  }
+  for (const key of ["fallback", "title", "alt_text"] as const) {
+    const text = readNonBlankString(value[key]);
+    if (text) {
+      output.push(text);
+    }
+  }
+  const text = value.text;
+  if (typeof text === "string" && text.trim()) {
+    output.push(text);
+  } else if (isRecord(text)) {
+    collectSlackFallbackText(text, output);
+  }
+  for (const key of ["blocks", "elements", "fields"] as const) {
+    collectSlackFallbackText(value[key], output);
+  }
+}
+
+function slackOutboundText(body: Record<string, unknown>): string | undefined {
+  if (typeof body.text === "string") {
+    // Explicit whitespace is invalid; structured fallback is only for text-less sends.
+    return body.text.trim() ? body.text : undefined;
+  }
+  const fallback: string[] = [];
+  collectSlackFallbackText(structuredSlackValues(body.blocks), fallback);
+  collectSlackFallbackText(structuredSlackValues(body.attachments), fallback);
+  const unique = [...new Set(fallback)];
+  return unique.length > 0 ? unique.join("\n") : undefined;
 }
 
 export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
@@ -140,6 +198,10 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
       },
       createInbound(input) {
         const channel = requireSlackChannelId(input.conversation.id, "Slack conversation");
+        const kind = slackConversationKind(channel);
+        if (input.conversation.kind !== kind) {
+          throw new Error("Slack inbound conversation kind does not match the native channel id.");
+        }
         const user = requireSlackUserId(input.senderId, "Slack sender");
         const threadTs = requireSlackThreadTs(input.threadId, "Slack thread");
         return {
@@ -155,7 +217,7 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
           qaTarget: qaTargetForInbound(input),
           stateConversation: {
             id: channel,
-            kind: channel.startsWith("D") ? "direct" : "group",
+            kind,
           },
           ...(threadTs ? { threadId: threadTs } : {}),
         };
@@ -168,7 +230,7 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
           return null;
         }
         const channel = readString(event.body.channel);
-        const text = readNonBlankString(event.body.text);
+        const text = slackOutboundText(event.body);
         if (!channel || !text) {
           return null;
         }
