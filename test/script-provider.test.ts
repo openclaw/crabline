@@ -149,6 +149,117 @@ describe("script provider", () => {
     throw new Error(`watch subprocess ${pid} is still running`);
   });
 
+  it("enforces command deadlines in the parent process", async () => {
+    const context = await createContext();
+    const sendScript = path.join(path.dirname(context.manifestPath), "send-hanging.mjs");
+    await writeText(sendScript, "process.stdin.resume();setInterval(()=>{},1000);");
+    context.fixture.timeoutMs = 100;
+    context.config.script!.commands.send = `node ${sendScript}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(
+      provider.send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      }),
+    ).rejects.toThrow(/timed out after 100ms/u);
+  });
+
+  it("rejects commands that exceed the output limit", async () => {
+    const context = await createContext();
+    const sendScript = path.join(path.dirname(context.manifestPath), "send-noisy.mjs");
+    await writeText(
+      sendScript,
+      'process.stdin.resume();process.stdout.write("x".repeat(1024*1024+1));',
+    );
+    context.config.script!.commands.send = `node ${sendScript}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(
+      provider.send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      }),
+    ).rejects.toThrow(/exceeded 1048576 bytes of output/u);
+  });
+
+  it("validates script JSON result contracts at runtime", async () => {
+    const context = await createContext();
+    const probeScript = path.join(path.dirname(context.manifestPath), "probe-invalid.mjs");
+    await writeText(
+      probeScript,
+      'process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:"yes"})));',
+    );
+    context.config.script!.commands.probe = `node ${probeScript}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(provider.probe(context)).rejects.toThrow(/returned invalid result.*healthy/isu);
+
+    const waitScript = path.join(path.dirname(context.manifestPath), "wait-invalid.mjs");
+    await writeText(
+      waitScript,
+      'process.stdin.resume();process.stdin.on("end",()=>process.stdout.write("{}"));',
+    );
+    context.config.script!.commands.waitForInbound = `node ${waitScript}`;
+
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        nonce: "nonce",
+        since: new Date().toISOString(),
+        timeoutMs: 1000,
+      }),
+    ).rejects.toThrow(/either a message or timeout: true/u);
+  });
+
+  it("reports watch subprocess failures after emitted messages", async () => {
+    const context = await createContext();
+    const watchScript = path.join(path.dirname(context.manifestPath), "watch-failing.mjs");
+    await writeText(
+      watchScript,
+      'process.stdout.write(JSON.stringify({author:"assistant",id:"watch-before-failure",sentAt:new Date().toISOString(),text:"watch payload",threadId:"thread-1"})+"\\n");process.stderr.write("watch exploded");process.exitCode=7;',
+    );
+    context.config.script!.commands.watch = `node ${watchScript}`;
+    const provider = new ScriptProviderAdapter(context);
+    const iterator = provider.watch(context)[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { id: "watch-before-failure" },
+    });
+    await expect(iterator.next()).rejects.toThrow(/watch exploded/u);
+  });
+
+  it("reports watch subprocess spawn failures without crashing", async () => {
+    const context = await createContext();
+    context.config.script!.shell = path.join(
+      path.dirname(context.manifestPath),
+      "missing-shell",
+    );
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(provider.watch(context).next()).rejects.toThrow(/failed to start/u);
+  });
+
+  it("validates watched JSON message contracts", async () => {
+    const context = await createContext();
+    const watchScript = path.join(path.dirname(context.manifestPath), "watch-invalid.mjs");
+    await writeText(
+      watchScript,
+      'process.stdout.write(JSON.stringify({author:"bot",id:"watch-1",sentAt:new Date().toISOString(),text:"watch payload",threadId:"thread-1"})+"\\n");',
+    );
+    context.config.script!.commands.watch = `node ${watchScript}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(provider.watch(context).next()).rejects.toThrow(
+      /returned invalid result.*author/isu,
+    );
+  });
+
   it("fails when required commands are missing", async () => {
     const context = await createContext();
     const provider = new ScriptProviderAdapter({
