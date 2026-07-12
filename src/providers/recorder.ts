@@ -6,8 +6,19 @@ export type RecordedInboundEnvelope = InboundEnvelope & {
   recordedAt: string;
 };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timeout = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 function toRecordKey(event: InboundEnvelope): string {
@@ -264,14 +275,21 @@ export async function* watchRecordedInbound(params: {
   filePath: string;
   matches: (event: RecordedInboundEnvelope) => boolean;
   pollMs?: number;
+  signal?: AbortSignal | undefined;
   since?: string | undefined;
 }): AsyncIterable<RecordedInboundEnvelope> {
   const state = createIncrementalReadState();
   const seen = new Set<string>();
 
-  while (true) {
+  while (!params.signal?.aborted) {
     const events = await readRecordedInboundAppend(params.filePath, state);
+    if (params.signal?.aborted) {
+      return;
+    }
     for (const event of events) {
+      if (params.signal?.aborted) {
+        return;
+      }
       const key = toRecordKey(event);
       if (seen.has(key)) {
         continue;
@@ -293,6 +311,6 @@ export async function* watchRecordedInbound(params: {
       }
     }
 
-    await sleep(params.pollMs ?? 250);
+    await sleep(params.pollMs ?? 250, params.signal);
   }
 }

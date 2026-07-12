@@ -65,6 +65,7 @@ export type WaitContext = ProviderContext & {
 };
 
 export type WatchContext = ProviderContext & {
+  signal?: AbortSignal | undefined;
   since?: string;
 };
 

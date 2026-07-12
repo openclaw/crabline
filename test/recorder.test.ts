@@ -463,6 +463,40 @@ describe("recorder", () => {
     expect(next.value?.id).toBe("evt-3");
   });
 
+  it("stops before yielding buffered events after abort", async () => {
+    const filePath = await createRecorderPath();
+    await appendRecordedInbound(filePath, {
+      author: "user",
+      id: "evt-buffered-1",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "first",
+      threadId: "slack:C999",
+    });
+    await appendRecordedInbound(filePath, {
+      author: "user",
+      id: "evt-buffered-2",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "second",
+      threadId: "slack:C999",
+    });
+    const controller = new AbortController();
+    const iterator = watchRecordedInbound({
+      filePath,
+      matches: () => true,
+      signal: controller.signal,
+    })[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { id: "evt-buffered-1" },
+    });
+    controller.abort();
+
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
   it("reads only appended records while watching a large recorder", async () => {
     const filePath = await createRecorderPath();
     const history = Array.from(

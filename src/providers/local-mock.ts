@@ -238,6 +238,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       matches: (entry) =>
         entry.provider === this.id &&
         isAddressInChannel(entry.threadId, target.threadId ?? target.channelId),
+      signal: context.signal,
       since: context.since,
     })) {
       yield event;
