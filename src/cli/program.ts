@@ -632,7 +632,7 @@ async function backupReadyFile(filePath: string, backupPath: string): Promise<bo
     if (code === "ENOENT") {
       return false;
     }
-    if (!code || !["ENOTSUP", "EOPNOTSUPP", "EPERM", "EXDEV"].includes(code)) {
+    if (code === "EEXIST") {
       throw error;
     }
   }

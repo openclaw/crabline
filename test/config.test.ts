@@ -2,18 +2,8 @@ import { describe, expect, it } from "vitest";
 import { ManifestSchema } from "../src/config/schema.js";
 
 describe("manifest schema", () => {
-  it("rejects unsafe inbound regular expressions", () => {
-    for (const pattern of [
-      "^(a+)+$",
-      "^(a|aa)+$",
-      "^((a|aa))+$",
-      "^((a+))+$",
-      "^a*a*$",
-      "^(a|aa){100}$",
-      `^${"(a|aa)".repeat(80)}$`,
-      String.raw`^\(?a$`,
-      String.raw`^(a)\1$`,
-    ]) {
+  it("rejects regex syntax unsupported by the linear-time matcher", () => {
+    for (const pattern of [String.raw`^(a)\1$`, "(?=a)a"]) {
       expect(() =>
         ManifestSchema.parse({
           configVersion: 1,
@@ -32,22 +22,30 @@ describe("manifest schema", () => {
     }
   });
 
-  it("accepts regexes without repetition operators or alternation", () => {
-    expect(() =>
-      ManifestSchema.parse({
-        configVersion: 1,
-        fixtures: [
-          {
-            id: "safe-regex",
-            inboundMatch: { nonce: "ignore", pattern: "^hello[.!]$", strategy: "regex" },
-            mode: "roundtrip",
-            provider: "local",
-            target: { id: "echo-bot" },
-          },
-        ],
-        providers: { local: { adapter: "loopback", platform: "loopback" } },
-      }),
-    ).not.toThrow();
+  it("accepts linear-time alternation and repetition", () => {
+    for (const pattern of [
+      "^(yes|no)$",
+      "^message-[0-9]+$",
+      "^a{1,20}$",
+      "^(a+)+$",
+      `^${"(a|aa)".repeat(80)}$`,
+    ]) {
+      expect(() =>
+        ManifestSchema.parse({
+          configVersion: 1,
+          fixtures: [
+            {
+              id: "safe-regex",
+              inboundMatch: { nonce: "ignore", pattern, strategy: "regex" },
+              mode: "roundtrip",
+              provider: "local",
+              target: { id: "echo-bot" },
+            },
+          ],
+          providers: { local: { adapter: "loopback", platform: "loopback" } },
+        }),
+      ).not.toThrow();
+    }
   });
 
   it("accepts the documented thread target shape", () => {

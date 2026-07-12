@@ -116,4 +116,26 @@ describe("nonce + matcher", () => {
       ),
     ).toBe(false);
   });
+
+  it("matches backtracking-heavy patterns in linear time", () => {
+    expect(
+      matchesInbound(
+        {
+          author: "assistant",
+          id: "1",
+          provider: "loopback",
+          sentAt: new Date().toISOString(),
+          text: `${"a".repeat(10_000)}!`,
+          threadId: "loopback:echo",
+        },
+        {
+          author: "assistant",
+          nonce: "ignore",
+          pattern: "^(a+)+$",
+          strategy: "regex",
+        },
+        "nonce",
+      ),
+    ).toBe(false);
+  });
 });

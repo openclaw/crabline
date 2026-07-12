@@ -159,7 +159,7 @@ describe("run behavior", () => {
     expect(sendCalls).toBe(0);
   });
 
-  it("rejects an unsafe inbound regex before sending", async () => {
+  it("rejects regex syntax unsupported by the linear-time matcher before sending", async () => {
     let sendCalls = 0;
     const provider: ProviderAdapter = {
       id: "mock",
@@ -176,7 +176,7 @@ describe("run behavior", () => {
       },
       waitForInbound: async () => null,
     };
-    const unsafeManifest = withAllCapabilities({
+    const unsupportedManifest = withAllCapabilities({
       ...manifest,
       fixtures: [
         {
@@ -184,7 +184,7 @@ describe("run behavior", () => {
           inboundMatch: {
             author: "assistant",
             nonce: "ignore",
-            pattern: "^(a+)+$",
+            pattern: String.raw`^(a)\1$`,
             strategy: "regex",
           },
         },
@@ -193,7 +193,7 @@ describe("run behavior", () => {
 
     const result = await runFixtureCommand({
       fixtureId: "fixture",
-      manifest: unsafeManifest,
+      manifest: unsupportedManifest,
       manifestPath: "/tmp/crabline.yaml",
       registry: buildRegistry(provider),
     });

@@ -5,7 +5,7 @@
 - Preserve provider-native WhatsApp message acknowledgements, legacy group JIDs, bounded inbound admission, WebSocket error isolation, and strict handshake varints.
 - Authenticate built-in Telegram, Slack, and Zalo webhooks, bound recorder wait state, accept Slack user send targets, preserve canonical Telegram topics, and complete WhatsApp cleanup after close failures.
 - Harden HTTP stream failure handling, bound Mattermost WebSocket delivery, move Slack rate-limit controls out of provider payloads, drain Slack callback bodies, and validate release dispatch and existing release state.
-- Harden ready-file replacement and artifact cleanup, reject unsafe inbound regexes and blank channel selections, redact malformed JSON details, and preserve slash-containing QA thread targets.
+- Harden ready-file replacement and artifact cleanup, use linear-time inbound regex matching, reject blank channel selections, redact malformed JSON details, and preserve slash-containing QA thread targets.
 - Hold serve ready-file ownership across startup and shutdown, preserve live manifests on failed replacement, and retain compound cleanup failures.
 - Reject invalid matchers and provider/fixture mismatches before side effects, drain aborted provider work before cleanup, preserve frozen primary smoke failures, and recover stale smoke locks after PID reuse.
 - Preserve Slack thread scope and validate Telegram command entities.

@@ -1,50 +1,22 @@
-const MAX_INBOUND_REGEX_LENGTH = 512;
+import { RE2JS } from "re2js";
 
-function isEscaped(pattern: string, index: number): boolean {
-  let backslashes = 0;
-  for (let cursor = index - 1; cursor >= 0 && pattern[cursor] === "\\"; cursor -= 1) {
-    backslashes += 1;
-  }
-  return backslashes % 2 === 1;
-}
+const MAX_INBOUND_REGEX_LENGTH = 512;
 
 export function inboundRegexSafetyError(pattern: string): string | undefined {
   if (pattern.length > MAX_INBOUND_REGEX_LENGTH) {
     return `must contain at most ${MAX_INBOUND_REGEX_LENGTH} characters`;
   }
-  if (/\\(?:[1-9]|k<)/u.test(pattern)) {
-    return "must not contain backreferences";
-  }
-
-  let inCharacterClass = false;
-  for (let index = 0; index < pattern.length; index += 1) {
-    const character = pattern[index]!;
-    if (character === "\\") {
-      index += 1;
-      continue;
-    }
-    if (character === "[") {
-      inCharacterClass = true;
-      continue;
-    }
-    if (character === "]" && inCharacterClass) {
-      inCharacterClass = false;
-      continue;
-    }
-    if (inCharacterClass) {
-      continue;
-    }
-    if (character === "|") {
-      return "must not contain alternation";
-    }
-    if (
-      character === "*" ||
-      character === "+" ||
-      character === "{" ||
-      (character === "?" && (pattern[index - 1] !== "(" || isEscaped(pattern, index - 1)))
-    ) {
-      return "must not contain repetition operators";
-    }
+  try {
+    compileInboundRegex(pattern);
+  } catch {
+    return "must use syntax supported by the linear-time regex engine";
   }
   return undefined;
+}
+
+export function compileInboundRegex(pattern: string): RE2JS {
+  if (pattern.length > MAX_INBOUND_REGEX_LENGTH) {
+    throw new Error(`Regex must contain at most ${MAX_INBOUND_REGEX_LENGTH} characters.`);
+  }
+  return RE2JS.compile(RE2JS.translateRegExp(pattern));
 }
