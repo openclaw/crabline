@@ -481,14 +481,13 @@ async function flushTelegramWebhookUpdates(
     const controller = new AbortController();
     state.activeWebhookDeliveries.add(controller);
     try {
+      const headers = new Headers({ "content-type": "application/json" });
+      if (webhook.secretToken) {
+        headers.set("x-telegram-bot-api-secret-token", webhook.secretToken);
+      }
       const response = await fetch(webhook.url, {
         body: JSON.stringify(update),
-        headers: {
-          "content-type": "application/json",
-          ...(webhook.secretToken
-            ? { "x-telegram-bot-api-secret-token": webhook.secretToken }
-            : {}),
-        },
+        headers,
         method: "POST",
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3_000)]),
       });
