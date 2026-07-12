@@ -29,9 +29,10 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
   provider: "mattermost",
   createAdapter(mattermost) {
     return {
-      async probe() {
+      async probe(signal) {
         const response = await fetch(`${mattermost.endpoints.apiRoot}/users/me`, {
           headers: { authorization: `Bearer ${mattermost.botToken}` },
+          ...(signal ? { signal } : {}),
         });
         if (!response.ok) {
           throw new Error(`Crabline Mattermost probe failed with HTTP ${response.status}.`);

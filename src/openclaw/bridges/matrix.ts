@@ -29,9 +29,10 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
   provider: "matrix",
   createAdapter(matrix) {
     return {
-      async probe() {
+      async probe(signal) {
         const response = await fetch(`${matrix.endpoints.clientApiRoot}/account/whoami`, {
           headers: { authorization: `Bearer ${matrix.accessToken}` },
+          ...(signal ? { signal } : {}),
         });
         if (!response.ok) {
           throw new Error(`Crabline Matrix probe failed with HTTP ${response.status}.`);

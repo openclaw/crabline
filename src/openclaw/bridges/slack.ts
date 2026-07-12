@@ -54,10 +54,11 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
   provider: "slack",
   createAdapter(slack) {
     return {
-      async probe() {
+      async probe(signal) {
         const response = await fetch(`${slack.endpoints.apiRoot}auth.test`, {
           headers: { authorization: `Bearer ${slack.botToken}` },
           method: "POST",
+          ...(signal ? { signal } : {}),
         });
         if (!response.ok) {
           throw new Error(`Crabline Slack auth.test probe failed with HTTP ${response.status}.`);

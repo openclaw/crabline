@@ -208,9 +208,12 @@ describe("OpenClaw local provider bridge", () => {
   ])("times out stalled $label probe headers", async ({ label, manifest: probeManifest }) => {
     const controller = new AbortController();
     const timeoutMock = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(() => new Promise<Response>(() => {}));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+      expect(init?.signal).toBe(controller.signal);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+    });
     try {
       const probe = probeOpenClawCrablineProvider(probeManifest);
       expect(timeoutMock).toHaveBeenCalledWith(5_000);
@@ -225,11 +228,19 @@ describe("OpenClaw local provider bridge", () => {
   it("times out a stalled provider probe response body", async () => {
     const controller = new AbortController();
     const timeoutMock = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      json: () => new Promise<unknown>(() => {}),
-      ok: true,
-      status: 200,
-    } as Response);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+      expect(init?.signal).toBe(controller.signal);
+      return Promise.resolve({
+        json: () =>
+          new Promise<unknown>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+              once: true,
+            });
+          }),
+        ok: true,
+        status: 200,
+      } as Response);
+    });
     try {
       const probe = probeOpenClawCrablineProvider(manifest);
       controller.abort(new DOMException("probe deadline", "TimeoutError"));
