@@ -70,6 +70,19 @@ describe("release workflow", () => {
     expect(releaseStep).toContain("--verify-tag");
   });
 
+  it("pins privileged release actions to immutable revisions", async () => {
+    const workflow = await readWorkflow();
+    const steps = workflow.jobs?.release?.steps ?? [];
+    const actionRefs = steps
+      .map((step) => step.uses)
+      .filter((uses): uses is string => uses !== undefined);
+
+    expect(actionRefs).not.toEqual([]);
+    for (const actionRef of actionRefs) {
+      expect(actionRef).toMatch(/^[^@]+@[0-9a-f]{40}$/u);
+    }
+  });
+
   it("requires an exact changelog version heading", async () => {
     const workflow = await readWorkflow();
     const verifyStep = workflow.jobs?.release?.steps?.find(
