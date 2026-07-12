@@ -784,6 +784,7 @@ describe("Matrix local provider server", () => {
     });
     servers.push(server);
     let firstEventId = "";
+    let secondEventId = "";
     let firstBatch = "";
     let typingStatus: number | undefined;
     for (let index = 0; index < 1_000; index += 1) {
@@ -817,6 +818,9 @@ describe("Matrix local provider server", () => {
         );
         typingStatus = typing.status;
       }
+      if (index === 1) {
+        secondEventId = body.event_id;
+      }
     }
     expect(typingStatus).toBe(200);
     const refreshed = await fetch(
@@ -836,20 +840,26 @@ describe("Matrix local provider server", () => {
         method: "PUT",
       },
     );
-    expect(admitted.status).toBe(200);
-    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
-      body: JSON.stringify({
-        roomId: "!bounded:matrix.test",
-        senderId: server.manifest.botUserId,
-        text: "advance the bounded timeline",
-      }),
-      headers: new Headers([
-        ["content-type", "application/json"],
-        ["x-crabline-admin-token", server.manifest.adminToken],
-      ]),
-      method: "POST",
+    expect(admitted.status).toBe(429);
+    await expect(admitted.json()).resolves.toEqual({
+      errcode: "M_LIMIT_EXCEEDED",
+      error: "Too many retained transaction responses",
     });
-    expect(inbound.status).toBe(200);
+    for (const text of ["advance the bounded timeline", "overflow the bounded timeline"]) {
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          roomId: "!bounded:matrix.test",
+          senderId: server.manifest.botUserId,
+          text,
+        }),
+        headers: new Headers([
+          ["content-type", "application/json"],
+          ["x-crabline-admin-token", server.manifest.adminToken],
+        ]),
+        method: "POST",
+      });
+      expect(inbound.status).toBe(200);
+    }
 
     const sync = (await (
       await fetch(server.manifest.endpoints.syncUrl, { headers: auth("test-token-placeholder") })
@@ -878,5 +888,14 @@ describe("Matrix local provider server", () => {
       },
     );
     await expect(retried.json()).resolves.toEqual({ event_id: firstEventId });
+    const untouchedRetry = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-1`,
+      {
+        body: JSON.stringify({ body: "transaction remains idempotent", msgtype: "m.text" }),
+        headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
+        method: "PUT",
+      },
+    );
+    await expect(untouchedRetry.json()).resolves.toEqual({ event_id: secondEventId });
   });
 });

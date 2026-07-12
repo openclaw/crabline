@@ -295,15 +295,7 @@ function rememberTransaction(
   key: string,
   response: MatrixTransactionResponse,
 ): void {
-  forgetExpiredTransactions(state);
   state.transactions.set(key, response);
-  while (state.transactions.size > MAX_MATRIX_TRANSACTION_RESPONSES) {
-    const oldestKey = state.transactions.keys().next().value;
-    if (oldestKey === undefined) {
-      break;
-    }
-    state.transactions.delete(oldestKey);
-  }
 }
 
 function forgetExpiredTransactions(state: MatrixServerState): void {
@@ -649,6 +641,9 @@ async function handleMatrixApi(params: {
     const existingResponse = transactionResponse(params.state, transactionKey);
     if (existingResponse) {
       return jsonResponse(existingResponse.body, existingResponse.status);
+    }
+    if (params.state.transactions.size >= MAX_MATRIX_TRANSACTION_RESPONSES) {
+      return matrixError("M_LIMIT_EXCEEDED", "Too many retained transaction responses", 429);
     }
     const room = params.state.rooms.get(roomId);
     if (!room) {
