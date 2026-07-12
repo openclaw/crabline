@@ -39,7 +39,11 @@ import {
 type SmokeRunTestDependencies = {
   acquireLock?: () => Promise<{
     assertOwned(): Promise<void>;
-    prepareForRelease(): Promise<void>;
+    commitFileAtomically(params: {
+      contents: string;
+      destinationPath: string;
+      stageFile(filePath: string, contents: string): Promise<void>;
+    }): Promise<void>;
     release(): Promise<void>;
   }>;
   publishGeneration?: typeof publishOpenClawCrablineArtifactGeneration;
@@ -1835,7 +1839,7 @@ describe("OpenClaw local provider bridge", () => {
           {
             acquireLock: async () => ({
               async assertOwned() {},
-              async prepareForRelease() {
+              async commitFileAtomically() {
                 throw failure;
               },
               release,

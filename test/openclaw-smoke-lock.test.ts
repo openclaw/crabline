@@ -76,6 +76,51 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("does not delete a successor lock when a paused owner resumes release", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    const suspendedOwnerDirectory = `${lockDirectory}.suspended-owner`;
+    let resumeRelease: (() => void) | undefined;
+    let releaseValidated: (() => void) | undefined;
+    const resumeReleasePromise = new Promise<void>((resolve) => {
+      resumeRelease = resolve;
+    });
+    const releaseValidatedPromise = new Promise<void>((resolve) => {
+      releaseValidated = resolve;
+    });
+    let successorLock: Awaited<ReturnType<typeof acquireOpenClawCrablineSmokeRunLock>> | undefined;
+    try {
+      const oldLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        beforeReleaseClaim: async () => {
+          releaseValidated?.();
+          await resumeReleasePromise;
+        },
+        startHeartbeat: disableHeartbeat,
+      });
+      const oldRelease = oldLock.release();
+      await releaseValidatedPromise;
+
+      await fs.rename(lockDirectory, suspendedOwnerDirectory);
+      successorLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        startHeartbeat: disableHeartbeat,
+      });
+      resumeRelease?.();
+
+      await expect(oldRelease).resolves.toBeUndefined();
+      await expect(successorLock.assertOwned()).resolves.toBeUndefined();
+      expect(await fs.stat(lockDirectory)).toBeDefined();
+    } finally {
+      resumeRelease?.();
+      await successorLock?.release();
+      await fs.rm(suspendedOwnerDirectory, { force: true, recursive: true });
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("reclaims a live PID lock when the acquiring process has a new start identity", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
@@ -387,7 +432,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("fails ownership preparation after a heartbeat renewal error", async () => {
+  it("fails pointer fencing after a heartbeat renewal error", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const ownerPath = path.join(
@@ -406,9 +451,15 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 25));
 
-      await expect(lock.prepareForRelease()).rejects.toThrow(
-        "OpenClaw Crabline smoke lock heartbeat failed.",
-      );
+      await expect(
+        lock.commitFileAtomically({
+          contents: "{}\n",
+          destinationPath: path.join(outputDir, "current.json"),
+          stageFile: async (filePath, contents) => {
+            await fs.writeFile(filePath, contents);
+          },
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke lock heartbeat failed.");
 
       await fs.writeFile(ownerPath, owner);
       await expect(lock.release()).resolves.toBeUndefined();
