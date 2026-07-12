@@ -137,6 +137,41 @@ function normalizeHostname(hostname: string): string {
   return hostname.replace(/^\[(.*)\]$/u, "$1").replace(/%25/gu, "%");
 }
 
+function parseIpv6Hextets(address: string): number[] | undefined {
+  const sections = address.split("::");
+  if (sections.length > 2) {
+    return undefined;
+  }
+  const parseSection = (section: string): number[] =>
+    section
+      ? section.split(":").flatMap((value) => {
+          if (!value.includes(".")) {
+            return [Number.parseInt(value, 16)];
+          }
+          const octets = value.split(".").map(Number);
+          return [(octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!];
+        })
+      : [];
+  const leading = parseSection(sections[0]!);
+  const trailing = parseSection(sections[1] ?? "");
+  const omitted = sections.length === 2 ? 8 - leading.length - trailing.length : 0;
+  const hextets = [...leading, ...Array.from({ length: omitted }, () => 0), ...trailing];
+  return hextets.length === 8 ? hextets : undefined;
+}
+
+function embeddedNat64Ipv4(address: string): string | undefined {
+  const hextets = parseIpv6Hextets(address);
+  if (
+    !hextets ||
+    hextets[0] !== 0x64 ||
+    hextets[1] !== 0xff9b ||
+    hextets.slice(2, 6).some((value) => value !== 0)
+  ) {
+    return undefined;
+  }
+  return [hextets[6]! >> 8, hextets[6]! & 0xff, hextets[7]! >> 8, hextets[7]! & 0xff].join(".");
+}
+
 function isBlockedWebhookAddress(address: string): boolean {
   const normalized = normalizeHostname(address);
   const family = isIP(normalized);
@@ -147,6 +182,10 @@ function isBlockedWebhookAddress(address: string): boolean {
     );
   }
   if (family === 6) {
+    const embeddedIpv4 = embeddedNat64Ipv4(normalized);
+    if (embeddedIpv4 && isBlockedWebhookAddress(embeddedIpv4)) {
+      return true;
+    }
     if (GLOBAL_IPV6_EXCEPTIONS.check(normalized, "ipv6")) {
       return false;
     }
