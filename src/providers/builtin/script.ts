@@ -1,5 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
+import { z } from "zod";
 import { CrablineError, ensureErrorMessage } from "../../core/errors.js";
 import type {
   ProviderAdapter,
@@ -8,6 +9,8 @@ import type {
   WaitContext,
   WatchContext,
 } from "../types.js";
+
+const MAX_SCRIPT_OUTPUT_BYTES = 1024 * 1024;
 
 type ScriptPayload = {
   fixture: ProviderContext["fixture"];
@@ -18,76 +21,201 @@ type ScriptPayload = {
   };
 };
 
-type ScriptProbeResult = {
-  details?: string[];
-  healthy: boolean;
-};
+const ScriptMessageSchema = z.object({
+  author: z.enum(["assistant", "system", "user"]),
+  id: z.string().min(1),
+  raw: z.unknown().optional(),
+  sentAt: z.string().min(1),
+  text: z.string(),
+  threadId: z.string().min(1),
+});
 
-type ScriptSendResult = {
-  accepted: boolean;
-  messageId: string;
-  threadId: string;
-};
+const ScriptProbeResultSchema = z.object({
+  details: z.array(z.string()).optional(),
+  healthy: z.boolean(),
+});
 
-type ScriptInboundResult = {
-  message?: {
-    author: "assistant" | "system" | "user";
-    id: string;
-    raw?: unknown;
-    sentAt: string;
-    text: string;
-    threadId: string;
-  };
-  timeout?: boolean;
-};
+const ScriptSendResultSchema = z.object({
+  accepted: z.boolean(),
+  messageId: z.string().min(1),
+  threadId: z.string().min(1),
+});
 
-function runScript<T>(command: string, payload: unknown, cwd?: string, shell?: string): Promise<T> {
+const ScriptInboundResultSchema = z
+  .object({
+    message: ScriptMessageSchema.optional(),
+    timeout: z.boolean().optional(),
+  })
+  .refine(
+    (result) =>
+      (result.timeout === true && result.message === undefined) ||
+      (result.timeout !== true && result.message !== undefined),
+    { message: "result must contain either a message or timeout: true" },
+  );
+
+function terminateChild(child: ChildProcess): void {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+
+  if (process.platform !== "win32" && child.pid) {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+      return;
+    } catch {
+      // The process group may have exited with the shell.
+    }
+  }
+  child.kill("SIGKILL");
+}
+
+function formatValidationError(error: z.ZodError): string {
+  return error.issues
+    .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "result"}: ${issue.message}`)
+    .join("; ");
+}
+
+function parseScriptJson<T>(params: { command: string; output: string; schema: z.ZodType<T> }): T {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(params.output);
+  } catch (error) {
+    throw new CrablineError(
+      `Script command did not return valid JSON: ${params.command}\n${ensureErrorMessage(error)}`,
+      { kind: "config" },
+    );
+  }
+
+  const result = params.schema.safeParse(parsed);
+  if (!result.success) {
+    throw new CrablineError(
+      `Script command returned invalid result: ${params.command}\n${formatValidationError(result.error)}`,
+      { kind: "config" },
+    );
+  }
+  return result.data;
+}
+
+function runScript<T>(params: {
+  command: string;
+  cwd?: string | undefined;
+  payload: unknown;
+  schema: z.ZodType<T>;
+  shell?: string | undefined;
+  timeoutMs: number;
+}): Promise<T> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, {
-      cwd: cwd ? path.resolve(cwd) : process.cwd(),
+    const child = spawn(params.command, {
+      cwd: params.cwd ? path.resolve(params.cwd) : process.cwd(),
       env: process.env,
-      shell: shell ?? true,
+      shell: params.shell ?? true,
+      detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    let stdout = "";
-    let stderr = "";
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let outputBytes = 0;
+    let settled = false;
+
+    const finish = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
+
+    const failForOutputLimit = () => {
+      finish(() => {
+        terminateChild(child);
+        reject(
+          new CrablineError(
+            `Script command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of output: ${params.command}`,
+            { kind: "connectivity" },
+          ),
+        );
+      });
+    };
 
     child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      outputBytes += buffer.length;
+      if (outputBytes > MAX_SCRIPT_OUTPUT_BYTES) {
+        failForOutputLimit();
+        return;
+      }
+      stdout.push(buffer);
     });
 
     child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(
-          new CrablineError(
-            `Script command failed: ${command}\n${stderr.trim() || stdout.trim()}`,
-            {
-              kind: "connectivity",
-            },
-          ),
-        );
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      outputBytes += buffer.length;
+      if (outputBytes > MAX_SCRIPT_OUTPUT_BYTES) {
+        failForOutputLimit();
         return;
       }
-
-      try {
-        resolve(JSON.parse(stdout) as T);
-      } catch (error) {
-        reject(
-          new CrablineError(
-            `Script command did not return valid JSON: ${command}\n${ensureErrorMessage(error)}`,
-            { kind: "config" },
-          ),
-        );
-      }
+      stderr.push(buffer);
     });
 
-    child.stdin.end(JSON.stringify(payload));
+    child.stdin.on("error", () => {
+      // Child closure is reported through the process error/close handlers.
+    });
+    child.once("error", (error) => {
+      finish(() => {
+        reject(
+          new CrablineError(
+            `Script command failed to start: ${params.command}\n${ensureErrorMessage(error)}`,
+            { cause: error, kind: "connectivity" },
+          ),
+        );
+      });
+    });
+    child.once("close", (code, signal) => {
+      finish(() => {
+        const stdoutText = Buffer.concat(stdout).toString("utf8");
+        const stderrText = Buffer.concat(stderr).toString("utf8");
+        if (code !== 0) {
+          reject(
+            new CrablineError(
+              `Script command failed: ${params.command}${
+                signal ? ` (${signal})` : ""
+              }\n${stderrText.trim() || stdoutText.trim()}`,
+              { kind: "connectivity" },
+            ),
+          );
+          return;
+        }
+
+        try {
+          resolve(
+            parseScriptJson({
+              command: params.command,
+              output: stdoutText,
+              schema: params.schema,
+            }),
+          );
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+
+    const timeout = setTimeout(() => {
+      finish(() => {
+        terminateChild(child);
+        reject(
+          new CrablineError(
+            `Script command timed out after ${params.timeoutMs}ms: ${params.command}`,
+            { kind: "timeout" },
+          ),
+        );
+      });
+    }, params.timeoutMs);
+    timeout.unref();
+
+    child.stdin.end(JSON.stringify(params.payload));
   });
 }
 
@@ -134,12 +262,14 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       };
     }
 
-    const result = await runScript<ScriptProbeResult>(
+    const result = await runScript({
       command,
-      createPayload(context),
-      this.#config.cwd,
-      this.#config.shell,
-    );
+      cwd: this.#config.cwd,
+      payload: createPayload(context),
+      schema: ScriptProbeResultSchema,
+      shell: this.#config.shell,
+      timeoutMs: context.fixture.timeoutMs,
+    });
     return {
       details: result.details ?? [],
       healthy: result.healthy,
@@ -154,9 +284,10 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       });
     }
 
-    return runScript<ScriptSendResult>(
+    return runScript({
       command,
-      {
+      cwd: this.#config.cwd,
+      payload: {
         ...createPayload(context),
         outbound: {
           mode: context.mode,
@@ -165,9 +296,10 @@ export class ScriptProviderAdapter implements ProviderAdapter {
           text: context.text,
         },
       },
-      this.#config.cwd,
-      this.#config.shell,
-    );
+      schema: ScriptSendResultSchema,
+      shell: this.#config.shell,
+      timeoutMs: context.fixture.timeoutMs,
+    });
   }
 
   async waitForInbound(context: WaitContext) {
@@ -176,9 +308,10 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       return null;
     }
 
-    const result = await runScript<ScriptInboundResult>(
+    const result = await runScript({
       command,
-      {
+      cwd: this.#config.cwd,
+      payload: {
         ...createPayload(context),
         wait: {
           nonce: context.nonce,
@@ -187,9 +320,10 @@ export class ScriptProviderAdapter implements ProviderAdapter {
           timeoutMs: context.timeoutMs,
         },
       },
-      this.#config.cwd,
-      this.#config.shell,
-    );
+      schema: ScriptInboundResultSchema,
+      shell: this.#config.shell,
+      timeoutMs: context.timeoutMs,
+    });
 
     if (result.timeout || !result.message) {
       return null;
@@ -214,8 +348,41 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       env: process.env,
       shell: this.#config.shell ?? true,
       detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "inherit"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
+
+    let buffer = "";
+    let stderr = "";
+    let childError: unknown;
+    let outputLimitError: CrablineError | undefined;
+    child.stdin.on("error", () => {
+      // Child closure is reported through the process error/close handlers.
+    });
+    child.stderr.on("data", (chunk) => {
+      if (outputLimitError) {
+        return;
+      }
+      stderr += String(chunk);
+      if (Buffer.byteLength(stderr) > MAX_SCRIPT_OUTPUT_BYTES) {
+        outputLimitError = new CrablineError(
+          `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of stderr: ${command}`,
+          { kind: "connectivity" },
+        );
+        terminateChild(child);
+      }
+    });
+    child.once("error", (error) => {
+      childError = error;
+    });
+    const childClosed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolve({ code: child.exitCode, signal: child.signalCode });
+          return;
+        }
+        child.once("close", (code, signal) => resolve({ code, signal }));
+      },
+    );
     child.stdin.end(
       JSON.stringify({
         ...createPayload(context),
@@ -226,28 +393,32 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       }),
     );
 
-    let buffer = "";
-    const childClosed = new Promise<void>((resolve) => {
-      if (child.exitCode !== null || child.signalCode !== null) {
-        resolve();
-        return;
-      }
-      child.once("close", () => resolve());
-    });
-
     try {
       for await (const chunk of child.stdout) {
         buffer += String(chunk);
+        if (Buffer.byteLength(buffer) > MAX_SCRIPT_OUTPUT_BYTES && !buffer.includes("\n")) {
+          throw new CrablineError(
+            `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes without a newline: ${command}`,
+            { kind: "config" },
+          );
+        }
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
         for (const line of lines) {
           if (!line.trim()) {
             continue;
           }
-          const parsed = JSON.parse(line) as ScriptInboundResult["message"];
-          if (!parsed) {
-            continue;
+          if (Buffer.byteLength(line) > MAX_SCRIPT_OUTPUT_BYTES) {
+            throw new CrablineError(
+              `Script watch command emitted a JSON line larger than ${MAX_SCRIPT_OUTPUT_BYTES} bytes: ${command}`,
+              { kind: "config" },
+            );
           }
+          const parsed = parseScriptJson({
+            command,
+            output: line,
+            schema: ScriptMessageSchema,
+          });
           yield {
             ...parsed,
             provider: this.id,
@@ -256,25 +427,50 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       }
 
       if (buffer.trim()) {
-        const parsed = JSON.parse(buffer) as ScriptInboundResult["message"];
-        if (parsed) {
-          yield {
-            ...parsed,
-            provider: this.id,
-          };
-        }
+        const parsed = parseScriptJson({
+          command,
+          output: buffer,
+          schema: ScriptMessageSchema,
+        });
+        yield {
+          ...parsed,
+          provider: this.id,
+        };
       }
+
+      const exit = await childClosed;
+      if (outputLimitError) {
+        throw outputLimitError;
+      }
+      if (childError) {
+        throw new CrablineError(
+          `Script watch command failed to start: ${command}\n${ensureErrorMessage(childError)}`,
+          { cause: childError, kind: "connectivity" },
+        );
+      }
+      if (exit.code !== 0) {
+        throw new CrablineError(
+          `Script watch command failed: ${command}${
+            exit.signal ? ` (${exit.signal})` : ""
+          }\n${stderr.trim()}`,
+          { kind: "connectivity" },
+        );
+      }
+    } catch (error) {
+      if (outputLimitError) {
+        throw outputLimitError;
+      }
+      if (childError) {
+        throw new CrablineError(
+          `Script watch command failed to start: ${command}\n${ensureErrorMessage(childError)}`,
+          { cause: childError, kind: "connectivity" },
+        );
+      }
+      throw error;
     } finally {
       child.stdin.destroy();
       if (child.exitCode === null && child.signalCode === null) {
-        child.kill();
-        if (process.platform !== "win32" && child.pid) {
-          try {
-            process.kill(-child.pid, "SIGKILL");
-          } catch {
-            // The process group may have already exited with the shell.
-          }
-        }
+        terminateChild(child);
       }
       await childClosed;
     }
