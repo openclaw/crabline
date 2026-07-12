@@ -233,28 +233,28 @@ crabline --json serve whatsapp --ready-file .crabline/whatsapp-server.json
 
 Manifest fields:
 
-- `endpoints.apiRoot`: Crabline WhatsApp local provider API root
+- `endpoints.apiRoot`: versioned WhatsApp Graph API root
+- `endpoints.phoneNumberUrl`: provider-native phone-number resource
 - `endpoints.baileysWebSocketUrl`: Baileys-compatible WebSocket URL for
   `waWebSocketUrl`, including the local provider access token query parameter
 - `accessToken`: bearer token for local provider requests
 - `adminToken`: value for the `X-Crabline-Admin-Token` header on admin ingress
 - `selfJid`: local authenticated WhatsApp user JID
-- `env.CRABLINE_WHATSAPP_ACCESS_TOKEN`: same value as `accessToken`
-- `env.CRABLINE_WHATSAPP_API_ROOT`: same value as `endpoints.apiRoot`
-- `env.CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL`: same value as
-  `endpoints.baileysWebSocketUrl`
-- `env.CRABLINE_WHATSAPP_RECORDER_PATH`: recorder file for HTTP traffic and
-  Baileys WebSocket stanzas
-- `env.CRABLINE_WHATSAPP_SELF_JID`: local authenticated WhatsApp user JID
+- `env.CLOUD_API_ACCESS_TOKEN`: same value as `accessToken`
+- `env.CLOUD_API_VERSION`: Graph API version used by the local server
+- `env.WA_BASE_URL`: local Graph API origin
+- `env.WA_PHONE_NUMBER_ID`: local sender phone-number resource ID
 - `endpoints.adminInboundUrl`: authenticated admin ingress for test user
   messages using the WhatsApp Business webhook payload shape
-- `endpoints.messagesUrl`: text send endpoint for Graph-style callers
-- `endpoints.presenceUrl`: presence endpoint for Graph-style callers
+- `endpoints.messagesUrl`: provider-native Cloud API message and status endpoint
+- `endpoints.statusUrl`: alias for the same provider-native status endpoint
 - `recorderPath`: JSONL provider traffic recorder for HTTP traffic and Baileys
   WebSocket stanzas
 
 Pass `endpoints.baileysWebSocketUrl` to Baileys as `waWebSocketUrl` when a
-runtime needs to connect through the local provider. The local server completes
+runtime needs to connect through the local provider. Cloud API-compatible
+clients can send text messages through
+`POST /v25.0/<phone-number-id>/messages` with a bearer token. The local server completes
 the Baileys Noise handshake, serves bootstrap/device/prekey queries, and records
 encrypted outbound WebSocket stanzas. The WebSocket endpoint rejects clients
 that do not present the access token embedded in the manifest URL. The admin

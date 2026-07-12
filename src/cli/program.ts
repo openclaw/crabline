@@ -461,7 +461,8 @@ function renderServeProviderFields(manifest: CrablineServerManifest): string[] |
       `  accessToken: ${manifest.accessToken}`,
       `  baileysWebSocket: ${manifest.endpoints.baileysWebSocketUrl}`,
       `  messages: ${manifest.endpoints.messagesUrl}`,
-      `  presence: ${manifest.endpoints.presenceUrl}`,
+      `  phoneNumber: ${manifest.endpoints.phoneNumberUrl}`,
+      `  status: ${manifest.endpoints.statusUrl}`,
       `  selfJid: ${manifest.selfJid}`,
     ];
   }

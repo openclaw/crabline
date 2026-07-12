@@ -29,6 +29,7 @@ import type { ServerRequestEvent } from "./http.js";
 // as a black-box client to verify this narrow WhatsApp Web wire subset.
 const EMPTY_BUFFER = Buffer.alloc(0);
 const IV_LENGTH = 12;
+const MAX_PENDING_INBOUND_MESSAGES = 1_000;
 type NodeBuffer = Buffer<ArrayBufferLike>;
 const WHATSAPP_NOISE_CERT_CHAIN = Buffer.from(
   "CncKMwjjAhADGiCRKg7Kg1iu4CSulwLBaxX51Tefw6VXGgZqcr5OEbXIRiDQ04bOBijQjZ/TBhJA34Bj82jAHhLpCWBNVBlGnFDieamd8+138S57uMt9ke9mrn5r4+VepwBPKEgHjob6bR70rlCmWDkxZv+CfVjIAxJ2CjIIAxAAGiAcUamsMDmUxsjQuS6hh4pTNHZZnMWZ++o1mX2aqQzOYiCAka6+Bij/3rfcBhJAJw8pRkhTn+1IcOJQVN1OlZg6uikYnCumyO7acFVVX3U3QPXsGSq2TCbCbWrebSC593Su43EgprIDlfU8ZgWFBw==",
@@ -37,7 +38,7 @@ const WHATSAPP_NOISE_CERT_CHAIN = Buffer.from(
 
 export type WhatsAppBaileysWebSocketServer = {
   close(): Promise<void>;
-  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): void;
+  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): "delivered" | "queued";
 };
 
 export type WhatsAppBaileysWebSocketServerParams = {
@@ -260,10 +261,15 @@ class WhatsAppBaileysWebSocketSession {
     private readonly params: {
       appendEvent(event: ServerRequestEvent): Promise<void>;
       path: string;
+      onOpen(session: WhatsAppBaileysWebSocketSession): void;
       selfJid: string;
       signalBundles: Map<string, MockSignalBundle>;
     },
   ) {}
+
+  get isOpen(): boolean {
+    return this.#handshakeState === "open" && this.socket.readyState === WebSocket.OPEN;
+  }
 
   handleMessage(data: RawData): void {
     void this.#handleMessage(data).catch((error: unknown) => {
@@ -271,11 +277,12 @@ class WhatsAppBaileysWebSocketSession {
     });
   }
 
-  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): void {
-    if (this.#handshakeState !== "open" || this.socket.readyState !== WebSocket.OPEN) {
-      return;
+  deliverInboundMessage(message: WhatsAppBaileysInboundMessage): boolean {
+    if (!this.isOpen) {
+      return false;
     }
     this.#sendNode(createInboundMessageNode(message));
+    return true;
   }
 
   async #handleMessage(data: RawData): Promise<void> {
@@ -300,6 +307,7 @@ class WhatsAppBaileysWebSocketSession {
           content: [{ attrs: { count: "0" }, tag: "offline" }],
           tag: "ib",
         });
+        this.params.onOpen(this);
         continue;
       }
       await this.#handleNode(await this.#noise.decodeTransportNode(frame));
@@ -512,7 +520,23 @@ export function attachWhatsAppBaileysWebSocketServer(
 ): WhatsAppBaileysWebSocketServer {
   const signalBundles = new Map<string, MockSignalBundle>();
   const sessions = new Set<WhatsAppBaileysWebSocketSession>();
+  const pendingMessages: WhatsAppBaileysInboundMessage[] = [];
   const wss = new WebSocketServer({ noServer: true });
+  const flushPendingMessages = (session: WhatsAppBaileysWebSocketSession) => {
+    while (pendingMessages.length > 0) {
+      const message = pendingMessages[0];
+      if (!message || !session.deliverInboundMessage(message)) {
+        return;
+      }
+      pendingMessages.shift();
+    }
+  };
+  const enqueuePendingMessage = (message: WhatsAppBaileysInboundMessage) => {
+    if (pendingMessages.length >= MAX_PENDING_INBOUND_MESSAGES) {
+      throw new Error(`WhatsApp inbound queue is full (${MAX_PENDING_INBOUND_MESSAGES} messages).`);
+    }
+    pendingMessages.push(message);
+  };
   const handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname !== params.path) {
@@ -532,6 +556,9 @@ export function attachWhatsAppBaileysWebSocketServer(
   wss.on("connection", (socket: WebSocket) => {
     const session = new WhatsAppBaileysWebSocketSession(socket, {
       appendEvent: params.appendEvent,
+      onOpen: (openSession) => {
+        setImmediate(() => flushPendingMessages(openSession));
+      },
       path: params.path,
       selfJid: params.selfJid,
       signalBundles,
@@ -546,6 +573,7 @@ export function attachWhatsAppBaileysWebSocketServer(
       for (const client of wss.clients) {
         client.close();
       }
+      pendingMessages.length = 0;
       await new Promise<void>((resolve, reject) => {
         wss.close((error) => {
           if (error) {
@@ -557,9 +585,15 @@ export function attachWhatsAppBaileysWebSocketServer(
       });
     },
     deliverInboundMessage(message) {
-      for (const session of sessions) {
-        session.deliverInboundMessage(message);
+      if (pendingMessages.length === 0) {
+        for (const session of sessions) {
+          if (session.deliverInboundMessage(message)) {
+            return "delivered";
+          }
+        }
       }
+      enqueuePendingMessage(message);
+      return "queued";
     },
   };
 }

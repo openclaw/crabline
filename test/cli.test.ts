@@ -466,25 +466,31 @@ describe("cli", () => {
         baileysWebSocketUrl?: string;
         messagesUrl?: string;
       };
-      env?: { CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL?: string };
+      env?: {
+        CLOUD_API_ACCESS_TOKEN?: string;
+        CLOUD_API_VERSION?: string;
+        WA_PHONE_NUMBER_ID?: string;
+      };
       provider?: string;
     };
     expect(manifest.provider).toBe("whatsapp");
     expect(manifest.accessToken).toBe("test-whatsapp-access-token");
     expect(manifest.adminToken).toBe("test-whatsapp-admin-token");
-    expect(manifest.endpoints?.apiRoot).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp$/u);
+    expect(manifest.endpoints?.apiRoot).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v25\.0$/u);
     expect(manifest.endpoints?.adminInboundUrl).toMatch(
-      /^http:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/inbound$/u,
+      /^http:\/\/127\.0\.0\.1:\d+\/_crabline\/admin\/whatsapp\/inbound$/u,
     );
     expect(manifest.endpoints?.messagesUrl).toMatch(
-      /^http:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/messages$/u,
+      /^http:\/\/127\.0\.0\.1:\d+\/v25\.0\/100000000000000\/messages$/u,
     );
     expect(manifest.endpoints?.baileysWebSocketUrl).toMatch(
-      /^ws:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp\/ws\/chat\?access_token=test-whatsapp-access-token$/u,
+      /^ws:\/\/127\.0\.0\.1:\d+\/ws\/chat\?access_token=test-whatsapp-access-token$/u,
     );
-    expect(manifest.env?.CRABLINE_WHATSAPP_BAILEYS_WEB_SOCKET_URL).toBe(
-      manifest.endpoints?.baileysWebSocketUrl,
-    );
+    expect(manifest.env).toMatchObject({
+      CLOUD_API_ACCESS_TOKEN: "test-whatsapp-access-token",
+      CLOUD_API_VERSION: "v25.0",
+      WA_PHONE_NUMBER_ID: "100000000000000",
+    });
     await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "whatsapp"');
   });
 
