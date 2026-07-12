@@ -115,6 +115,35 @@ describe("WhatsApp webhook normalizer", () => {
     ]);
   });
 
+  it("validates and canonicalizes generic fallback timestamps", () => {
+    expect(
+      normalizeWhatsAppWebhookPayload({
+        message: { sentAt: "2023-11-14T23:13:20+01:00", text: "nested" },
+        sentAt: "2023-11-14T23:13:20+01:00",
+        threadId: "15551234567",
+      }),
+    ).toMatchObject([
+      {
+        message: { sentAt: "2023-11-14T22:13:20.000Z" },
+        sentAt: "2023-11-14T22:13:20.000Z",
+      },
+    ]);
+
+    expect(() =>
+      normalizeWhatsAppWebhookPayload({
+        sentAt: "not-a-timestamp",
+        text: "invalid",
+        threadId: "15551234567",
+      }),
+    ).toThrow("WhatsApp fallback sentAt must be a valid timestamp");
+    expect(() =>
+      normalizeWhatsAppWebhookPayload({
+        message: { sentAt: "not-a-timestamp", text: "invalid" },
+        threadId: "15551234567",
+      }),
+    ).toThrow("WhatsApp fallback message.sentAt must be a valid timestamp");
+  });
+
   it("rejects a malformed batch without recording valid siblings", async () => {
     const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
     const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
