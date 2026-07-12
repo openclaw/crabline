@@ -870,6 +870,73 @@ describe("telegram local provider server", () => {
     }
   });
 
+  it("requires HTTPS except for loopback HTTP on loopback-bound servers", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    const rejected = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
+      {
+        body: JSON.stringify({ url: "http://192.168.1.10/telegram" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(rejected.status).toBe(400);
+    await expect(rejected.json()).resolves.toEqual({
+      description: "Bad Request: webhook URL must use HTTPS",
+      error_code: 400,
+      ok: false,
+    });
+  });
+
+  it("blocks private and link-local webhook targets when remotely bound", async () => {
+    const server = await startTelegramServer({
+      botToken: "test-token-placeholder",
+      host: "0.0.0.0",
+    });
+    servers.push(server);
+    const apiRoot = server.manifest.baseUrl.replace("0.0.0.0", "127.0.0.1");
+
+    for (const url of [
+      "https://10.0.0.1/telegram",
+      "https://127.0.0.1/telegram",
+      "https://169.254.169.254/latest/meta-data",
+      "https://[::1]/telegram",
+      "https://[::ffff:7f00:1]/telegram",
+    ]) {
+      const response = await fetch(`${apiRoot}/bottest-token-placeholder/setWebhook`, {
+        body: JSON.stringify({ url }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        description: "Bad Request: webhook URL must not target a private or link-local address",
+        error_code: 400,
+        ok: false,
+      });
+    }
+
+    const http = await fetch(`${apiRoot}/bottest-token-placeholder/setWebhook`, {
+      body: JSON.stringify({ url: "http://93.184.216.34/telegram" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(http.status).toBe(400);
+    await expect(http.json()).resolves.toMatchObject({
+      description: "Bad Request: webhook URL must use HTTPS",
+      ok: false,
+    });
+
+    const publicHttps = await fetch(`${apiRoot}/bottest-token-placeholder/setWebhook`, {
+      body: JSON.stringify({ url: "https://93.184.216.34/telegram" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(publicHttps.status).toBe(200);
+  });
+
   it("rejects unauthenticated inbound updates", async () => {
     const directory = await createTempDir();
     directories.push(directory);

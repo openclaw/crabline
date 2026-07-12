@@ -1,8 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { lookup } from "node:dns/promises";
-import { request as requestHttp, type ClientRequest, type IncomingMessage } from "node:http";
-import { request as requestHttps } from "node:https";
-import { BlockList, isIP } from "node:net";
+import type { ClientRequest, IncomingMessage } from "node:http";
 import path from "node:path";
 import {
   adminAuthError,
@@ -21,12 +18,16 @@ import {
 } from "./http.js";
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 import { resolveMaxPendingInboundEvents } from "./pending-events.js";
+import {
+  postWebhookRequest,
+  validateWebhookTarget,
+  type WebhookAddress,
+} from "./webhook-target.js";
 
 type ZaloChatType = "GROUP" | "PRIVATE";
 
 const DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_MS = 5_000;
 const MAX_WEBHOOK_DELIVERY_TIMEOUT_MS = 30_000;
-const BLOCKED_WEBHOOK_ADDRESSES = createBlockedWebhookAddresses();
 
 type ZaloMessage = {
   chat: { chat_type: ZaloChatType; id: string };
@@ -48,11 +49,6 @@ type PendingUpdateRequest = {
   request: IncomingMessage;
   resolve(response: Response): void;
   timeout: NodeJS.Timeout | undefined;
-};
-
-type WebhookAddress = {
-  address: string;
-  family: 4 | 6;
 };
 
 type ValidatedWebhookTarget = {
@@ -162,156 +158,23 @@ function webhookDeliveryTimeoutMs(value: number | undefined): number {
   return Math.max(1, Math.min(Math.floor(value), MAX_WEBHOOK_DELIVERY_TIMEOUT_MS));
 }
 
-function createBlockedWebhookAddresses(): BlockList {
-  const blockList = new BlockList();
-  for (const [address, prefix] of [
-    ["0.0.0.0", 8],
-    ["10.0.0.0", 8],
-    ["100.64.0.0", 10],
-    ["127.0.0.0", 8],
-    ["169.254.0.0", 16],
-    ["172.16.0.0", 12],
-    ["192.168.0.0", 16],
-    ["224.0.0.0", 4],
-    ["240.0.0.0", 4],
-  ] as const) {
-    blockList.addSubnet(address, prefix, "ipv4");
-    const octets = address.split(".").map(Number);
-    const high = ((octets[0] ?? 0) << 8) | (octets[1] ?? 0);
-    const low = ((octets[2] ?? 0) << 8) | (octets[3] ?? 0);
-    blockList.addSubnet(`::ffff:${high.toString(16)}:${low.toString(16)}`, 96 + prefix, "ipv6");
-  }
-  for (const [address, prefix] of [
-    ["::", 128],
-    ["::1", 128],
-    ["fc00::", 7],
-    ["fe80::", 10],
-    ["ff00::", 8],
-  ] as const) {
-    blockList.addSubnet(address, prefix, "ipv6");
-  }
-  return blockList;
-}
-
-function normalizeHostname(hostname: string): string {
-  return hostname.replace(/^\[(.*)\]$/u, "$1").replace(/%25/gu, "%");
-}
-
-function isBlockedWebhookAddress(address: string): boolean {
-  const normalized = normalizeHostname(address);
-  const mappedIpv4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/iu.exec(normalized)?.[1];
-  if (mappedIpv4) {
-    return BLOCKED_WEBHOOK_ADDRESSES.check(mappedIpv4, "ipv4");
-  }
-  const family = isIP(normalized);
-  return family === 4
-    ? BLOCKED_WEBHOOK_ADDRESSES.check(normalized, "ipv4")
-    : family === 6
-      ? BLOCKED_WEBHOOK_ADDRESSES.check(normalized, "ipv6")
-      : false;
-}
-
-async function resolveWebhookAddresses(hostname: string): Promise<WebhookAddress[]> {
-  const normalized = normalizeHostname(hostname);
-  const family = isIP(normalized);
-  if (family === 4 || family === 6) {
-    return [{ address: normalized, family }];
-  }
-  return (await lookup(normalized, { all: true, verbatim: true })).flatMap((entry) =>
-    entry.family === 4 || entry.family === 6
-      ? [{ address: entry.address, family: entry.family }]
-      : [],
-  );
-}
-
 async function validateWebhookUrl(
   url: URL,
   state: Pick<ZaloServerState, "allowLoopbackHttpWebhook" | "restrictWebhookTargets">,
 ): Promise<Response | ValidatedWebhookTarget> {
-  if (
-    url.protocol === "http:" &&
-    (!state.allowLoopbackHttpWebhook || !isLoopbackHost(url.hostname))
-  ) {
-    return zaloError("url must use HTTPS", 400);
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return zaloError("url must use HTTPS", 400);
-  }
-  if (!state.restrictWebhookTargets) {
-    return { addresses: undefined };
-  }
-
-  let addresses: WebhookAddress[];
-  try {
-    addresses = await resolveWebhookAddresses(url.hostname);
-  } catch {
-    return zaloError("url host could not be resolved", 400);
-  }
-  if (addresses.length === 0 || addresses.some((entry) => isBlockedWebhookAddress(entry.address))) {
-    return zaloError("url must not target a private or link-local address", 400);
-  }
-  return { addresses };
-}
-
-async function postWebhook(
-  url: URL,
-  body: string,
-  secretToken: string,
-  timeoutMs: number,
-  address: WebhookAddress | undefined,
-  activeRequests: Set<ClientRequest>,
-): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
-    let settled = false;
-    let response: IncomingMessage | undefined;
-    let deadline: NodeJS.Timeout;
-    const finish = (callback: () => void) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(deadline);
-      activeRequests.delete(request);
-      callback();
-    };
-    const send = url.protocol === "https:" ? requestHttps : requestHttp;
-    const request = send(
-      url,
-      {
-        ...(address ? { family: address.family } : {}),
-        headers: {
-          "content-length": String(Buffer.byteLength(body)),
-          "content-type": "application/json",
-          "x-bot-api-secret-token": secretToken,
-        },
-        ...(address
-          ? {
-              lookup: (_hostname, _options, callback) =>
-                callback(null, address.address, address.family),
-            }
-          : {}),
-        method: "POST",
-      },
-      (incoming) => {
-        response = incoming;
-        incoming.resume();
-        incoming.once("error", (error) => finish(() => reject(error)));
-        incoming.once("end", () => finish(() => resolve(incoming.statusCode ?? 0)));
-      },
-    );
-    activeRequests.add(request);
-    deadline = setTimeout(() => {
-      const error = new DOMException(
-        `Webhook delivery timed out after ${timeoutMs}ms`,
-        "TimeoutError",
-      );
-      response?.destroy(error);
-      request.destroy(error);
-    }, timeoutMs);
-    deadline.unref();
-    request.once("error", (error) => finish(() => reject(error)));
-    request.end(body);
+  const target = await validateWebhookTarget({
+    allowLoopbackHttp: state.allowLoopbackHttpWebhook,
+    restrictPrivateAddresses: state.restrictWebhookTargets,
+    url,
   });
+  if ("error" in target) {
+    return target.error === "unresolvable"
+      ? zaloError("url host could not be resolved", 400)
+      : target.error === "private-address"
+        ? zaloError("url must not target a private or link-local address", 400)
+        : zaloError("url must use HTTPS", 400);
+  }
+  return target;
 }
 
 function webhookTimeoutError(timeoutMs: number): DOMException {
@@ -369,14 +232,14 @@ export async function postZaloWebhook(params: {
     const attemptsRemaining = addresses.length - index;
     const attemptTimeoutMs = Math.max(1, Math.floor(remainingMs / attemptsRemaining));
     try {
-      return await postWebhook(
-        params.url,
-        params.body,
-        params.verificationValue,
-        attemptTimeoutMs,
-        address,
+      return await postWebhookRequest({
         activeRequests,
-      );
+        address,
+        body: params.body,
+        headerEntries: [["x-bot-api-secret-token", params.verificationValue]],
+        timeoutMs: attemptTimeoutMs,
+        url: params.url,
+      });
     } catch (error) {
       if (params.shouldCancel?.()) {
         throw error;
