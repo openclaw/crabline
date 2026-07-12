@@ -91,7 +91,7 @@ export async function runFixtureCommand(params: {
           providerId: fixture.provider,
         });
       } catch (error) {
-        return (result = toFailure(fixture.id, fixture.provider, mode, error));
+        return (result = toFailure(fixture.id, fixture.provider, mode, error, "connectivity"));
       }
     }
 
@@ -106,12 +106,18 @@ export async function runFixtureCommand(params: {
       try {
         const outboundText = createOutboundText({ ...fixture, mode }, nonce);
         const since = new Date().toISOString();
-        const accepted = await provider.send({
-          ...contextBase,
-          mode,
-          nonce,
-          text: outboundText,
-        });
+        let accepted;
+        try {
+          accepted = await provider.send({
+            ...contextBase,
+            mode,
+            nonce,
+            text: outboundText,
+          });
+        } catch (error) {
+          lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "outbound", nonce);
+          continue;
+        }
         diagnostics.push(`accepted message ${accepted.messageId}`);
 
         if (mode === "send") {
@@ -125,13 +131,19 @@ export async function runFixtureCommand(params: {
           });
         }
 
-        const inbound = await provider.waitForInbound({
-          ...contextBase,
-          nonce,
-          since,
-          threadId: accepted.threadId,
-          timeoutMs: fixture.timeoutMs,
-        });
+        let inbound;
+        try {
+          inbound = await provider.waitForInbound({
+            ...contextBase,
+            nonce,
+            since,
+            threadId: accepted.threadId,
+            timeoutMs: fixture.timeoutMs,
+          });
+        } catch (error) {
+          lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "inbound", nonce);
+          continue;
+        }
         if (!inbound) {
           lastFailure = {
             diagnostics: [
@@ -172,7 +184,7 @@ export async function runFixtureCommand(params: {
           providerId: fixture.provider,
         });
       } catch (error) {
-        lastFailure = toFailure(fixture.id, fixture.provider, mode, error, nonce);
+        lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "assertion", nonce);
       }
     }
 
@@ -278,6 +290,7 @@ function toFailure(
   providerId: string,
   mode: string,
   error: unknown,
+  fallbackKind: FailureKind,
   nonce?: string,
 ): CommandRunResult {
   const diagnostics = [ensureErrorMessage(error)];
@@ -296,7 +309,7 @@ function toFailure(
 
   return {
     diagnostics,
-    failureKind: "assertion",
+    failureKind: fallbackKind,
     fixtureId,
     mode,
     nonce,

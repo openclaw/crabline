@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Command, CommanderError } from "commander";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import nodePath from "node:path";
@@ -126,6 +126,7 @@ export function createProgram(
   const startServer = dependencies.startServer ?? startCrablineServer;
 
   program
+    .exitOverride()
     .name("crabline")
     .description("Deterministic CLI harness for messaging provider E2E tests")
     .option("-c, --config <path>", "Config file path")
@@ -568,15 +569,40 @@ export async function runCli(argv: string[]): Promise<number> {
   const program = createProgram((code) => {
     exitCode = code;
   });
+  const json = argv.slice(2).includes("--json");
+  if (json) {
+    const configureJsonOutput = (command: Command): void => {
+      command.configureOutput({ writeErr: () => undefined });
+      for (const child of command.commands) {
+        configureJsonOutput(child);
+      }
+    };
+    configureJsonOutput(program);
+  }
   try {
     await program.parseAsync(argv);
     return exitCode;
   } catch (error) {
-    const message = ensureErrorMessage(error);
-    process.stderr.write(`${message}\n`);
-    if (error instanceof CrablineError) {
-      return error.exitCode;
+    const errorExitCode =
+      error instanceof CrablineError || error instanceof CommanderError ? error.exitCode : 1;
+    if (error instanceof CommanderError && errorExitCode === 0) {
+      return 0;
     }
-    return 1;
+    if (json) {
+      process.stderr.write(
+        `${formatJson({
+          error: {
+            ...(error instanceof CommanderError ? { code: error.code } : {}),
+            exitCode: errorExitCode,
+            ...(error instanceof CrablineError && error.kind ? { kind: error.kind } : {}),
+            message: ensureErrorMessage(error),
+          },
+          ok: false,
+        })}\n`,
+      );
+    } else if (!(error instanceof CommanderError)) {
+      process.stderr.write(`${ensureErrorMessage(error)}\n`);
+    }
+    return errorExitCode;
   }
 }

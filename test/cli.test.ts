@@ -122,6 +122,100 @@ describe("cli", () => {
     expect(captured.stderr.join("")).toContain("Unknown fixture");
   });
 
+  it("reports JSON failures as one machine-readable document", async () => {
+    const configPath = await createConfig();
+    const captured = captureWrites();
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli([
+        "node",
+        "crabline",
+        "--json",
+        "--config",
+        configPath,
+        "probe",
+        "missing",
+      ]);
+    } finally {
+      captured.restore();
+    }
+
+    expect(exitCode!).toBe(10);
+    expect(captured.stdout).toEqual([]);
+    expect(JSON.parse(captured.stderr.join(""))).toEqual({
+      error: {
+        exitCode: 10,
+        kind: "config",
+        message: "Unknown fixture: missing",
+      },
+      ok: false,
+    });
+  });
+
+  it("keeps Commander exits inside runCli without duplicate output", async () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit must not be called");
+    });
+    const captured = captureWrites();
+
+    try {
+      expect(await runCli(["node", "crabline", "not-a-command"])).toBe(1);
+      expect(await runCli(["node", "crabline", "--help"])).toBe(0);
+    } finally {
+      captured.restore();
+      exit.mockRestore();
+    }
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(captured.stderr.join("").match(/unknown command 'not-a-command'/gu)).toHaveLength(1);
+    expect(captured.stdout.join("")).toContain("Usage: crabline");
+  });
+
+  it("serializes Commander failures when JSON output is requested", async () => {
+    const captured = captureWrites();
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli(["node", "crabline", "--json", "not-a-command"]);
+    } finally {
+      captured.restore();
+    }
+
+    expect(exitCode!).toBe(1);
+    expect(captured.stdout).toEqual([]);
+    expect(JSON.parse(captured.stderr.join(""))).toEqual({
+      error: {
+        code: "commander.unknownCommand",
+        exitCode: 1,
+        message: "error: unknown command 'not-a-command'",
+      },
+      ok: false,
+    });
+  });
+
+  it("suppresses subcommand parser output in JSON mode", async () => {
+    const captured = captureWrites();
+
+    let exitCode: number;
+    try {
+      exitCode = await runCli(["node", "crabline", "--json", "probe"]);
+    } finally {
+      captured.restore();
+    }
+
+    expect(exitCode!).toBe(1);
+    expect(captured.stdout).toEqual([]);
+    expect(JSON.parse(captured.stderr.join(""))).toEqual({
+      error: {
+        code: "commander.missingArgument",
+        exitCode: 1,
+        message: "error: missing required argument 'fixtureId'",
+      },
+      ok: false,
+    });
+  });
+
   it("documents probe as a fixture-only command", () => {
     const probe = createProgram().commands.find((command) => command.name() === "probe");
 

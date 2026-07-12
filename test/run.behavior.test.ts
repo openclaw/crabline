@@ -154,7 +154,46 @@ describe("run behavior", () => {
       manifestPath: "/tmp/crabline.yaml",
       registry: buildRegistry(provider),
     });
-    expect(roundtrip.failureKind).toBe("assertion");
+    expect(roundtrip.failureKind).toBe("outbound");
+  });
+
+  it("classifies plain provider failures by execution stage", async () => {
+    let stage: "probe" | "send" | "wait" = "probe";
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => {
+        throw new Error("probe exploded");
+      },
+      send: async () => {
+        if (stage === "send") {
+          throw new Error("send exploded");
+        }
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      waitForInbound: async () => {
+        throw new Error("wait exploded");
+      },
+    };
+    const run = (modeOverride?: "probe") =>
+      runFixtureCommand({
+        fixtureId: "fixture",
+        manifest: withAllCapabilities(manifest),
+        manifestPath: "/tmp/crabline.yaml",
+        ...(modeOverride ? { modeOverride } : {}),
+        registry: buildRegistry(provider),
+      });
+
+    expect((await run("probe")).failureKind).toBe("connectivity");
+    stage = "send";
+    expect((await run()).failureKind).toBe("outbound");
+    stage = "wait";
+    expect((await run()).failureKind).toBe("inbound");
   });
 
   it("fails an otherwise successful fixture when cleanup fails", async () => {
