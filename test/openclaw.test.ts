@@ -298,6 +298,22 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
+  it("rejects Telegram application errors returned with HTTP 200", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ description: "Unauthorized", error_code: 401, ok: false }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+    try {
+      await expect(probeOpenClawCrablineProvider(manifest)).rejects.toThrow(
+        "Crabline Telegram getMe probe failed: Unauthorized.",
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it.each([
     { label: "Mattermost users.me", manifest: mattermostManifest },
     { label: "Matrix whoami", manifest: matrixManifest },
@@ -894,6 +910,28 @@ describe("OpenClaw local provider bridge", () => {
         "Telegram numeric target sign does not match the declared target kind.",
       );
     }
+  });
+
+  it("rejects Telegram numeric identities that cannot round-trip through JSON numbers", () => {
+    for (const target of [
+      `dm:${BigInt(Number.MAX_SAFE_INTEGER) + 1n}`,
+      `group:${BigInt(Number.MIN_SAFE_INTEGER) - 1n}`,
+    ]) {
+      expect(() => createOpenClawCrablineAgentDelivery({ manifest, target })).toThrow(
+        "Telegram numeric target must be a safe integer.",
+      );
+    }
+
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          senderId: String(BigInt(Number.MAX_SAFE_INTEGER) + 1n),
+          text: "unsafe sender",
+        },
+      }),
+    ).toThrow("Telegram numeric target must be a safe integer.");
   });
 
   it("validates explicit Telegram thread target ids", () => {
