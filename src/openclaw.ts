@@ -206,7 +206,9 @@ export async function runOpenClawCrablineChannelDriverSmoke(
     channel: params.selection.channel,
     outputDir,
   });
-  let lockReleased = false;
+  let outcome:
+    | { committed: false; error: unknown }
+    | { committed: true; result: OpenClawCrablineChannelDriverSmokeResult };
 
   try {
     const recorderPath = path.join(
@@ -254,22 +256,35 @@ export async function runOpenClawCrablineChannelDriverSmoke(
       selection: params.selection,
       smoke,
     });
-    await releaseLock(smokeLock);
-    lockReleased = true;
-    return {
-      artifactPointerPath: generation.pointerPath,
-      capabilityReport,
-      capabilityMatrixPath: generation.capabilityMatrixPath,
-      generation: generation.generation,
-      manifestPath: generation.manifestPath,
-      smoke: generation.smoke,
-      smokeArtifactPath: generation.smokeArtifactPath,
+    outcome = {
+      committed: true,
+      result: {
+        artifactPointerPath: generation.pointerPath,
+        capabilityReport,
+        capabilityMatrixPath: generation.capabilityMatrixPath,
+        generation: generation.generation,
+        manifestPath: generation.manifestPath,
+        smoke: generation.smoke,
+        smokeArtifactPath: generation.smokeArtifactPath,
+      },
     };
-  } finally {
-    if (!lockReleased) {
-      await releaseLock(smokeLock);
+  } catch (error) {
+    outcome = { committed: false, error };
+  }
+
+  try {
+    await releaseLock(smokeLock);
+  } catch (error) {
+    // The pointer switch is authoritative; lock removal cannot roll it back.
+    if (!outcome.committed) {
+      throw error;
     }
   }
+
+  if (!outcome.committed) {
+    throw outcome.error;
+  }
+  return outcome.result;
 }
 
 export function createOpenClawCrablineChannelReportNotes(
