@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { isCrablineServerChannel, type CrablineServerChannel } from "../servers/index.js";
+import { securePrivateDirectory } from "./private-file.js";
 import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "./shared.js";
 
 type LegacySmokeLockOwner = {
@@ -51,6 +52,7 @@ type BeforeRecoveryClaim = () => Promise<void>;
 type BeforeRecoveryDeleteClaim = () => Promise<void>;
 type BeforeReleaseClaim = () => Promise<void>;
 type BeforeCommitFileRename = () => Promise<void>;
+type SecureWindowsDirectory = (directoryPath: string) => Promise<void>;
 type LockClaimKind = "commit" | "recovering" | "release";
 type LockClaim = {
   directoryPath: string;
@@ -615,11 +617,19 @@ async function resolveLockContention(params: {
 async function createLockCandidate(params: {
   lockDirectory: string;
   owner: RenewableSmokeLockOwner;
+  platform?: NodeJS.Platform;
+  secureWindowsDirectory?: SecureWindowsDirectory;
 }): Promise<string> {
   const candidateDirectory = `${params.lockDirectory}.${params.owner.pid}.${params.owner.token}.tmp`;
   await fs.mkdir(candidateDirectory, { mode: 0o700 });
   try {
-    await fs.chmod(candidateDirectory, 0o700);
+    const securedDirectory = await securePrivateDirectory(candidateDirectory, {
+      ...(params.platform ? { platform: params.platform } : {}),
+      ...(params.secureWindowsDirectory
+        ? { secureWindowsDirectory: params.secureWindowsDirectory }
+        : {}),
+    });
+    await securedDirectory.assertIdentityAt();
     const ownerPath = path.join(candidateDirectory, LOCK_OWNER_FILE);
     await fs.writeFile(ownerPath, `${JSON.stringify(params.owner)}\n`, {
       encoding: "utf8",
@@ -659,6 +669,8 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     now?: () => number;
     pid?: number;
     processStartedAtMs?: number;
+    platform?: NodeJS.Platform;
+    secureWindowsDirectory?: SecureWindowsDirectory;
     beforeCommitFileRename?: BeforeCommitFileRename;
     beforeRecoveryDeleteClaim?: BeforeRecoveryDeleteClaim;
     beforeRecoveryClaim?: BeforeRecoveryClaim;
@@ -713,6 +725,10 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     const candidateDirectory = await createLockCandidate({
       lockDirectory,
       owner,
+      ...(dependencies.platform ? { platform: dependencies.platform } : {}),
+      ...(dependencies.secureWindowsDirectory
+        ? { secureWindowsDirectory: dependencies.secureWindowsDirectory }
+        : {}),
     });
     try {
       await fs.rename(candidateDirectory, lockDirectory);
