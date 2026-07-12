@@ -45,6 +45,10 @@ export function queryRecord(url: URL): Record<string, string> {
   return Object.fromEntries(url.searchParams.entries());
 }
 
+export function formatUrlHost(host: string): string {
+  return host.includes(":") ? `[${host}]` : host;
+}
+
 export async function writeResponse(
   response: ServerResponse,
   fetchResponse: Response,
@@ -104,7 +108,7 @@ export async function startHttpJsonServer(params: {
     });
   }
   return {
-    baseUrl: `http://${params.host.includes(":") ? `[${params.host}]` : params.host}:${address.port}`,
+    baseUrl: `http://${formatUrlHost(params.host)}:${address.port}`,
     async close() {
       await closeServer(server);
     },

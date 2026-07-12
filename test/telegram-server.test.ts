@@ -20,6 +20,20 @@ afterEach(async () => {
 });
 
 describe("telegram local provider server", () => {
+  it("advertises valid URLs when bound to IPv6", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startTelegramServer({
+      host: "::1",
+      recorderPath: path.join(directory, "telegram-ipv6.jsonl"),
+    });
+    servers.push(server);
+
+    expect(new URL(server.manifest.baseUrl).hostname).toBe("[::1]");
+    const getMe = await fetch(`${server.manifest.baseUrl}/bot${server.manifest.botToken}/getMe`);
+    expect(getMe.status).toBe(200);
+  });
+
   it("distinguishes ordinary groups from supergroups", async () => {
     const directory = await createTempDir();
     directories.push(directory);

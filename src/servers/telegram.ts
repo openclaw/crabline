@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { CrablineError } from "../core/errors.js";
-import { adminAuthError, hasAdminToken } from "./http.js";
+import { adminAuthError, formatUrlHost, hasAdminToken } from "./http.js";
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
 
 type TelegramServerEvent = {
@@ -544,7 +544,7 @@ export async function startTelegramServer(
       kind: "connectivity",
     });
   }
-  const baseUrl = `http://${host}:${address.port}`;
+  const baseUrl = `http://${formatUrlHost(host)}:${address.port}`;
   return {
     async close() {
       await closeServer(server);
