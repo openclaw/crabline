@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   acquireOpenClawCrablineSmokeRunLock,
-  processStartedAtMsFromElapsed,
+  processIdentityFromLinuxStat,
   releaseOpenClawCrablineSmokeRunLock,
 } from "../src/openclaw/smoke-lock.js";
 import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "../src/openclaw/shared.js";
@@ -16,12 +16,13 @@ const disableHeartbeat = (_renew: () => Promise<void>, _intervalMs: number) => (
 });
 
 describe("OpenClaw smoke lock cleanup", () => {
-  it("derives process identity from timezone-independent elapsed time", () => {
-    expect(processStartedAtMsFromElapsed("01:02", 1_000_000)).toBe(938_000);
-    expect(processStartedAtMsFromElapsed("03:04:05", 20_000_000)).toBe(8_955_000);
-    expect(processStartedAtMsFromElapsed("2-03:04:05", 200_000_000)).toBe(16_155_000);
-    expect(processStartedAtMsFromElapsed("25:00:00", 200_000_000)).toBeNull();
-    expect(processStartedAtMsFromElapsed("not elapsed", 200_000_000)).toBeNull();
+  it("extracts the exact Linux process start token", () => {
+    expect(
+      processIdentityFromLinuxStat(
+        "4242 (command with spaces) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 123456",
+      ),
+    ).toBe("linux:123456");
+    expect(processIdentityFromLinuxStat("malformed")).toBeNull();
   });
 
   it("secures an empty Windows lock directory before writing sensitive contents", async () => {
@@ -276,12 +277,14 @@ describe("OpenClaw smoke lock cleanup", () => {
         isProcessAlive: () => true,
         now: () => 1_000,
         pid: 4_242,
+        processIdentity: "test:first",
         processStartedAtMs: 100,
       });
       const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
         isProcessAlive: () => true,
         now: () => 1_100,
         pid: 4_242,
+        processIdentity: "test:second",
         processStartedAtMs: 200,
       });
 
@@ -291,6 +294,7 @@ describe("OpenClaw smoke lock cleanup", () => {
           isProcessAlive: () => true,
           now: () => 1_200,
           pid: 4_242,
+          processIdentity: "test:second",
           processStartedAtMs: 200,
         }),
       ).rejects.toThrow("OpenClaw Crabline smoke is already running");
@@ -358,6 +362,7 @@ describe("OpenClaw smoke lock cleanup", () => {
           channel: "telegram",
           createdAtMs: 1_000,
           pid: 4_242,
+          processIdentity: "test:prior",
           processStartedAtMs: 100,
           token: "prior",
         })}\n`,
@@ -367,7 +372,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       await expect(
         acquireOpenClawCrablineSmokeRunLock(params, {
           isProcessAlive: () => true,
-          getProcessStartedAtMs: () => 100,
+          getProcessIdentity: () => "test:prior",
           leaseMs: 1_000,
           now: () => 10_000,
           pid: 5_252,
@@ -401,7 +406,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
 
       const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
-        getProcessStartedAtMs: () => null,
+        getProcessIdentity: () => null,
         isProcessAlive: () => false,
         leaseMs: 1_000,
         now: () => 1_100,
@@ -431,6 +436,7 @@ describe("OpenClaw smoke lock cleanup", () => {
           channel: "telegram",
           createdAtMs: 1_000,
           pid: 4_242,
+          processIdentity: "test:prior",
           processStartedAtMs: 100,
           token: "prior",
         })}\n`,
@@ -438,7 +444,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
 
       const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
-        getProcessStartedAtMs: () => 5_000,
+        getProcessIdentity: () => "test:replacement",
         isProcessAlive: () => true,
         leaseMs: 1_000,
         now: () => 1_100,
