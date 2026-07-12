@@ -474,9 +474,9 @@ async function handleSlackApi(params: {
         return slackOk({
           channel: {
             id: channel.id,
-            is_group: true,
+            is_group: false,
             is_mpim: true,
-            members: channel.users,
+            members: [params.state.botUserId, ...channel.users],
           },
         });
       }
@@ -501,9 +501,9 @@ async function handleSlackApi(params: {
         channel: {
           id: channel,
           is_channel: channel.startsWith("C"),
-          is_group: channel.startsWith("G"),
+          is_group: mpim ? false : channel.startsWith("G"),
           is_im: channel.startsWith("D"),
-          ...(mpim ? { is_mpim: true, members: mpim.users } : {}),
+          ...(mpim ? { is_mpim: true, members: [params.state.botUserId, ...mpim.users] } : {}),
           name: "crabline",
         },
       });

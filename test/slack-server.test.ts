@@ -127,9 +127,9 @@ describe("slack local provider server", () => {
     await expect(opened.json()).resolves.toEqual({
       channel: {
         id: "G000000001",
-        is_group: true,
+        is_group: false,
         is_mpim: true,
-        members: users,
+        members: ["UCRABBOT", ...users],
       },
       ok: true,
     });
@@ -140,7 +140,26 @@ describe("slack local provider server", () => {
     await expect(reopened.json()).resolves.toMatchObject({
       channel: {
         id: "G000000001",
-        members: users,
+        members: ["UCRABBOT", ...users],
+      },
+      ok: true,
+    });
+
+    await expect(
+      (
+        await slackApi(server, "conversations.info", {
+          channel: "G000000001",
+        })
+      ).json(),
+    ).resolves.toEqual({
+      channel: {
+        id: "G000000001",
+        is_channel: false,
+        is_group: false,
+        is_im: false,
+        is_mpim: true,
+        members: ["UCRABBOT", ...users],
+        name: "crabline",
       },
       ok: true,
     });
