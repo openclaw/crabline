@@ -161,6 +161,75 @@ describe("recorder", () => {
     expect(Date.now() - startedAt).toBeLessThan(500);
   });
 
+  it("reads only appended bytes while waiting and preserves a partial record", async () => {
+    const filePath = await createRecorderPath();
+    const now = new Date().toISOString();
+    const history = Array.from(
+      { length: 1000 },
+      (_, index) =>
+        `${JSON.stringify({
+          author: "user",
+          id: `history-${index}`,
+          provider: "slack",
+          recordedAt: now,
+          sentAt: now,
+          text: "history",
+          threadId: "slack:C999",
+        })}\n`,
+    ).join("");
+    const tail = JSON.stringify({
+      author: "assistant",
+      id: "evt-tail",
+      provider: "slack",
+      recordedAt: now,
+      sentAt: now,
+      text: "completed tail",
+      threadId: "slack:C123",
+    });
+    const splitAt = Math.floor(tail.length / 2);
+    await appendFile(filePath, history + tail.slice(0, splitAt), "utf8");
+
+    const probeHandle = await open(filePath, "r");
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle);
+    await probeHandle.close();
+    const originalRead = fileHandlePrototype.read;
+    let bytesRead = 0;
+    fileHandlePrototype.read = async function (
+      this: FileHandle,
+      buffer: Uint8Array,
+      offset?: number | null,
+      length?: number | null,
+      position?: number | null,
+    ) {
+      const result = await originalRead.call(this, buffer, offset, length, position);
+      bytesRead += result.bytesRead;
+      return result;
+    };
+
+    try {
+      const waitPromise = waitForRecordedInbound({
+        filePath,
+        matches: (event) => event.id === "evt-tail",
+        pollMs: 10,
+        timeoutMs: 500,
+      });
+
+      setTimeout(() => {
+        void appendFile(filePath, `${tail.slice(splitAt)}\n`, "utf8");
+      }, 25);
+
+      await expect(waitPromise).resolves.toMatchObject({
+        id: "evt-tail",
+        text: "completed tail",
+      });
+      const fileSize = Buffer.byteLength(`${history}${tail}\n`);
+      expect(bytesRead).toBeGreaterThanOrEqual(fileSize);
+      expect(bytesRead).toBeLessThan(fileSize * 2);
+    } finally {
+      fileHandlePrototype.read = originalRead;
+    }
+  });
+
   it("streams new inbound events", async () => {
     const filePath = await createRecorderPath();
     const iterator = watchRecordedInbound({
