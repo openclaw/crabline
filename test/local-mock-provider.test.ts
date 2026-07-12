@@ -517,6 +517,61 @@ describe("local mock provider", () => {
     await expect(provider.waitForInbound(contexts.at(-1)!)).resolves.toBeNull();
   });
 
+  it("does not evict active wait cursors when concurrency exceeds the retained limit", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "active-waits.jsonl");
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+        recorderPath,
+      },
+    });
+    providers.push(provider);
+    const contexts = Array.from({ length: 65 }, (_, index) => {
+      const context = createContext(config);
+      context.fixture.target = { id: `channel-${index}`, metadata: {} };
+      return {
+        ...context,
+        nonce: `active-${index}`,
+        since: new Date(0).toISOString(),
+        threadId: `channel-${index}`,
+        timeoutMs: 1_000,
+      };
+    });
+    const waits = contexts.map((context) => provider.waitForInbound(context));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    for (const [index, context] of contexts.entries()) {
+      await appendRecordedInbound(recorderPath, {
+        author: "assistant",
+        id: `first-${index}`,
+        provider: "provider-a",
+        sentAt: new Date().toISOString(),
+        text: `first ${index}`,
+        threadId: context.threadId,
+      });
+    }
+    await expect(Promise.all(waits)).resolves.toHaveLength(65);
+
+    await appendRecordedInbound(recorderPath, {
+      author: "assistant",
+      id: "second-0",
+      provider: "provider-a",
+      sentAt: new Date().toISOString(),
+      text: "second 0",
+      threadId: contexts[0]!.threadId,
+    });
+    await expect(provider.waitForInbound(contexts[0]!)).resolves.toMatchObject({
+      id: "second-0",
+    });
+  });
+
   it("keeps concurrent same-key waits on independent cursors", async () => {
     const directory = await createTempDir();
     directories.push(directory);
