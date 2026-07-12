@@ -10,7 +10,10 @@ import {
   resolveOpenClawCrablineChannelDriverSelection,
   type CrablineServerManifest,
 } from "../src/index.js";
-import type { OpenClawCrablineSmokeRunLock } from "../src/openclaw/smoke-lock.js";
+import {
+  acquireOpenClawCrablineSmokeRunLock,
+  type OpenClawCrablineSmokeRunLock,
+} from "../src/openclaw/smoke-lock.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const manifest: CrablineServerManifest = {
@@ -31,11 +34,15 @@ const manifest: CrablineServerManifest = {
 
 function createLock(): OpenClawCrablineSmokeRunLock & {
   assertOwned: ReturnType<typeof vi.fn<() => Promise<void>>>;
-  prepareForRelease: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  commitFileAtomically: ReturnType<
+    typeof vi.fn<OpenClawCrablineSmokeRunLock["commitFileAtomically"]>
+  >;
 } {
   return {
     assertOwned: vi.fn(async () => undefined),
-    prepareForRelease: vi.fn(async () => undefined),
+    commitFileAtomically: vi.fn(async ({ contents, destinationPath, stageFile }) => {
+      await stageFile(destinationPath, contents);
+    }),
     release: vi.fn(async () => undefined),
   };
 }
@@ -90,8 +97,94 @@ describe("OpenClaw artifact generation publication", () => {
         ).mode & 0o777,
       ).toBe(0o700);
       expect(lock.assertOwned).toHaveBeenCalledTimes(2);
-      expect(lock.prepareForRelease).toHaveBeenCalledTimes(1);
+      expect(lock.commitFileAtomically).toHaveBeenCalledTimes(1);
     } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("prevents an expired fenced owner from overwriting a successor pointer", async () => {
+    const outputDir = await createTempDir();
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    let now = 1_000;
+    let resumeOldOwner: (() => void) | undefined;
+    let oldOwnerFenced: (() => void) | undefined;
+    const resumeOldOwnerPromise = new Promise<void>((resolve) => {
+      resumeOldOwner = resolve;
+    });
+    const oldOwnerFencedPromise = new Promise<void>((resolve) => {
+      oldOwnerFenced = resolve;
+    });
+    const disableHeartbeat = () => ({
+      assertHealthy() {},
+      async stop() {},
+    });
+    let oldLock: OpenClawCrablineSmokeRunLock | undefined;
+    let successorLock: OpenClawCrablineSmokeRunLock | undefined;
+    try {
+      oldLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          beforeCommitFileRename: async () => {
+            oldOwnerFenced?.();
+            await resumeOldOwnerPromise;
+          },
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 4_242,
+          processStartedAtMs: 100,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+      const oldPublication = publishOpenClawCrablineArtifactGeneration(
+        {
+          capabilityReport: { result: { generation: "old" } },
+          lock: oldLock,
+          manifest,
+          outputDir,
+          selection,
+          smoke: { result: { generation: "old" } },
+        },
+        { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
+      );
+
+      await oldOwnerFencedPromise;
+      now = 2_001;
+      successorLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 5_252,
+          processStartedAtMs: 200,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+      const successor = await publishOpenClawCrablineArtifactGeneration(
+        {
+          capabilityReport: { result: { generation: "successor" } },
+          lock: successorLock,
+          manifest,
+          outputDir,
+          selection,
+          smoke: { result: { generation: "successor" } },
+        },
+        { createGenerationId: () => "22222222-2222-4222-8222-222222222222" },
+      );
+
+      resumeOldOwner?.();
+      await expect(oldPublication).rejects.toThrow(
+        "OpenClaw Crabline smoke lock ownership was lost.",
+      );
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toMatchObject({
+        generation: successor.generation,
+      });
+    } finally {
+      resumeOldOwner?.();
+      await oldLock?.release();
+      await successorLock?.release();
       await disposeTempDir(outputDir);
     }
   });

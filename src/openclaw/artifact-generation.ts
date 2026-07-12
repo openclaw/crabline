@@ -311,12 +311,13 @@ export async function publishOpenClawCrablineArtifactGeneration(
   await store.assertIdentityAt();
 
   await dependencies.beforePointerSwitch?.(pointer);
-  await params.lock.prepareForRelease();
-  await publishPrivateFile(
-    path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH),
-    `${JSON.stringify(pointer, null, 2)}\n`,
-    fileOptions,
-  );
+  await params.lock.commitFileAtomically({
+    contents: `${JSON.stringify(pointer, null, 2)}\n`,
+    destinationPath: path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH),
+    stageFile: async (filePath, contents) => {
+      await publishPrivateFile(filePath, contents, fileOptions);
+    },
+  });
   await store.assertIdentityAt();
 
   return {
