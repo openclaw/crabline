@@ -442,6 +442,10 @@ describe("telegram local provider server", () => {
         },
         update_id: 1,
       },
+      ...(["guest_message", "managed_bot"] as const).map((field, index) => ({
+        [field]: {},
+        update_id: index + 10,
+      })),
       {
         message: {
           chat: { id: -1001234567890, type: "supergroup" },
