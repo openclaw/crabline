@@ -26,7 +26,7 @@ describe("errors and reporters", () => {
     const suite = formatRunResultText({
       results: [
         {
-          diagnostics: [],
+          diagnostics: ["accepted"],
           fixtureId: "fixture",
           mode: "send",
           ok: true,
@@ -38,6 +38,7 @@ describe("errors and reporters", () => {
 
     expect(stripAnsi(single)).toContain("PASS");
     expect(stripAnsi(suite)).toContain("suite 1/1 passed");
+    expect(stripAnsi(suite)).toContain("  - accepted");
     expect(formatJson({ ok: true })).toContain('"ok": true');
     expect(formatJson(undefined)).toBe("null");
   });

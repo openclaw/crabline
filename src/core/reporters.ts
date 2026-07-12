@@ -5,7 +5,10 @@ export function formatRunResultText(result: CommandRunResult | SuiteRunResult): 
   if ("results" in result) {
     const lines = [
       `${pc.bold("suite")} ${result.totalPassed}/${result.results.length} passed`,
-      ...result.results.map((entry) => formatCaseLine(entry)),
+      ...result.results.flatMap((entry) => [
+        formatCaseLine(entry),
+        ...entry.diagnostics.map((diagnostic) => `  - ${diagnostic}`),
+      ]),
     ];
     return lines.join("\n");
   }
