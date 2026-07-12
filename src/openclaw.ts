@@ -33,6 +33,8 @@ import {
   type StartedOpenClawCrablineAdapter,
   type StartOpenClawCrablineAdapterParams,
 } from "./openclaw/shared.js";
+import { acquireOpenClawCrablineSmokeRunLock } from "./openclaw/smoke-lock.js";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -68,8 +70,6 @@ const OPENCLAW_CRABLINE_PROVIDER_BRIDGES = {
 const OPENCLAW_CRABLINE_PROVIDER_BRIDGE_LIST = Object.values(
   OPENCLAW_CRABLINE_PROVIDER_BRIDGES,
 ) as readonly OpenClawCrablineProviderBridge[];
-
-const activeSmokeRuns = new Map<string, { channel: CrablineServerChannel }>();
 
 function createOpenClawCrablineProviderAdapter(
   manifest: CrablineServerManifest,
@@ -175,20 +175,33 @@ export async function startOpenClawCrablineAdapter(
   };
 }
 
+async function publishPrivateJson(filePath: string, value: unknown): Promise<void> {
+  const temporaryPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    await fs.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await fs.chmod(temporaryPath, 0o600);
+    await fs.rename(temporaryPath, filePath);
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
 export async function runOpenClawCrablineChannelDriverSmoke(params: {
   outputDir: string;
   selection: OpenClawCrablineChannelDriverSelection;
 }): Promise<OpenClawCrablineChannelDriverSmokeResult> {
   const outputDir = path.resolve(params.outputDir);
-  const runKey = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
-  const activeRun = activeSmokeRuns.get(runKey);
-  if (activeRun) {
-    throw new Error(
-      `OpenClaw Crabline smoke is already running for channel "${activeRun.channel}" in "${outputDir}"; cannot start channel "${params.selection.channel}".`,
-    );
-  }
-  const run = { channel: params.selection.channel };
-  activeSmokeRuns.set(runKey, run);
+  const smokeLock = await acquireOpenClawCrablineSmokeRunLock({
+    channel: params.selection.channel,
+    outputDir,
+  });
 
   try {
     const manifestPath = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
@@ -205,7 +218,7 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
       recorderPath,
     });
     try {
-      await fs.writeFile(manifestPath, `${JSON.stringify(adapter.manifest, null, 2)}\n`, "utf8");
+      await publishPrivateJson(manifestPath, adapter.manifest);
       const probe = await adapter.probe();
       return {
         capabilityReport: {
@@ -231,9 +244,7 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
       await adapter.close();
     }
   } finally {
-    if (activeSmokeRuns.get(runKey) === run) {
-      activeSmokeRuns.delete(runKey);
-    }
+    await smokeLock.release();
   }
 }
 

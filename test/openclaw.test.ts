@@ -1,3 +1,5 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +29,64 @@ import {
   type CrablineServerManifest,
   type OpenClawCrablineConversation,
 } from "../src/index.js";
+
+function startSmokeLockHolder(outputDir: string, channel: string): ChildProcessWithoutNullStreams {
+  const lockModuleUrl = new URL("../src/openclaw/smoke-lock.ts", import.meta.url).href;
+  const script = `
+    import { acquireOpenClawCrablineSmokeRunLock } from ${JSON.stringify(lockModuleUrl)};
+    const lock = await acquireOpenClawCrablineSmokeRunLock({
+      channel: process.argv[2],
+      outputDir: process.argv[1],
+    });
+    process.stdout.write("locked\\n");
+    process.stdin.once("data", async () => {
+      await lock.release();
+    });
+  `;
+  return spawn(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", script, outputDir, channel],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
+}
+
+async function waitForSmokeLock(child: ChildProcessWithoutNullStreams): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for smoke lock holder. stderr: ${stderr}`));
+    }, 10_000);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.stdout.off("data", onStdout);
+      child.stderr.off("data", onStderr);
+      child.off("exit", onExit);
+    };
+    const onStdout = (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      if (stdout.includes("locked\n")) {
+        cleanup();
+        resolve();
+      }
+    };
+    const onStderr = (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      reject(
+        new Error(
+          `Smoke lock holder exited before acquiring the lock (code=${code}, signal=${signal}). stderr: ${stderr}`,
+        ),
+      );
+    };
+    child.stdout.on("data", onStdout);
+    child.stderr.on("data", onStderr);
+    child.once("exit", onExit);
+  });
+}
 
 const manifest: CrablineServerManifest = {
   adminToken: "crabline-admin-token",
@@ -1374,6 +1434,9 @@ describe("OpenClaw local provider bridge", () => {
   it("runs OpenClaw channel-driver smoke and writes provider artifacts", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-smoke-"));
     try {
+      const manifestPath = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
+      await fs.writeFile(manifestPath, "permissive stale manifest\n", { mode: 0o666 });
+      await fs.chmod(manifestPath, 0o666);
       const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
       const result = await runOpenClawCrablineChannelDriverSmoke({
         outputDir,
@@ -1410,10 +1473,13 @@ describe("OpenClaw local provider bridge", () => {
           },
         },
       });
-      const writtenManifest = JSON.parse(
-        await fs.readFile(path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH), "utf8"),
-      ) as { provider?: string };
+      const writtenManifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
+        provider?: string;
+      };
       expect(writtenManifest.provider).toBe("telegram");
+      const manifestMode = (await fs.stat(manifestPath)).mode & 0o777;
+      const expectedMode = process.platform === "win32" ? manifestMode : 0o600;
+      expect(manifestMode).toBe(expectedMode);
       expect(createOpenClawCrablineChannelReportNotes(selection)).toEqual([
         "Channel driver: crabline local provider for telegram.",
         "Channel capability report: crabline-fake-provider-capabilities.json.",
@@ -1425,33 +1491,62 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
-  it("rejects overlapping smoke runs that share an output artifact set", async () => {
+  it("rejects cross-process smoke runs that share an output artifact set", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-overlap-"));
+    const holder = startSmokeLockHolder(outputDir, "telegram");
     try {
+      await waitForSmokeLock(holder);
       const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
-      const first = runOpenClawCrablineChannelDriverSmoke({ outputDir, selection });
-      const overlapping = runOpenClawCrablineChannelDriverSmoke({ outputDir, selection });
       const otherSelection = resolveOpenClawCrablineChannelDriverSelection({ channel: "slack" });
-      const otherChannel = runOpenClawCrablineChannelDriverSmoke({
-        outputDir,
-        selection: otherSelection,
-      });
 
-      await expect(overlapping).rejects.toThrow(
+      await expect(runOpenClawCrablineChannelDriverSmoke({ outputDir, selection })).rejects.toThrow(
         `OpenClaw Crabline smoke is already running for channel "telegram" in "${outputDir}"; cannot start channel "telegram".`,
       );
-      await expect(otherChannel).rejects.toThrow(
+      await expect(
+        runOpenClawCrablineChannelDriverSmoke({ outputDir, selection: otherSelection }),
+      ).rejects.toThrow(
         `OpenClaw Crabline smoke is already running for channel "telegram" in "${outputDir}"; cannot start channel "slack".`,
       );
-      await expect(first).resolves.toMatchObject({
-        smoke: { result: { ok: true, provider: "telegram" } },
-      });
+
+      const holderExit = once(holder, "exit");
+      holder.stdin.end("release\n");
+      const [exitCode, signal] = await holderExit;
+      expect({ exitCode, signal }).toEqual({ exitCode: 0, signal: null });
+
       await expect(
         runOpenClawCrablineChannelDriverSmoke({ outputDir, selection }),
       ).resolves.toMatchObject({
         smoke: { result: { ok: true, provider: "telegram" } },
       });
     } finally {
+      if (holder.exitCode === null && holder.signalCode === null) {
+        holder.kill("SIGTERM");
+        await once(holder, "exit").catch(() => undefined);
+      }
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a smoke lock abandoned by a terminated process", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-stale-lock-"));
+    const holder = startSmokeLockHolder(outputDir, "telegram");
+    try {
+      await waitForSmokeLock(holder);
+      const holderExit = once(holder, "exit");
+      holder.kill("SIGKILL");
+      await holderExit;
+
+      const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+      await expect(
+        runOpenClawCrablineChannelDriverSmoke({ outputDir, selection }),
+      ).resolves.toMatchObject({
+        smoke: { result: { ok: true, provider: "telegram" } },
+      });
+    } finally {
+      if (holder.exitCode === null && holder.signalCode === null) {
+        holder.kill("SIGTERM");
+        await once(holder, "exit").catch(() => undefined);
+      }
       await fs.rm(outputDir, { recursive: true, force: true });
     }
   });
