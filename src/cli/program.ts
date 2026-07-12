@@ -2,6 +2,7 @@ import { Command, CommanderError } from "commander";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import nodePath from "node:path";
+import { lock } from "proper-lockfile";
 import { loadManifest } from "../config/load.js";
 import { createRegistry } from "../providers/registry.js";
 import { formatJson, formatRunResultText } from "../core/reporters.js";
@@ -23,9 +24,21 @@ type GlobalOptions = {
 
 type SetExitCode = (code: number) => void;
 
+export type ReadyFileIdentity = {
+  birthtimeNs: bigint;
+  ctimeNs: bigint;
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+};
+
 type ProgramDependencies = {
-  publishReadyFile?: (filePath: string, contents: string) => Promise<void>;
-  removeReadyFile?: (filePath: string, expectedContents: string) => Promise<void>;
+  publishReadyFile?: (filePath: string, contents: string) => Promise<ReadyFileIdentity>;
+  removeReadyFile?: (
+    filePath: string,
+    expectedContents: string,
+    expectedIdentity: ReadyFileIdentity,
+  ) => Promise<void>;
   startServer?: (params: StartCrablineServerParams) => Promise<StartedCrablineServer>;
 };
 
@@ -325,12 +338,15 @@ export function createProgram(
         ),
       );
       const close = onceAsync(() => server.close());
-      let publishedReadyContents: string | undefined;
+      let publishedReady: { contents: string; identity: ReadyFileIdentity } | undefined;
       try {
         const payload = formatJson(server.manifest);
         if (commandOptions.readyFile) {
-          publishedReadyContents = `${payload}\n`;
-          await publish(commandOptions.readyFile, publishedReadyContents);
+          const readyContents = `${payload}\n`;
+          publishedReady = {
+            contents: readyContents,
+            identity: await publish(commandOptions.readyFile, readyContents),
+          };
         }
         print(
           options.json
@@ -344,8 +360,12 @@ export function createProgram(
         try {
           await close();
         } finally {
-          if (commandOptions.readyFile && publishedReadyContents !== undefined) {
-            await removeReady(commandOptions.readyFile, publishedReadyContents);
+          if (commandOptions.readyFile && publishedReady) {
+            await removeReady(
+              commandOptions.readyFile,
+              publishedReady.contents,
+              publishedReady.identity,
+            );
           }
         }
       }
@@ -380,30 +400,132 @@ function onceAsync(action: () => Promise<void>): () => Promise<void> {
 }
 
 async function prepareReadyFile(filePath: string): Promise<void> {
-  await fs.mkdir(nodePath.dirname(filePath), { recursive: true });
-  await fs.rm(filePath, { force: true });
+  await withReadyFileLock(filePath, async () => {
+    await fs.rm(filePath, { force: true });
+  });
 }
 
-export async function publishReadyFile(filePath: string, contents: string): Promise<void> {
-  const temporaryPath = nodePath.join(
-    nodePath.dirname(filePath),
-    `.${nodePath.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+async function readReadyFileIdentity(filePath: string): Promise<ReadyFileIdentity> {
+  const stats = await fs.stat(filePath, { bigint: true });
+  return {
+    birthtimeNs: stats.birthtimeNs,
+    ctimeNs: stats.ctimeNs,
+    dev: stats.dev,
+    ino: stats.ino,
+    size: stats.size,
+  };
+}
+
+function sameReadyFileIdentity(left: ReadyFileIdentity, right: ReadyFileIdentity): boolean {
+  return (
+    left.birthtimeNs === right.birthtimeNs &&
+    left.ctimeNs === right.ctimeNs &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size
   );
+}
+
+async function withReadyFileLock<T>(filePath: string, action: () => Promise<T>): Promise<T> {
+  await fs.mkdir(nodePath.dirname(filePath), { recursive: true });
+  const release = await lock(filePath, {
+    realpath: false,
+    retries: {
+      factor: 1,
+      maxTimeout: 10,
+      minTimeout: 10,
+      retries: 100,
+    },
+    stale: 10_000,
+    update: 2_500,
+  });
+  let actionFailed = false;
+  let actionError: unknown;
+  let result: T | undefined;
   try {
-    await fs.writeFile(temporaryPath, contents, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
+    result = await action();
+  } catch (error) {
+    actionFailed = true;
+    actionError = error;
+  }
+  try {
+    await release();
+  } catch (releaseError) {
+    if (actionFailed) {
+      const aggregateError = new AggregateError(
+        [actionError, releaseError],
+        `Ready-file action and lock release both failed for "${filePath}".`,
+      );
+      aggregateError.cause = actionError;
+      throw aggregateError;
+    }
+    throw releaseError;
+  }
+  if (actionFailed) {
+    throw actionError;
+  }
+  return result as T;
+}
+
+export async function publishReadyFile(
+  filePath: string,
+  contents: string,
+): Promise<ReadyFileIdentity> {
+  let publishedIdentity: ReadyFileIdentity | undefined;
+  try {
+    return await withReadyFileLock(filePath, async () => {
+      const suffix = `${process.pid}.${randomUUID()}.tmp`;
+      const temporaryPath = nodePath.join(
+        nodePath.dirname(filePath),
+        `.${nodePath.basename(filePath)}.${suffix}`,
+      );
+      let manifestPublished = false;
+      try {
+        await fs.writeFile(temporaryPath, contents, {
+          encoding: "utf8",
+          flag: "wx",
+          mode: 0o600,
+        });
+        await fs.rename(temporaryPath, filePath);
+        manifestPublished = true;
+        publishedIdentity = await readReadyFileIdentity(filePath);
+        return publishedIdentity;
+      } catch (error) {
+        if (manifestPublished) {
+          await fs.rm(filePath, { force: true }).catch(() => undefined);
+        }
+        throw error;
+      } finally {
+        await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+      }
     });
-    await fs.rename(temporaryPath, filePath);
-  } finally {
-    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  } catch (error) {
+    if (publishedIdentity) {
+      try {
+        await removeReadyFileIfOwned(filePath, contents, publishedIdentity);
+      } catch (cleanupError) {
+        const aggregateError = new AggregateError(
+          [error, cleanupError],
+          `Ready-file publication and compensation both failed for "${filePath}".`,
+        );
+        aggregateError.cause = error;
+        throw aggregateError;
+      }
+    }
+    throw error;
   }
 }
 
-export async function removeReadyFile(filePath: string, expectedContents: string): Promise<void> {
+async function removeReadyFileIfOwned(
+  filePath: string,
+  expectedContents: string,
+  expectedIdentity: ReadyFileIdentity,
+): Promise<void> {
   try {
-    if ((await fs.readFile(filePath, "utf8")) !== expectedContents) {
+    if (
+      (await fs.readFile(filePath, "utf8")) !== expectedContents ||
+      !sameReadyFileIdentity(await readReadyFileIdentity(filePath), expectedIdentity)
+    ) {
       return;
     }
     await fs.rm(filePath);
@@ -412,6 +534,16 @@ export async function removeReadyFile(filePath: string, expectedContents: string
       throw error;
     }
   }
+}
+
+export async function removeReadyFile(
+  filePath: string,
+  expectedContents: string,
+  expectedIdentity: ReadyFileIdentity,
+): Promise<void> {
+  await withReadyFileLock(filePath, async () => {
+    await removeReadyFileIfOwned(filePath, expectedContents, expectedIdentity);
+  });
 }
 
 export function waitForShutdown(
@@ -491,10 +623,13 @@ function renderServeProviderFields(
     ];
   }
   if (manifest.provider === "whatsapp") {
+    const baileysWebSocketUrl = showSecrets
+      ? manifest.endpoints.baileysWebSocketUrl
+      : `${manifest.endpoints.baileysWebSocketUrl.split("?")[0]}?access_token=<redacted>`;
     return [
       `  adminToken: ${secret(manifest.adminToken)}`,
       `  accessToken: ${secret(manifest.accessToken)}`,
-      `  baileysWebSocket: ${manifest.endpoints.baileysWebSocketUrl}`,
+      `  baileysWebSocket: ${baileysWebSocketUrl}`,
       `  messages: ${manifest.endpoints.messagesUrl}`,
       `  phoneNumber: ${manifest.endpoints.phoneNumberUrl}`,
       `  status: ${manifest.endpoints.statusUrl}`,
