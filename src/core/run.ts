@@ -131,15 +131,35 @@ export async function runFixtureCommand(params: {
           });
         }
 
+        const inboundDeadline = Date.now() + fixture.timeoutMs;
+        const seenInbound = new Set<string>();
         let inbound;
         try {
-          inbound = await provider.waitForInbound({
-            ...contextBase,
-            nonce,
-            since,
-            threadId: accepted.threadId,
-            timeoutMs: fixture.timeoutMs,
-          });
+          while (Date.now() < inboundDeadline) {
+            const timeoutMs = inboundDeadline - Date.now();
+            const candidate = await provider.waitForInbound({
+              ...contextBase,
+              nonce,
+              since,
+              threadId: accepted.threadId,
+              timeoutMs,
+            });
+            if (!candidate) {
+              break;
+            }
+
+            const key = JSON.stringify([candidate.provider, candidate.threadId, candidate.id]);
+            if (seenInbound.has(key)) {
+              await sleep(Math.min(10, Math.max(0, inboundDeadline - Date.now())));
+              continue;
+            }
+            seenInbound.add(key);
+
+            if (matchesInbound(candidate, fixture.inboundMatch, nonce)) {
+              inbound = candidate;
+              break;
+            }
+          }
         } catch (error) {
           lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "inbound", nonce);
           continue;
@@ -151,20 +171,6 @@ export async function runFixtureCommand(params: {
               `timed out waiting for inbound after ${fixture.timeoutMs}ms`,
             ],
             failureKind: "timeout",
-            fixtureId: fixture.id,
-            mode,
-            nonce,
-            ok: false,
-            providerId: fixture.provider,
-          };
-          await sleep(50);
-          continue;
-        }
-
-        if (!matchesInbound(inbound, fixture.inboundMatch, nonce)) {
-          lastFailure = {
-            diagnostics: [...diagnostics, `received non-matching inbound message ${inbound.id}`],
-            failureKind: "assertion",
             fixtureId: fixture.id,
             mode,
             nonce,
