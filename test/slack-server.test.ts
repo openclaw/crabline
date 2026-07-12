@@ -175,9 +175,11 @@ describe("slack local provider server", () => {
   it("delivers authenticated admin inbound through signed Slack Events API requests", async () => {
     type DeliveredEvent = {
       body: string;
+      history: Array<{ text?: string }>;
       signature: string | undefined;
       timestamp: string | undefined;
     };
+    let slackServer: StartedSlackServer | undefined;
     let resolveDelivered: (event: DeliveredEvent) => void = () => undefined;
     const delivered = new Promise<DeliveredEvent>((resolve) => {
       resolveDelivered = resolve;
@@ -187,8 +189,20 @@ describe("slack local provider server", () => {
       for await (const chunk of request) {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       }
+      if (!slackServer) {
+        response.statusCode = 500;
+        response.end("Slack server is not ready.");
+        return;
+      }
+      const historyResponse = await slackApi(slackServer, "conversations.history", {
+        channel: "C1234567890",
+      });
+      const history = (await historyResponse.json()) as {
+        messages?: Array<{ text?: string }>;
+      };
       resolveDelivered({
         body: Buffer.concat(chunks).toString("utf8"),
+        history: history.messages ?? [],
         signature:
           typeof request.headers["x-slack-signature"] === "string"
             ? request.headers["x-slack-signature"]
@@ -206,10 +220,11 @@ describe("slack local provider server", () => {
     if (!address || typeof address === "string") {
       throw new Error("Unable to resolve Slack Events API receiver address.");
     }
-    const server = await startTestSlackServer({
+    slackServer = await startTestSlackServer({
       eventsRequestUrl: `http://127.0.0.1:${address.port}/slack/events`,
       signingSecret: "test-signing-secret",
     });
+    const server = slackServer;
     const parent = await postMessage(server, {
       channel: "C1234567890",
       text: "hello fake slack",
@@ -271,6 +286,11 @@ describe("slack local provider server", () => {
           .update(`v0:${callback.timestamp}:${callback.body}`)
           .digest("hex")}`,
       );
+      expect(callback.history).toContainEqual(
+        expect.objectContaining({
+          text: "user nonce-1",
+        }),
+      );
 
       await expect(
         (
@@ -281,6 +301,57 @@ describe("slack local provider server", () => {
         ).json(),
       ).resolves.toMatchObject({
         messages: [{ text: "hello fake slack" }, { text: "user nonce-1" }],
+        ok: true,
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        eventsReceiver.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("retains inbound message state when Events API delivery is rejected", async () => {
+    const eventsReceiver = createServer((_request, response) => {
+      response.statusCode = 503;
+      response.end();
+    });
+    await new Promise<void>((resolve) => eventsReceiver.listen(0, "127.0.0.1", resolve));
+    const address = eventsReceiver.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve Slack Events API receiver address.");
+    }
+    const server = await startTestSlackServer({
+      eventsRequestUrl: `http://127.0.0.1:${address.port}/slack/events`,
+      signingSecret: "test-signing-secret",
+    });
+
+    try {
+      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          channel: "C1234567890",
+          text: "retained after callback failure",
+          user: "U1234567890",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin-token",
+        },
+        method: "POST",
+      });
+      expect(inbound.status).toBe(502);
+      await expect(inbound.json()).resolves.toEqual({
+        error: "event_delivery_failed",
+        ok: false,
+      });
+
+      await expect(
+        (
+          await slackApi(server, "conversations.history", {
+            channel: "C1234567890",
+          })
+        ).json(),
+      ).resolves.toMatchObject({
+        messages: [{ text: "retained after callback failure" }],
         ok: true,
       });
     } finally {
