@@ -316,6 +316,7 @@ export async function runOpenClawCrablineProviderReadiness(
     };
     const providerReadiness = {
       result: {
+        ok: true,
         proof: "provider-api-probe",
         ready: true,
         probe,
