@@ -434,6 +434,21 @@ export const ProviderConfigSchema = z
   .superRefine((value, ctx) => {
     const platform = value.platform ?? inferProviderPlatform(value.adapter);
 
+    for (const adapterConfigKey of BUILTIN_ADAPTERS) {
+      if (adapterConfigKey === value.adapter || value[adapterConfigKey] === undefined) {
+        continue;
+      }
+
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          value.adapter === "script"
+            ? `script adapter cannot use ${adapterConfigKey} configuration; configure provider behavior through script.commands`
+            : `${adapterConfigKey} configuration requires adapter=${adapterConfigKey}, got adapter=${value.adapter}`,
+        path: [adapterConfigKey],
+      });
+    }
+
     if (value.adapter === "script" && !value.script) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -633,6 +648,16 @@ const StrictManifestSchema = z
           code: z.ZodIssueCode.custom,
           message: `fixture ${fixture.id} references unknown provider ${fixture.provider}`,
           path: ["fixtures", index, "provider"],
+        });
+        continue;
+      }
+
+      const provider = manifest.providers[fixture.provider]!;
+      if (!provider.capabilities.includes(fixture.mode)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `fixture ${fixture.id} uses mode ${fixture.mode}, but provider ${fixture.provider} declares capabilities ${provider.capabilities.join(", ") || "(none)"}`,
+          path: ["fixtures", index, "mode"],
         });
       }
     }

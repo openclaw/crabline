@@ -71,6 +71,30 @@ describe("manifest schema", () => {
     ).toThrow(/fixture missing-provider references unknown provider missing/u);
   });
 
+  it("rejects fixture modes outside provider capabilities", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [
+          {
+            id: "unsupported-roundtrip",
+            mode: "roundtrip",
+            provider: "local",
+            target: { id: "echo-bot" },
+          },
+        ],
+        providers: {
+          local: {
+            adapter: "loopback",
+            capabilities: ["probe", "send"],
+          },
+        },
+      }),
+    ).toThrow(
+      /fixture unsupported-roundtrip uses mode roundtrip, but provider local declares capabilities probe, send/u,
+    );
+  });
+
   it("parses a valid loopback fixture", () => {
     const manifest = ManifestSchema.parse({
       configVersion: 1,
@@ -225,6 +249,62 @@ describe("manifest schema", () => {
     });
 
     expect(manifest.providers.slack?.script?.commands.waitForInbound).toBe("wait");
+  });
+
+  it("rejects adapter config blocks for a different built-in adapter", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          slack: {
+            adapter: "slack",
+            telegram: {},
+          },
+        },
+      }),
+    ).toThrow(/telegram configuration requires adapter=telegram, got adapter=slack/u);
+  });
+
+  it("keeps script adapter configuration behind script commands", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          slack: {
+            adapter: "script",
+            capabilities: ["probe"],
+            platform: "slack",
+            script: {
+              commands: {
+                probe: "probe",
+              },
+            },
+            slack: {},
+          },
+        },
+      }),
+    ).toThrow(
+      /script adapter cannot use slack configuration; configure provider behavior through script\.commands/u,
+    );
+
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          slack: {
+            adapter: "slack",
+            script: {
+              commands: {
+                probe: "probe",
+              },
+            },
+          },
+        },
+      }),
+    ).toThrow(/script configuration requires adapter=script, got adapter=slack/u);
   });
 
   it("parses a built-in slack provider with webhook defaults", () => {
