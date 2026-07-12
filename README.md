@@ -343,6 +343,7 @@ Thread targets use the platform's native thread identifier:
 
 ```yaml
 target:
+  id: "C1234567890"
   channelId: "C1234567890"
   threadId: "1700000000.000100"
 ```

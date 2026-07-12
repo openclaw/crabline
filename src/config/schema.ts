@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { inboundRegexSafetyError } from "../core/safe-regex.js";
 
 export const FIXTURE_MODES = ["probe", "send", "roundtrip", "agent"] as const;
 const FIXTURE_ID_PATTERN = /^[a-z0-9-]+$/i;
@@ -82,6 +83,15 @@ const InboundMatchSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "inboundMatch.pattern must be a valid Unicode regular expression",
+        path: ["pattern"],
+      });
+      return;
+    }
+    const safetyError = inboundRegexSafetyError(value.pattern);
+    if (safetyError) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `inboundMatch.pattern ${safetyError}`,
         path: ["pattern"],
       });
     }

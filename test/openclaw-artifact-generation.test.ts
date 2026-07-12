@@ -560,6 +560,25 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("removes staging when artifact serialization fails", async () => {
+    const outputDir = await createTempDir();
+    const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
+    try {
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(
+          {
+            ...publishParams(outputDir),
+            capabilityReport: { unsupported: 1n },
+          },
+          { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
+        ),
+      ).rejects.toThrow(/BigInt/u);
+      await expect(fs.readdir(storePath)).resolves.toEqual([]);
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("establishes the Windows directory ACL before creating sensitive files", async () => {
     const outputDir = await createTempDir();
     const events: string[] = [];

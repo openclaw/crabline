@@ -2,6 +2,47 @@ import { describe, expect, it } from "vitest";
 import { ManifestSchema } from "../src/config/schema.js";
 
 describe("manifest schema", () => {
+  it("rejects unsafe inbound regular expressions", () => {
+    for (const pattern of ["^(a+)+$", "^(a|aa)+$", String.raw`^(a)\1$`]) {
+      expect(() =>
+        ManifestSchema.parse({
+          configVersion: 1,
+          fixtures: [
+            {
+              id: "unsafe-regex",
+              inboundMatch: { nonce: "ignore", pattern, strategy: "regex" },
+              mode: "roundtrip",
+              provider: "local",
+              target: { id: "echo-bot" },
+            },
+          ],
+          providers: { local: { adapter: "loopback", platform: "loopback" } },
+        }),
+      ).toThrow(/inboundMatch\.pattern/u);
+    }
+  });
+
+  it("accepts the documented thread target shape", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [
+          {
+            id: "slack-thread",
+            mode: "send",
+            provider: "slack",
+            target: {
+              channelId: "C1234567890",
+              id: "C1234567890",
+              threadId: "1700000000.000100",
+            },
+          },
+        ],
+        providers: { slack: { adapter: "slack" } },
+      }),
+    ).not.toThrow();
+  });
+
   it("rejects fixture ids that cannot be embedded in nonces", () => {
     for (const id of ["foo_bar", "foo.bar", "foo bar"]) {
       expect(() =>

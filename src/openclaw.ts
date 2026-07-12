@@ -96,7 +96,10 @@ function createOpenClawCrablineProviderAdapter(
 }
 
 export function resolveOpenClawCrablineChannel(input?: string | null): CrablineServerChannel {
-  const channel = input?.trim().toLowerCase() || OPENCLAW_CRABLINE_DEFAULT_CHANNEL;
+  const channel =
+    input === undefined || input === null
+      ? OPENCLAW_CRABLINE_DEFAULT_CHANNEL
+      : input.trim().toLowerCase();
   if (isCrablineServerChannel(channel)) {
     return channel;
   }

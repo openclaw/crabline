@@ -159,6 +159,50 @@ describe("run behavior", () => {
     expect(sendCalls).toBe(0);
   });
 
+  it("rejects an unsafe inbound regex before sending", async () => {
+    let sendCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => {
+        sendCalls += 1;
+        return { accepted: true, messageId: "1", threadId: "1" };
+      },
+      waitForInbound: async () => null,
+    };
+    const unsafeManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [
+        {
+          ...manifest.fixtures[0]!,
+          inboundMatch: {
+            author: "assistant",
+            nonce: "ignore",
+            pattern: "^(a+)+$",
+            strategy: "regex",
+          },
+        },
+      ],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: unsafeManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.failureKind).toBe("config");
+    expect(result.diagnostics.join("\n")).toContain("Invalid inbound regex");
+    expect(sendCalls).toBe(0);
+  });
+
   it("uses one effective fixture for mode overrides in provider contexts", async () => {
     const contextFixtures: ManifestDefinition["fixtures"] = [];
     let outboundText = "";

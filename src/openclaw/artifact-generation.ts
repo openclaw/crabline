@@ -217,14 +217,6 @@ export async function publishOpenClawCrablineArtifactGeneration(
   const stagingPath = path.join(storePath, `.staging-${generationId}`);
   const generationPath = path.join(storePath, generation);
   const staging = await securePrivateDirectory(stagingPath, directoryOptions);
-  const pointer: OpenClawCrablineArtifactPointer = {
-    capabilityMatrixPath: generationArtifactPath(generation, params.selection.capabilityMatrixPath),
-    generation,
-    manifestPath: generationArtifactPath(generation, OPENCLAW_CRABLINE_MANIFEST_PATH),
-    ...(currentPointer ? { previousGeneration: currentPointer.generation } : {}),
-    smokeArtifactPath: generationArtifactPath(generation, params.selection.smokeArtifactPath),
-    version: 1,
-  };
   const publishPrivateFile = dependencies.publishPrivateFile ?? publishPrivateFileAtomically;
   const fileOptions = {
     ...(dependencies.platform ? { platform: dependencies.platform } : {}),
@@ -232,50 +224,61 @@ export async function publishOpenClawCrablineArtifactGeneration(
       ? { secureWindowsFile: dependencies.secureWindowsFile }
       : {}),
   };
-  const smoke = {
-    ...params.smoke,
-    manifestPath: pointer.manifestPath,
-  };
-  const artifactContents = [
-    {
-      contents: `${JSON.stringify(params.manifest, null, 2)}\n`,
-      fileName: OPENCLAW_CRABLINE_MANIFEST_PATH,
-    },
-    {
-      contents: `${JSON.stringify(
-        {
-          version: 1,
-          source: "openclaw/crabline",
-          channelDriver: params.selection.channelDriver,
-          selectedChannel: params.selection.channel,
-          manifestPath: pointer.manifestPath,
-          report: params.capabilityReport,
-        },
-        null,
-        2,
-      )}\n`,
-      fileName: params.selection.capabilityMatrixPath,
-    },
-    {
-      contents: `${JSON.stringify(
-        {
-          version: 1,
-          source: "openclaw/crabline",
-          channelDriver: params.selection.channelDriver,
-          selectedChannel: params.selection.channel,
-          manifestPath: pointer.manifestPath,
-          smoke,
-        },
-        null,
-        2,
-      )}\n`,
-      fileName: params.selection.smokeArtifactPath,
-    },
-  ] as const;
-
   let installed = false;
   let committed = false;
   try {
+    const pointer: OpenClawCrablineArtifactPointer = {
+      capabilityMatrixPath: generationArtifactPath(
+        generation,
+        params.selection.capabilityMatrixPath,
+      ),
+      generation,
+      manifestPath: generationArtifactPath(generation, OPENCLAW_CRABLINE_MANIFEST_PATH),
+      ...(currentPointer ? { previousGeneration: currentPointer.generation } : {}),
+      smokeArtifactPath: generationArtifactPath(generation, params.selection.smokeArtifactPath),
+      version: 1,
+    };
+    const smoke = {
+      ...params.smoke,
+      manifestPath: pointer.manifestPath,
+    };
+    const artifactContents = [
+      {
+        contents: `${JSON.stringify(params.manifest, null, 2)}\n`,
+        fileName: OPENCLAW_CRABLINE_MANIFEST_PATH,
+      },
+      {
+        contents: `${JSON.stringify(
+          {
+            version: 1,
+            source: "openclaw/crabline",
+            channelDriver: params.selection.channelDriver,
+            selectedChannel: params.selection.channel,
+            manifestPath: pointer.manifestPath,
+            report: params.capabilityReport,
+          },
+          null,
+          2,
+        )}\n`,
+        fileName: params.selection.capabilityMatrixPath,
+      },
+      {
+        contents: `${JSON.stringify(
+          {
+            version: 1,
+            source: "openclaw/crabline",
+            channelDriver: params.selection.channelDriver,
+            selectedChannel: params.selection.channel,
+            manifestPath: pointer.manifestPath,
+            smoke,
+          },
+          null,
+          2,
+        )}\n`,
+        fileName: params.selection.smokeArtifactPath,
+      },
+    ] as const;
+
     await params.lock.assertOwned();
     for (const artifact of artifactContents) {
       await staging.assertIdentityAt();

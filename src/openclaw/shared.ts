@@ -255,8 +255,14 @@ export function parseQaTarget(target: string): ParsedQaTarget {
     if (slash <= 0 || slash !== rest.lastIndexOf("/")) {
       return invalidTarget();
     }
-    const id = rest.slice(0, slash).trim();
-    const threadId = rest.slice(slash + 1).trim();
+    let id: string;
+    let threadId: string;
+    try {
+      id = decodeURIComponent(rest.slice(0, slash)).trim();
+      threadId = decodeURIComponent(rest.slice(slash + 1)).trim();
+    } catch {
+      return invalidTarget();
+    }
     if (!id || !threadId) {
       return invalidTarget();
     }
@@ -284,6 +290,10 @@ export function canonicalConversationIdForInbound(input: OpenClawCrablineInbound
   return input.conversation.id.trim();
 }
 
+function encodeQaThreadComponent(value: string): string {
+  return value.replaceAll("%", "%25").replaceAll("/", "%2F");
+}
+
 export function qaTargetForInbound(input: OpenClawCrablineInboundInput) {
   const conversationId = canonicalConversationIdForInbound(input);
   const threadId = input.threadId?.trim();
@@ -293,7 +303,9 @@ export function qaTargetForInbound(input: OpenClawCrablineInboundInput) {
       : input.conversation.kind === "channel"
         ? "channel"
         : "group";
-  return threadId ? `thread:${conversationId}/${threadId}` : `${prefix}:${conversationId}`;
+  return threadId
+    ? `thread:${encodeQaThreadComponent(conversationId)}/${encodeQaThreadComponent(threadId)}`
+    : `${prefix}:${conversationId}`;
 }
 
 export function createAdminInboundRequest(manifest: CrablineServerManifest) {

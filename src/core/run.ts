@@ -1,6 +1,7 @@
 import { matchesInbound } from "./matcher.js";
 import { createOutboundText } from "./message-template.js";
 import { createNonce } from "./nonces.js";
+import { inboundRegexSafetyError } from "./safe-regex.js";
 import { type FailureKind, CrablineError, ensureErrorMessage } from "./errors.js";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.js";
 import type { ManifestDefinition } from "../config/schema.js";
@@ -133,6 +134,10 @@ export async function runFixtureCommand(params: {
     if (fixture.inboundMatch.strategy === "regex" && fixture.inboundMatch.pattern) {
       try {
         RegExp(fixture.inboundMatch.pattern, "u");
+        const safetyError = inboundRegexSafetyError(fixture.inboundMatch.pattern);
+        if (safetyError) {
+          throw new Error(safetyError);
+        }
       } catch (error) {
         return (result = toFailure(
           fixture.id,

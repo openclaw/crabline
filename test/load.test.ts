@@ -127,6 +127,31 @@ describe("config load", () => {
     expect((cause as Error).message).not.toContain("accessToken");
   });
 
+  it("omits malformed JSON source text from load errors", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.json");
+    const sentinel = "sentinel-json-secret";
+    await writeText(configPath, `{"accessToken":"${sentinel}",}`);
+
+    let failure: unknown;
+    try {
+      await loadManifest(configPath);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("JSON parse error");
+    expect((failure as Error).message).not.toContain(sentinel);
+    expect((failure as Error).message).not.toContain("accessToken");
+    const cause = (failure as Error & { cause?: unknown }).cause;
+    expect(cause).toBeInstanceOf(Error);
+    expect((cause as Error).message).toContain("JSON parse error");
+    expect((cause as Error).message).not.toContain(sentinel);
+    expect((cause as Error).message).not.toContain("accessToken");
+  });
+
   it("resolves default config names from cwd", async () => {
     const directory = await createTempDir();
     directories.push(directory);
