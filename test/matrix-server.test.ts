@@ -719,10 +719,10 @@ describe("Matrix local provider server", () => {
         senderId: "@alice:matrix.test",
         text: "advance the bounded timeline",
       }),
-      headers: {
-        "content-type": "application/json",
-        "x-crabline-admin-token": server.manifest.adminToken,
-      },
+      headers: new Headers([
+        ["content-type", "application/json"],
+        ["x-crabline-admin-token", server.manifest.adminToken],
+      ]),
       method: "POST",
     });
     expect(inbound.status).toBe(200);
