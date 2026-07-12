@@ -1,4 +1,4 @@
-import { extractNonce } from "./nonces.js";
+import { extractNonces } from "./nonces.js";
 import type { InboundEnvelope, InboundMatchConfig } from "../providers/types.js";
 
 export function matchesInbound(
@@ -11,18 +11,18 @@ export function matchesInbound(
   }
 
   const text = envelope.text ?? "";
-  const extractedNonce = extractNonce(text);
+  const extractedNonces = extractNonces(text);
 
   if (config.nonce !== "ignore") {
-    if (!extractedNonce) {
+    if (extractedNonces.length === 0) {
       return false;
     }
 
-    if (config.nonce === "exact" && extractedNonce !== nonce) {
+    if (config.nonce === "exact" && extractedNonces[0] !== nonce) {
       return false;
     }
 
-    if (config.nonce === "contains" && !text.includes(nonce)) {
+    if (config.nonce === "contains" && !extractedNonces.includes(nonce)) {
       return false;
     }
   }

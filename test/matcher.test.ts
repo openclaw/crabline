@@ -30,6 +30,36 @@ describe("nonce + matcher", () => {
     ).toBe(true);
   });
 
+  it("matches contains mode only against canonical nonce tokens", () => {
+    const nonce = "mp-demo-abc-1234abcd";
+    const otherNonce = "mp-other-def-8765dcba";
+    const envelope = {
+      author: "assistant" as const,
+      id: "1",
+      provider: "loopback",
+      sentAt: new Date().toISOString(),
+      text: `ACK ${otherNonce} then ${nonce}`,
+      threadId: "loopback:echo",
+    };
+    const config = {
+      author: "assistant" as const,
+      nonce: "contains" as const,
+      strategy: "contains" as const,
+    };
+
+    expect(matchesInbound(envelope, config, nonce)).toBe(true);
+    expect(
+      matchesInbound(
+        {
+          ...envelope,
+          text: `ACK ${otherNonce} then malformed ${nonce}0`,
+        },
+        config,
+        nonce,
+      ),
+    ).toBe(false);
+  });
+
   it("covers exact, regex, and ignore-nonce branches", () => {
     const baseMessage = {
       author: "assistant" as const,
