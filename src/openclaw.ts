@@ -33,8 +33,8 @@ import {
   type StartedOpenClawCrablineAdapter,
   type StartOpenClawCrablineAdapterParams,
 } from "./openclaw/shared.js";
+import { publishPrivateFileAtomically } from "./openclaw/private-file.js";
 import { acquireOpenClawCrablineSmokeRunLock } from "./openclaw/smoke-lock.js";
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -175,24 +175,6 @@ export async function startOpenClawCrablineAdapter(
   };
 }
 
-async function publishPrivateJson(filePath: string, value: unknown): Promise<void> {
-  const temporaryPath = path.join(
-    path.dirname(filePath),
-    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
-  );
-  try {
-    await fs.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
-    await fs.chmod(temporaryPath, 0o600);
-    await fs.rename(temporaryPath, filePath);
-  } finally {
-    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
-  }
-}
-
 export async function runOpenClawCrablineChannelDriverSmoke(params: {
   outputDir: string;
   selection: OpenClawCrablineChannelDriverSelection;
@@ -218,7 +200,10 @@ export async function runOpenClawCrablineChannelDriverSmoke(params: {
       recorderPath,
     });
     try {
-      await publishPrivateJson(manifestPath, adapter.manifest);
+      await publishPrivateFileAtomically(
+        manifestPath,
+        `${JSON.stringify(adapter.manifest, null, 2)}\n`,
+      );
       const probe = await adapter.probe();
       return {
         capabilityReport: {

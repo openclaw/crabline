@@ -418,8 +418,14 @@ It does not mean "connect to live Telegram."
 
 OpenClaw smoke runs claim their output directory exclusively across processes.
 The credential-bearing server manifest is atomically replaced with owner-only
-`0600` permissions, including when an older manifest was more permissive.
-Locks abandoned by terminated smoke processes are reclaimed on the next run.
+permissions, including when an older manifest was more permissive. POSIX hosts
+use mode `0600`. Windows hosts require `powershell.exe` with `Set-Acl`; Crabline
+resolves it from the absolute local `SystemRoot`, creates an empty temporary
+file, applies and verifies a protected DACL containing only the current user SID
+with full control, and only then writes credentials. If `SystemRoot`, the ACL
+tooling, or verification is unavailable, publication aborts without replacing
+the previous manifest. Locks abandoned by terminated smoke processes are
+reclaimed on the next run.
 
 For release or live verification, use OpenClaw's live driver:
 
