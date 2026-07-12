@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { z } from "zod";
 import { CrablineError, ensureErrorMessage } from "../../core/errors.js";
@@ -54,19 +54,23 @@ const ScriptInboundResultSchema = z
   );
 
 function terminateChild(child: ChildProcess): void {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return;
-  }
-
-  if (process.platform !== "win32" && child.pid) {
+  if (process.platform === "win32" && child.pid) {
+    spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+      stdio: "ignore",
+      timeout: 5000,
+      windowsHide: true,
+    });
+  } else if (child.pid) {
     try {
       process.kill(-child.pid, "SIGKILL");
-      return;
     } catch {
       // The process group may have exited with the shell.
     }
   }
-  child.kill("SIGKILL");
+
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGKILL");
+  }
 }
 
 function formatValidationError(error: z.ZodError): string {
@@ -374,13 +378,13 @@ export class ScriptProviderAdapter implements ProviderAdapter {
     child.once("error", (error) => {
       childError = error;
     });
+    let childCloseObserved = false;
     const childClosed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolve) => {
-        if (child.exitCode !== null || child.signalCode !== null) {
-          resolve({ code: child.exitCode, signal: child.signalCode });
-          return;
-        }
-        child.once("close", (code, signal) => resolve({ code, signal }));
+        child.once("close", (code, signal) => {
+          childCloseObserved = true;
+          resolve({ code, signal });
+        });
       },
     );
     child.stdin.end(
@@ -469,7 +473,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       throw error;
     } finally {
       child.stdin.destroy();
-      if (child.exitCode === null && child.signalCode === null) {
+      if (!childCloseObserved) {
         terminateChild(child);
       }
       await childClosed;

@@ -250,7 +250,7 @@ describe("discord provider", () => {
     expect(next.value?.id).toBe("evt-2");
   });
 
-  it("reuses an existing interactions listener during probe", async () => {
+  it("rejects a secondary probe when the interactions listener is occupied", async () => {
     const config = await createDiscordConfig(await resolveFreePort());
     const primary = new DiscordProviderAdapter(
       "discord-primary",
@@ -281,23 +281,26 @@ describe("discord provider", () => {
     providers.push(secondary);
 
     const primaryProbe = await primary.probe(createContext(config));
-    const secondaryProbe = await secondary.probe(
-      createContext({
-        ...config,
-        discord: {
-          ...config.discord!,
-          recorder: {
-            path: config.discord!.recorder.path?.replace(
-              "discord.jsonl",
-              "discord-secondary.jsonl",
-            ),
-          },
-        },
-      }),
-    );
-
     expect(primaryProbe.healthy).toBe(true);
-    expect(secondaryProbe.healthy).toBe(true);
+
+    await expect(
+      secondary.probe(
+        createContext({
+          ...config,
+          discord: {
+            ...config.discord!,
+            recorder: {
+              path: config.discord!.recorder.path?.replace(
+                "discord.jsonl",
+                "discord-secondary.jsonl",
+              ),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/EADDRINUSE/u);
+
+    await expect(primary.probe(createContext(config))).resolves.toMatchObject({ healthy: true });
   });
 
   it("returns channel-like webhook errors for malformed interaction events", async () => {

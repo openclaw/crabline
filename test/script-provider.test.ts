@@ -10,6 +10,19 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+}
+
 const createContext = async (watchTrailingNewline = true): Promise<ProviderContext> => {
   const directory = await createTempDir();
   directories.push(directory);
@@ -148,6 +161,66 @@ describe("script provider", () => {
     }
     throw new Error(`watch subprocess ${pid} is still running`);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "stops descendants that hold watch pipes after the leader exits",
+    async () => {
+      const context = await createContext();
+      const watchScript = path.join(path.dirname(context.manifestPath), "watch-descendant.mjs");
+      await writeText(
+        watchScript,
+        'import {spawn} from "node:child_process";const descendant=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:["ignore","inherit","ignore"]});descendant.unref();process.stdout.write(JSON.stringify({author:"assistant",id:String(descendant.pid),raw:{leaderPid:process.pid},sentAt:new Date().toISOString(),text:"watch payload",threadId:"thread-1"})+"\\n");',
+      );
+      context.config.script!.commands.watch = `exec node ${JSON.stringify(watchScript)}`;
+      const provider = new ScriptProviderAdapter(context);
+      const iterator = provider.watch(context)[Symbol.asyncIterator]();
+      let descendantPid = 0;
+      let descendantExited = false;
+      try {
+        const watched = await iterator.next();
+        descendantPid = Number(watched.value?.id);
+        const leaderPid = Number(
+          (watched.value?.raw as { leaderPid?: number } | undefined)?.leaderPid,
+        );
+        expect(Number.isInteger(descendantPid)).toBe(true);
+        expect(Number.isInteger(leaderPid)).toBe(true);
+        await expect(waitForProcessExit(leaderPid, 2000)).resolves.toBe(true);
+
+        const returnPromise = iterator.return();
+        let timeout: NodeJS.Timeout | undefined;
+        const stopped = await Promise.race([
+          returnPromise.then(() => true),
+          new Promise<false>((resolve) => {
+            timeout = setTimeout(() => resolve(false), 1000);
+          }),
+        ]);
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        if (!stopped) {
+          try {
+            process.kill(descendantPid, "SIGKILL");
+          } catch {
+            // The descendant may have exited at the timeout boundary.
+          }
+          await returnPromise;
+          throw new Error("watch cleanup waited for a descendant-held pipe");
+        }
+
+        descendantExited = await waitForProcessExit(descendantPid, 2000);
+        expect(descendantExited).toBe(true);
+      } finally {
+        if (descendantPid > 0 && !descendantExited) {
+          try {
+            process.kill(descendantPid, "SIGKILL");
+          } catch {
+            // The expected cleanup path already stopped the descendant.
+          }
+        }
+        await iterator.return();
+      }
+    },
+  );
 
   it("enforces command deadlines in the parent process", async () => {
     const context = await createContext();
