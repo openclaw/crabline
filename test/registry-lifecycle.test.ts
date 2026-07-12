@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManifestDefinition, ProviderConfig } from "../src/config/schema.js";
-import { createRegistry } from "../src/providers/registry.js";
-import type { ProviderContext, SendContext } from "../src/providers/types.js";
+import { createRegistry, LazyProviderAdapter } from "../src/providers/registry.js";
+import type { ProviderAdapter, ProviderContext, SendContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 type AppendRecordedInbound = typeof import("../src/providers/recorder.js").appendRecordedInbound;
@@ -149,6 +149,88 @@ function createTelegramManifest(recorderPath: string): {
 }
 
 describe("lazy provider lifecycle", () => {
+  it("starts concrete cleanup before waiting for a stuck operation", async () => {
+    let releaseWait: (() => void) | undefined;
+    let markCleanupStarted: (() => void) | undefined;
+    let markWaitStarted: (() => void) | undefined;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      markCleanupStarted = resolve;
+    });
+    const waitStarted = new Promise<void>((resolve) => {
+      markWaitStarted = resolve;
+    });
+    const concrete: ProviderAdapter = {
+      id: "test",
+      platform: "loopback",
+      status: "ready",
+      supports: ["roundtrip"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      async waitForInbound() {
+        markWaitStarted?.();
+        return await new Promise<null>((resolve) => {
+          releaseWait = () => resolve(null);
+        });
+      },
+      async cleanup() {
+        markCleanupStarted?.();
+        releaseWait?.();
+      },
+    };
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory: async () => concrete,
+      id: "test",
+      normalizeTarget: concrete.normalizeTarget.bind(concrete),
+      platform: "loopback",
+      status: "ready",
+      supports: ["roundtrip"],
+    });
+    const controller = new AbortController();
+    const waiting = provider.waitForInbound({
+      config: {
+        adapter: "loopback",
+        capabilities: ["roundtrip"],
+        env: [],
+        platform: "loopback",
+        status: "active",
+      },
+      fixture: {
+        env: [],
+        id: "fixture",
+        inboundMatch: { author: "assistant", nonce: "contains", strategy: "contains" },
+        mode: "roundtrip",
+        provider: "test",
+        retries: 0,
+        tags: [],
+        target: { id: "target", metadata: {} },
+        timeoutMs: 10,
+      },
+      manifestPath: "/tmp/crabline.yaml",
+      nonce: "nonce",
+      providerId: "test",
+      signal: controller.signal,
+      since: new Date().toISOString(),
+      timeoutMs: 10,
+      userName: "crabline",
+    });
+    await waitStarted;
+    controller.abort();
+
+    const cleanup = provider.cleanup();
+
+    await expect(cleanupStarted).resolves.toBeUndefined();
+    await expect(waiting).resolves.toBeNull();
+    await expect(cleanup).resolves.toBeUndefined();
+  });
+
   it("starts concrete WhatsApp cleanup before draining admitted registry work", async () => {
     const directory = await createTempDir();
     const recorderPath = path.join(directory, "whatsapp.jsonl");

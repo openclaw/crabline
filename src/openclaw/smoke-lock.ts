@@ -381,13 +381,22 @@ const getProcessStartedAtMs: GetProcessStartedAtMs = (pid) => {
   if (pid === process.pid) {
     return CURRENT_PROCESS_STARTED_AT_MS;
   }
-  if (process.platform === "win32") {
-    return null;
-  }
-  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-    encoding: "utf8",
-    timeout: 1_000,
-  });
+  const result =
+    process.platform === "win32"
+      ? spawnSync(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
+          ],
+          { encoding: "utf8", timeout: 1_000, windowsHide: true },
+        )
+      : spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+          encoding: "utf8",
+          timeout: 1_000,
+        });
   if (result.status !== 0) {
     return null;
   }
