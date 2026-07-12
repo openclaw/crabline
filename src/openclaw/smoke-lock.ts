@@ -417,6 +417,12 @@ export function processIdentityFromDarwin(
   return `darwin:${bootMatch[1]}.${bootMatch[2]}:${normalizedStartedAt}`;
 }
 
+export function darwinProcessIdentityEnvironment(
+  environment: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return { ...environment, LC_ALL: "C", TZ: "UTC" };
+}
+
 const getProcessIdentity: GetProcessIdentity = (pid) => {
   if (process.platform === "linux") {
     try {
@@ -431,7 +437,7 @@ const getProcessIdentity: GetProcessIdentity = (pid) => {
   if (process.platform === "darwin") {
     const options = {
       encoding: "utf8" as const,
-      env: { ...process.env, LC_ALL: "C" },
+      env: darwinProcessIdentityEnvironment(process.env),
       timeout: 1_000,
     };
     const startedAt = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], options);

@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   acquireOpenClawCrablineSmokeRunLock,
+  darwinProcessIdentityEnvironment,
   processIdentityFromDarwin,
   processIdentityFromLinuxStat,
   releaseOpenClawCrablineSmokeRunLock,
@@ -35,6 +36,21 @@ describe("OpenClaw smoke lock cleanup", () => {
       ),
     ).toBe("darwin:1783864000.123456:Sun Jul 12 16:04:00 2026");
     expect(processIdentityFromDarwin("", "{ sec = 1, usec = 2 }")).toBeNull();
+  });
+
+  it("uses a canonical environment for Darwin process start times", () => {
+    const environment = { LC_ALL: "fr_FR.UTF-8", TZ: "Europe/Paris", UNRELATED: "preserved" };
+
+    expect(darwinProcessIdentityEnvironment(environment)).toEqual({
+      LC_ALL: "C",
+      TZ: "UTC",
+      UNRELATED: "preserved",
+    });
+    expect(environment).toEqual({
+      LC_ALL: "fr_FR.UTF-8",
+      TZ: "Europe/Paris",
+      UNRELATED: "preserved",
+    });
   });
 
   it("secures an empty Windows lock directory before writing sensitive contents", async () => {
