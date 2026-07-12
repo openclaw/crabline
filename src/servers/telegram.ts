@@ -59,6 +59,7 @@ type TelegramServerState = {
   webhookDelivery: Promise<Response | undefined> | undefined;
   webhookRetryAttempts: number;
   webhookRetryTimer: NodeJS.Timeout | undefined;
+  webhookRetryUpdateId: number | undefined;
 };
 
 type TelegramUpdatePoll = {
@@ -479,6 +480,7 @@ async function flushTelegramWebhookUpdates(
     return undefined;
   }
   while (state.updates.length > 0 && state.webhook) {
+    syncTelegramWebhookRetryHead(state);
     const webhook: TelegramWebhook = state.webhook;
     const update = state.updates[0]!;
     const controller = new AbortController();
@@ -530,7 +532,18 @@ function clearTelegramWebhookRetry(state: TelegramServerState, resetAttempts = f
   }
   if (resetAttempts) {
     state.webhookRetryAttempts = 0;
+    state.webhookRetryUpdateId = undefined;
   }
+}
+
+function syncTelegramWebhookRetryHead(state: TelegramServerState): void {
+  const updateId = state.updates[0]?.update_id;
+  if (updateId === state.webhookRetryUpdateId) {
+    return;
+  }
+  clearTelegramWebhookRetry(state);
+  state.webhookRetryAttempts = 0;
+  state.webhookRetryUpdateId = updateId;
 }
 
 function scheduleTelegramWebhookDelivery(state: TelegramServerState, delayMs: number): void {
@@ -545,16 +558,24 @@ function scheduleTelegramWebhookDelivery(state: TelegramServerState, delayMs: nu
   }
   state.webhookRetryTimer = setTimeout(() => {
     state.webhookRetryTimer = undefined;
-    void deliverTelegramWebhookUpdates(state);
+    void deliverTelegramWebhookUpdates(state, true);
   }, delayMs);
   state.webhookRetryTimer.unref();
 }
 
 async function deliverTelegramWebhookUpdates(
   state: TelegramServerState,
+  scheduledRetry = false,
 ): Promise<Response | undefined> {
+  syncTelegramWebhookRetryHead(state);
   if (state.webhookDelivery) {
     return await state.webhookDelivery;
+  }
+  if (
+    !scheduledRetry &&
+    (state.webhookRetryTimer || state.webhookRetryAttempts >= TELEGRAM_WEBHOOK_MAX_RETRIES)
+  ) {
+    return telegramError("Bad Gateway: webhook delivery failed", 502);
   }
   const delivery = flushTelegramWebhookUpdates(state);
   state.webhookDelivery = delivery;
@@ -907,6 +928,7 @@ export async function startTelegramServer(
     webhookDelivery: undefined,
     webhookRetryAttempts: 0,
     webhookRetryTimer: undefined,
+    webhookRetryUpdateId: undefined,
   };
   const port = params.port ?? 0;
   const server = createServer(async (request, response) => {
