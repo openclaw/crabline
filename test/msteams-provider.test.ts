@@ -54,6 +54,7 @@ describe("Microsoft Teams webhook authentication", () => {
         aud: "teams-app-id",
         exp: Math.floor(now / 1000) + 60,
         iss: "https://api.botframework.com",
+        serviceurl: serviceUrl,
       }),
     ).toString("base64url");
     const signature = sign(
@@ -69,6 +70,30 @@ describe("Microsoft Teams webhook authentication", () => {
         body,
       ),
     ).resolves.toBeUndefined();
+
+    const mismatchedPayload = Buffer.from(
+      JSON.stringify({
+        aud: "teams-app-id",
+        exp: Math.floor(now / 1000) + 60,
+        iss: "https://api.botframework.com",
+        serviceurl: "https://smba.trafficmanager.net/amer/",
+      }),
+    ).toString("base64url");
+    const mismatchedSignature = sign(
+      "RSA-SHA256",
+      Buffer.from(`${header}.${mismatchedPayload}`),
+      keys.privateKey,
+    ).toString("base64url");
+    await expect(
+      authenticate!(
+        new Request(url, {
+          headers: {
+            authorization: `Bearer ${header}.${mismatchedPayload}.${mismatchedSignature}`,
+          },
+        }),
+        body,
+      ),
+    ).resolves.toMatchObject({ status: 401 });
   });
 });
 
