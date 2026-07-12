@@ -147,8 +147,8 @@ function requireSlackToken(
 ): Response | undefined {
   const authorization = request.headers.authorization;
   const tokenFromHeader =
-    typeof authorization === "string" && authorization.startsWith("Bearer ")
-      ? authorization.slice("Bearer ".length).trim()
+    typeof authorization === "string"
+      ? /^Bearer\s+(.+)$/iu.exec(authorization.trim())?.[1]?.trim()
       : undefined;
   const token = tokenFromHeader ?? readTrimmedString(body.token);
   if (!token) {
@@ -224,6 +224,14 @@ function readStructuredValue(value: unknown): unknown {
   }
 }
 
+function readStructuredArray(value: unknown, error: string): unknown[] | Response | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = readStructuredValue(value);
+  return Array.isArray(parsed) ? parsed : slackError(error);
+}
+
 function hasStructuredMessageContent(value: unknown): boolean {
   if (Array.isArray(value)) {
     return value.length > 0;
@@ -243,7 +251,7 @@ function hasThreadParent(
   },
 ): boolean {
   return messagesForChannel(state, params.channel).some(
-    (message) => message.ts === params.threadTs || message.thread_ts === params.threadTs,
+    (message) => message.ts === params.threadTs && message.thread_ts === undefined,
   );
 }
 
@@ -290,7 +298,7 @@ function mpimChannelForUsers(
   return channel;
 }
 
-function requireSlackUsers(value: unknown): string[] | Response {
+function requireSlackUsers(value: unknown, botUserId: string): string[] | Response {
   const rawUsers = readTrimmedString(value);
   if (!rawUsers) {
     return slackError("users_list_not_supplied");
@@ -305,7 +313,18 @@ function requireSlackUsers(value: unknown): string[] | Response {
   if (new Set(users).size !== users.length) {
     return slackError("invalid_user_combination");
   }
+  if (users.includes(botUserId)) {
+    return slackError("invalid_user_combination");
+  }
   return users;
+}
+
+function requireSlackLimit(value: unknown): number | Response {
+  const limit = value === undefined ? 100 : readInteger(value);
+  if (limit === undefined || limit < 1 || limit > 1_000) {
+    return slackError("invalid_limit");
+  }
+  return limit;
 }
 
 function appendMessage(state: SlackServerState, message: SlackMessage): SlackMessage {
@@ -459,8 +478,14 @@ async function handleSlackApi(params: {
         return channel;
       }
       const text = readTrimmedString(params.body.text) ?? "";
-      const attachments = readStructuredValue(params.body.attachments);
-      const blocks = readStructuredValue(params.body.blocks);
+      const attachments = readStructuredArray(params.body.attachments, "invalid_attachments");
+      if (attachments instanceof Response) {
+        return attachments;
+      }
+      const blocks = readStructuredArray(params.body.blocks, "invalid_blocks");
+      if (blocks instanceof Response) {
+        return blocks;
+      }
       const metadata = readStructuredValue(params.body.metadata);
       if (
         !text &&
@@ -497,7 +522,7 @@ async function handleSlackApi(params: {
       return slackOk({ channel, message, ts: message.ts });
     }
     case "conversations.open": {
-      const users = requireSlackUsers(params.body.users);
+      const users = requireSlackUsers(params.body.users, params.state.botUserId);
       if (users instanceof Response) {
         return users;
       }
@@ -553,7 +578,10 @@ async function handleSlackApi(params: {
       if (latest instanceof Response) {
         return latest;
       }
-      const limit = readInteger(params.body.limit) ?? 100;
+      const limit = requireSlackLimit(params.body.limit);
+      if (limit instanceof Response) {
+        return limit;
+      }
       const messages = messagesForChannel(params.state, channel).filter((message) => {
         if (oldest && message.ts <= oldest) {
           return false;
@@ -580,7 +608,10 @@ async function handleSlackApi(params: {
       if (!ts) {
         return slackError("message_not_found");
       }
-      const limit = readInteger(params.body.limit) ?? 100;
+      const limit = requireSlackLimit(params.body.limit);
+      if (limit instanceof Response) {
+        return limit;
+      }
       const messages = messagesForChannel(params.state, channel).filter(
         (message) => message.ts === ts || message.thread_ts === ts,
       );
@@ -613,6 +644,9 @@ async function handleAdminInbound(params: {
   const threadTs = requireSlackThreadTs(params.body.threadTs ?? params.body.thread_ts);
   if (threadTs instanceof Response) {
     return threadTs;
+  }
+  if (threadTs && !hasThreadParent(params.state, { channel, threadTs })) {
+    return slackError("thread_not_found");
   }
   const ts = requireSlackThreadTs(params.body.ts);
   if (ts instanceof Response) {
