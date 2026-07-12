@@ -43,6 +43,8 @@ describe("webhook target validation", () => {
     "[2001:2::1]",
     "[2001:db8::1]",
     "[2002::1]",
+    "[3800::1]",
+    "[3ffe::1]",
     "[3fff::1]",
     "[4000::1]",
     "[5f00::1]",
@@ -58,6 +60,8 @@ describe("webhook target validation", () => {
     ["192.0.0.9", "192.0.0.9", 4],
     ["[64:ff9b::5db8:d822]", "64:ff9b::5db8:d822", 6],
     ["[2001:1::1]", "2001:1::1", 6],
+    ["[2001:4860:4860::8888]", "2001:4860:4860::8888", 6],
+    ["[2404:6800::1]", "2404:6800::1", 6],
     ["[2606:4700:4700::1111]", "2606:4700:4700::1111", 6],
   ] as const)("allows globally reachable address %s", async (host, address, family) => {
     await expect(validate(host)).resolves.toEqual({
