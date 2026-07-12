@@ -139,6 +139,25 @@ describe("telegram provider", () => {
     expect(firstThreadId).not.toBe(secondThreadId);
   });
 
+  it("normalizes edited channel posts", () => {
+    const payload = {
+      edited_channel_post: {
+        caption: "edited caption",
+        chat: { id: -1001234567890 },
+        message_id: 42,
+      },
+      update_id: 99,
+    };
+
+    expect(normalizeTelegramWebhookPayload(payload)).toEqual({
+      author: "user",
+      id: "42",
+      raw: payload,
+      text: "edited caption",
+      threadId: "-1001234567890",
+    });
+  });
+
   it("probes and sends through the local mock service", async () => {
     const config = await createTelegramConfig(0);
     const provider = new TelegramProviderAdapter("telegram", config, "crabline");

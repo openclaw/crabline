@@ -101,7 +101,8 @@ export function normalizeTelegramWebhookPayload(payload: unknown) {
   const message =
     optionalRecord(payload, "message") ??
     optionalRecord(payload, "edited_message") ??
-    optionalRecord(payload, "channel_post");
+    optionalRecord(payload, "channel_post") ??
+    optionalRecord(payload, "edited_channel_post");
   if (!message) {
     return genericMockPayloadWithNativeThread({
       channelRule: TELEGRAM_CHAT_ID_RULE,

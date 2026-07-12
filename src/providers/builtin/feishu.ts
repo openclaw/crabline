@@ -62,7 +62,7 @@ export class FeishuProviderAdapter extends LocalMockProviderAdapter implements P
   }
 }
 
-function normalizeFeishuWebhookPayload(payload: unknown) {
+export function normalizeFeishuWebhookPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("Feishu webhook payload must be an object", { kind: "inbound" });
   }
@@ -79,6 +79,7 @@ function normalizeFeishuWebhookPayload(payload: unknown) {
 
   const chatId = optionalString(message, "chat_id");
   const messageId = optionalString(message, "message_id");
+  const rootId = optionalString(message, "root_id");
   const rawContent = optionalString(message, "content");
   const text = parseFeishuText(rawContent);
   if (!chatId || !text) {
@@ -94,8 +95,8 @@ function normalizeFeishuWebhookPayload(payload: unknown) {
       : {}),
     raw: payload,
     text,
-    threadId: messageId
-      ? requireNativeInboundId(messageId, FEISHU_MESSAGE_ID_RULE, "Feishu message_id")
+    threadId: rootId
+      ? requireNativeInboundId(rootId, FEISHU_MESSAGE_ID_RULE, "Feishu root_id")
       : requireNativeInboundId(chatId, FEISHU_CHAT_ID_RULE, "Feishu chat_id"),
   };
 }
