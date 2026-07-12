@@ -529,7 +529,7 @@ function isValidIgnoredTelegramUpdate(body: Record<string, unknown>): boolean {
     ) {
       return false;
     }
-    return hasTelegramMedia(message) && toStringValue(message.text) === undefined;
+    return toStringValue(message.text) === undefined;
   }
 
   const chatId = telegramChatId(body.chatId ?? body.chat_id);

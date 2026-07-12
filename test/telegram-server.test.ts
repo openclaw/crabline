@@ -422,7 +422,7 @@ describe("telegram local provider server", () => {
     });
   });
 
-  it("acknowledges unsupported and media-only updates without recording them", async () => {
+  it("acknowledges unsupported and non-text updates without recording them", async () => {
     const observed: unknown[] = [];
     const server = await startTelegramServer({
       botToken: "test-token-placeholder",
@@ -462,6 +462,18 @@ describe("telegram local provider server", () => {
         },
         update_id: 3,
       },
+      ...(["contact", "dice", "game", "location", "poll", "venue"] as const).map(
+        (field, index) => ({
+          message: {
+            [field]: {},
+            chat: { id: -1001234567890, type: "supergroup" },
+            date: 1_700_000_000,
+            from: { first_name: "Alice", id: 100001, is_bot: false },
+            message_id: index + 4,
+          },
+          update_id: index + 4,
+        }),
+      ),
     ]) {
       const response = await injectUpdate(server, body);
       expect(response.status).toBe(200);
