@@ -3,7 +3,14 @@ import { ManifestSchema } from "../src/config/schema.js";
 
 describe("manifest schema", () => {
   it("rejects unsafe inbound regular expressions", () => {
-    for (const pattern of ["^(a+)+$", "^(a|aa)+$", String.raw`^(a)\1$`]) {
+    for (const pattern of [
+      "^(a+)+$",
+      "^(a|aa)+$",
+      "^((a|aa))+$",
+      "^((a+))+$",
+      "^a*a*$",
+      String.raw`^(a)\1$`,
+    ]) {
       expect(() =>
         ManifestSchema.parse({
           configVersion: 1,
