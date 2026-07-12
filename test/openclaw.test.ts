@@ -215,9 +215,7 @@ describe("OpenClaw local provider bridge", () => {
       const probe = probeOpenClawCrablineProvider(probeManifest);
       expect(timeoutMock).toHaveBeenCalledWith(5_000);
       controller.abort(new DOMException("probe deadline", "TimeoutError"));
-      await expect(probe).rejects.toThrow(
-        `Crabline ${label} probe timed out after 5000 ms.`,
-      );
+      await expect(probe).rejects.toThrow(`Crabline ${label} probe timed out after 5000 ms.`);
     } finally {
       fetchMock.mockRestore();
       timeoutMock.mockRestore();
@@ -235,9 +233,7 @@ describe("OpenClaw local provider bridge", () => {
     try {
       const probe = probeOpenClawCrablineProvider(manifest);
       controller.abort(new DOMException("probe deadline", "TimeoutError"));
-      await expect(probe).rejects.toThrow(
-        "Crabline Telegram getMe probe timed out after 5000 ms.",
-      );
+      await expect(probe).rejects.toThrow("Crabline Telegram getMe probe timed out after 5000 ms.");
     } finally {
       fetchMock.mockRestore();
       timeoutMock.mockRestore();
