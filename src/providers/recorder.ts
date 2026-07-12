@@ -136,10 +136,14 @@ export async function waitForRecordedInbound(params: {
   timeoutMs: number;
 }): Promise<RecordedInboundEnvelope | null> {
   const deadline = Date.now() + params.timeoutMs;
+  const state: IncrementalReadState = {
+    offset: 0,
+    pending: Buffer.alloc(0),
+  };
   const seen = new Set<string>();
 
   while (Date.now() <= deadline) {
-    const events = await readRecordedInbound(params.filePath);
+    const events = await readRecordedInboundAppend(params.filePath, state);
     for (const event of events) {
       const key = toRecordKey(event);
       if (seen.has(key)) {
