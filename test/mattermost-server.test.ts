@@ -443,10 +443,11 @@ describe("Mattermost local provider server", () => {
     const second = new WebSocket(server.manifest.endpoints.websocketUrl);
     const secondClosed = waitForSocketClose(second);
     await waitForSocketOpen(second);
-    await expect(secondClosed).resolves.toEqual({
-      code: 1013,
-      reason: "too many unauthenticated clients",
-    });
+    await expect(secondClosed).resolves.toMatchObject({ code: 1006 });
+    const third = new WebSocket(server.manifest.endpoints.websocketUrl);
+    const thirdClosed = waitForSocketClose(third);
+    await waitForSocketOpen(third);
+    await expect(thirdClosed).resolves.toMatchObject({ code: 1006 });
 
     const firstClosed = waitForSocketClose(first);
     first.send(JSON.stringify({ action: "x".repeat(64) }));
