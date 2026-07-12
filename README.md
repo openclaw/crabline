@@ -361,7 +361,7 @@ Examples:
 - Slack threads: `1700000000.000100`
 - Telegram chats: `-1001234567890` or `@channelusername`
 - Telegram topics: `42`
-- WhatsApp users: `15551234567@s.whatsapp.net`
+- WhatsApp users: `+15551234567`
 - WhatsApp groups: `120363001234567890@g.us`
 - Discord channels and threads: Discord snowflake ids such as
   `123456789012345678`

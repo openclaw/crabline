@@ -7,6 +7,128 @@ import { describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
 const DEV_ONLY_RUNTIME_PACKAGES = ["baileys"] as const;
+const PUBLIC_RUNTIME_EXPORTS = [
+  "BUILTIN_ADAPTERS",
+  "CRABLINE_FAKE_PROVIDER_CHANNELS",
+  "CRABLINE_SERVER_CHANNELS",
+  "FIXTURE_MODES",
+  "INBOUND_AUTHORS",
+  "INBOUND_NONCE_MODES",
+  "INBOUND_STRATEGIES",
+  "ManifestSchema",
+  "OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH",
+  "OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY",
+  "OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH",
+  "OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH",
+  "OPENCLAW_CRABLINE_DEFAULT_CHANNEL",
+  "OPENCLAW_CRABLINE_MANIFEST_PATH",
+  "OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH",
+  "OPENCLAW_SUPPORT_CATALOG",
+  "PROVIDER_PLATFORMS",
+  "ProviderConfigSchema",
+  "createOpenClawCrablineAgentDelivery",
+  "createOpenClawCrablineChannelReportNotes",
+  "createOpenClawCrablineFakeProviderBinding",
+  "createOpenClawCrablineInbound",
+  "createOpenClawCrablineOutboundFromRecorderEvent",
+  "createOpenClawCrablineProviderBinding",
+  "createRegistry",
+  "isCrablineFakeProviderChannel",
+  "isCrablineServerChannel",
+  "probeOpenClawCrablineFakeProvider",
+  "probeOpenClawCrablineProvider",
+  "resolveOpenClawCrablineChannel",
+  "resolveOpenClawCrablineChannelDriverSelection",
+  "resolveTelegramAdapterConfig",
+  "resolveWhatsAppAdapterConfig",
+  "runOpenClawCrablineChannelDriverSmoke",
+  "runOpenClawCrablineProviderReadiness",
+  "startCrablineFakeProviderServer",
+  "startCrablineServer",
+  "startMatrixServer",
+  "startMattermostServer",
+  "startOpenClawCrablineAdapter",
+  "startSignalServer",
+  "startSlackFakeServer",
+  "startSlackServer",
+  "startTelegramFakeServer",
+  "startTelegramServer",
+  "startWhatsAppFakeServer",
+  "startWhatsAppServer",
+  "startZaloServer",
+] as const;
+const PUBLIC_TYPE_EXPORTS = [
+  "BuiltinAdapterId",
+  "CatalogEntry",
+  "CrablineFakeProviderChannel",
+  "CrablineFakeProviderManifest",
+  "CrablineServerChannel",
+  "CrablineServerManifest",
+  "FixtureDefinition",
+  "FixtureMode",
+  "InboundEnvelope",
+  "ManifestDefinition",
+  "MattermostServerManifest",
+  "MatrixServerManifest",
+  "NormalizedTarget",
+  "OpenClawCrablineAgentDelivery",
+  "OpenClawCrablineChannelDriverSelection",
+  "OpenClawCrablineChannelDriverSmokeResult",
+  "OpenClawCrablineConversation",
+  "OpenClawCrablineGatewayBinding",
+  "OpenClawCrablineInbound",
+  "OpenClawCrablineInboundInput",
+  "OpenClawCrablineOutboundMessage",
+  "OpenClawCrablineProviderReadinessResult",
+  "ProbeResult",
+  "ProviderAdapter",
+  "ProviderConfig",
+  "ProviderContext",
+  "ProviderPlatform",
+  "ProviderSupportStatus",
+  "Registry",
+  "SendContext",
+  "SendResult",
+  "ServerEventObserver",
+  "ServerRequestEvent",
+  "SignalServerManifest",
+  "SlackFakeServerManifest",
+  "SlackServerManifest",
+  "StartedCrablineFakeProviderServer",
+  "StartedCrablineServer",
+  "StartedMattermostServer",
+  "StartedMatrixServer",
+  "StartedOpenClawCrablineAdapter",
+  "StartedSignalServer",
+  "StartedSlackFakeServer",
+  "StartedSlackServer",
+  "StartedTelegramFakeServer",
+  "StartedTelegramServer",
+  "StartedWhatsAppFakeServer",
+  "StartedWhatsAppServer",
+  "StartedZaloServer",
+  "StartCrablineFakeProviderServerParams",
+  "StartCrablineServerParams",
+  "StartMattermostServerParams",
+  "StartMatrixServerParams",
+  "StartOpenClawCrablineAdapterParams",
+  "StartSignalServerParams",
+  "StartSlackFakeServerParams",
+  "StartSlackServerParams",
+  "StartTelegramFakeServerParams",
+  "StartTelegramServerParams",
+  "StartWhatsAppFakeServerParams",
+  "StartWhatsAppServerParams",
+  "StartZaloServerParams",
+  "TelegramFakeServerManifest",
+  "TelegramServerManifest",
+  "WaitContext",
+  "WatchContext",
+  "WhatsAppBaileysMessage",
+  "WhatsAppFakeServerManifest",
+  "WhatsAppServerManifest",
+  "ZaloServerManifest",
+] as const;
 const IMPORT_PATTERNS = DEV_ONLY_RUNTIME_PACKAGES.map(
   (packageName) =>
     new RegExp(
@@ -24,6 +146,7 @@ describe("production package", () => {
       bundledDependencies?: string[];
       dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
+      exports?: Record<string, unknown>;
       main?: string;
       optionalDependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
@@ -34,6 +157,12 @@ describe("production package", () => {
 
     expect(pkg.dependencies?.["@types/node"]).toBeDefined();
     expect(pkg.devDependencies?.["@types/node"]).toBeUndefined();
+    expect(pkg.exports).toEqual({
+      ".": {
+        types: "./dist/src/index.d.ts",
+        import: "./dist/src/index.js",
+      },
+    });
 
     for (const packageName of DEV_ONLY_RUNTIME_PACKAGES) {
       expect(pkg.dependencies?.[packageName]).toBeUndefined();
@@ -120,6 +249,7 @@ describe("production package", () => {
         await fs.readFile(path.join(installedRoot, "package.json"), "utf8"),
       ) as typeof pkg;
       expect(installedPackage.version).toBe(pkg.version);
+      expect(installedPackage.exports).toEqual(pkg.exports);
       for (const packageName of DEV_ONLY_RUNTIME_PACKAGES) {
         await expect(
           fs.stat(path.join(consumerDirectory, "node_modules", packageName)),
@@ -131,18 +261,22 @@ describe("production package", () => {
         [
           "--input-type=module",
           "--eval",
-          'const pkg = await import("@openclaw/crabline"); console.log(typeof pkg.startCrablineServer);',
+          'const pkg = await import("@openclaw/crabline"); console.log(JSON.stringify(Object.keys(pkg).sort()));',
         ],
         { cwd: consumerDirectory },
       );
-      expect(importOutput.trim()).toBe("function");
+      expect(JSON.parse(importOutput) as string[]).toEqual(PUBLIC_RUNTIME_EXPORTS);
 
       await fs.writeFile(
         path.join(consumerDirectory, "consumer.ts"),
         [
           'import { startCrablineServer } from "@openclaw/crabline";',
+          `import type { ${PUBLIC_TYPE_EXPORTS.join(", ")} } from "@openclaw/crabline";`,
           "const start: typeof startCrablineServer = startCrablineServer;",
+          `type PublicTypes = [${PUBLIC_TYPE_EXPORTS.join(", ")}];`,
+          "declare const publicTypes: PublicTypes;",
           "void start;",
+          "void publicTypes;",
           "",
         ].join("\n"),
       );
