@@ -1,5 +1,5 @@
 import type { IncomingMessage } from "node:http";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import path from "node:path";
 import {
   adminAuthError,
@@ -42,6 +42,7 @@ type SlackServerState = {
   botId: string;
   botToken: string;
   botUserId: string;
+  eventsRequestUrl: string | undefined;
   nextDmIndex: number;
   nextTsIndex: number;
   onEvent: ServerEventObserver | undefined;
@@ -81,6 +82,7 @@ export type StartSlackServerParams = {
   botId?: string | undefined;
   botToken?: string | undefined;
   botUserId?: string | undefined;
+  eventsRequestUrl?: string | undefined;
   host?: string | undefined;
   onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
@@ -310,6 +312,42 @@ function asSlackEventCallback(message: SlackMessage) {
   };
 }
 
+function slackRequestSignature(signingSecret: string, timestamp: string, body: string): string {
+  const digest = createHmac("sha256", signingSecret)
+    .update(`v0:${timestamp}:${body}`)
+    .digest("hex");
+  return `v0=${digest}`;
+}
+
+async function deliverSlackEvent(
+  state: SlackServerState,
+  event: ReturnType<typeof asSlackEventCallback>,
+): Promise<Response | undefined> {
+  if (!state.eventsRequestUrl) {
+    return undefined;
+  }
+  const body = JSON.stringify(event);
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  try {
+    const response = await fetch(state.eventsRequestUrl, {
+      body,
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": slackRequestSignature(state.signingSecret, timestamp, body),
+      },
+      method: "POST",
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!response.ok) {
+      return slackError("event_delivery_failed", 502);
+    }
+  } catch {
+    return slackError("event_delivery_failed", 502);
+  }
+  return undefined;
+}
+
 async function handleSlackApi(params: {
   body: Record<string, unknown>;
   method: string;
@@ -494,17 +532,20 @@ async function handleAdminInbound(params: {
   if (ts instanceof Response) {
     return ts;
   }
-  const message = appendMessage(
-    params.state,
-    createSlackMessage(params.state, {
-      channel,
-      text,
-      threadTs,
-      ts,
-      user,
-    }),
-  );
-  return slackOk({ event: asSlackEventCallback(message), message });
+  const message = createSlackMessage(params.state, {
+    channel,
+    text,
+    threadTs,
+    ts,
+    user,
+  });
+  const event = asSlackEventCallback(message);
+  const deliveryError = await deliverSlackEvent(params.state, event);
+  if (deliveryError) {
+    return deliveryError;
+  }
+  appendMessage(params.state, message);
+  return slackOk({ event, message });
 }
 
 async function handleRequest(params: { request: IncomingMessage; state: SlackServerState }) {
@@ -566,6 +607,7 @@ export async function startSlackServer(
     botId: params.botId ?? "BCRABLINE",
     botToken: params.botToken ?? "xoxb-crabline-slack-token",
     botUserId: params.botUserId ?? "UCRABBOT",
+    eventsRequestUrl: params.eventsRequestUrl,
     nextDmIndex: 1,
     nextTsIndex: 100,
     onEvent: params.onEvent,

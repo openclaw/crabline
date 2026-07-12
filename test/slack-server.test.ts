@@ -1,7 +1,13 @@
-import path from "node:path";
+import { createHmac } from "node:crypto";
 import fs from "node:fs/promises";
+import { createServer } from "node:http";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { startSlackServer, type StartedSlackServer } from "../src/index.js";
+import {
+  startSlackServer,
+  type StartedSlackServer,
+  type StartSlackServerParams,
+} from "../src/index.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const servers: StartedSlackServer[] = [];
@@ -12,12 +18,15 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
-async function startTestSlackServer(): Promise<StartedSlackServer> {
+async function startTestSlackServer(
+  params: StartSlackServerParams = {},
+): Promise<StartedSlackServer> {
   const directory = await createTempDir();
   directories.push(directory);
   const server = await startSlackServer({
-    adminToken: "admin-token",
-    botToken: "xoxb-fake",
+    ...params,
+    adminToken: params.adminToken ?? "admin-token",
+    botToken: params.botToken ?? "xoxb-fake",
     recorderPath: path.join(directory, "slack.jsonl"),
   });
   servers.push(server);
@@ -163,8 +172,44 @@ describe("slack local provider server", () => {
     });
   });
 
-  it("accepts authenticated admin inbound messages", async () => {
-    const server = await startTestSlackServer();
+  it("delivers authenticated admin inbound through signed Slack Events API requests", async () => {
+    type DeliveredEvent = {
+      body: string;
+      signature: string | undefined;
+      timestamp: string | undefined;
+    };
+    let resolveDelivered: (event: DeliveredEvent) => void = () => undefined;
+    const delivered = new Promise<DeliveredEvent>((resolve) => {
+      resolveDelivered = resolve;
+    });
+    const eventsReceiver = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      resolveDelivered({
+        body: Buffer.concat(chunks).toString("utf8"),
+        signature:
+          typeof request.headers["x-slack-signature"] === "string"
+            ? request.headers["x-slack-signature"]
+            : undefined,
+        timestamp:
+          typeof request.headers["x-slack-request-timestamp"] === "string"
+            ? request.headers["x-slack-request-timestamp"]
+            : undefined,
+      });
+      response.statusCode = 200;
+      response.end();
+    });
+    await new Promise<void>((resolve) => eventsReceiver.listen(0, "127.0.0.1", resolve));
+    const address = eventsReceiver.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve Slack Events API receiver address.");
+    }
+    const server = await startTestSlackServer({
+      eventsRequestUrl: `http://127.0.0.1:${address.port}/slack/events`,
+      signingSecret: "test-signing-secret",
+    });
     const parent = await postMessage(server, {
       channel: "C1234567890",
       text: "hello fake slack",
@@ -182,21 +227,36 @@ describe("slack local provider server", () => {
     });
     expect(rejected.status).toBe(401);
 
-    const accepted = await fetch(server.manifest.endpoints.adminInboundUrl, {
-      body: JSON.stringify({
-        channel: "C1234567890",
-        text: "user nonce-1",
-        threadTs: parent.ts,
-        user: "U1234567890",
-      }),
-      headers: {
-        "content-type": "application/json",
-        "x-crabline-admin-token": "admin-token",
-      },
-      method: "POST",
-    });
-    await expect(accepted.json()).resolves.toMatchObject({
-      event: {
+    try {
+      const accepted = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          channel: "C1234567890",
+          text: "user nonce-1",
+          threadTs: parent.ts,
+          user: "U1234567890",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin-token",
+        },
+        method: "POST",
+      });
+      await expect(accepted.json()).resolves.toMatchObject({
+        event: {
+          event: {
+            channel: "C1234567890",
+            text: "user nonce-1",
+            thread_ts: parent.ts,
+            user: "U1234567890",
+          },
+          type: "event_callback",
+        },
+        ok: true,
+      });
+
+      const callback = await delivered;
+      const callbackBody = JSON.parse(callback.body) as Record<string, unknown>;
+      expect(callbackBody).toMatchObject({
         event: {
           channel: "C1234567890",
           text: "user nonce-1",
@@ -204,21 +264,30 @@ describe("slack local provider server", () => {
           user: "U1234567890",
         },
         type: "event_callback",
-      },
-      ok: true,
-    });
+      });
+      expect(callback.timestamp).toMatch(/^\d+$/u);
+      expect(callback.signature).toBe(
+        `v0=${createHmac("sha256", "test-signing-secret")
+          .update(`v0:${callback.timestamp}:${callback.body}`)
+          .digest("hex")}`,
+      );
 
-    await expect(
-      (
-        await slackApi(server, "conversations.replies", {
-          channel: "C1234567890",
-          ts: parent.ts,
-        })
-      ).json(),
-    ).resolves.toMatchObject({
-      messages: [{ text: "hello fake slack" }, { text: "user nonce-1" }],
-      ok: true,
-    });
+      await expect(
+        (
+          await slackApi(server, "conversations.replies", {
+            channel: "C1234567890",
+            ts: parent.ts,
+          })
+        ).json(),
+      ).resolves.toMatchObject({
+        messages: [{ text: "hello fake slack" }, { text: "user nonce-1" }],
+        ok: true,
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        eventsReceiver.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   });
 
   it("redacts body/query tokens and skips rejected admin inbound recording", async () => {
