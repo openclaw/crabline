@@ -683,6 +683,9 @@ async function handleAdminInbound(params: {
   if (channel instanceof Response) {
     return channel;
   }
+  if (params.body.text !== undefined && typeof params.body.text !== "string") {
+    return slackError("invalid_text", 400);
+  }
   const text = readSlackText(params.body.text) ?? "";
   const attachments = readStructuredArray(params.body.attachments, "invalid_attachments");
   if (attachments instanceof Response) {
