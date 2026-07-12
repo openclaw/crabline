@@ -35,6 +35,7 @@ export const MAX_WHATSAPP_NOISE_FRAME_BYTES = 2 * 1024 * 1024;
 export const MAX_WHATSAPP_WEBSOCKET_BUFFERED_BYTES = 4 * 1024 * 1024;
 export const MAX_WHATSAPP_WEBSOCKET_MESSAGE_BYTES = 4 * 1024 * 1024;
 export const MAX_WHATSAPP_NOISE_BUFFER_CHUNKS = 1_024;
+export const MAX_WHATSAPP_NOISE_FRAMES_PER_MESSAGE = 1_024;
 export const WHATSAPP_WEBSOCKET_SEND_TIMEOUT_MS = 5_000;
 const MAX_PENDING_WEBSOCKET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_WEBSOCKET_MESSAGES = 32;
@@ -233,6 +234,11 @@ export class WhatsAppNoiseFrameDecoder {
       }
       if (this.#bufferedBytes < size + 3) {
         break;
+      }
+      if (frames.length >= MAX_WHATSAPP_NOISE_FRAMES_PER_MESSAGE) {
+        throw new Error(
+          `WhatsApp Noise message exceeds ${MAX_WHATSAPP_NOISE_FRAMES_PER_MESSAGE} frames.`,
+        );
       }
       this.#consume(3);
       frames.push(this.#read(size));

@@ -23,6 +23,7 @@ import {
   createSerializedMessageHandler,
   MAX_WHATSAPP_NOISE_BUFFER_CHUNKS,
   MAX_WHATSAPP_NOISE_FRAME_BYTES,
+  MAX_WHATSAPP_NOISE_FRAMES_PER_MESSAGE,
   MAX_WHATSAPP_WEBSOCKET_BUFFERED_BYTES,
   parseWhatsAppWebSocketUpgradeUrl,
   sendWhatsAppWebSocketPayload,
@@ -241,6 +242,15 @@ describe("WhatsApp WebSocket message processing", () => {
 
     expect(() => decoder.decodeFrames(Buffer.concat([NOISE_WA_HEADER, prefix]))).toThrow(
       `exceeds ${MAX_WHATSAPP_NOISE_FRAME_BYTES} bytes`,
+    );
+  });
+
+  it("rejects excessive Noise frame counts in one message", () => {
+    const decoder = new WhatsAppNoiseFrameDecoder();
+    const emptyFrames = Buffer.alloc((MAX_WHATSAPP_NOISE_FRAMES_PER_MESSAGE + 1) * 3);
+
+    expect(() => decoder.decodeFrames(Buffer.concat([NOISE_WA_HEADER, emptyFrames]))).toThrow(
+      `exceeds ${MAX_WHATSAPP_NOISE_FRAMES_PER_MESSAGE} frames`,
     );
   });
 
