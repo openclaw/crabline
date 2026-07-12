@@ -758,6 +758,42 @@ describe("OpenClaw local provider bridge", () => {
       createOpenClawCrablineInbound({
         manifest,
         input: {
+          conversation: { id: "alice", kind: "direct" },
+          nativeCommand: { name: "stop" },
+          senderId: "alice",
+          text: "/stop@CrablineBot now",
+        },
+      }).providerBody,
+    ).toMatchObject({
+      entities: [{ length: 17, offset: 0, type: "bot_command" }],
+    });
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          nativeCommand: { name: "Stop!" },
+          senderId: "alice",
+          text: "/Stop!",
+        },
+      }),
+    ).toThrow("Telegram native command names must contain 1-32 lowercase letters");
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          nativeCommand: { name: "stop" },
+          senderId: "alice",
+          text: "please stop",
+        },
+      }),
+    ).toThrow("Telegram native command text must start with /stop");
+
+    expect(
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
           conversation: { id: "alice", kind: "group" },
           senderId: "alice",
           text: "topic message",

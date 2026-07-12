@@ -2,7 +2,7 @@ import type { BuiltinAdapterId, FixtureDefinition, ProviderPlatform } from "../c
 import { CrablineError } from "../core/errors.js";
 import type { LocalMockTargetCodec } from "./local-mock.js";
 import type { NativeIdRule } from "./native-ids.js";
-import { SLACK_CHANNEL_ID_RULE, SLACK_TS_RULE } from "./slack-ids.js";
+import { slackTargetKey, SLACK_CHANNEL_ID_RULE, SLACK_TS_RULE } from "./slack-ids.js";
 import type { NormalizedTarget } from "./types.js";
 
 export type BuiltinProviderAdapterId = Exclude<BuiltinAdapterId, "script">;
@@ -200,7 +200,8 @@ const SLACK_TARGET_CODEC: LocalMockTargetCodec = {
   },
   resolveThreadId(target) {
     const normalized = this.normalize(target);
-    return normalized.threadId ?? normalized.channelId ?? normalized.id;
+    const channelId = normalized.channelId ?? normalized.id;
+    return slackTargetKey(channelId, normalized.threadId);
   },
 };
 
