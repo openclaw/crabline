@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
@@ -162,7 +164,18 @@ export class LoopbackChatAdapter {
       return Promise.resolve(result);
     }
 
+    if (!/^[1-9]\d*$/u.test(options.cursor)) {
+      throw new CrablineError("Loopback message cursor must be a positive safe integer.", {
+        kind: "config",
+      });
+    }
     const offset = Number(options.cursor);
+    if (!Number.isSafeInteger(offset) || offset > messages.length) {
+      throw new CrablineError(
+        "Loopback message cursor must be a positive safe integer within message history.",
+        { kind: "config" },
+      );
+    }
     const result: { messages: LoopbackMessage[]; nextCursor?: string } = {
       messages: messages.slice(Math.max(0, offset - limit), offset).map(cloneMessage),
     };
@@ -272,9 +285,10 @@ export class LoopbackProviderAdapter extends LocalMockProviderAdapter implements
       config,
       id,
       options: {
-        defaultWebhook: { host: "127.0.0.1", path: "/loopback/webhook", port: 8786 },
+        defaultWebhook: { host: "127.0.0.1", path: "/loopback/webhook", port: 0 },
         endpointLabel: "webhook endpoint",
         platform: "loopback",
+        recorderPath: path.resolve(".crabline", "recorders", `${id}-${randomUUID()}.jsonl`),
       },
     });
   }

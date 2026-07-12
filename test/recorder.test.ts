@@ -78,6 +78,22 @@ describe("recorder", () => {
     });
   });
 
+  it("reads a valid final record without a trailing newline", async () => {
+    const filePath = await createRecorderPath();
+    const event = {
+      author: "assistant",
+      id: "evt-final",
+      provider: "slack",
+      recordedAt: new Date().toISOString(),
+      sentAt: new Date().toISOString(),
+      text: "complete",
+      threadId: "slack:C123",
+    } as const;
+    await writeFile(filePath, JSON.stringify(event), "utf8");
+
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([event]);
+  });
+
   it("rejects a malformed final record once it is newline terminated", async () => {
     const filePath = await createRecorderPath();
     await appendFile(filePath, '{"id":"malformed"} trailing\n', "utf8");
@@ -97,6 +113,13 @@ describe("recorder", () => {
       pollMs: 10,
     })[Symbol.asyncIterator]();
     await expect(iterator.next()).rejects.toThrow(SyntaxError);
+  });
+
+  it("does not hide a completed malformed record behind a blank tail", async () => {
+    const filePath = await createRecorderPath();
+    await appendFile(filePath, '{"id":"malformed"} trailing\n   ', "utf8");
+
+    await expect(readRecordedInbound(filePath)).rejects.toThrow(SyntaxError);
   });
 
   it("waits for a matching inbound event", async () => {
@@ -359,6 +382,20 @@ describe("recorder", () => {
     } finally {
       fileHandlePrototype.read = originalRead;
     }
+  });
+
+  it("bounds unterminated recorder records", async () => {
+    const filePath = await createRecorderPath();
+    await writeFile(filePath, "x".repeat(1024 * 1024 + 1), "utf8");
+
+    await expect(
+      waitForRecordedInbound({
+        filePath,
+        matches: () => false,
+        pollMs: 10,
+        timeoutMs: 30,
+      }),
+    ).rejects.toThrow(/exceeded 1048576 bytes without a newline/u);
   });
 
   it("resets incremental reads when the recorder is atomically replaced", async () => {

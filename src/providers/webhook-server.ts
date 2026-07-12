@@ -47,9 +47,11 @@ async function readRequestBody(request: IncomingMessage, maxBodyBytes: number): 
   });
 }
 
-async function toFetchRequest(request: IncomingMessage, maxBodyBytes: number): Promise<Request> {
-  const host = request.headers.host ?? "127.0.0.1";
-  const url = new URL(request.url ?? "/", `http://${host}`);
+async function toFetchRequest(
+  request: IncomingMessage,
+  url: URL,
+  maxBodyBytes: number,
+): Promise<Request> {
   const body =
     request.method === "GET" || request.method === "HEAD"
       ? undefined
@@ -117,13 +119,16 @@ export async function startWebhookServer(params: {
   const maxBodyBytes = params.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const server = createServer(async (request, response) => {
     try {
-      const fetchRequest = await toFetchRequest(request, maxBodyBytes);
-      const pathname = new URL(fetchRequest.url).pathname;
-      if (!methods.has(fetchRequest.method) || pathname !== params.path) {
+      const method = request.method ?? "GET";
+      const host = request.headers.host ?? "127.0.0.1";
+      const url = new URL(request.url ?? "/", `http://${host}`);
+      if (!methods.has(method) || url.pathname !== params.path) {
+        request.resume();
         await writeFetchResponse(response, new Response("not found", { status: 404 }));
         return;
       }
 
+      const fetchRequest = await toFetchRequest(request, url, maxBodyBytes);
       await writeFetchResponse(response, await params.handle(fetchRequest));
     } catch (error) {
       const status = error instanceof RequestBodyTooLargeError ? 413 : 500;

@@ -6,8 +6,11 @@ import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter, type LocalMockWebhookConfig } from "../local-mock.js";
 import {
   appendRecordedInbound,
+  cloneRecordedInboundCursor,
+  createRecordedInboundCursor,
   waitForRecordedInbound,
   watchRecordedInbound,
+  type RecordedInboundCursor,
 } from "../recorder.js";
 import type {
   InboundEnvelope,
@@ -53,6 +56,7 @@ const DEFAULT_WHATSAPP_WEBHOOK = {
   path: "/whatsapp/webhook",
   port: 8789,
 } as const;
+const MAX_WAIT_CURSORS = 64;
 
 export function resolveWhatsAppAdapterConfig(
   config: ProviderConfig,
@@ -76,6 +80,10 @@ export function resolveWhatsAppAdapterConfig(
 }
 
 type ResolvedWhatsAppAdapterConfig = ReturnType<typeof resolveWhatsAppAdapterConfig>;
+type WaitCursorState = {
+  active: number;
+  cursor?: RecordedInboundCursor | undefined;
+};
 
 export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   readonly #config: ProviderConfig;
@@ -87,6 +95,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   #cleanupPromise: Promise<void> | null = null;
   readonly #inFlightSends = new Set<Promise<SendResult>>();
   readonly #inFlightWebhookRequests = new Set<Promise<Response>>();
+  readonly #waitCursors = new Map<string, WaitCursorState>();
   #server: StartedWebhookServer | null = null;
   #serverClosing: Promise<void> | null = null;
   #serverStarting: Promise<StartedWebhookServer> | null = null;
@@ -153,19 +162,53 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   override async waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
     await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
-    return await waitForRecordedInbound({
-      filePath: this.#recorderPath,
-      matches: (event) =>
-        event.provider === this.id &&
-        isAddressInChannel(
-          event.threadId,
-          context.threadId ?? target.threadId ?? target.channelId ?? target.id,
-        ) &&
-        matchesInbound(event, context.fixture.inboundMatch, context.nonce),
-      since: context.since,
-      signal: context.signal,
-      timeoutMs: context.timeoutMs,
-    });
+    const channelId = context.threadId ?? target.threadId ?? target.channelId ?? target.id;
+    const cursorKey = JSON.stringify([
+      context.nonce,
+      context.since,
+      channelId,
+      context.fixture.inboundMatch,
+    ]);
+    const cursorState = this.#waitCursors.get(cursorKey) ?? { active: 0 };
+    const cursor = cursorState.cursor
+      ? cloneRecordedInboundCursor(cursorState.cursor)
+      : createRecordedInboundCursor();
+    cursorState.active++;
+    this.#waitCursors.delete(cursorKey);
+    this.#waitCursors.set(cursorKey, cursorState);
+    while (this.#waitCursors.size > MAX_WAIT_CURSORS) {
+      const oldestKey = this.#waitCursors.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.#waitCursors.delete(oldestKey);
+      }
+    }
+    try {
+      const event = await waitForRecordedInbound({
+        cursor,
+        filePath: this.#recorderPath,
+        matches: (candidate) =>
+          candidate.provider === this.id &&
+          !isOutboundRecord(candidate) &&
+          isAddressInChannel(candidate.threadId, channelId) &&
+          matchesInbound(candidate, context.fixture.inboundMatch, context.nonce),
+        since: context.since,
+        signal: context.signal,
+        timeoutMs: context.timeoutMs,
+      });
+      if (event && this.#waitCursors.get(cursorKey) === cursorState) {
+        cursorState.cursor = cursor;
+      }
+      return event;
+    } finally {
+      cursorState.active--;
+      if (
+        cursorState.active === 0 &&
+        !cursorState.cursor &&
+        this.#waitCursors.get(cursorKey) === cursorState
+      ) {
+        this.#waitCursors.delete(cursorKey);
+      }
+    }
   }
 
   override async *watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
@@ -175,6 +218,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       filePath: this.#recorderPath,
       matches: (entry) =>
         entry.provider === this.id &&
+        !isOutboundRecord(entry) &&
         isAddressInChannel(entry.threadId, target.threadId ?? target.channelId ?? target.id),
       signal: context.signal,
       since: context.since,
@@ -195,6 +239,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   override async cleanup(): Promise<void> {
     this.beginCleanup();
     this.#cleanedUp = true;
+    this.#waitCursors.clear();
     this.#cleanupPromise ??= (async () => {
       await Promise.allSettled([...this.#inFlightSends, ...this.#inFlightWebhookRequests]);
       const errors: unknown[] = [];
@@ -557,4 +602,13 @@ function isAddressInChannel(threadId: string, channelId?: string): boolean {
     return true;
   }
   return threadId === channelId || threadId.startsWith(`${channelId}:`);
+}
+
+function isOutboundRecord(event: InboundEnvelope): boolean {
+  return (
+    event.raw !== null &&
+    typeof event.raw === "object" &&
+    "direction" in event.raw &&
+    event.raw.direction === "outbound"
+  );
 }

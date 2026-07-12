@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManifestDefinition, ProviderConfig } from "../src/config/schema.js";
 import { runFixtureCommand } from "../src/core/run.js";
 import { SlackProviderAdapter } from "../src/providers/builtin/slack.js";
+import { LoopbackProviderAdapter } from "../src/providers/builtin/loopback.js";
 import { OPENCLAW_SUPPORT_CATALOG } from "../src/providers/catalog.js";
 import {
   createGenericLocalMockTargetCodec,
@@ -158,6 +159,35 @@ describe("local mock provider", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("closes a listener that finishes starting after cleanup begins", async () => {
+    let resolveStart:
+      | ((server: { close(): Promise<void>; endpointUrl: string }) => void)
+      | undefined;
+    const close = vi.fn(async () => undefined);
+    webhookMocks.startWebhookServer.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+    const config = createConfig();
+    const provider = new SlackProviderAdapter("provider-a", config, "crabline");
+    providers.push(provider);
+    const probe = provider.probe(createContext(config));
+    await vi.waitFor(() => expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1));
+    const cleanup = provider.cleanup();
+
+    resolveStart?.({
+      close,
+      endpointUrl: "http://127.0.0.1:43210/slack/events",
+    });
+
+    await expect(probe).rejects.toThrow('Provider "provider-a" has been cleaned up.');
+    await expect(cleanup).resolves.toBeUndefined();
+    expect(close).toHaveBeenCalledTimes(1);
+    await expect(provider.probe(createContext(config))).rejects.toThrow(/cleaned up/u);
+    expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to the webhook public URL and gives the top-level option precedence", async () => {
     const config = createConfig();
     const context = createContext(config);
@@ -200,6 +230,54 @@ describe("local mock provider", () => {
       "public webhook https://webhook.example.test/slack/events",
     );
   });
+
+  it.each(["authenticateWebhookRequest", "handleWebhookPayload"] as const)(
+    "does not expose arbitrary %s failures as public 400 responses",
+    async (hook) => {
+      let handleRequest: ((request: Request) => Promise<Response>) | undefined;
+      webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+        handleRequest = params.handle;
+        return {
+          async close() {},
+          endpointUrl: "http://127.0.0.1:43210/slack/events",
+        };
+      });
+      const config = createConfig();
+      const provider = new LocalMockProviderAdapter({
+        codec: createGenericLocalMockTargetCodec("slack"),
+        config,
+        id: "provider-a",
+        options: {
+          ...(hook === "authenticateWebhookRequest"
+            ? {
+                authenticateWebhookRequest() {
+                  throw new Error("sensitive auth failure");
+                },
+              }
+            : {
+                handleWebhookPayload() {
+                  throw new Error("sensitive hook failure");
+                },
+              }),
+          defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+          endpointLabel: "events endpoint",
+          platform: "slack",
+        },
+      });
+      providers.push(provider);
+      await provider.probe(createContext(config));
+
+      await expect(
+        handleRequest!(
+          new Request("http://127.0.0.1:43210/slack/events", {
+            body: "{}",
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          }),
+        ),
+      ).rejects.toThrow(/sensitive/u);
+    },
+  );
 
   it("does not watch events from another provider sharing its recorder", async () => {
     const directory = await createTempDir();
@@ -437,5 +515,143 @@ describe("local mock provider", () => {
       id: "event-0",
     });
     await expect(provider.waitForInbound(contexts.at(-1)!)).resolves.toBeNull();
+  });
+
+  it("keeps concurrent same-key waits on independent cursors", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "concurrent-waits.jsonl");
+    const config = createConfig();
+    config.slack!.recorder.path = recorderPath;
+    const provider = new SlackProviderAdapter("provider-a", config, "crabline");
+    providers.push(provider);
+    const context = {
+      ...createContext(config),
+      nonce: "same-key",
+      since: new Date(0).toISOString(),
+      threadId: "C1234567890",
+      timeoutMs: 500,
+    };
+    await appendRecordedInbound(recorderPath, {
+      author: "assistant",
+      id: "initial",
+      provider: "provider-a",
+      sentAt: new Date().toISOString(),
+      text: "initial",
+      threadId: "C1234567890",
+    });
+    await expect(provider.waitForInbound(context)).resolves.toMatchObject({ id: "initial" });
+
+    const firstWait = provider.waitForInbound(context);
+    const secondWait = provider.waitForInbound(context);
+    await appendRecordedInbound(recorderPath, {
+      author: "assistant",
+      id: "first",
+      provider: "provider-a",
+      sentAt: new Date().toISOString(),
+      text: "first",
+      threadId: "C1234567890",
+    });
+    await appendRecordedInbound(recorderPath, {
+      author: "assistant",
+      id: "second",
+      provider: "provider-a",
+      sentAt: new Date().toISOString(),
+      text: "second",
+      threadId: "C1234567890",
+    });
+
+    await expect(Promise.all([firstWait, secondWait])).resolves.toEqual([
+      expect.objectContaining({ id: "first" }),
+      expect.objectContaining({ id: "first" }),
+    ]);
+    await expect(provider.waitForInbound(context)).resolves.toMatchObject({ id: "second" });
+  });
+
+  it("keeps progress when a newer same-key wait is aborted", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "aborted-concurrent-wait.jsonl");
+    const config = createConfig();
+    config.slack!.recorder.path = recorderPath;
+    const provider = new SlackProviderAdapter("provider-a", config, "crabline");
+    providers.push(provider);
+    const context = {
+      ...createContext(config),
+      nonce: "same-key",
+      since: new Date(0).toISOString(),
+      threadId: "C1234567890",
+      timeoutMs: 500,
+    };
+    const olderWait = provider.waitForInbound(context);
+    const abortController = new AbortController();
+    const newerWait = provider.waitForInbound({
+      ...context,
+      signal: abortController.signal,
+    });
+    abortController.abort();
+    await expect(newerWait).resolves.toBeNull();
+
+    await appendRecordedInbound(recorderPath, {
+      author: "assistant",
+      id: "after-abort",
+      provider: "provider-a",
+      sentAt: new Date().toISOString(),
+      text: "after abort",
+      threadId: "C1234567890",
+    });
+    await expect(olderWait).resolves.toMatchObject({ id: "after-abort" });
+    await expect(provider.waitForInbound({ ...context, timeoutMs: 30 })).resolves.toBeNull();
+  });
+
+  it("isolates same-id loopback provider listeners and recorders", async () => {
+    const config: ProviderConfig = {
+      adapter: "loopback",
+      capabilities: ["probe", "send", "roundtrip", "agent"],
+      env: [],
+      loopback: { delayMs: 0 },
+      platform: "loopback",
+      status: "active",
+    };
+    const first = new LoopbackProviderAdapter("loopback", config, "crabline");
+    const second = new LoopbackProviderAdapter("loopback", config, "crabline");
+    providers.push(first, second);
+    const context: ProviderContext = {
+      config,
+      fixture: {
+        env: [],
+        id: "loopback-agent",
+        inboundMatch: { author: "assistant", nonce: "ignore", strategy: "contains" },
+        mode: "agent",
+        provider: "loopback",
+        retries: 0,
+        tags: [],
+        target: { id: "recipient", metadata: {} },
+        timeoutMs: 50,
+      },
+      manifestPath: "/tmp/crabline.yaml",
+      providerId: "loopback",
+      userName: "crabline",
+    };
+
+    const [firstProbe, secondProbe] = await Promise.all([
+      first.probe(context),
+      second.probe(context),
+    ]);
+    expect(webhookMocks.startWebhookServer).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ port: 0 }),
+    );
+    expect(webhookMocks.startWebhookServer).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ port: 0 }),
+    );
+    const firstRecorder = firstProbe.details.find((detail) => detail.startsWith("recorder path "));
+    const secondRecorder = secondProbe.details.find((detail) =>
+      detail.startsWith("recorder path "),
+    );
+    expect(firstRecorder).toBeDefined();
+    expect(secondRecorder).toBeDefined();
+    expect(firstRecorder).not.toBe(secondRecorder);
   });
 });
