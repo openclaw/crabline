@@ -686,6 +686,8 @@ describe("Matrix local provider server", () => {
     });
     servers.push(server);
     let firstEventId = "";
+    let firstBatch = "";
+    let typingStatus: number | undefined;
     for (let index = 0; index < 1_000; index += 1) {
       const response = await fetch(
         `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-${index}`,
@@ -698,8 +700,27 @@ describe("Matrix local provider server", () => {
       const body = (await response.json()) as { event_id: string };
       if (index === 0) {
         firstEventId = body.event_id;
+        const sync = (await (
+          await fetch(server.manifest.endpoints.syncUrl, {
+            headers: auth("test-token-placeholder"),
+          })
+        ).json()) as { next_batch: string };
+        firstBatch = sync.next_batch;
+        const typing = await fetch(
+          `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/typing/${encodeURIComponent(server.manifest.botUserId)}`,
+          {
+            body: JSON.stringify({ typing: false }),
+            headers: {
+              ...auth("test-token-placeholder"),
+              "content-type": "application/json",
+            },
+            method: "PUT",
+          },
+        );
+        typingStatus = typing.status;
       }
     }
+    expect(typingStatus).toBe(200);
     const exhausted = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-1000`,
       {
@@ -716,7 +737,7 @@ describe("Matrix local provider server", () => {
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
         roomId: "!bounded:matrix.test",
-        senderId: "@alice:matrix.test",
+        senderId: server.manifest.botUserId,
         text: "advance the bounded timeline",
       }),
       headers: new Headers([
@@ -736,6 +757,14 @@ describe("Matrix local provider server", () => {
       limited: true,
     });
     expect(sync.rooms.join["!bounded:matrix.test"]?.timeline.events).toHaveLength(1_000);
+    const resumed = (await (
+      await fetch(`${server.manifest.endpoints.syncUrl}?since=${firstBatch}`, {
+        headers: auth("test-token-placeholder"),
+      })
+    ).json()) as {
+      rooms: { join: Record<string, { timeline: { limited: boolean } }> };
+    };
+    expect(resumed.rooms.join["!bounded:matrix.test"]?.timeline.limited).toBe(false);
 
     const retried = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!bounded:matrix.test")}/send/m.room.message/bounded-0`,
