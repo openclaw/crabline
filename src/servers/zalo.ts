@@ -7,6 +7,7 @@ import {
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
+  isLoopbackHost,
   jsonResponse,
   parseUnknownRequestBody,
   queryRecord,
@@ -361,7 +362,9 @@ export async function startZaloServer(
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     botId: params.botId ?? "1459232241454765289",
     botName: params.botName ?? "bot.crabline",
-    botToken: params.botToken ?? "crabline-zalo-bot-token",
+    botToken:
+      params.botToken ??
+      (isLoopbackHost(host) ? "crabline-zalo-bot-token" : randomBytes(32).toString("base64url")),
     nextMessage: 1,
     onEvent: params.onEvent,
     pendingRequests: [],

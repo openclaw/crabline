@@ -10,6 +10,7 @@ import {
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
+  isLoopbackHost,
   jsonResponse,
   queryRecord,
   readBody,
@@ -649,11 +650,17 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
 export async function startTelegramServer(
   params: StartTelegramServerParams = {},
 ): Promise<StartedTelegramServer> {
+  const host = params.host ?? "127.0.0.1";
+  const botId = params.botId ?? 424242;
   const state: TelegramServerState = {
     activeUpdatePoll: undefined,
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
-    botId: params.botId ?? 424242,
-    botToken: params.botToken ?? "424242:crabline-telegram-token",
+    botId,
+    botToken:
+      params.botToken ??
+      (isLoopbackHost(host)
+        ? "424242:crabline-telegram-token"
+        : `${botId}:${randomBytes(26).toString("base64url")}`),
     botUsername: params.botUsername ?? "crabline_bot",
     nextMessageId: 1,
     nextUpdateId: 1,
@@ -662,7 +669,6 @@ export async function startTelegramServer(
     closing: false,
     updates: [],
   };
-  const host = params.host ?? "127.0.0.1";
   const port = params.port ?? 0;
   const server = createServer(async (request, response) => {
     try {

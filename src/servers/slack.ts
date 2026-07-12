@@ -6,6 +6,7 @@ import {
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
+  isLoopbackHost,
   jsonResponse,
   parseUnknownRequestBody,
   queryRecord,
@@ -631,21 +632,28 @@ async function handleRequest(params: { request: IncomingMessage; state: SlackSer
 export async function startSlackServer(
   params: StartSlackServerParams = {},
 ): Promise<StartedSlackServer> {
+  const host = params.host ?? "127.0.0.1";
+  const externallyBound = !isLoopbackHost(host);
   const state: SlackServerState = {
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     botId: params.botId ?? "BCRABLINE",
-    botToken: params.botToken ?? "xoxb-crabline-slack-token",
+    botToken:
+      params.botToken ??
+      (externallyBound
+        ? `xoxb-${randomBytes(6).toString("hex")}-${randomBytes(12).toString("base64url")}`
+        : "xoxb-crabline-slack-token"),
     botUserId: params.botUserId ?? "UCRABBOT",
     eventsRequestUrl: params.eventsRequestUrl,
     nextDmIndex: 1,
     nextTsIndex: 100,
     onEvent: params.onEvent,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "slack.jsonl"),
-    signingSecret: params.signingSecret ?? "crabline-slack-signing-secret",
+    signingSecret:
+      params.signingSecret ??
+      (externallyBound ? randomBytes(16).toString("hex") : "crabline-slack-signing-secret"),
     userDmChannels: new Map(),
     messagesByChannel: new Map(),
   };
-  const host = params.host ?? "127.0.0.1";
   const httpServer = await startHttpJsonServer({
     handle: (request) => handleRequest({ request, state }),
     handleError: (error) => {

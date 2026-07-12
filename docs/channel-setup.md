@@ -104,7 +104,9 @@ The complete multi-channel script fixture is available in
 ## Local Provider Servers
 
 Server-backed channels currently include Mattermost, Matrix, Signal, Slack,
-Telegram, and WhatsApp.
+Telegram, WhatsApp, and Zalo. Loopback binds retain stable local credentials for
+fixture compatibility. Non-loopback binds generate fresh provider-shaped
+credentials unless the corresponding token or secret option is supplied.
 
 ### Mattermost
 

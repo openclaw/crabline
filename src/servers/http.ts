@@ -154,6 +154,20 @@ export function formatUrlHost(host: string): string {
   return host.includes(":") ? `[${host}]` : host;
 }
 
+export function isLoopbackHost(host: string): boolean {
+  const normalized = host
+    .trim()
+    .replace(/^\[(.*)\]$/u, "$1")
+    .toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized === "::1" ||
+    normalized.startsWith("::ffff:127.") ||
+    /^127(?:\.\d{1,3}){3}$/u.test(normalized)
+  );
+}
+
 export async function writeResponse(
   response: ServerResponse,
   fetchResponse: Response,
