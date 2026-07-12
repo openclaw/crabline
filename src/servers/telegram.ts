@@ -18,6 +18,7 @@ import {
   writeResponse,
 } from "./http.js";
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 
 const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 
@@ -37,6 +38,7 @@ type TelegramServerState = {
   botToken: string;
   botUsername: string;
   closing: boolean;
+  maxPendingInboundEvents: number;
   nextMessageId: number;
   nextUpdateId: number;
   onEvent: ServerEventObserver | undefined;
@@ -145,6 +147,7 @@ export type StartTelegramServerParams = {
   onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
+  maxPendingInboundEvents?: number | undefined;
 };
 
 function telegramOk(result: unknown): Response {
@@ -600,6 +603,15 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
       return telegramError("Bad Request: request body must be a JSON object");
     }
     const update = createInboundUpdate(params.state, body);
+    if (!update) {
+      return telegramError("Bad Request: chatId and text are required");
+    }
+    if (params.state.updates.length >= params.state.maxPendingInboundEvents) {
+      return telegramError(
+        `Too Many Requests: pending inbound queue is full (${params.state.maxPendingInboundEvents} updates)`,
+        429,
+      );
+    }
     await appendEvent(params.state, {
       at: new Date().toISOString(),
       body,
@@ -608,9 +620,6 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
       query: queryRecord(url),
       type: "admin",
     });
-    if (!update) {
-      return telegramError("Bad Request: chatId and text are required");
-    }
     params.state.updates.push(update);
     params.state.updates.sort((left, right) => left.update_id - right.update_id);
     finishTelegramUpdatePoll(params.state, "update");
@@ -662,6 +671,7 @@ export async function startTelegramServer(
         ? "424242:crabline-telegram-token"
         : `${botId}:${randomBytes(26).toString("base64url")}`),
     botUsername: params.botUsername ?? "crabline_bot",
+    maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessageId: 1,
     nextUpdateId: 1,
     onEvent: params.onEvent,

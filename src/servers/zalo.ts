@@ -20,6 +20,7 @@ import {
   type ServerRequestEvent,
 } from "./http.js";
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 
 type ZaloChatType = "GROUP" | "PRIVATE";
 
@@ -61,6 +62,7 @@ type ZaloServerState = {
   botId: string;
   botName: string;
   botToken: string;
+  maxPendingInboundEvents: number;
   nextMessage: number;
   onEvent: ServerEventObserver | undefined;
   pendingRequests: PendingUpdateRequest[];
@@ -103,6 +105,7 @@ export type StartZaloServerParams = {
   onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
+  maxPendingInboundEvents?: number | undefined;
   webhookDeliveryTimeoutMs?: number | undefined;
 };
 
@@ -168,6 +171,10 @@ function createBlockedWebhookAddresses(): BlockList {
     ["240.0.0.0", 4],
   ] as const) {
     blockList.addSubnet(address, prefix, "ipv4");
+    const octets = address.split(".").map(Number);
+    const high = ((octets[0] ?? 0) << 8) | (octets[1] ?? 0);
+    const low = ((octets[2] ?? 0) << 8) | (octets[3] ?? 0);
+    blockList.addSubnet(`::ffff:${high.toString(16)}:${low.toString(16)}`, 96 + prefix, "ipv6");
   }
   for (const [address, prefix] of [
     ["::", 128],
@@ -249,6 +256,17 @@ async function postWebhook(
   address: WebhookAddress | undefined,
 ): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
+    let settled = false;
+    let response: IncomingMessage | undefined;
+    let deadline: NodeJS.Timeout;
+    const finish = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(deadline);
+      callback();
+    };
     const send = url.protocol === "https:" ? requestHttps : requestHttp;
     const request = send(
       url,
@@ -267,17 +285,23 @@ async function postWebhook(
           : {}),
         method: "POST",
       },
-      (response) => {
-        response.resume();
-        response.once("end", () => resolve(response.statusCode ?? 0));
+      (incoming) => {
+        response = incoming;
+        incoming.resume();
+        incoming.once("error", (error) => finish(() => reject(error)));
+        incoming.once("end", () => finish(() => resolve(incoming.statusCode ?? 0)));
       },
     );
-    request.setTimeout(timeoutMs, () => {
-      request.destroy(
-        new DOMException(`Webhook delivery timed out after ${timeoutMs}ms`, "TimeoutError"),
+    deadline = setTimeout(() => {
+      const error = new DOMException(
+        `Webhook delivery timed out after ${timeoutMs}ms`,
+        "TimeoutError",
       );
-    });
-    request.once("error", reject);
+      response?.destroy(error);
+      request.destroy(error);
+    }, timeoutMs);
+    deadline.unref();
+    request.once("error", (error) => finish(() => reject(error)));
     request.end(body);
   });
 }
@@ -310,14 +334,18 @@ function waitForUpdate(state: ZaloServerState, timeoutSeconds: number): Promise<
   });
 }
 
-function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): void {
+function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boolean {
   const pending = state.pendingRequests.shift();
   if (!pending) {
+    if (state.updates.length >= state.maxPendingInboundEvents) {
+      return false;
+    }
     state.updates.push(update);
-    return;
+    return true;
   }
   clearTimeout(pending.timeout);
   pending.resolve(zaloOk(update));
+  return true;
 }
 
 async function deliverWebhookUpdate(
@@ -387,6 +415,16 @@ async function handleAdminInbound(
       text,
     },
   };
+  if (
+    !state.webhook?.url &&
+    state.pendingRequests.length === 0 &&
+    state.updates.length >= state.maxPendingInboundEvents
+  ) {
+    return zaloError(
+      `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
+      429,
+    );
+  }
   await appendEvent(state, {
     at: new Date().toISOString(),
     body,
@@ -401,7 +439,12 @@ async function handleAdminInbound(
       return error;
     }
   } else {
-    deliverPollingUpdate(state, update);
+    if (!deliverPollingUpdate(state, update)) {
+      return zaloError(
+        `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
+        429,
+      );
+    }
   }
   return zaloOk(update);
 }
@@ -513,6 +556,7 @@ export async function startZaloServer(
     botToken:
       params.botToken ??
       (isLoopbackHost(host) ? "crabline-zalo-bot-token" : randomBytes(32).toString("base64url")),
+    maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessage: 1,
     onEvent: params.onEvent,
     pendingRequests: [],

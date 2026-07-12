@@ -298,6 +298,32 @@ describe("telegram local provider server", () => {
     });
   });
 
+  it("rejects admin inbound when the update queue is full", async () => {
+    const server = await startTelegramServer({
+      adminToken: "admin",
+      maxPendingInboundEvents: 1,
+    });
+    servers.push(server);
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ chatId: 42, text }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+
+    expect((await sendInbound("first")).status).toBe(200);
+    const overloaded = await sendInbound("second");
+    expect(overloaded.status).toBe(429);
+    await expect(overloaded.json()).resolves.toEqual({
+      description: "Too Many Requests: pending inbound queue is full (1 updates)",
+      error_code: 429,
+      ok: false,
+    });
+  });
+
   it("rejects unauthenticated inbound updates", async () => {
     const directory = await createTempDir();
     directories.push(directory);

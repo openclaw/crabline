@@ -212,8 +212,12 @@ describe("Zalo local provider server", () => {
     }
   });
 
-  it("bounds webhook delivery time for admin ingress", async () => {
-    const webhook = createServer(() => undefined);
+  it("enforces an absolute webhook delivery deadline while responses trickle", async () => {
+    const webhook = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/plain" });
+      const interval = setInterval(() => response.write("."), 5);
+      response.once("close", () => clearInterval(interval));
+    });
     await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
     const address = webhook.address();
     if (!address || typeof address === "string") {
@@ -293,6 +297,7 @@ describe("Zalo local provider server", () => {
       "https://127.0.0.1/zalo",
       "https://169.254.169.254/latest/meta-data",
       "https://[::1]/zalo",
+      "https://[::ffff:7f00:1]/zalo",
     ]) {
       const response = await fetch(`${apiRoot}/bottest-auth-token/setWebhook`, {
         body: JSON.stringify({ secret_token: "secret-token", url }),
@@ -330,6 +335,32 @@ describe("Zalo local provider server", () => {
       method: "POST",
     });
     expect(publicHttps.status).toBe(200);
+  });
+
+  it("rejects admin inbound when the polling update queue is full", async () => {
+    const server = await startZaloServer({
+      adminToken: "admin",
+      maxPendingInboundEvents: 1,
+    });
+    servers.push(server);
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+
+    expect((await sendInbound("first")).status).toBe(200);
+    const overloaded = await sendInbound("second");
+    expect(overloaded.status).toBe(429);
+    await expect(overloaded.json()).resolves.toEqual({
+      description: "Pending inbound queue is full (1 updates)",
+      error_code: 429,
+      ok: false,
+    });
   });
 
   it("rejects invalid bot tokens and unauthenticated admin ingress", async () => {

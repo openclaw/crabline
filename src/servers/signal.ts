@@ -18,11 +18,13 @@ import {
   writeResponse,
 } from "./http.js";
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 
 type SignalServerState = {
   account: string;
   adminToken: string;
   clients: Set<ServerResponse>;
+  maxPendingInboundEvents: number;
   nextTimestamp: number;
   onEvent: ServerEventObserver | undefined;
   pendingEvents: string[];
@@ -59,6 +61,7 @@ export type StartSignalServerParams = {
   onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
+  maxPendingInboundEvents?: number | undefined;
 };
 
 async function appendEvent(state: SignalServerState, event: ServerRequestEvent): Promise<void> {
@@ -80,15 +83,19 @@ function rpcError(code: number, message: string, id: unknown = null, status = 40
   );
 }
 
-function emitSignalEvent(state: SignalServerState, payload: unknown): void {
+function emitSignalEvent(state: SignalServerState, payload: unknown): boolean {
   const event = `event:receive\ndata:${JSON.stringify(payload)}\n\n`;
   if (state.clients.size === 0) {
+    if (state.pendingEvents.length >= state.maxPendingInboundEvents) {
+      return false;
+    }
     state.pendingEvents.push(event);
-    return;
+    return true;
   }
   for (const client of state.clients) {
     client.write(event);
   }
+  return true;
 }
 
 async function handleAdminInbound(params: {
@@ -114,7 +121,15 @@ async function handleAdminInbound(params: {
       },
     },
   };
-  emitSignalEvent(params.state, payload);
+  if (!emitSignalEvent(params.state, payload)) {
+    return jsonResponse(
+      {
+        error: `Pending inbound queue is full (${params.state.maxPendingInboundEvents} events)`,
+        ok: false,
+      },
+      503,
+    );
+  }
   return jsonResponse({ event: payload, ok: true });
 }
 
@@ -230,6 +245,7 @@ export async function startSignalServer(
     account: params.account ?? "+15550000000",
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     clients: new Set(),
+    maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextTimestamp: Date.now(),
     onEvent: params.onEvent,
     pendingEvents: [],

@@ -18,7 +18,10 @@ import {
   type ServerRequestEvent,
 } from "./http.js";
 import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 import { closeWebSocketServer } from "./websocket.js";
+
+const DEFAULT_WEBSOCKET_AUTHENTICATION_TIMEOUT_MS = 5_000;
 
 type MattermostPost = {
   channel_id: string;
@@ -47,6 +50,7 @@ type MattermostServerState = {
   botUserId: string;
   botUsername: string;
   channels: Map<string, { id: string; name: string; display_name: string; type: string }>;
+  maxPendingInboundEvents: number;
   nextPost: number;
   onEvent: ServerEventObserver | undefined;
   pendingEvents: MattermostWebSocketEvent[];
@@ -89,6 +93,8 @@ export type StartMattermostServerParams = {
   onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
+  maxPendingInboundEvents?: number | undefined;
+  websocketAuthenticationTimeoutMs?: number | undefined;
 };
 
 export function mattermostId(value: string): string {
@@ -162,14 +168,18 @@ function sendEvent(
   state.websocketClients.set(client, seq + 1);
 }
 
-function broadcast(state: MattermostServerState, event: MattermostWebSocketEvent): void {
+function broadcast(state: MattermostServerState, event: MattermostWebSocketEvent): boolean {
   if (state.websocketClients.size === 0) {
+    if (state.pendingEvents.length >= state.maxPendingInboundEvents) {
+      return false;
+    }
     state.pendingEvents.push(event);
-    return;
+    return true;
   }
   for (const client of state.websocketClients.keys()) {
     sendEvent(state, client, event);
   }
+  return true;
 }
 
 function createPost(params: {
@@ -202,6 +212,18 @@ async function handleAdminInbound(params: {
   const text = readTrimmedString(params.body.text ?? params.body.message);
   if (!channelId || !senderId || !text) {
     return jsonResponse({ error: "channelId, senderId, and text are required", ok: false }, 400);
+  }
+  if (
+    params.state.websocketClients.size === 0 &&
+    params.state.pendingEvents.length >= params.state.maxPendingInboundEvents
+  ) {
+    return jsonResponse(
+      {
+        error: `Pending inbound queue is full (${params.state.maxPendingInboundEvents} events)`,
+        ok: false,
+      },
+      503,
+    );
   }
   const senderName = readTrimmedString(params.body.senderName) ?? senderId;
   const channelType = readTrimmedString(params.body.channelType) ?? "D";
@@ -382,6 +404,7 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
 }
 
 function attachWebSocketServer(params: {
+  authenticationTimeoutMs: number;
   state: MattermostServerState;
   server: import("node:http").Server;
 }) {
@@ -401,6 +424,10 @@ function attachWebSocketServer(params: {
   };
   params.server.on("upgrade", onUpgrade);
   websocketServer.on("connection", (client) => {
+    const authenticationTimeout = setTimeout(() => {
+      client.close(4001, "authentication timeout");
+    }, params.authenticationTimeoutMs);
+    authenticationTimeout.unref();
     client.on("message", (raw: RawData) => {
       let message: {
         action?: string;
@@ -426,8 +453,10 @@ function attachWebSocketServer(params: {
               status: "FAIL",
             }),
           );
+          client.close(4001, "authentication failed");
           return;
         }
+        clearTimeout(authenticationTimeout);
         params.state.websocketClients.set(client, 0);
         client.send(JSON.stringify({ seq_reply: seq, status: "OK" }));
         sendEvent(params.state, client, {
@@ -470,7 +499,10 @@ function attachWebSocketServer(params: {
         }),
       );
     });
-    client.once("close", () => params.state.websocketClients.delete(client));
+    client.once("close", () => {
+      clearTimeout(authenticationTimeout);
+      params.state.websocketClients.delete(client);
+    });
   });
   return async () => {
     params.server.off("upgrade", onUpgrade);
@@ -492,6 +524,7 @@ export async function startMattermostServer(
     botUserId,
     botUsername,
     channels: new Map(),
+    maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextPost: 1,
     onEvent: params.onEvent,
     pendingEvents: [],
@@ -516,6 +549,8 @@ export async function startMattermostServer(
     serverName: "Mattermost",
   });
   const closeMattermostWebSocketServer = attachWebSocketServer({
+    authenticationTimeoutMs:
+      params.websocketAuthenticationTimeoutMs ?? DEFAULT_WEBSOCKET_AUTHENTICATION_TIMEOUT_MS,
     server: httpServer.server,
     state,
   });
