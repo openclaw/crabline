@@ -216,6 +216,67 @@ describe("discord provider", () => {
     });
   });
 
+  it("records native component interactions that include a Discord message", async () => {
+    const config = await createDiscordConfig(0);
+    const provider = new DiscordProviderAdapter("discord", config, "crabline");
+    providers.push(provider);
+
+    const probe = await provider.probe(createContext(config));
+    const endpoint = probe.details.find((detail) => detail.startsWith("interactions endpoint "));
+    expect(endpoint).toBeDefined();
+
+    const context = createContext(config);
+    context.fixture.inboundMatch = {
+      author: "user",
+      nonce: "contains",
+      strategy: "contains",
+    };
+    const since = new Date(Date.now() - 1000).toISOString();
+    const response = await fetch(endpoint!.replace("interactions endpoint ", ""), {
+      body: JSON.stringify({
+        channel_id: "123456789012345678",
+        data: {
+          component_type: 2,
+          custom_id: "approve:nonce-3",
+        },
+        id: "444456789012345678",
+        member: {
+          user: {
+            bot: false,
+            id: "555456789012345678",
+          },
+        },
+        message: {
+          author: {
+            bot: true,
+            id: "666456789012345678",
+          },
+          content: "Choose an action",
+          id: "777456789012345678",
+        },
+        type: 3,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        nonce: "nonce-3",
+        since,
+        threadId: "123456789012345678",
+        timeoutMs: 500,
+      }),
+    ).resolves.toMatchObject({
+      author: "user",
+      id: "444456789012345678",
+      text: "approve:nonce-3",
+      threadId: "123456789012345678",
+    });
+  });
+
   it("streams watched interaction events", async () => {
     const config = await createDiscordConfig(0);
     const provider = new DiscordProviderAdapter("discord", config, "crabline");
