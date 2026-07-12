@@ -811,10 +811,13 @@ export function attachWhatsAppBaileysWebSocketServer(
     flushPromise = next.catch(() => undefined);
     return next;
   };
+  const rejectUpgrade = (socket: Duplex, response: string) => {
+    socket.end(response, () => socket.destroy());
+  };
   const handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = parseWhatsAppWebSocketUpgradeUrl(request.url);
     if (!url) {
-      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      rejectUpgrade(socket, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
       return;
     }
     if (url.pathname !== params.path) {
@@ -822,7 +825,7 @@ export function attachWhatsAppBaileysWebSocketServer(
       return;
     }
     if (url.searchParams.get("access_token") !== params.accessToken) {
-      socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      rejectUpgrade(socket, "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       return;
     }
     wss.handleUpgrade(request, socket, head, (ws) => {
