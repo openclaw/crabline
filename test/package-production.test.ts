@@ -215,9 +215,7 @@ function findJsonDocumentEnd(output: string, start: number): number {
 
 function isNpmPackMetadata(value: unknown): value is NpmPackMetadata {
   return (
-    Boolean(value) &&
-    typeof value === "object" &&
-    Array.isArray((value as NpmPackMetadata).files)
+    Boolean(value) && typeof value === "object" && Array.isArray((value as NpmPackMetadata).files)
   );
 }
 
