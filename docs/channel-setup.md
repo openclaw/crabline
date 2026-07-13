@@ -113,11 +113,14 @@ header before JSON parsing or recorder writes:
   decrypt encrypted envelopes before normalization. Initial encrypted
   `url_verification` challenges may omit signature headers and are accepted
   only when their decrypted token matches the configured verification token.
+  Text events must carry `message.content` as valid JSON containing a string
+  `text` field; malformed JSON is rejected instead of treated as plaintext.
 - Slack `signingSecret` or `SLACK_SIGNING_SECRET` verifies
   `X-Slack-Request-Timestamp` and `X-Slack-Signature`; it is required when the
   webhook host is non-loopback or `publicUrl` is set.
 - Telegram `secretToken` or `TELEGRAM_WEBHOOK_SECRET_TOKEN` verifies
-  `X-Telegram-Bot-Api-Secret-Token`.
+  `X-Telegram-Bot-Api-Secret-Token`. The value must contain 1-256 letters,
+  digits, underscores, or hyphens; control characters are rejected.
 - Zalo `webhookSecret` or `ZALO_WEBHOOK_SECRET` verifies
   `X-Bot-Api-Secret-Token`.
 
@@ -212,11 +215,14 @@ and credential. Because the server is loopback HTTP, trusted QA configuration
 must also set `channels.mattermost.network.dangerouslyAllowPrivateNetwork` to
 `true`. The OpenClaw bridge does this automatically.
 
-Admin inbound accepts `channelId`, `senderId`, `text`, optional `senderName`,
-`channelType`, and `rootId`. It emits the message through Mattermost's native
-`/api/v4/websocket` `posted` event. Text sends through `POST /api/v4/posts` are
-written to the manifest's recorder. QA agent delivery currently supports DM and
-channel targets; thread targets require the later OpenClaw QA wiring step.
+Admin inbound accepts 26-character lowercase Mattermost `channelId` and
+`senderId` values, `text`, optional `senderName`, `channelType`, `rootId`,
+`channelName`, and `channelDisplayName`. It emits the message through
+Mattermost's native `/api/v4/websocket` channel-scoped `posted` event, including
+the configured channel names. Text sends through `POST /api/v4/posts` require a
+JSON media type and are written to the manifest's recorder. QA agent delivery
+currently supports DM and channel targets; thread targets require the later
+OpenClaw QA wiring step.
 
 The server itself is provider-shaped and has no OpenClaw runtime dependency. It
 implements Mattermost REST error/status behavior plus WebSocket authentication,
@@ -356,7 +362,12 @@ Compatible clients may switch to webhook delivery with `setWebhook`, including
 an optional `secret_token` that Crabline returns as
 `X-Telegram-Bot-Api-Secret-Token`. `deleteWebhook` restores polling. While a
 webhook is configured, `getUpdates` returns Telegram's native conflict error
-instead of consuming updates.
+instead of consuming updates. The secret accepts only 1-256 letters, digits,
+underscores, or hyphens. Bot API text fields are string-only and limited to
+4,096 UTF-16 code units; media captions are string-only and limited to 1,024.
+Admin-injected message entities preserve native `url`, `user`, `language`, and
+`custom_emoji_id` metadata. Calls addressed to `@username` return a numeric
+`Chat.id`, as Telegram does.
 
 WhatsApp:
 

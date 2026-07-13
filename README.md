@@ -105,6 +105,8 @@ loopback-only callback check. Microsoft Teams also requires `appId` for
 non-loopback or explicitly public webhook endpoints.
 Authenticated external webhook ingress must advertise an HTTPS `publicUrl`;
 plain HTTP is limited to loopback-local testing.
+Feishu text callbacks require valid JSON-encoded `message.content`; malformed
+content is rejected.
 
 ## Built-In Mock Channels
 
@@ -173,7 +175,10 @@ The server implements a Mattermost API subset for text DM and channel
 roundtrips, including REST authentication/status codes, WebSocket
 authentication and `hello`, sequenced events, typing, and post
 create/edit/delete events. Admin ingress is only the test control plane;
-injected messages are delivered to clients as native `posted` events.
+injected messages require native 26-character lowercase channel/user IDs and
+are delivered to clients as channel-scoped native `posted` events. Optional
+`channelName` and `channelDisplayName` values populate the native event fields.
+`POST /api/v4/posts` requires a JSON media type.
 
 Matrix:
 
@@ -270,7 +275,10 @@ Implemented Telegram Bot API endpoints include `getMe`, `sendMessage`,
 `deleteMessage`, `setMessageReaction`, `createForumTopic`, `editForumTopic`,
 `pinChatMessage`, `unpinChatMessage`, `getUpdates`, `deleteWebhook`,
 `setWebhook`, `setMyCommands`, `deleteMyCommands`, `sendChatAction`, and
-`answerCallbackQuery`.
+`answerCallbackQuery`. Webhook secrets use Telegram's 1-256 character
+letter/digit/underscore/hyphen alphabet. Text and caption fields enforce native
+string types and 4,096/1,024 UTF-16 limits, entity metadata is retained, and
+`@username` method targets resolve to numeric `Chat.id` values.
 
 WhatsApp:
 
