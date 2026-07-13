@@ -8,6 +8,8 @@ import type { ServerRequestEvent } from "../src/servers/http.js";
 import {
   recordCommittedServerEvent,
   recordServerEvent,
+  secureServerRecorderWindowsLockRoot,
+  serverRecorderWindowsLockPath,
   ServerRecorderCommittedError,
 } from "../src/servers/recorder.js";
 
@@ -251,6 +253,26 @@ afterEach(() => {
 });
 
 describe("server recorder", () => {
+  it("creates the Windows process-lock root with an owner-only ACL", async () => {
+    const lockRoot = path.join("/tmp", "crabline-server-recorder-locks");
+    const createWindowsDirectory = vi.fn(async () => undefined);
+
+    await expect(
+      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+    ).resolves.toBe(lockRoot);
+
+    expect(createWindowsDirectory).toHaveBeenCalledWith(lockRoot);
+    expect(fsMocks.lstat).toHaveBeenCalledWith(lockRoot);
+  });
+
+  it("maps Windows path case aliases to the same process lock", () => {
+    const lockRoot = String.raw`C:\Users\tester\AppData\Local\Crabline\locks`;
+
+    expect(serverRecorderWindowsLockPath(lockRoot, String.raw`C:\Logs\Events.jsonl`)).toBe(
+      serverRecorderWindowsLockPath(lockRoot, String.raw`c:\logs\events.JSONL`),
+    );
+  });
+
   it("makes a recursively created recorder path durable before observing its first append", async () => {
     const firstParent = path.join("/tmp", "private");
     const finalParent = path.join(firstParent, "nested");
@@ -1265,9 +1287,12 @@ describe("server recorder", () => {
           { timeout: 5_000 },
         );
         first.child.stdin.end("go\n");
-        await vi.waitFor(async () => {
-          await expect(actualFs.stat(`${recorderPath}.lock`)).resolves.toBeDefined();
-        });
+        await vi.waitFor(
+          async () => {
+            await expect(actualFs.stat(`${recorderPath}.lock`)).resolves.toBeDefined();
+          },
+          { timeout: 10_000 },
+        );
         await actualFs.link(recorderPath, aliasPath);
         const second = startRecorderProcess(aliasPath, "/process-b", canonicalLockRoot);
         processes.push(second);

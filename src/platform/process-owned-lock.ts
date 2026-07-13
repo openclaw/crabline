@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs, { readFileSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -8,19 +8,47 @@ import { resolveWindowsPowerShellPath } from "./windows-acl.js";
 type LockOwner = {
   pid: number;
   processIdentity: string | null;
+  processNamespace: string | null;
   processStartedAtMs: number;
   token: string;
-  version: 1;
+  version: 1 | 2;
 };
 
-type OwnerStatus = "active" | "dead" | "unknown";
+type OwnerStatus = "active" | "dead" | "superseded" | "unknown";
+
+type ParsedLockOwner = {
+  owner: LockOwner;
+  publishedAtMs: number;
+};
+
+type RecoveryClaim = {
+  activePath: string;
+  supersededPaths: string[];
+};
+
+type DirectoryIdentity = {
+  dev: number;
+  ino: number;
+};
+
+type AbandonedDirectoryIdentity = DirectoryIdentity & {
+  ownerGenerationKey: string;
+};
+
+const retainedCoordinationClaims = new Map<string, RecoveryClaim>();
+const abandonedOwnerTokens = new Set<string>();
+const abandonedDirectoryIdentities = new Map<string, AbandonedDirectoryIdentity>();
 
 const OWNER_FILE = "crabline-owner.json";
 const MAX_OWNER_BYTES = 4096;
 const MAX_PROCESS_ID = 2_147_483_647;
 const IDENTITY_CACHE_MS = 1000;
+const CURRENT_IDENTITY_ATTEMPTS = 3;
+const LEGACY_PROCESS_START_TOLERANCE_MS = 2000;
 const OWNERLESS_LOCK_RECOVERY_MS = 10 * 60 * 1000;
 const CURRENT_PROCESS_STARTED_AT_MS = Math.trunc(performance.timeOrigin);
+const DARWIN_PRECISE_IDENTITY_PATTERN = /^darwin:\d+\.\d+:us:\d+$/u;
+const LINUX_PID_NAMESPACE_PATTERN = /^pid:\[\d+\]$/u;
 
 function isValidProcessId(pid: number): boolean {
   return Number.isSafeInteger(pid) && pid > 0 && pid <= MAX_PROCESS_ID;
@@ -113,7 +141,7 @@ function processIdentityFromDarwin(processDetails: string, bootTime: string): st
       ) - offsetMs;
     if (Number.isSafeInteger(utcMilliseconds) && utcMilliseconds > 0) {
       const startedAtMicros = BigInt(utcMilliseconds) * 1000n + BigInt(fractionMicros % 1000);
-      return `darwin:${bootMatch[1]}.${bootMatch[2]}:${startedAtMicros}`;
+      return `darwin:${bootMatch[1]}.${bootMatch[2]}:us:${startedAtMicros}`;
     }
   }
   const normalizedDetails = processDetails.trim().replace(/\s+/gu, " ");
@@ -142,10 +170,28 @@ function readProcessIdentity(pid: number): string | null {
       timeout: 1000,
     };
     const bootTime = spawnSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], options);
-    const processDetails = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], options);
-    return bootTime.status === 0 && processDetails.status === 0
-      ? processIdentityFromDarwin(processDetails.stdout, bootTime.stdout)
-      : null;
+    const preciseDetails = spawnSync("/usr/bin/vmmap", ["-summary", String(pid)], {
+      ...options,
+      timeout: 3000,
+    });
+    const sampleDetails =
+      preciseDetails.status === 0
+        ? undefined
+        : spawnSync("/usr/bin/sample", [String(pid), "1", "1"], {
+            ...options,
+            timeout: 3000,
+          });
+    const nativeDetails =
+      preciseDetails.status === 0
+        ? preciseDetails
+        : sampleDetails?.status === 0
+          ? sampleDetails
+          : undefined;
+    const identity =
+      bootTime.status === 0 && nativeDetails
+        ? processIdentityFromDarwin(nativeDetails.stdout, bootTime.stdout)
+        : null;
+    return identity !== null && DARWIN_PRECISE_IDENTITY_PATTERN.test(identity) ? identity : null;
   }
   if (process.platform !== "win32") {
     return null;
@@ -170,33 +216,238 @@ function readProcessIdentity(pid: number): string | null {
   return /^\d+$/u.test(ticks) ? `windows:${ticks}` : null;
 }
 
-let cachedCurrentProcessIdentity: string | null | undefined;
-
-function parseOwner(lockDirectory: fs.PathLike): LockOwner | undefined {
+function readProcessNamespace(pid: number): string | null {
+  if (process.platform !== "linux") {
+    return null;
+  }
   try {
-    const raw = readFileSync(path.join(String(lockDirectory), OWNER_FILE));
-    if (raw.byteLength === 0 || raw.byteLength > MAX_OWNER_BYTES) {
-      return undefined;
-    }
-    const value = JSON.parse(raw.toString("utf8")) as Partial<LockOwner>;
-    if (
-      value.version !== 1 ||
-      !isValidProcessId(value.pid ?? 0) ||
-      typeof value.token !== "string" ||
-      value.token.length === 0 ||
-      value.token.length > 128 ||
-      !Number.isSafeInteger(value.processStartedAtMs) ||
-      (value.processIdentity !== null &&
-        (typeof value.processIdentity !== "string" ||
-          value.processIdentity.length === 0 ||
-          value.processIdentity.length > 256))
-    ) {
-      return undefined;
-    }
-    return value as LockOwner;
+    const namespace = fs.readlinkSync(`/proc/${pid}/ns/pid`);
+    return LINUX_PID_NAMESPACE_PATTERN.test(namespace) ? namespace : null;
   } catch {
+    return null;
+  }
+}
+
+let cachedLinuxClockTicks: number | undefined;
+
+function readLegacyProcessStartedAtMs(pid: number): number | null {
+  if (process.platform === "linux") {
+    try {
+      const processStat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = processStat.lastIndexOf(") ");
+      const startTicks =
+        commandEnd < 0
+          ? undefined
+          : processStat
+              .slice(commandEnd + 2)
+              .trim()
+              .split(/\s+/u)[19];
+      const bootTime = /^btime\s+(\d+)$/mu.exec(readFileSync("/proc/stat", "utf8"))?.[1];
+      if (!startTicks || !/^\d+$/u.test(startTicks) || !bootTime) {
+        return null;
+      }
+      if (cachedLinuxClockTicks === undefined) {
+        const result = spawnSync("/usr/bin/getconf", ["CLK_TCK"], {
+          encoding: "utf8",
+          timeout: 1000,
+        });
+        const ticks = result.status === 0 ? Number(result.stdout.trim()) : Number.NaN;
+        if (!Number.isSafeInteger(ticks) || ticks <= 0) {
+          return null;
+        }
+        cachedLinuxClockTicks = ticks;
+      }
+      return Number(bootTime) * 1000 + (Number(startTicks) * 1000) / cachedLinuxClockTicks;
+    } catch {
+      return null;
+    }
+  }
+  const identity = readProcessIdentity(pid);
+  const darwinStart = /^darwin:\d+\.\d+:us:(\d+)$/u.exec(identity ?? "")?.[1];
+  if (darwinStart) {
+    return Number(BigInt(darwinStart) / 1000n);
+  }
+  const windowsStart = /^windows:(\d+)$/u.exec(identity ?? "")?.[1];
+  if (windowsStart) {
+    const unixEpochTicks = 621_355_968_000_000_000n;
+    const ticks = BigInt(windowsStart);
+    return ticks >= unixEpochTicks ? Number((ticks - unixEpochTicks) / 10_000n) : null;
+  }
+  return null;
+}
+
+function legacyProcessStartMatches(expected: number, observed: number): boolean {
+  return Math.abs(expected - observed) <= LEGACY_PROCESS_START_TOLERANCE_MS;
+}
+
+function isCoarseDarwinIdentity(identity: string): boolean {
+  return /^darwin:\d+\.\d+:(?!us:).+$/u.test(identity);
+}
+
+function isExactProcessIdentity(identity: string): boolean {
+  return (
+    /^linux:[0-9a-f-]{16,64}:\d+$/iu.test(identity) ||
+    DARWIN_PRECISE_IDENTITY_PATTERN.test(identity) ||
+    /^windows:\d+$/u.test(identity)
+  );
+}
+
+function isExactProcessIdentityForCurrentPlatform(identity: string): boolean {
+  if (process.platform === "linux") {
+    return /^linux:[0-9a-f-]{16,64}:\d+$/iu.test(identity);
+  }
+  if (process.platform === "darwin") {
+    return DARWIN_PRECISE_IDENTITY_PATTERN.test(identity);
+  }
+  if (process.platform === "win32") {
+    return /^windows:\d+$/u.test(identity);
+  }
+  return false;
+}
+
+function directoryIdentity(stats: Pick<fs.Stats, "dev" | "ino">): DirectoryIdentity {
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+function directoryIdentityMatches(
+  expected: DirectoryIdentity | undefined,
+  actual: Pick<fs.Stats, "dev" | "ino">,
+): boolean {
+  return expected !== undefined && expected.dev === actual.dev && expected.ino === actual.ino;
+}
+
+function canonicalLockDirectoryPath(directoryPath: fs.PathLike): string {
+  const resolved = path.resolve(String(directoryPath));
+  let canonicalParent: string;
+  try {
+    canonicalParent = fs.realpathSync.native(path.dirname(resolved));
+  } catch {
+    canonicalParent = path.dirname(resolved);
+  }
+  const canonical = path.join(canonicalParent, path.basename(resolved));
+  return process.platform === "win32" ? path.win32.normalize(canonical).toLowerCase() : canonical;
+}
+
+function recoveryClaimPath(directoryPath: fs.PathLike, fingerprint = "coordination"): string {
+  const canonicalDirectory = canonicalLockDirectoryPath(directoryPath);
+  const digest = createHash("sha256")
+    .update(canonicalDirectory)
+    .update("\0")
+    .update(fingerprint)
+    .digest("hex");
+  return path.join(path.dirname(canonicalDirectory), `.crabline-reclaim-${digest}`);
+}
+
+function lockOwnerMatches(
+  left: ParsedLockOwner | null | undefined,
+  right: ParsedLockOwner | null | undefined,
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+  return left.owner.token === right.owner.token;
+}
+
+let cachedCurrentProcessIdentity: string | undefined;
+
+function readProcessIdentityWithRetry(
+  pid: number,
+  reader: (candidatePid: number) => string | null,
+): string | null {
+  for (let attempt = 0; attempt < CURRENT_IDENTITY_ATTEMPTS; attempt++) {
+    const identity = reader(pid);
+    if (identity !== null) {
+      return identity;
+    }
+  }
+  return null;
+}
+
+function readProcessNamespaceWithRetry(pid: number): string | null {
+  for (let attempt = 0; attempt < CURRENT_IDENTITY_ATTEMPTS; attempt++) {
+    const namespace = readProcessNamespace(pid);
+    if (namespace !== null) {
+      return namespace;
+    }
+  }
+  return null;
+}
+
+function parseOpenedOwner(ownerHandle: number): ParsedLockOwner | undefined {
+  const stats = fs.fstatSync(ownerHandle);
+  if (!stats.isFile() || stats.size === 0 || stats.size > MAX_OWNER_BYTES) {
     return undefined;
   }
+  const raw = Buffer.alloc(stats.size);
+  let offset = 0;
+  while (offset < raw.byteLength) {
+    const bytesRead = fs.readSync(ownerHandle, raw, offset, raw.byteLength - offset, offset);
+    if (bytesRead === 0) {
+      return undefined;
+    }
+    offset += bytesRead;
+  }
+  const value = JSON.parse(raw.toString("utf8")) as Partial<LockOwner>;
+  if (
+    (value.version !== 1 && value.version !== 2) ||
+    !isValidProcessId(value.pid ?? 0) ||
+    typeof value.token !== "string" ||
+    value.token.length === 0 ||
+    value.token.length > 128 ||
+    !Number.isSafeInteger(value.processStartedAtMs) ||
+    (value.processNamespace !== undefined &&
+      value.processNamespace !== null &&
+      (typeof value.processNamespace !== "string" ||
+        !LINUX_PID_NAMESPACE_PATTERN.test(value.processNamespace))) ||
+    (value.processIdentity !== null &&
+      (typeof value.processIdentity !== "string" ||
+        value.processIdentity.length === 0 ||
+        value.processIdentity.length > 256))
+  ) {
+    return undefined;
+  }
+  if (
+    value.version === 2 &&
+    (value.processIdentity === null ||
+      !isExactProcessIdentityForCurrentPlatform(value.processIdentity) ||
+      (process.platform === "linux" &&
+        (value.processNamespace === null ||
+          value.processNamespace === undefined ||
+          !LINUX_PID_NAMESPACE_PATTERN.test(value.processNamespace))))
+  ) {
+    return undefined;
+  }
+  return {
+    owner: {
+      ...(value as LockOwner),
+      processNamespace: value.processNamespace ?? null,
+    },
+    publishedAtMs: stats.mtimeMs,
+  };
+}
+
+function parseOwner(lockDirectory: fs.PathLike): ParsedLockOwner | null | undefined {
+  let ownerHandle: number;
+  try {
+    ownerHandle = fs.openSync(
+      path.join(String(lockDirectory), OWNER_FILE),
+      fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW,
+    );
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null;
+  }
+  let parsed: ParsedLockOwner | undefined;
+  try {
+    parsed = parseOpenedOwner(ownerHandle);
+  } catch {
+    parsed = undefined;
+  }
+  try {
+    fs.closeSync(ownerHandle);
+  } catch {
+    return null;
+  }
+  return parsed ?? null;
 }
 
 function syntheticFreshStat(stats: fs.Stats): fs.Stats {
@@ -209,64 +460,324 @@ function syntheticFreshStat(stats: fs.Stats): fs.Stats {
   return fresh;
 }
 
+function syntheticStaleStat(stats: fs.Stats): fs.Stats {
+  const stale = Object.assign(Object.create(Object.getPrototypeOf(stats)), stats) as fs.Stats;
+  Object.defineProperty(stale, "mtime", {
+    configurable: true,
+    enumerable: true,
+    value: new Date(0),
+  });
+  return stale;
+}
+
 function isRecoverableOwnerlessLock(stats: Pick<fs.Stats, "mtimeMs">): boolean {
   return Date.now() - stats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
 }
 
-export function createProcessOwnedLockFileSystem(): typeof fs {
-  const token = randomUUID();
-  if (cachedCurrentProcessIdentity === undefined) {
-    cachedCurrentProcessIdentity = readProcessIdentity(process.pid);
+function isRecoverableUnverifiableOwner(candidate: ParsedLockOwner, status: OwnerStatus): boolean {
+  return (
+    status === "superseded" &&
+    candidate.owner.version === 1 &&
+    (candidate.owner.processIdentity === null ||
+      isCoarseDarwinIdentity(candidate.owner.processIdentity)) &&
+    Date.now() - candidate.publishedAtMs >= OWNERLESS_LOCK_RECOVERY_MS
+  );
+}
+
+export function createProcessOwnedLockFileSystem(
+  options: {
+    processIdentityReader?: (pid: number) => string | null;
+  } = {},
+): typeof fs {
+  if (
+    process.platform !== "linux" &&
+    process.platform !== "darwin" &&
+    process.platform !== "win32"
+  ) {
+    return fs;
   }
-  const currentIdentity = cachedCurrentProcessIdentity;
+  const token = randomUUID();
+  const identityReader = options.processIdentityReader ?? readProcessIdentity;
+  let currentProcessIdentity: string | null;
+  if (options.processIdentityReader) {
+    currentProcessIdentity = readProcessIdentityWithRetry(process.pid, identityReader);
+  } else {
+    if (cachedCurrentProcessIdentity === undefined) {
+      const currentIdentity = readProcessIdentityWithRetry(process.pid, identityReader);
+      if (currentIdentity !== null) {
+        cachedCurrentProcessIdentity = currentIdentity;
+      }
+    }
+    currentProcessIdentity = cachedCurrentProcessIdentity ?? null;
+  }
+  if (currentProcessIdentity === null || !isExactProcessIdentity(currentProcessIdentity)) {
+    throw new Error("Recorder lock process identity is unavailable.");
+  }
+  const currentProcessNamespace = readProcessNamespaceWithRetry(process.pid);
+  if (process.platform === "linux" && currentProcessNamespace === null) {
+    throw new Error("Recorder lock process namespace is unavailable.");
+  }
+  const ownedDirectories = new Map<string, DirectoryIdentity>();
   let cachedForeignIdentity:
     | {
         checkedAt: number;
+        ownerGenerationKey: string;
         identity: string | null;
         pid: number;
+        startedAtMs: number | null;
       }
     | undefined;
   const owner: LockOwner = {
     pid: process.pid,
-    processIdentity: currentIdentity,
+    processIdentity: currentProcessIdentity,
+    processNamespace: currentProcessNamespace,
     processStartedAtMs: CURRENT_PROCESS_STARTED_AT_MS,
     token,
-    version: 1,
+    version: 2,
   };
 
-  const ownerStatus = (candidate: LockOwner | undefined): OwnerStatus => {
+  const publishOwner = (directory: string): void => {
+    const ownerPath = path.join(directory, OWNER_FILE);
+    let ownerHandle: number | undefined;
+    let openedIdentity: fs.Stats | undefined;
+    try {
+      ownerHandle = fs.openSync(
+        ownerPath,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+        0o600,
+      );
+      openedIdentity = fs.fstatSync(ownerHandle);
+      const contents = Buffer.from(`${JSON.stringify(owner)}\n`);
+      let offset = 0;
+      while (offset < contents.byteLength) {
+        const written = fs.writeSync(
+          ownerHandle,
+          contents,
+          offset,
+          contents.byteLength - offset,
+          offset,
+        );
+        if (written === 0) {
+          throw new Error("Recorder lock owner publication made no progress.");
+        }
+        offset += written;
+      }
+      fs.closeSync(ownerHandle);
+      ownerHandle = undefined;
+    } catch (error) {
+      if (openedIdentity !== undefined) {
+        try {
+          const current = fs.lstatSync(ownerPath);
+          if (openedIdentity.dev === current.dev && openedIdentity.ino === current.ino) {
+            fs.unlinkSync(ownerPath);
+          }
+        } catch {
+          // Preserve a replacement path that cannot be proven to be ours.
+        }
+      }
+      throw error;
+    } finally {
+      if (ownerHandle !== undefined) {
+        try {
+          fs.closeSync(ownerHandle);
+        } catch {
+          // Preserve the publication error already being reported.
+        }
+      }
+    }
+  };
+
+  const abandonOwner = (directory: string): void => {
+    abandonedOwnerTokens.add(token);
+    const coordinationKey = canonicalLockDirectoryPath(directory);
+    const ownedIdentity = ownedDirectories.get(coordinationKey);
+    if (!ownedIdentity) {
+      return;
+    }
+    try {
+      const current = fs.lstatSync(directory);
+      if (current.isDirectory() && directoryIdentityMatches(ownedIdentity, current)) {
+        abandonedDirectoryIdentities.set(coordinationKey, {
+          ...ownedIdentity,
+          ownerGenerationKey: token,
+        });
+      }
+    } catch {
+      // The path no longer names the directory published by this wrapper.
+    }
+  };
+
+  const ownerStatus = (candidate: ParsedLockOwner | null | undefined): OwnerStatus => {
     if (!candidate) {
       return "unknown";
     }
-    if (!isProcessAlive(candidate.pid)) {
+    const claim = candidate.owner;
+    if (abandonedOwnerTokens.has(claim.token)) {
       return "dead";
     }
-    if (isDefunctProcess(candidate.pid)) {
-      return "dead";
-    }
-    if (candidate.pid === process.pid) {
-      return candidate.processStartedAtMs === CURRENT_PROCESS_STARTED_AT_MS ? "active" : "dead";
-    }
-    if (candidate.processIdentity === null) {
+    if (
+      process.platform === "linux" &&
+      claim.version === 2 &&
+      (claim.processNamespace === null ||
+        currentProcessNamespace === null ||
+        claim.processNamespace !== currentProcessNamespace)
+    ) {
       return "unknown";
+    }
+    if (!isProcessAlive(claim.pid)) {
+      if (process.platform === "linux" && claim.version === 1 && claim.processNamespace === null) {
+        return "unknown";
+      }
+      return "dead";
+    }
+    if (isDefunctProcess(claim.pid)) {
+      return "dead";
+    }
+    if (claim.pid === process.pid) {
+      if (claim.processIdentity !== null && isExactProcessIdentity(claim.processIdentity)) {
+        return claim.processIdentity === currentProcessIdentity ? "active" : "dead";
+      }
+      return claim.processStartedAtMs === CURRENT_PROCESS_STARTED_AT_MS ? "active" : "superseded";
     }
     const now = Date.now();
     if (
       !cachedForeignIdentity ||
-      cachedForeignIdentity.pid !== candidate.pid ||
+      cachedForeignIdentity.pid !== claim.pid ||
+      cachedForeignIdentity.ownerGenerationKey !== claim.token ||
       now - cachedForeignIdentity.checkedAt >= IDENTITY_CACHE_MS
     ) {
       cachedForeignIdentity = {
         checkedAt: now,
-        identity: readProcessIdentity(candidate.pid),
-        pid: candidate.pid,
+        identity: readProcessIdentity(claim.pid),
+        ownerGenerationKey: claim.token,
+        pid: claim.pid,
+        startedAtMs: readLegacyProcessStartedAtMs(claim.pid),
       };
+    }
+    if (
+      claim.processIdentity === null ||
+      isCoarseDarwinIdentity(claim.processIdentity) ||
+      !isExactProcessIdentity(claim.processIdentity)
+    ) {
+      if (claim.version !== 1 || cachedForeignIdentity.startedAtMs === null) {
+        return "unknown";
+      }
+      return legacyProcessStartMatches(claim.processStartedAtMs, cachedForeignIdentity.startedAtMs)
+        ? "active"
+        : "superseded";
     }
     return cachedForeignIdentity.identity === null
       ? "unknown"
-      : cachedForeignIdentity.identity === candidate.processIdentity
+      : cachedForeignIdentity.identity === claim.processIdentity
         ? "active"
         : "dead";
+  };
+
+  const createRecoveryClaim = (
+    claimPath: string,
+    callback: (error: NodeJS.ErrnoException | null, claim?: RecoveryClaim) => void,
+  ): void => {
+    fs.mkdir(claimPath, { mode: 0o700 }, (claimError) => {
+      if (!claimError) {
+        try {
+          publishOwner(claimPath);
+          callback(null, { activePath: claimPath, supersededPaths: [] });
+        } catch (ownerError) {
+          fs.rmdir(claimPath, () => callback(ownerError as NodeJS.ErrnoException));
+        }
+        return;
+      }
+      if (claimError.code !== "EEXIST") {
+        callback(claimError);
+        return;
+      }
+      const existingClaim = parseOwner(claimPath);
+      let existingFingerprint: string | undefined;
+      if (existingClaim) {
+        if (ownerStatus(existingClaim) === "dead") {
+          existingFingerprint = `owner:${existingClaim.owner.token}`;
+        }
+      } else if (existingClaim === undefined) {
+        try {
+          const stats = fs.statSync(claimPath);
+          if (isRecoverableOwnerlessLock(stats)) {
+            existingFingerprint = `ownerless:${stats.dev}:${stats.ino}:${stats.mtimeMs}`;
+          }
+        } catch {
+          // Treat a concurrently changing claim as active.
+        }
+      }
+      if (!existingFingerprint) {
+        callback(
+          Object.assign(new Error("Recorder lock recovery is already in progress."), {
+            code: "ELOCKED",
+          }),
+        );
+        return;
+      }
+      const takeoverPath = recoveryClaimPath(claimPath, existingFingerprint);
+      createRecoveryClaim(takeoverPath, (takeoverError, takeoverClaim) => {
+        if (takeoverError || !takeoverClaim) {
+          callback(
+            takeoverError ??
+              Object.assign(new Error("Recorder lock recovery claim failed."), {
+                code: "ELOCKED",
+              }),
+          );
+        } else {
+          callback(null, {
+            activePath: takeoverClaim.activePath,
+            supersededPaths: [claimPath, ...takeoverClaim.supersededPaths],
+          });
+        }
+      });
+    });
+  };
+
+  const releaseRecoveryClaim = (
+    directory: string,
+    claim: RecoveryClaim,
+    callback: () => void,
+  ): void => {
+    const coordinationKey = canonicalLockDirectoryPath(directory);
+    // Retire nested takeover paths before the base claim so any failure leaves
+    // the active claim discoverable through the original coordination path.
+    const supersededPaths = [...claim.supersededPaths].reverse();
+    const removeSuperseded = (index: number): void => {
+      const supersededPath = supersededPaths[index];
+      if (!supersededPath) {
+        fs.rm(claim.activePath, { force: true, recursive: true }, (activeError) => {
+          if (activeError && supersededPaths.length === 0) {
+            retainedCoordinationClaims.set(coordinationKey, claim);
+          }
+          callback();
+        });
+        return;
+      }
+      fs.rm(supersededPath, { force: true, recursive: true }, (error) => {
+        if (error) {
+          retainedCoordinationClaims.set(coordinationKey, claim);
+          callback();
+          return;
+        }
+        removeSuperseded(index + 1);
+      });
+    };
+    removeSuperseded(0);
+  };
+
+  const acquireCoordinationClaim = (
+    directory: string,
+    callback: (error: NodeJS.ErrnoException | null, claim?: RecoveryClaim) => void,
+  ): void => {
+    const coordinationKey = canonicalLockDirectoryPath(directory);
+    const retainedClaim = retainedCoordinationClaims.get(coordinationKey);
+    if (retainedClaim) {
+      retainedCoordinationClaims.delete(coordinationKey);
+      callback(null, retainedClaim);
+      return;
+    }
+    createRecoveryClaim(recoveryClaimPath(directory), callback);
   };
 
   const lockFs = Object.create(fs) as typeof fs;
@@ -274,26 +785,44 @@ export function createProcessOwnedLockFileSystem(): typeof fs {
     directoryPath: fs.PathLike,
     callback: (error: NodeJS.ErrnoException | null) => void,
   ) => {
-    fs.mkdir(directoryPath, (error) => {
-      if (error) {
-        callback(error);
+    const directory = String(directoryPath);
+    acquireCoordinationClaim(directory, (claimError, coordinationClaim) => {
+      if (claimError || !coordinationClaim) {
+        callback(
+          claimError ??
+            Object.assign(new Error("Recorder lock coordination failed."), {
+              code: "ELOCKED",
+            }),
+        );
         return;
       }
-      try {
-        fs.writeFileSync(
-          path.join(String(directoryPath), OWNER_FILE),
-          `${JSON.stringify(owner)}\n`,
-          { flag: "wx", mode: 0o600 },
-        );
-        callback(null);
-      } catch (ownerError) {
-        try {
-          fs.rmSync(directoryPath, { force: true, recursive: true });
-        } catch {
-          // Preserve the owner publication failure.
+      fs.mkdir(directoryPath, (error) => {
+        if (error) {
+          releaseRecoveryClaim(directory, coordinationClaim, () => callback(error));
+          return;
         }
-        callback(ownerError as NodeJS.ErrnoException);
-      }
+        let publicationError: NodeJS.ErrnoException | null = null;
+        try {
+          publishOwner(directory);
+          const publishedDirectory = fs.lstatSync(directory);
+          if (!publishedDirectory.isDirectory() || publishedDirectory.isSymbolicLink()) {
+            throw new Error("Recorder lock directory changed during owner publication.");
+          }
+          ownedDirectories.set(
+            canonicalLockDirectoryPath(directory),
+            directoryIdentity(publishedDirectory),
+          );
+        } catch (ownerError) {
+          publicationError = ownerError as NodeJS.ErrnoException;
+        }
+        if (publicationError) {
+          fs.rmdir(directoryPath, () =>
+            releaseRecoveryClaim(directory, coordinationClaim, () => callback(publicationError)),
+          );
+          return;
+        }
+        releaseRecoveryClaim(directory, coordinationClaim, () => callback(null));
+      });
     });
   }) as typeof fs.mkdir;
   lockFs.stat = ((
@@ -305,11 +834,24 @@ export function createProcessOwnedLockFileSystem(): typeof fs {
         callback(error);
         return;
       }
+      const coordinationKey = canonicalLockDirectoryPath(filePath);
+      if (directoryIdentityMatches(abandonedDirectoryIdentities.get(coordinationKey), stats)) {
+        callback(null, syntheticStaleStat(stats));
+        return;
+      }
       const candidate = parseOwner(filePath);
+      const status = ownerStatus(candidate);
+      if (candidate && abandonedOwnerTokens.has(candidate.owner.token)) {
+        callback(null, syntheticStaleStat(stats));
+        return;
+      }
       callback(
         null,
-        candidate?.token === token ||
-          ownerStatus(candidate) === "dead" ||
+        candidate?.owner.token === token ||
+          status === "dead" ||
+          (candidate !== undefined &&
+            candidate !== null &&
+            isRecoverableUnverifiableOwner(candidate, status)) ||
           (candidate === undefined && isRecoverableOwnerlessLock(stats))
           ? stats
           : syntheticFreshStat(stats),
@@ -320,41 +862,196 @@ export function createProcessOwnedLockFileSystem(): typeof fs {
     directoryPath: fs.PathLike,
     callback: (error: NodeJS.ErrnoException | null) => void,
   ) => {
-    const candidate = parseOwner(directoryPath);
-    let recoverableOwnerless = false;
-    if (candidate === undefined) {
-      try {
-        recoverableOwnerless = isRecoverableOwnerlessLock(fs.statSync(directoryPath));
-      } catch (error) {
-        callback(error as NodeJS.ErrnoException);
+    const directory = String(directoryPath);
+    const coordinationKey = canonicalLockDirectoryPath(directory);
+    acquireCoordinationClaim(directory, (claimError, coordinationClaim) => {
+      if (claimError || !coordinationClaim) {
+        if (ownedDirectories.has(coordinationKey)) {
+          abandonOwner(directory);
+        }
+        callback(
+          claimError ??
+            Object.assign(new Error("Recorder lock coordination failed."), {
+              code: "ELOCKED",
+            }),
+        );
         return;
       }
-    }
-    if (candidate?.token !== token && ownerStatus(candidate) !== "dead" && !recoverableOwnerless) {
-      callback(
-        Object.assign(new Error("Recorder lock owner is still active or cannot be verified."), {
-          code: "ELOCKED",
-        }),
-      );
-      return;
-    }
-    fs.rm(path.join(String(directoryPath), OWNER_FILE), { force: true }, (ownerError) => {
-      if (ownerError) {
-        callback(ownerError);
+      const finish = (error: NodeJS.ErrnoException | null): void => {
+        releaseRecoveryClaim(directory, coordinationClaim, () => callback(error));
+      };
+      const candidate = parseOwner(directoryPath);
+      const ownedIdentity = ownedDirectories.get(coordinationKey);
+      let ownsPublishedDirectory = false;
+      if (ownedIdentity) {
+        try {
+          const current = fs.lstatSync(directoryPath);
+          ownsPublishedDirectory =
+            current.isDirectory() && directoryIdentityMatches(ownedIdentity, current);
+        } catch {
+          ownsPublishedDirectory = false;
+        }
+      }
+      if (
+        candidate?.owner.token === token ||
+        ((candidate === null || candidate === undefined) && ownsPublishedDirectory)
+      ) {
+        const tombstonePath = `${coordinationClaim.activePath}.${token}.release`;
+        fs.rename(directoryPath, tombstonePath, (renameError) => {
+          if (renameError) {
+            abandonOwner(directory);
+            finish(renameError);
+            return;
+          }
+          ownedDirectories.delete(coordinationKey);
+          abandonedDirectoryIdentities.delete(coordinationKey);
+          abandonedOwnerTokens.delete(token);
+          fs.rm(tombstonePath, { force: true, recursive: true }, (removeError) =>
+            finish(removeError),
+          );
+        });
         return;
       }
-      fs.rmdir(directoryPath, callback);
+      if (candidate === null && ownedDirectories.has(coordinationKey)) {
+        abandonOwner(directory);
+        finish(
+          Object.assign(new Error("Recorder lock owner metadata cannot be verified for release."), {
+            code: "ELOCKED",
+          }),
+        );
+        return;
+      }
+      let ownerlessStats: fs.Stats | undefined;
+      let recoverableOwnerless = false;
+      let recoverableAbandoned = false;
+      const status = ownerStatus(candidate);
+      const recoverableUnverifiable =
+        candidate !== undefined &&
+        candidate !== null &&
+        isRecoverableUnverifiableOwner(candidate, status);
+      if (candidate === undefined || candidate === null) {
+        try {
+          ownerlessStats = fs.statSync(directoryPath);
+          recoverableAbandoned = directoryIdentityMatches(
+            abandonedDirectoryIdentities.get(coordinationKey),
+            ownerlessStats,
+          );
+          recoverableOwnerless =
+            candidate === undefined && isRecoverableOwnerlessLock(ownerlessStats);
+        } catch (error) {
+          finish(error as NodeJS.ErrnoException);
+          return;
+        }
+      }
+      if (
+        status !== "dead" &&
+        !recoverableUnverifiable &&
+        !recoverableOwnerless &&
+        !recoverableAbandoned
+      ) {
+        finish(
+          Object.assign(new Error("Recorder lock owner is still active or cannot be verified."), {
+            code: "ELOCKED",
+          }),
+        );
+        return;
+      }
+      const refreshed = parseOwner(directoryPath);
+      const refreshedStatus = ownerStatus(refreshed);
+      let recoveryStillAuthorized =
+        candidate !== undefined &&
+        candidate !== null &&
+        lockOwnerMatches(candidate, refreshed) &&
+        (refreshedStatus === "dead" ||
+          (refreshed !== undefined &&
+            refreshed !== null &&
+            isRecoverableUnverifiableOwner(refreshed, refreshedStatus)));
+      if (candidate === undefined && refreshed === undefined && ownerlessStats) {
+        try {
+          const refreshedStats = fs.statSync(directoryPath);
+          recoveryStillAuthorized =
+            refreshedStats.dev === ownerlessStats.dev &&
+            refreshedStats.ino === ownerlessStats.ino &&
+            refreshedStats.mtimeMs === ownerlessStats.mtimeMs &&
+            isRecoverableOwnerlessLock(refreshedStats);
+        } catch {
+          recoveryStillAuthorized = false;
+        }
+      }
+      if (recoverableAbandoned && ownerlessStats) {
+        try {
+          recoveryStillAuthorized = directoryIdentityMatches(
+            abandonedDirectoryIdentities.get(coordinationKey),
+            fs.statSync(directoryPath),
+          );
+        } catch {
+          recoveryStillAuthorized = false;
+        }
+      }
+      if (!recoveryStillAuthorized) {
+        finish(
+          Object.assign(new Error("Recorder lock owner changed during recovery."), {
+            code: "ELOCKED",
+          }),
+        );
+        return;
+      }
+      const tombstonePath = `${coordinationClaim.activePath}.${token}.lock`;
+      fs.rename(directoryPath, tombstonePath, (renameError) => {
+        if (renameError) {
+          finish(renameError);
+          return;
+        }
+        fs.rm(tombstonePath, { force: true, recursive: true }, (removeError) => {
+          if (removeError) {
+            finish(removeError);
+            return;
+          }
+          if (candidate) {
+            abandonedOwnerTokens.delete(candidate.owner.token);
+          }
+          const abandonedIdentity = abandonedDirectoryIdentities.get(coordinationKey);
+          if (abandonedIdentity) {
+            abandonedOwnerTokens.delete(abandonedIdentity.ownerGenerationKey);
+            abandonedDirectoryIdentities.delete(coordinationKey);
+          }
+          retainedCoordinationClaims.set(canonicalLockDirectoryPath(directory), coordinationClaim);
+          callback(null);
+        });
+      });
     });
   }) as typeof fs.rmdir;
   lockFs.rmdirSync = ((directoryPath: fs.PathLike) => {
-    const candidate = parseOwner(directoryPath);
-    if (candidate?.token !== token) {
-      throw Object.assign(new Error("Recorder lock is not owned by this process."), {
-        code: "ELOCKED",
-      });
+    const directory = String(directoryPath);
+    const claimPath = recoveryClaimPath(directory);
+    fs.mkdirSync(claimPath, { mode: 0o700 });
+    const coordinationClaim: RecoveryClaim = {
+      activePath: claimPath,
+      supersededPaths: [],
+    };
+    try {
+      publishOwner(claimPath);
+      const candidate = parseOwner(directoryPath);
+      if (candidate?.owner.token !== token) {
+        throw Object.assign(new Error("Recorder lock is not owned by this process."), {
+          code: "ELOCKED",
+        });
+      }
+      const tombstonePath = `${claimPath}.${token}.release`;
+      fs.renameSync(directoryPath, tombstonePath);
+      fs.rmSync(tombstonePath, { force: true, recursive: true });
+    } finally {
+      for (const currentPath of [
+        ...coordinationClaim.supersededPaths,
+        coordinationClaim.activePath,
+      ]) {
+        try {
+          fs.rmSync(currentPath, { force: true, recursive: true });
+        } catch {
+          // Exit cleanup is best-effort; a live coordination claim is safer than an ABA race.
+        }
+      }
     }
-    fs.rmSync(path.join(String(directoryPath), OWNER_FILE), { force: true });
-    fs.rmdirSync(directoryPath);
   }) as typeof fs.rmdirSync;
   return lockFs;
 }

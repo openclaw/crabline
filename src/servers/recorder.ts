@@ -1,8 +1,11 @@
 import { constants as fsConstants } from "node:fs";
+import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, open, readlink, realpath, stat as statPath } from "node:fs/promises";
+import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
+import { createOwnerOnlyWindowsDirectory } from "../platform/windows-acl.js";
 import type { ServerRequestEvent } from "./http.js";
 
 export type ServerEventObserver = (event: ServerRequestEvent) => void | Promise<void>;
@@ -300,6 +303,43 @@ function recorderIdentityLockPath(root: string, identity: RecorderFileIdentity):
   return path.join(root, `recorder-${identity.ino}`);
 }
 
+export async function secureServerRecorderWindowsLockRoot(
+  root: string,
+  options: {
+    createWindowsDirectory?: (directoryPath: string) => Promise<void>;
+  } = {},
+): Promise<string> {
+  await (options.createWindowsDirectory ?? createOwnerOnlyWindowsDirectory)(root);
+  const identity = await lstat(root);
+  if (!identity.isDirectory() || identity.isSymbolicLink()) {
+    throw new Error("Server recorder Windows lock root is not a private directory.");
+  }
+  return root;
+}
+
+function serverRecorderWindowsLockRoot(): string {
+  const configuredRoot = process.env.LOCALAPPDATA?.trim();
+  const localAppData =
+    configuredRoot && path.isAbsolute(configuredRoot)
+      ? configuredRoot
+      : path.join(userInfo().homedir, "AppData", "Local");
+  return path.join(localAppData, "Crabline", "locks", "server-recorder");
+}
+
+export function serverRecorderWindowsLockPath(root: string, filePath: string): string {
+  const canonicalPath = path.win32.normalize(filePath).toLowerCase();
+  const fingerprint = createHash("sha256").update(canonicalPath).digest("hex");
+  return path.join(root, `recorder-${fingerprint}`);
+}
+
+async function recorderProcessLockTarget(filePath: string): Promise<string> {
+  if (process.platform !== "win32") {
+    return filePath;
+  }
+  const root = await secureServerRecorderWindowsLockRoot(serverRecorderWindowsLockRoot());
+  return serverRecorderWindowsLockPath(root, filePath);
+}
+
 async function recorderIdentityLockTarget(
   identity: RecorderFileIdentity,
 ): Promise<string | undefined> {
@@ -321,10 +361,11 @@ async function recorderIdentityLockTarget(
 
 async function acquireRecorderLock(filePath: string): Promise<() => Promise<void>> {
   const deadline = performance.now() + RECORDER_LOCK_STALE_MS + RECORDER_LOCK_WAIT_MARGIN_MS;
+  const lockTarget = await recorderProcessLockTarget(filePath);
   const lockFileSystem = createProcessOwnedLockFileSystem();
   for (;;) {
     try {
-      return await lock(filePath, {
+      return await lock(lockTarget, {
         fs: lockFileSystem,
         realpath: false,
         retries: 0,
