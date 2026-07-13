@@ -256,6 +256,7 @@ describe("recorder append serialization", () => {
       );
       expect(fsMocks.providerOpen.mock.calls.map(([, flags, mode]) => [flags, mode])).toEqual([
         ["ax+", 0o600],
+        ["a+", 0o600],
         ["ax+", 0o600],
         ["a+", 0o600],
       ]);
