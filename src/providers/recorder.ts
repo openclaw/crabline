@@ -314,16 +314,19 @@ function consumeRecordedChunk(
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
-      await serializeAppend(filePath, async (publicationPath, logicalPath, lockCreatedFile) => {
-        await appendCommittedLine(
-          publicationPath,
-          logicalPath,
-          line,
-          true,
-          undefined,
-          lockCreatedFile,
-        );
-      });
+      await serializeAppend(
+        filePath,
+        async (publicationPath, logicalPath, lockCreatedFile, lockedIdentity) => {
+          await appendCommittedLine(
+            publicationPath,
+            logicalPath,
+            line,
+            true,
+            lockedIdentity,
+            lockCreatedFile,
+          );
+        },
+      );
       return;
     } catch (error) {
       if (!(error instanceof RecorderRotatedError) || attempt + 1 >= RECORDER_ROTATION_ATTEMPTS) {
@@ -468,12 +471,19 @@ async function prepareRecorderPathForAppend(
   publicationPath: string,
   logicalPath: string,
   durable: boolean,
+  expectedIdentity?: RecorderFileIdentity,
 ): Promise<{ created: boolean; identity: RecorderFileIdentity }> {
   const opened = await openRecorderForAppend(publicationPath);
   const { handle } = opened;
   const identity = await handle.stat({ bigint: true });
   const recorderIdentity = { dev: identity.dev, ino: identity.ino, nlink: identity.nlink };
   try {
+    if (
+      expectedIdentity !== undefined &&
+      !sameRecorderFileIdentity(expectedIdentity, recorderIdentity)
+    ) {
+      throw new RecorderRotatedError("Recorder rotated before preparing a committed line.");
+    }
     const changed = await prepareRecorderTailForAppend(handle);
     if (changed && durable) {
       await handle.sync();
@@ -707,10 +717,11 @@ async function releaseRecorderLocks(releases: Array<() => Promise<void>>): Promi
 
 async function withRecorderLock<T>(
   filePath: string,
-  operation: (lockCreatedFile: boolean) => Promise<T>,
+  operation: (lockCreatedFile: boolean, lockedIdentity: RecorderFileIdentity) => Promise<T>,
 ): Promise<T> {
   const releases: Array<() => Promise<void>> = [];
   let lockCreatedFile = false;
+  let lockedIdentity: RecorderFileIdentity | undefined;
   try {
     releases.push(await acquireRecorderLock(filePath));
     for (let attempt = 0; attempt < RECORDER_ROTATION_ATTEMPTS; attempt += 1) {
@@ -725,6 +736,7 @@ async function withRecorderLock<T>(
       const currentIdentity = await readRecorderFileIdentity(filePath);
       if (sameRecorderFileIdentity(identity, currentIdentity)) {
         releases.push(releaseIdentityLock);
+        lockedIdentity = identity;
         break;
       }
       const releaseErrors = await releaseRecorderLocks([releaseIdentityLock]);
@@ -739,6 +751,9 @@ async function withRecorderLock<T>(
         throw new RecorderRotatedError("Recorder kept rotating while acquiring its identity lock.");
       }
     }
+    if (!lockedIdentity) {
+      throw new RecorderRotatedError("Recorder disappeared while acquiring its identity lock.");
+    }
   } catch (error) {
     const releaseErrors = await releaseRecorderLocks(releases);
     if (releaseErrors.length > 0) {
@@ -751,7 +766,7 @@ async function withRecorderLock<T>(
   let operationError: unknown;
   let result: T | undefined;
   try {
-    result = await operation(lockCreatedFile);
+    result = await operation(lockCreatedFile, lockedIdentity);
   } catch (error) {
     operationFailed = true;
     operationError = error;
@@ -776,7 +791,12 @@ async function withRecorderLock<T>(
 
 async function serializeAppend<T>(
   filePath: string,
-  operation: (publicationPath: string, logicalPath: string, lockCreatedFile: boolean) => Promise<T>,
+  operation: (
+    publicationPath: string,
+    logicalPath: string,
+    lockCreatedFile: boolean,
+    lockedIdentity: RecorderFileIdentity,
+  ) => Promise<T>,
 ): Promise<T> {
   const logicalPath = path.resolve(filePath);
   const key = await resolveRecorderPublicationPath(logicalPath);
@@ -787,7 +807,8 @@ async function serializeAppend<T>(
     .then(async () => {
       result = await withRecorderLock(
         key,
-        async (lockCreatedFile) => await operation(key, logicalPath, lockCreatedFile),
+        async (lockCreatedFile, lockedIdentity) =>
+          await operation(key, logicalPath, lockCreatedFile, lockedIdentity),
       );
     });
   pendingAppends.set(key, current);
@@ -905,8 +926,13 @@ export async function appendRecordedInboundBatch(
     try {
       return await serializeAppend(
         filePath,
-        async (publicationPath, logicalPath, lockCreatedFile) => {
-          const generation = await prepareRecorderPathForAppend(publicationPath, logicalPath, true);
+        async (publicationPath, logicalPath, lockCreatedFile, lockedIdentity) => {
+          const generation = await prepareRecorderPathForAppend(
+            publicationPath,
+            logicalPath,
+            true,
+            lockedIdentity,
+          );
           const seen = await syncRecordIdentityIndex(publicationPath);
           const pendingIdentities = new Set<string>();
           const recorded: RecordedInboundEnvelope[] = [];
