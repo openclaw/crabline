@@ -56,6 +56,23 @@ describe("iMessage thread matching", () => {
     ).toBe(false);
   });
 
+  it("does not treat fixture-local ids as provider thread aliases", () => {
+    expect(
+      matchesIMessageThread(
+        "fixture-contact",
+        "iMessage;-;old-guid",
+        {
+          channelId: "+15551234567",
+          id: "fixture-contact",
+        },
+        {
+          chatGuid: "fixture-contact",
+          chatIdentifier: "+15557654321",
+        },
+      ),
+    ).toBe(false);
+  });
+
   it("matches recipient targets while preserving the native chat GUID", async () => {
     const config = await createLocalMockConfig("imessage", "/imessage/webhook");
     const provider = new IMessageProviderAdapter("imessage", config, "crabline");
