@@ -964,6 +964,40 @@ describe("whatsapp local provider server", () => {
       },
     });
     expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
+    receiver.markMessageAcknowledged("15557654321@s.whatsapp.net", "retry-ack");
+  });
+
+  it("preserves unresolved acknowledgements when their safety limit is reached", async () => {
+    const receiver = new WhatsAppSignalBundleStore(1, 1);
+    const firstNode: BinaryNode = {
+      attrs: { id: "first", to: "15557654321@s.whatsapp.net" },
+      tag: "message",
+    };
+    const secondNode: BinaryNode = {
+      attrs: { id: "second", to: "15557654321@s.whatsapp.net" },
+      tag: "message",
+    };
+    const events: unknown[] = [];
+    const persist = (node: BinaryNode) =>
+      persistAcceptedBaileysMessage({
+        appendEvent: async (event) => {
+          events.push(event);
+        },
+        node,
+        path: "/ws/chat",
+        remoteJid: "15550000001@s.whatsapp.net",
+        signalBundles: receiver,
+      });
+
+    await expect(persist(firstNode)).resolves.toBe(true);
+    await expect(persist(secondNode)).rejects.toThrow(
+      "WhatsApp pending acknowledgement limit exceeded (1).",
+    );
+    expect(events).toHaveLength(1);
+
+    receiver.markMessageAcknowledged("15557654321@s.whatsapp.net", "first");
+    await expect(persist(secondNode)).resolves.toBe(true);
+    expect(events).toHaveLength(2);
   });
 
   it("commits and acknowledges decryptable unsupported payloads before later text", async () => {
