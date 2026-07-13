@@ -192,7 +192,12 @@ export async function writeResponse(
   const body = Buffer.from(await fetchResponse.arrayBuffer());
   response.statusCode = fetchResponse.status;
   for (const [name, value] of fetchResponse.headers) {
-    if (name.toLowerCase() === "set-cookie") {
+    const normalizedName = name.toLowerCase();
+    if (
+      normalizedName === "content-length" ||
+      normalizedName === "set-cookie" ||
+      normalizedName === "transfer-encoding"
+    ) {
       continue;
     }
     response.setHeader(name, value);
@@ -331,8 +336,10 @@ export async function startHttpJsonServer(params: {
       kind: "connectivity",
     });
   }
+  const advertisedHost =
+    params.host === "0.0.0.0" ? "127.0.0.1" : params.host === "::" ? "::1" : params.host;
   return {
-    baseUrl: `http://${formatUrlHost(params.host)}:${address.port}`,
+    baseUrl: `http://${formatUrlHost(advertisedHost)}:${address.port}`,
     async close() {
       await closeServer(server);
     },
