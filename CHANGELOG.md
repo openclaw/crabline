@@ -12,7 +12,7 @@
 - Route local-mock GET hooks through the real server and parse structured JSON media types as JSON.
 - Bound Matrix and Mattermost committed state, authenticate and redact native Mattermost outgoing webhooks, enforce native transport, post lifecycle, and direct-channel identity semantics, and serialize Signal timestamps, SSE cleanup, JSON-RPC strings, and username identity.
 - Enforce Telegram native identity and UTF-16 entity boundaries without synthetic chat collisions, while accepting four-character collectible chat usernames.
-- Randomize WhatsApp server credentials, canonicalize direct delivery JIDs, restrict read receipts to accepted inbound messages, and bound queued, session, and binary-node resources.
+- Randomize WhatsApp server credentials, canonicalize direct delivery JIDs, restrict read receipts to accepted inbound messages, and bound queued, session, and binary-node resources without evicting live Signal sessions.
 - Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
 - Suppress serve readiness output when shutdown begins during ready-file publication.
 - Treat Unicode format characters as continuations when recognizing standalone acknowledgement tokens.
