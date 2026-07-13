@@ -1,6 +1,7 @@
 import path from "node:path";
 import { CrablineError, ensureErrorMessage } from "../core/errors.js";
 import type { ProviderConfig, ProviderPlatform } from "../config/schema.js";
+import { isJsonMediaType } from "../servers/http.js";
 import {
   appendRecordedInbound,
   cloneRecordedInboundCursor,
@@ -517,9 +518,9 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     if (authenticationFailure) {
       return authenticationFailure;
     }
-    const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+    const isJson = isJsonMediaType(request.headers.get("content-type") ?? "");
     let rawPayload: unknown;
-    if (mediaType === "application/json") {
+    if (isJson) {
       try {
         rawPayload = JSON.parse(rawBody) as unknown;
       } catch {
@@ -554,7 +555,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       if (directResponse) {
         return respond(directResponse);
       }
-      if (mediaType !== "application/json") {
+      if (!isJson) {
         return respond(new Response("expected application/json", { status: 415 }));
       }
       let payload: MockWebhookPayload;
@@ -622,6 +623,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         return await startWebhookServer({
           handle: (request) => this.#handleWebhook(request),
           host,
+          methods: this.#options.handleWebhookPayload ? ["GET", "POST"] : ["POST"],
           path: webhookPath,
           port,
         });

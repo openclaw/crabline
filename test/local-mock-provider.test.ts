@@ -461,6 +461,85 @@ describe("local mock provider", () => {
     );
   });
 
+  it("routes GET challenge hooks through the real webhook server", async () => {
+    const actualWebhookServer = await vi.importActual<
+      typeof import("../src/providers/webhook-server.js")
+    >("../src/providers/webhook-server.js");
+    let endpointUrl: string | undefined;
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      const server = await actualWebhookServer.startWebhookServer(params);
+      endpointUrl = server.endpointUrl;
+      return server;
+    });
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        handleWebhookPayload(_payload, request) {
+          return new Response(new URL(request.url).searchParams.get("challenge") ?? "", {
+            status: 202,
+          });
+        },
+        platform: "slack",
+      },
+    });
+    providers.push(provider);
+    await provider.probe(createContext(config));
+
+    const response = await fetch(`${endpointUrl}?challenge=provider-ok`, { method: "GET" });
+
+    expect(response.status).toBe(202);
+    await expect(response.text()).resolves.toBe("provider-ok");
+    expect(webhookMocks.startWebhookServer).toHaveBeenCalledWith(
+      expect.objectContaining({ methods: ["GET", "POST"] }),
+    );
+  });
+
+  it("parses structured JSON request bodies before provider hooks", async () => {
+    let handleRequest: ((request: Request) => Promise<Response>) | undefined;
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handleRequest = params.handle;
+      return {
+        async close() {},
+        endpointUrl: "http://127.0.0.1:43210/slack/events",
+      };
+    });
+    const handlePayload = vi.fn(() => new Response("accepted", { status: 202 }));
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        handleWebhookPayload: handlePayload,
+        platform: "slack",
+      },
+    });
+    providers.push(provider);
+    await provider.probe(createContext(config));
+
+    const response = await handleRequest!(
+      new Request("http://127.0.0.1:43210/slack/events", {
+        body: '{"type":"challenge"}',
+        headers: { "content-type": "application/problem+json; charset=utf-8" },
+        method: "POST",
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(handlePayload).toHaveBeenCalledWith(
+      { type: "challenge" },
+      expect.any(Request),
+      '{"type":"challenge"}',
+    );
+  });
+
   it("rejects malformed normalized webhook envelopes", async () => {
     let handleRequest: ((request: Request) => Promise<Response>) | undefined;
     webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
