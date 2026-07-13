@@ -200,6 +200,38 @@ describe("telegram provider", () => {
       },
     });
 
+    const topLevelFallback = {
+      message: {
+        authorIsBot: true,
+        channelId: "-100123",
+        id: "generic-3",
+        text: "top-level topic fallback",
+      },
+      threadId: "-100123:43",
+    };
+    expect(normalizeTelegramWebhookPayload(topLevelFallback)).toMatchObject({
+      raw: topLevelFallback,
+      threadId: "-100123:43",
+      message: {
+        id: "generic-3",
+        text: "top-level topic fallback",
+        threadId: "-100123:43",
+      },
+    });
+
+    const nestedWins = {
+      message: {
+        channelId: "-100123",
+        text: "nested topic wins",
+        threadId: "-100123:44",
+      },
+      threadId: "-100123:45",
+    };
+    expect(normalizeTelegramWebhookPayload(nestedWins)).toMatchObject({
+      threadId: "-100123:44",
+      message: { threadId: "-100123:44" },
+    });
+
     expect(() =>
       normalizeTelegramWebhookPayload({
         channelId: "-100999",

@@ -57,9 +57,9 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
 
 function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {
   const message = optionalRecord(payload, "message");
-  const threadId = message
-    ? optionalString(message, "threadId")
-    : optionalString(payload, "threadId");
+  const threadId =
+    (message ? optionalString(message, "threadId") : undefined) ??
+    optionalString(payload, "threadId");
   const canonicalTopic = threadId ? parseCanonicalTelegramTopic(threadId) : undefined;
   const channelIds = [
     optionalString(payload, "channelId"),
@@ -131,7 +131,7 @@ export function normalizeTelegramWebhookPayload(payload: unknown) {
     optionalRecord(payload, "edited_message") ??
     optionalRecord(payload, "channel_post") ??
     optionalRecord(payload, "edited_channel_post");
-  if (!message || optionalString(message, "threadId")) {
+  if (!message || optionalString(message, "threadId") || optionalString(payload, "threadId")) {
     return normalizeGenericTelegramPayload(payload);
   }
 
