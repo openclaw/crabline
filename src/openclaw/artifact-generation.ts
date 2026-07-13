@@ -203,6 +203,77 @@ async function assertCurrentGenerationExists(
       throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
     }
   }
+
+  const readArtifactObject = async (artifactPath: string): Promise<Record<string, unknown>> => {
+    try {
+      const value = JSON.parse(await fs.readFile(path.join(outputDir, artifactPath), "utf8"));
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("artifact is not an object");
+      }
+      return value as Record<string, unknown>;
+    } catch (error) {
+      throw new Error("OpenClaw Crabline current artifact generation is incomplete.", {
+        cause: error,
+      });
+    }
+  };
+  const readNestedRecorderPath = (value: unknown): string | undefined => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return undefined;
+    }
+    const result = (value as Record<string, unknown>).result;
+    if (result === null || typeof result !== "object" || Array.isArray(result)) {
+      return undefined;
+    }
+    const recorderPath = (result as Record<string, unknown>).recorderPath;
+    if (recorderPath !== undefined && typeof recorderPath !== "string") {
+      throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
+    }
+    return recorderPath;
+  };
+
+  const manifest = await readArtifactObject(pointer.manifestPath);
+  const readiness = await readArtifactObject(pointer.providerReadinessArtifactPath);
+  const recorderPaths = [
+    typeof manifest.recorderPath === "string" ? manifest.recorderPath : undefined,
+    readNestedRecorderPath(readiness.providerReadiness),
+    readNestedRecorderPath(readiness.smoke),
+  ];
+  if (manifest.recorderPath !== undefined && typeof manifest.recorderPath !== "string") {
+    throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
+  }
+
+  const generationDirectory = path.resolve(
+    outputDir,
+    OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
+    pointer.generation,
+  );
+  const generationRecorderPaths = recorderPaths.filter(
+    (recorderPath): recorderPath is string =>
+      recorderPath !== undefined &&
+      path.dirname(path.resolve(outputDir, recorderPath)) === generationDirectory,
+  );
+  if (generationRecorderPaths.length === 0) {
+    return;
+  }
+  if (
+    recorderPaths.some((recorderPath) => recorderPath === undefined) ||
+    new Set(recorderPaths.map((recorderPath) => path.resolve(outputDir, recorderPath!))).size !== 1
+  ) {
+    throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
+  }
+  const recorderPath = path.resolve(outputDir, generationRecorderPaths[0]!);
+  try {
+    const recorderStats = await fs.lstat(recorderPath, { bigint: true });
+    if (recorderStats.isFile() && recorderStats.nlink === 1n) {
+      return;
+    }
+  } catch (error) {
+    throw new Error("OpenClaw Crabline current artifact generation is incomplete.", {
+      cause: error,
+    });
+  }
+  throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
 }
 
 async function pruneArtifactStore(params: {
