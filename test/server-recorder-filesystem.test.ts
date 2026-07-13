@@ -1,9 +1,11 @@
 import {
   appendFile,
+  chmod,
   open,
   readFile,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
   type FileHandle,
@@ -85,6 +87,28 @@ it.skipIf(process.platform === "win32")(
     expect(await readFile(secondTarget, "utf8")).toContain('"path":"/retargeted"');
   },
 );
+
+it.skipIf(process.platform === "win32")("preserves an existing recorder file mode", async () => {
+  const directory = await createTempDir();
+  directories.push(directory);
+  const recorderPath = path.join(directory, "server.jsonl");
+  await writeFile(recorderPath, "", "utf8");
+  await chmod(recorderPath, 0o640);
+
+  await recordServerEvent({
+    event: {
+      at: new Date().toISOString(),
+      method: "POST",
+      path: "/existing-mode",
+      query: {},
+      type: "api",
+    },
+    onEvent: undefined,
+    recorderPath,
+  });
+
+  expect((await stat(recorderPath)).mode & 0o777).toBe(0o640);
+});
 
 it("never truncates a rotated inode after a later writer appends", async () => {
   const directory = await createTempDir();

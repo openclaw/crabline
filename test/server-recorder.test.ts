@@ -445,7 +445,7 @@ describe("server recorder", () => {
     expect(lockMocks.release).toHaveBeenCalledOnce();
   });
 
-  it("repairs managed recorder directories without chmodding caller-owned parents", async () => {
+  it("repairs managed directories without chmodding existing recorder files or parents", async () => {
     const callerOwnedPath = path.join("/tmp", "events.jsonl");
     await recordServerEvent({
       event: serverEvent("/caller-owned"),
@@ -453,7 +453,7 @@ describe("server recorder", () => {
       recorderPath: callerOwnedPath,
     });
     expect(fsMocks.chmod).not.toHaveBeenCalled();
-    expect(fsMocks.file.chmod).toHaveBeenCalledWith(0o600);
+    expect(fsMocks.file.chmod).not.toHaveBeenCalled();
 
     const managedPath = path.resolve(".crabline", "servers", "events.jsonl");
     await recordServerEvent({
