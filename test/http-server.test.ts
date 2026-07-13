@@ -79,6 +79,56 @@ describe("server HTTP body reader", () => {
     await expect(arbitraryParsed).resolves.toEqual({ value: '{"ok":true}' });
   });
 
+  it.each([
+    ["0.0.0.0", "127.0.0.1"],
+    ["::", "[::1]"],
+  ])("advertises loopback while preserving the %s wildcard bind", async (host, advertisedHost) => {
+    const server = await startHttpJsonServer({
+      async handle() {
+        return Response.json({ ok: true });
+      },
+      host,
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      expect(new URL(server.baseUrl).hostname).toBe(advertisedHost);
+      const address = server.server.address();
+      expect(address).not.toBeNull();
+      expect(typeof address).not.toBe("string");
+      expect(typeof address === "string" || address === null ? undefined : address.address).toBe(
+        host,
+      );
+      await expect(fetch(server.baseUrl).then((response) => response.json())).resolves.toEqual({
+        ok: true,
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("owns buffered response framing instead of trusting caller Content-Length", async () => {
+    const server = await startHttpJsonServer({
+      async handle() {
+        return new Response("complete", {
+          headers: { "content-length": "1024" },
+        });
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const response = await fetch(server.baseUrl, { signal: AbortSignal.timeout(1_000) });
+      expect(response.headers.get("content-length")).toBe("8");
+      await expect(response.text()).resolves.toBe("complete");
+    } finally {
+      await server.close();
+    }
+  });
+
   it("does not expose unexpected exception details", async () => {
     const server = await startHttpJsonServer({
       async handle() {
