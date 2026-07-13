@@ -200,6 +200,80 @@ describe("telegram local provider server", () => {
     expect(secondPayload.result.chat.id).toBe(firstPayload.result.chat.id);
   });
 
+  it("preserves registered channel and supergroup types for username destinations", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
+
+    expect(
+      (
+        await injectUpdate(server, {
+          channel_post: {
+            chat: {
+              id: -1001111111111,
+              title: "Announcements",
+              type: "channel",
+              username: "Crabline_News",
+            },
+            message_id: 1,
+            text: "channel registration",
+          },
+          update_id: 1,
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await injectUpdate(server, {
+          message: {
+            chat: {
+              id: -1002222222222,
+              title: "Discussion",
+              type: "supergroup",
+              username: "Crabline_Group",
+            },
+            message_id: 1,
+            photo: [{ file_id: "photo", file_unique_id: "unique", height: 1, width: 1 }],
+          },
+          update_id: 2,
+        })
+      ).status,
+    ).toBe(200);
+
+    const sendMessage = async (chatId: string) => {
+      const response = await fetch(`${apiRoot}/sendMessage`, {
+        body: JSON.stringify({ chat_id: chatId, text: "registered destination" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      return (await response.json()) as {
+        result: { chat: { id: number; title?: string; type: string; username?: string } };
+      };
+    };
+
+    await expect(sendMessage("@crabline_news")).resolves.toMatchObject({
+      result: {
+        chat: {
+          id: -1001111111111,
+          title: "Announcements",
+          type: "channel",
+          username: "Crabline_News",
+        },
+      },
+    });
+    await expect(sendMessage("@CRABLINE_GROUP")).resolves.toMatchObject({
+      result: {
+        chat: {
+          id: -1002222222222,
+          title: "Discussion",
+          type: "supergroup",
+          username: "Crabline_Group",
+        },
+      },
+    });
+  });
+
   it("normalizes non-positive topic ids while preserving private-chat topics", async () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
@@ -1952,15 +2026,19 @@ describe("telegram local provider server", () => {
     await expect(callback.json()).resolves.toEqual({ ok: true });
   });
 
-  it("keeps generated media file identities unique across chats", async () => {
+  it("keeps file_unique_id stable for the same media reference across messages", async () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
     const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
 
     const media = await Promise.all(
-      [100, 200].map(async (chatId) => {
+      [
+        { chatId: 100, photo: "fixture.png" },
+        { chatId: 200, photo: "fixture.png" },
+        { chatId: 100, photo: "other.png" },
+      ].map(async ({ chatId, photo }) => {
         const response = await fetch(`${apiRoot}/sendPhoto`, {
-          body: JSON.stringify({ chat_id: chatId, photo: "fixture.png" }),
+          body: JSON.stringify({ chat_id: chatId, photo }),
           headers: { "content-type": "application/json" },
           method: "POST",
         });
@@ -1974,9 +2052,14 @@ describe("telegram local provider server", () => {
       }),
     );
 
-    expect(media.map((entry) => entry.result.message_id)).toEqual([1, 1]);
-    expect(new Set(media.map((entry) => entry.result.photo[0]?.file_id)).size).toBe(2);
-    expect(new Set(media.map((entry) => entry.result.photo[0]?.file_unique_id)).size).toBe(2);
+    expect(media.map((entry) => entry.result.message_id)).toEqual([1, 1, 2]);
+    expect(new Set(media.map((entry) => entry.result.photo[0]?.file_id)).size).toBe(3);
+    expect(media[0]!.result.photo[0]?.file_unique_id).toBe(
+      media[1]!.result.photo[0]?.file_unique_id,
+    );
+    expect(media[2]!.result.photo[0]?.file_unique_id).not.toBe(
+      media[0]!.result.photo[0]?.file_unique_id,
+    );
   });
 
   it("tracks explicit message IDs independently per chat", async () => {

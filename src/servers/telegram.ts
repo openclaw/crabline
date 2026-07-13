@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import path from "node:path";
 import { CrablineError } from "../core/errors.js";
@@ -26,7 +26,7 @@ import {
   validateWebhookTarget,
   type WebhookAddress,
 } from "./webhook-target.js";
-import { telegramUsernameChatId } from "./telegram-identity.js";
+import { canonicalizeTelegramUsername, telegramUsernameChatId } from "./telegram-identity.js";
 
 const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 const TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT = 5;
@@ -122,6 +122,8 @@ type TelegramServerState = {
   botId: number;
   botToken: string;
   botUsername: string;
+  chatsById: Map<number, TelegramChat>;
+  chatsByUsername: Map<string, TelegramChat>;
   closing: boolean;
   inboundAdmission: Promise<void>;
   maxPendingInboundEvents: number;
@@ -150,12 +152,15 @@ type TelegramGetUpdatesState = Pick<
   "activeUpdatePoll" | "closing" | "updates"
 >;
 
+type TelegramChat = {
+  id: number;
+  title?: string;
+  type: "channel" | "group" | "private" | "supergroup";
+  username?: string;
+};
+
 type TelegramMessage = {
-  chat: {
-    id: number;
-    title?: string;
-    type: "group" | "private" | "supergroup";
-  };
+  chat: TelegramChat;
   animation?: {
     duration: number;
     file_id: string;
@@ -373,12 +378,110 @@ function createBotUser(state: TelegramServerState) {
   };
 }
 
-function createChat(chatId: number): TelegramMessage["chat"] {
-  const type = chatId >= 0 ? "private" : String(chatId).startsWith("-100") ? "supergroup" : "group";
+function inferTelegramChatType(chatId: number): TelegramChat["type"] {
+  return chatId >= 0 ? "private" : String(chatId).startsWith("-100") ? "supergroup" : "group";
+}
+
+function createChat(chatId: number): TelegramChat {
   return {
     id: chatId,
-    type,
+    type: inferTelegramChatType(chatId),
   };
+}
+
+function telegramChatUsername(value: unknown): string | undefined {
+  const username = toStringValue(value);
+  if (!username) {
+    return undefined;
+  }
+  return canonicalizeTelegramUsername(username.startsWith("@") ? username : `@${username}`);
+}
+
+function telegramChatType(value: unknown): TelegramChat["type"] | undefined {
+  return value === "channel" || value === "group" || value === "private" || value === "supergroup"
+    ? value
+    : undefined;
+}
+
+function registerTelegramChat(state: TelegramServerState, chat: TelegramChat): void {
+  const stored = { ...chat };
+  state.chatsById.set(chat.id, stored);
+  const username = telegramChatUsername(chat.username);
+  if (username) {
+    state.chatsByUsername.set(username, stored);
+  }
+}
+
+function resolveTelegramChat(state: TelegramServerState, value: unknown): TelegramChat | undefined {
+  const stringValue = toStringValue(value);
+  if (!stringValue) {
+    return undefined;
+  }
+  if (/^-?\d+$/u.test(stringValue)) {
+    const chatId = telegramChatId(stringValue);
+    if (chatId === undefined) {
+      return undefined;
+    }
+    return state.chatsById.get(chatId) ?? createChat(chatId);
+  }
+  const username = telegramChatUsername(stringValue);
+  if (!username) {
+    return undefined;
+  }
+  const registered = state.chatsByUsername.get(username);
+  if (registered) {
+    return registered;
+  }
+  const chatId = telegramUsernameChatId(username);
+  return chatId === undefined
+    ? undefined
+    : {
+        id: chatId,
+        type: inferTelegramChatType(chatId),
+        username: username.slice(1),
+      };
+}
+
+function telegramChatFromRecord(value: unknown): TelegramChat | undefined {
+  if (!isJsonObject(value)) {
+    return undefined;
+  }
+  const id = telegramChatId(value.id);
+  const type = telegramChatType(value.type);
+  if (id === undefined || !type) {
+    return undefined;
+  }
+  const rawUsername = toStringValue(value.username);
+  const username = telegramChatUsername(rawUsername);
+  const title = toStringValue(value.title);
+  return {
+    id,
+    ...(title ? { title } : {}),
+    type,
+    ...(username && rawUsername
+      ? { username: rawUsername.startsWith("@") ? rawUsername.slice(1) : rawUsername }
+      : {}),
+  };
+}
+
+function registerTelegramUpdateChats(state: TelegramServerState, body: Record<string, unknown>) {
+  for (const field of TELEGRAM_MESSAGE_UPDATE_FIELDS) {
+    const message = body[field];
+    if (!isJsonObject(message)) {
+      continue;
+    }
+    const chat = telegramChatFromRecord(message.chat);
+    if (chat) {
+      registerTelegramChat(state, chat);
+    }
+  }
+  const callbackQuery = isJsonObject(body.callback_query) ? body.callback_query : undefined;
+  const callbackMessage =
+    callbackQuery && isJsonObject(callbackQuery.message) ? callbackQuery.message : undefined;
+  const callbackChat = telegramChatFromRecord(callbackMessage?.chat);
+  if (callbackChat) {
+    registerTelegramChat(state, callbackChat);
+  }
 }
 
 function telegramChatKey(chatId: number): string {
@@ -403,21 +506,21 @@ function createOutboundMessage(
   body: Record<string, unknown>,
   text: string,
 ): TelegramMessage | undefined {
-  const chatId = telegramChatId(body.chat_id);
-  if (chatId === undefined) {
+  const chat = resolveTelegramChat(state, body.chat_id);
+  if (!chat) {
     return undefined;
   }
   const parsedThreadId = toIntegerValue(body.message_thread_id);
   if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
-  const messageId = takeNextTelegramMessageId(state, chatId);
+  const messageId = takeNextTelegramMessageId(state, chat.id);
   if (messageId === undefined) {
     return undefined;
   }
   const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
   return {
-    chat: createChat(chatId),
+    chat,
     date: Math.floor(Date.now() / 1000),
     from: createBotUser(state),
     message_id: messageId,
@@ -432,16 +535,16 @@ function createOutboundMediaMessage(
   mediaKind: "animation" | "audio" | "document" | "photo" | "video",
   caption: string | undefined,
 ): TelegramMessage | undefined {
-  const chatId = telegramChatId(body.chat_id);
+  const chat = resolveTelegramChat(state, body.chat_id);
   const fileName = toStringValue(body[mediaKind]);
-  if (chatId === undefined || !fileName) {
+  if (!chat || !fileName) {
     return undefined;
   }
   const parsedThreadId = toIntegerValue(body.message_thread_id);
   if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
-  const messageId = takeNextTelegramMessageId(state, chatId);
+  const messageId = takeNextTelegramMessageId(state, chat.id);
   if (messageId === undefined) {
     return undefined;
   }
@@ -449,14 +552,21 @@ function createOutboundMediaMessage(
   const duration = Math.max(0, toIntegerValue(body.duration) ?? 0);
   const height = Math.max(1, toIntegerValue(body.height) ?? 1);
   const width = Math.max(1, toIntegerValue(body.width) ?? 1);
-  const chatIdentity = Buffer.from(telegramChatKey(chatId)).toString("base64url");
+  const chatIdentity = Buffer.from(telegramChatKey(chat.id)).toString("base64url");
+  const fileId = `crabline-${mediaKind}-${chatIdentity}-${messageId}`;
+  const fileUniqueId = `crabline-${mediaKind}-unique-${createHash("sha256")
+    .update(mediaKind)
+    .update("\0")
+    .update(fileName)
+    .digest("base64url")
+    .slice(0, 32)}`;
   const media = {
-    file_id: `crabline-${mediaKind}-${chatIdentity}-${messageId}`,
+    file_id: fileId,
     file_name: fileName,
-    file_unique_id: `crabline-${mediaKind}-unique-${chatIdentity}-${messageId}`,
+    file_unique_id: fileUniqueId,
   };
   return {
-    chat: createChat(chatId),
+    chat,
     date: Math.floor(Date.now() / 1000),
     from: createBotUser(state),
     ...(caption ? { caption } : {}),
@@ -489,9 +599,9 @@ function createEditedMessage(
   body: Record<string, unknown>,
   text: string,
 ): TelegramMessage | undefined {
-  const chatId = telegramChatId(body.chat_id);
+  const chat = resolveTelegramChat(state, body.chat_id);
   const messageId = toIntegerValue(body.message_id);
-  if (chatId === undefined || messageId === undefined) {
+  if (!chat || messageId === undefined) {
     return undefined;
   }
   const parsedThreadId = toIntegerValue(body.message_thread_id);
@@ -500,7 +610,7 @@ function createEditedMessage(
   }
   const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
   return {
-    chat: createChat(chatId),
+    chat,
     date: Math.floor(Date.now() / 1000),
     from: createBotUser(state),
     message_id: messageId,
@@ -513,10 +623,10 @@ function createInboundUpdate(
   state: TelegramServerState,
   body: Record<string, unknown>,
 ): TelegramUpdate | undefined {
-  const chatId = telegramChatId(body.chatId ?? body.chat_id);
+  const chat = resolveTelegramChat(state, body.chatId ?? body.chat_id);
   const text = body.text;
   if (
-    chatId === undefined ||
+    !chat ||
     typeof text !== "string" ||
     text.length < 1 ||
     text.length > TELEGRAM_MAX_TEXT_LENGTH
@@ -533,7 +643,9 @@ function createInboundUpdate(
   const fromUsername = toStringValue(body.fromUsername ?? body.from_username);
   const messageId = toIntegerValue(messageIdValue);
   const updateId = toIntegerValue(updateIdValue);
+  const explicitChatType = telegramChatType(body.chatType ?? body.chat_type);
   if (
+    ((body.chatType !== undefined || body.chat_type !== undefined) && !explicitChatType) ||
     (fromIdValue !== undefined && fromId === undefined) ||
     (threadIdValue !== undefined && parsedThreadId === undefined) ||
     (messageIdValue !== undefined && messageId === undefined) ||
@@ -547,7 +659,7 @@ function createInboundUpdate(
   }
   return {
     message: {
-      chat: createChat(chatId),
+      chat: explicitChatType ? { ...chat, type: explicitChatType } : chat,
       date: Math.floor(Date.now() / 1000),
       from: {
         first_name: toStringValue(body.fromName ?? body.from_name) ?? "QA User",
@@ -555,7 +667,7 @@ function createInboundUpdate(
         is_bot: false,
         ...(fromUsername ? { username: fromUsername } : {}),
       },
-      message_id: messageId ?? nextTelegramMessageId(state, chatId),
+      message_id: messageId ?? nextTelegramMessageId(state, chat.id),
       ...(entities && entities.length > 0 ? { entities } : {}),
       ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
       text,
@@ -910,7 +1022,10 @@ async function handleTelegramAdminInbound(params: {
       referencedTelegramMessageIdValues(params.body),
       { allowZero: true },
     );
-    const topLevelChatId = telegramChatId(params.body.chatId ?? params.body.chat_id);
+    const topLevelChatId = resolveTelegramChat(
+      params.state,
+      params.body.chatId ?? params.body.chat_id,
+    )?.id;
     const messageChatId =
       explicitMessageChatId === false ? undefined : (explicitMessageChatId ?? topLevelChatId);
     const messageChatKey = messageChatId === undefined ? undefined : telegramChatKey(messageChatId);
@@ -964,6 +1079,7 @@ async function handleTelegramAdminInbound(params: {
         if (explicitUpdateId.present) {
           params.state.nextUpdateId = explicitUpdateId.value + 1;
         }
+        registerTelegramUpdateChats(params.state, params.body);
         return jsonResponse({ ok: true });
       }
       return telegramError("Bad Request: chatId and text are required");
@@ -1010,6 +1126,7 @@ async function handleTelegramAdminInbound(params: {
       }
       throw error;
     }
+    registerTelegramChat(params.state, update.message.chat);
     params.state.updates.push(update);
     params.state.updates.sort((left, right) => left.update_id - right.update_id);
     if (params.state.webhook) {
@@ -1422,11 +1539,11 @@ async function handleTelegramApi(params: {
         url: params.state.webhook?.url ?? "",
       });
     case "createforumtopic": {
-      const chatId = telegramChatId(params.body.chat_id);
-      if (chatId === undefined) {
+      const chat = resolveTelegramChat(params.state, params.body.chat_id);
+      if (!chat) {
         return telegramError("Bad Request: chat_id is required");
       }
-      const messageThreadId = takeNextTelegramMessageId(params.state, chatId);
+      const messageThreadId = takeNextTelegramMessageId(params.state, chat.id);
       if (messageThreadId === undefined) {
         return telegramError("Bad Request: generated ID space is exhausted");
       }
@@ -1457,11 +1574,8 @@ async function handleTelegramApi(params: {
       if (text instanceof Response) {
         return text;
       }
-      const chatId = telegramChatId(params.body.chat_id);
-      if (
-        chatId !== undefined &&
-        nextTelegramMessageId(params.state, chatId) >= Number.MAX_SAFE_INTEGER
-      ) {
+      const chat = resolveTelegramChat(params.state, params.body.chat_id);
+      if (chat && nextTelegramMessageId(params.state, chat.id) >= Number.MAX_SAFE_INTEGER) {
         return telegramError("Bad Request: generated ID space is exhausted");
       }
       const message = createOutboundMessage(params.state, params.body, text!);
@@ -1487,11 +1601,8 @@ async function handleTelegramApi(params: {
       if (caption instanceof Response) {
         return caption;
       }
-      const chatId = telegramChatId(params.body.chat_id);
-      if (
-        chatId !== undefined &&
-        nextTelegramMessageId(params.state, chatId) >= Number.MAX_SAFE_INTEGER
-      ) {
+      const chat = resolveTelegramChat(params.state, params.body.chat_id);
+      if (chat && nextTelegramMessageId(params.state, chat.id) >= Number.MAX_SAFE_INTEGER) {
         return telegramError("Bad Request: generated ID space is exhausted");
       }
       const message = createOutboundMediaMessage(params.state, params.body, mediaKind, caption);
@@ -1760,6 +1871,8 @@ export async function startTelegramServer(
         ? "424242:crabline-telegram-token"
         : `${botId}:${randomBytes(26).toString("base64url")}`),
     botUsername: params.botUsername ?? "crabline_bot",
+    chatsById: new Map(),
+    chatsByUsername: new Map(),
     inboundAdmission: Promise.resolve(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessageIds: new Map(),
