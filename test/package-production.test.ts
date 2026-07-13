@@ -406,6 +406,15 @@ describe("production package", () => {
     }
   });
 
+  it("runs autoreview Python tests in the verify gate", async () => {
+    const pkg = JSON.parse(await fs.readFile("package.json", "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(pkg.scripts?.["test:autoreview"]).toBe("node tools/run-autoreview-tests.mjs");
+    expect(pkg.scripts?.verify).toContain("pnpm test:autoreview");
+  });
+
   it("documents source-checkout and user-supplied script bridge commands", async () => {
     const root = process.cwd();
     const [readme, channelSetup] = await Promise.all([
