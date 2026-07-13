@@ -588,6 +588,98 @@ describe("signal local provider server", () => {
     expect(generatedBody.event.envelope.timestamp).toBeGreaterThan(rpcBody.result.timestamp);
   });
 
+  it("does not commit or consume a send timestamp on definite recorder failure", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const blockedDirectory = path.join(directory, "blocked");
+    await fs.writeFile(blockedDirectory, "not a directory");
+    const now = 1_700_000_000_000;
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
+    const server = await startSignalServer({
+      recorderPath: path.join(blockedDirectory, "signal.jsonl"),
+    });
+    dateNow.mockRestore();
+    servers.push(server);
+    const send = (id: string) =>
+      fetch(server.manifest.endpoints.rpcUrl, {
+        body: JSON.stringify({
+          id,
+          jsonrpc: "2.0",
+          method: "send",
+          params: { message: id, recipient: "+15551234567" },
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+    const failed = await send("failed");
+    expect(failed.status).toBe(500);
+    await expect(failed.json()).resolves.toEqual({
+      error: "internal server error",
+      ok: false,
+    });
+
+    await fs.rm(blockedDirectory);
+    await fs.mkdir(blockedDirectory);
+    const retried = await send("retried");
+    await expect(retried.json()).resolves.toEqual({
+      id: "retried",
+      jsonrpc: "2.0",
+      result: { timestamp: now },
+    });
+    const records = (await fs.readFile(path.join(blockedDirectory, "signal.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { body: { id: string } });
+    expect(records.map((record) => record.body.id)).toEqual(["retried"]);
+  });
+
+  it("serializes concurrent send timestamp commits", async () => {
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let observeFirst!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      observeFirst = resolve;
+    });
+    let acceptedEvents = 0;
+    const now = 1_700_000_000_000;
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
+    const server = await startSignalServer({
+      async onEvent(event) {
+        if ((event as { accepted?: boolean }).accepted !== true || acceptedEvents++ !== 0) {
+          return;
+        }
+        observeFirst();
+        await firstBlocked;
+      },
+    });
+    dateNow.mockRestore();
+    servers.push(server);
+    const send = (id: string) =>
+      fetch(server.manifest.endpoints.rpcUrl, {
+        body: JSON.stringify({
+          id,
+          jsonrpc: "2.0",
+          method: "send",
+          params: { message: id, recipient: "+15551234567" },
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }).then((response) => response.json() as Promise<{ result: { timestamp: number } }>);
+
+    const first = send("first");
+    await firstStarted;
+    const second = send("second");
+    releaseFirst();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ result: { timestamp: now } }),
+      expect.objectContaining({ result: { timestamp: now + 1 } }),
+    ]);
+  });
+
   it("stops timestamp allocation before safe-integer precision is exhausted", async () => {
     const server = await startSignalServer({ adminToken: "admin" });
     servers.push(server);
@@ -1293,7 +1385,7 @@ describe("signal local provider server", () => {
     });
   });
 
-  it("preserves accepted RPC success when recording callbacks fail", async () => {
+  it("preserves accepted RPC success when recorder publication is explicit", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const recorderPath = path.join(directory, "signal-committed.jsonl");

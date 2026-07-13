@@ -22,6 +22,7 @@ import {
 import {
   recordCommittedServerEvent,
   recordServerEvent,
+  ServerRecorderCommittedError,
   type ServerEventObserver,
 } from "./recorder.js";
 import { resolveMaxPendingInboundEvents } from "./pending-events.js";
@@ -38,6 +39,7 @@ type SignalServerState = {
   onEvent: ServerEventObserver | undefined;
   pendingEventBytes: number;
   pendingEvents: SignalSseChunk[];
+  pendingRpcRequests: Promise<void>;
   pendingSseClients: number;
   recorderPath: string;
 };
@@ -58,11 +60,18 @@ const DEFAULT_MAX_SIGNAL_SSE_CLIENTS = 32;
 const MAX_SIGNAL_SSE_BUFFER_BYTES = 2 * 1024 * 1024;
 const SIGNAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 type SignalSseWriteResult = "accepted" | "queued" | "rejected";
-type SignalRpcResult = {
-  accepted: boolean;
-  record: boolean;
-  response: Response;
-};
+type SignalRpcResult =
+  | {
+      accepted: true;
+      record: true;
+      response: Response;
+      timestamp: number;
+    }
+  | {
+      accepted: false;
+      record: boolean;
+      response: Response;
+    };
 type SignalRecorderEvent = ServerRequestEvent & {
   accepted?: boolean | undefined;
 };
@@ -506,13 +515,13 @@ async function handleRpc(params: {
           : rpcError(-32603, "Timestamp capacity exhausted", id),
       };
     }
-    params.state.nextTimestamp = timestamp + 1;
     return {
       accepted: true,
       record: true,
       response: notification
         ? new Response(null, { status: 204 })
         : rpcResponse(id, method === "sendTyping" ? {} : { timestamp }),
+      timestamp,
     };
   }
   return {
@@ -612,6 +621,47 @@ function validSignalRpcParams(method: string, value: unknown): boolean {
     );
   }
   return method === "sendTyping" && hasTypingRecipients(value);
+}
+
+async function processSignalRpc(params: {
+  body: Record<string, unknown>;
+  state: SignalServerState;
+  url: URL;
+}): Promise<Response> {
+  const run = params.state.pendingRpcRequests
+    .catch(() => {})
+    .then(async () => {
+      const rpc = await handleRpc({ body: params.body, state: params.state });
+      if (rpc.record) {
+        const event: SignalRecorderEvent = {
+          accepted: rpc.accepted,
+          at: new Date().toISOString(),
+          body: params.body,
+          method: "POST",
+          path: params.url.pathname,
+          query: queryRecord(params.url),
+          type: "api",
+        };
+        if (rpc.accepted) {
+          try {
+            await appendEvent(params.state, event);
+          } catch (error) {
+            if (!(error instanceof ServerRecorderCommittedError)) {
+              throw error;
+            }
+          }
+          params.state.nextTimestamp = Math.max(params.state.nextTimestamp, rpc.timestamp + 1);
+        } else {
+          await appendEvent(params.state, event, rpc.response.status === 204);
+        }
+      }
+      return rpc.response;
+    });
+  params.state.pendingRpcRequests = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 function hasSignalJsonContentType(request: IncomingMessage): boolean {
@@ -718,20 +768,7 @@ async function handleRequest(params: {
         await writeResponse(params.response, rpcError(-32600, "Invalid Request"));
         return;
       }
-      const rpc = await handleRpc({ body, state: params.state });
-      if (rpc.record) {
-        const event: SignalRecorderEvent = {
-          accepted: rpc.accepted,
-          at: new Date().toISOString(),
-          body,
-          method: "POST",
-          path: url.pathname,
-          query: queryRecord(url),
-          type: "api",
-        };
-        await appendEvent(params.state, event, rpc.accepted || rpc.response.status === 204);
-      }
-      fetchResponse = rpc.response;
+      fetchResponse = await processSignalRpc({ body, state: params.state, url });
     }
   } else {
     fetchResponse = new Response("not found", { status: 404 });
@@ -822,6 +859,7 @@ export async function startSignalServer(
     onEvent: params.onEvent,
     pendingEventBytes: 0,
     pendingEvents: [],
+    pendingRpcRequests: Promise.resolve(),
     pendingSseClients: 0,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "signal.jsonl"),
   };
