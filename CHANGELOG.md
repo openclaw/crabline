@@ -4,6 +4,7 @@
 
 - Bound shared JSON ingress, reject non-object payloads precisely, and strictly normalize loopback IP addresses.
 - Harden WhatsApp send evidence, direct-JID correlation, cursor and cleanup races, and cleartext listener exposure.
+- Revalidate npm package version, integrity, and provenance after every release publication outcome.
 - Protect pnpm install-script policy and enforce immutable action pins across reusable workflows and composite actions.
 - Stop shipping a non-runnable OpenClaw script fixture and clarify source-checkout CLI invocation.
 - Bind npm and GitHub release mutations to the revalidated tag commit and fail closed on release lookup errors.

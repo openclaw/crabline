@@ -287,12 +287,19 @@ jobs:
           PACKAGE_TARBALL="${tarballs[0]}"
 
           check_existing_package() {
-            local actual_integrity actual_provenance
+            local actual_integrity actual_provenance actual_version
             if ! actual_integrity="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity 2>/dev/null)"; then
+              return 1
+            fi
+            if ! actual_version="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version 2>/dev/null)"; then
               return 1
             fi
             if ! actual_provenance="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.attestations.provenance.predicateType 2>/dev/null)"; then
               echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION is missing npm provenance."
+              return 2
+            fi
+            if [[ "$actual_version" != "$RELEASE_VERSION" ]]; then
+              echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION reports version $actual_version."
               return 2
             fi
             if [[ "$actual_integrity" != "$PACKAGE_INTEGRITY" ]]; then
@@ -304,6 +311,22 @@ jobs:
               return 2
             fi
             return 0
+          }
+
+          verify_published_package() {
+            local delay existing_status
+            for delay in 2 4 8 16; do
+              sleep "$delay"
+              if check_existing_package; then
+                return 0
+              else
+                existing_status=$?
+                if [[ "$existing_status" -eq 2 ]]; then
+                  return 2
+                fi
+              fi
+            done
+            return 1
           }
 
           guard_latest_version() {
@@ -338,36 +361,38 @@ jobs:
             ' "$RELEASE_VERSION" "$latest_version"
           }
 
+          publish_status=0
           if check_existing_package; then
-            echo "$PACKAGE_NAME@$RELEASE_VERSION is already published with the expected integrity."
-            exit 0
+            publication_message="$PACKAGE_NAME@$RELEASE_VERSION is already published with the expected postconditions."
           else
             existing_status=$?
             if [[ "$existing_status" -eq 2 ]]; then
               exit 1
             fi
+
+            guard_latest_version
+            if npm publish "$PACKAGE_TARBALL" --access public --provenance; then
+              publication_message="$PACKAGE_NAME@$RELEASE_VERSION was published with npm provenance."
+            else
+              publish_status=$?
+              publication_message="$PACKAGE_NAME@$RELEASE_VERSION was published despite the prior client error."
+            fi
           fi
 
-          guard_latest_version
-          if npm publish "$PACKAGE_TARBALL" --access public --provenance; then
+          if verify_published_package; then
+            echo "$publication_message"
             exit 0
           else
-            publish_status=$?
-          fi
-
-          for delay in 2 4 8 16; do
-            sleep "$delay"
-            if check_existing_package; then
-              echo "$PACKAGE_NAME@$RELEASE_VERSION was published despite the prior client error."
-              exit 0
-            else
-              existing_status=$?
-              if [[ "$existing_status" -eq 2 ]]; then
-                exit 1
-              fi
+            verification_status=$?
+            if [[ "$verification_status" -eq 2 ]]; then
+              exit 1
             fi
-          done
-          exit "$publish_status"
+          fi
+          if [[ "$publish_status" -ne 0 ]]; then
+            exit "$publish_status"
+          fi
+          echo "::error::Unable to verify published $PACKAGE_NAME@$RELEASE_VERSION after bounded retries."
+          exit 1
 
   github-release:
     needs: [verify, publish]
