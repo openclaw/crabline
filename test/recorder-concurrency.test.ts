@@ -1,6 +1,6 @@
 import path from "node:path";
 import { link, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { userInfo } from "node:os";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendRecordedInbound,
@@ -264,7 +264,7 @@ describe("recorder append serialization", () => {
       const identityLockPath = fsMocks.lock.mock.calls
         .map(([lockPath]) => String(lockPath))
         .find((lockPath) => path.basename(lockPath).startsWith("recorder-"));
-      expect(identityLockPath).toBeUndefined();
+      expect(identityLockPath).toBeDefined();
     } finally {
       await rm(recorderPath, { force: true });
     }
@@ -300,7 +300,7 @@ describe("recorder append serialization", () => {
           .find((lockPath) => path.basename(lockPath).startsWith("recorder-"));
         expect(identityLockPath).toBeDefined();
         expect(path.dirname(identityLockPath!)).toBe(
-          path.join(homedir(), ".cache", "crabline", "locks", "provider-recorder"),
+          path.join(userInfo().homedir, ".cache", "crabline", "locks", "provider-recorder"),
         );
         expect((await stat(path.dirname(identityLockPath!))).mode & 0o777).toBe(0o700);
       } finally {
