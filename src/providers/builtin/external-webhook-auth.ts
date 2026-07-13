@@ -19,7 +19,22 @@ export function requireExternalWebhookAuthentication(params: {
     ...(params.authenticatedIngressUrls ?? []),
     ...(params.webhook?.publicUrl ? [params.webhook.publicUrl] : []),
   ];
-  const externallyReachable = publicUrls.length > 0 || !hostIsLoopback;
+  const callbackUrls = publicUrls.map((publicUrl) => {
+    try {
+      const url = new URL(publicUrl);
+      return {
+        isLoopback: hostIsLoopback && isLoopbackHost(url.hostname),
+        url,
+      };
+    } catch (error) {
+      throw new CrablineError(`${params.provider} public callback URL is invalid.`, {
+        cause: error,
+        kind: "config",
+      });
+    }
+  });
+  const externallyReachable =
+    !hostIsLoopback || callbackUrls.some((callbackUrl) => !callbackUrl.isLoopback);
   if (externallyReachable && !params.authenticated) {
     throw new CrablineError(
       `${params.provider} externally reachable webhooks require ${params.requirement}.`,
@@ -36,19 +51,9 @@ export function requireExternalWebhookAuthentication(params: {
     );
   }
 
-  for (const publicUrl of publicUrls) {
-    let url: URL;
-    try {
-      url = new URL(publicUrl);
-    } catch (error) {
-      throw new CrablineError(`${params.provider} public callback URL is invalid.`, {
-        cause: error,
-        kind: "config",
-      });
-    }
-    const safeLoopbackHttp =
-      url.protocol === "http:" && hostIsLoopback && isLoopbackHost(url.hostname);
-    if (url.protocol !== "https:" && !safeLoopbackHttp) {
+  for (const callbackUrl of callbackUrls) {
+    const safeLoopbackHttp = callbackUrl.url.protocol === "http:" && callbackUrl.isLoopback;
+    if (callbackUrl.url.protocol !== "https:" && !safeLoopbackHttp) {
       throw new CrablineError(
         `${params.provider} authenticated external webhooks require HTTPS; plain HTTP is allowed only for loopback-local ingress.`,
         { kind: "config" },

@@ -60,24 +60,27 @@ describe("external webhook authentication policy", () => {
     ).toThrow(/require HTTPS/u);
   });
 
-  it("classifies malformed public callback URLs as configuration errors", () => {
-    let failure: unknown;
-    try {
-      requireExternalWebhookAuthentication({
-        ...base,
-        authenticated: true,
-        webhook: { host: "0.0.0.0", publicUrl: "not a URL" },
-      });
-    } catch (error) {
-      failure = error;
-    }
+  it.each([true, false])(
+    "classifies malformed public callback URLs as configuration errors when authenticated=%s",
+    (authenticated) => {
+      let failure: unknown;
+      try {
+        requireExternalWebhookAuthentication({
+          ...base,
+          authenticated,
+          webhook: { host: "127.0.0.1", publicUrl: "not a URL" },
+        });
+      } catch (error) {
+        failure = error;
+      }
 
-    expect(failure).toBeInstanceOf(CrablineError);
-    expect(failure).toMatchObject({
-      kind: "config",
-      message: "Example public callback URL is invalid.",
-    });
-  });
+      expect(failure).toBeInstanceOf(CrablineError);
+      expect(failure).toMatchObject({
+        kind: "config",
+        message: "Example public callback URL is invalid.",
+      });
+    },
+  );
 
   it("allows HTTPS frontends and loopback-local HTTP", () => {
     expect(() =>
@@ -127,13 +130,30 @@ describe("external webhook authentication policy", () => {
     ).not.toThrow();
   });
 
-  it("allows unauthenticated ingress only when it stays on loopback", () => {
+  it.each([
+    ["127.0.0.1", "http://127.0.0.1:8787/events"],
+    ["localhost", "http://localhost:8787/events"],
+    ["::1", "http://[::1]:8787/events"],
+  ])("allows unauthenticated loopback ingress on %s", (host, publicUrl) => {
     expect(() =>
       requireExternalWebhookAuthentication({
         ...base,
         authenticated: false,
-        webhook: { host: "localhost" },
+        webhook: { host, publicUrl },
       }),
     ).not.toThrow();
+  });
+
+  it.each([
+    ["external callback", "127.0.0.1", "https://hooks.example.test/events"],
+    ["external bind", "0.0.0.0", "http://127.0.0.1:8787/events"],
+  ])("requires authentication for %s", (_label, host, publicUrl) => {
+    expect(() =>
+      requireExternalWebhookAuthentication({
+        ...base,
+        authenticated: false,
+        webhook: { host, publicUrl },
+      }),
+    ).toThrow(/externally reachable webhooks require example\.signingSecret/u);
   });
 });
