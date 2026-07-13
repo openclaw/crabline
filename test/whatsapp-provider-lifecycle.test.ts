@@ -123,13 +123,12 @@ describe("WhatsApp provider lifecycle", () => {
         timeoutMs: 30_000,
       }),
     ).resolves.toBeNull();
-    const watching = provider
-      .watch({
-        ...context,
-        signal: controller.signal,
-        since: new Date(0).toISOString(),
-      })
-      [Symbol.asyncIterator]();
+    const stream = provider.watch({
+      ...context,
+      signal: controller.signal,
+      since: new Date(0).toISOString(),
+    });
+    const watching = stream[Symbol.asyncIterator]();
     await expect(watching.next()).resolves.toEqual({ done: true, value: undefined });
 
     expect(webhookMocks.startWebhookServer).not.toHaveBeenCalled();
