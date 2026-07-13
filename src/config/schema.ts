@@ -12,6 +12,10 @@ LOOPBACK_ADDRESSES.addAddress("::1", "ipv6");
 LOOPBACK_ADDRESSES.addSubnet("::ffff:127.0.0.0", 104, "ipv6");
 const MAX_FIXTURE_RETRIES = 10;
 const MAX_TIMER_MS = 2_147_483_647;
+const TimerMsSchema = z
+  .number()
+  .int()
+  .max(MAX_TIMER_MS, "timer duration must be at most 2147483647ms");
 export const INBOUND_AUTHORS = ["assistant", "user", "system", "any"] as const;
 export const INBOUND_STRATEGIES = ["contains", "exact", "regex"] as const;
 export const INBOUND_NONCE_MODES = ["contains", "exact", "ignore"] as const;
@@ -181,7 +185,7 @@ const ScriptCommandsSchema = z.strictObject({
 });
 
 const LoopbackConfigSchema = z.strictObject({
-  delayMs: z.number().int().min(0).max(MAX_TIMER_MS).default(25),
+  delayMs: TimerMsSchema.min(0).default(25),
 });
 
 const ScriptConfigSchema = z.strictObject({
@@ -225,7 +229,7 @@ const DiscordWebhookSchema = z.strictObject({
 const DiscordConfigSchema = z.strictObject({
   applicationId: z.string().min(1).optional(),
   botToken: z.string().min(1).optional(),
-  gatewayDurationMs: z.number().int().min(1000).default(180_000),
+  gatewayDurationMs: TimerMsSchema.min(1000).default(180_000),
   mentionRoleIds: z.array(z.string().min(1)).optional(),
   publicKey: z.string().min(1).optional(),
   recorder: DiscordRecorderSchema.default({}),
@@ -285,7 +289,7 @@ const MsTeamsConfigSchema = z.strictObject({
   appPassword: z.string().min(1).optional(),
   appTenantId: z.string().min(1).optional(),
   appType: z.enum(["MultiTenant", "SingleTenant"]).optional(),
-  dialogOpenTimeoutMs: z.number().int().min(0).optional(),
+  dialogOpenTimeoutMs: TimerMsSchema.min(0).optional(),
   federated: MsTeamsFederatedSchema.optional(),
   recorder: MsTeamsRecorderSchema.default({}),
   userName: z.string().min(1).optional(),
@@ -355,7 +359,7 @@ const TelegramLongPollingSchema = z.strictObject({
   deleteWebhook: z.boolean().optional(),
   dropPendingUpdates: z.boolean().optional(),
   limit: z.number().int().min(1).max(100).optional(),
-  retryDelayMs: z.number().int().min(0).optional(),
+  retryDelayMs: TimerMsSchema.min(0).optional(),
   timeout: z.number().int().min(0).optional(),
 });
 
@@ -425,8 +429,8 @@ const MattermostWebhookSchema = z.strictObject({
 
 const MattermostWebsocketSchema = z.strictObject({
   enabled: z.boolean().optional(),
-  maxReconnectDelayMs: z.number().int().min(0).optional(),
-  reconnectDelayMs: z.number().int().min(0).optional(),
+  maxReconnectDelayMs: TimerMsSchema.min(0).optional(),
+  reconnectDelayMs: TimerMsSchema.min(0).optional(),
 });
 
 const MattermostConfigSchema = z.strictObject({
@@ -502,7 +506,7 @@ const MatrixConfigSchema = z.strictObject({
 
 const IMessageConfigSchema = z.strictObject({
   apiKey: z.string().min(1).optional(),
-  gatewayDurationMs: z.number().int().min(1000).default(180_000),
+  gatewayDurationMs: TimerMsSchema.min(1000).default(180_000),
   local: z.boolean().optional(),
   recorder: z.strictObject({ path: z.string().min(1).optional() }).default({}),
   serverUrl: HttpUrlSchema.optional(),
@@ -717,7 +721,7 @@ export const FixtureSchema = z.strictObject({
   retries: z.number().int().min(0).max(MAX_FIXTURE_RETRIES).default(0),
   tags: z.array(z.string().min(1)).default([]),
   target: TargetSchema,
-  timeoutMs: z.number().int().min(100).max(MAX_TIMER_MS).default(30_000),
+  timeoutMs: TimerMsSchema.min(100).default(30_000),
 });
 
 const MANIFEST_EXTENSION_KEY_PATTERN = /^x-[a-z0-9][a-z0-9._-]*$/u;
