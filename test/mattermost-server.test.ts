@@ -189,6 +189,10 @@ describe("Mattermost local provider server", () => {
         "channelId must be a 26-character Mattermost ID",
       ],
       [
+        { channelId: `${CHANNEL_ID}\n`, senderId: USER_ID, text: "invalid channel terminator" },
+        "channelId must be a 26-character Mattermost ID",
+      ],
+      [
         { channelId: CHANNEL_ID, senderId: "short", text: "invalid sender" },
         "senderId must be a 26-character Mattermost ID",
       ],

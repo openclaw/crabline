@@ -33,9 +33,12 @@ const TELEGRAM_WEBHOOK_RETRY_BASE_MS = 100;
 const TELEGRAM_WEBHOOK_DELIVERY_TIMEOUT_MS = 3_000;
 const MAX_ACTIVE_TELEGRAM_WEBHOOK_VALIDATIONS = 8;
 const TELEGRAM_CHAT_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{3,31}$/u;
-const TELEGRAM_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u;
+const TELEGRAM_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{1,256}(?![\s\S])/u;
 const TELEGRAM_MAX_TEXT_LENGTH = 4096;
 const TELEGRAM_MAX_CAPTION_LENGTH = 1024;
+const TELEGRAM_HTML_TAG_PATTERN =
+  /<\/?(?:a|b|blockquote|code|del|em|i|ins|pre|s|span|strike|strong|tg-emoji|tg-spoiler|tg-time|u)(?:\s+[^<>]*)?>/giu;
+const TELEGRAM_HTML_ENTITY_PATTERN = /&(?:#\d+|#x[\da-f]+|amp|gt|lt|quot);/giu;
 const TELEGRAM_SEND_METHODS = new Set([
   "sendanimation",
   "sendaudio",
@@ -718,28 +721,116 @@ function readTelegramTextField(
   if (typeof value !== "string") {
     return telegramError(`Bad Request: ${field} must be a string`);
   }
-  if (options.required && value.length === 0) {
+  const parsedLength = telegramTextLength(value, options.parseMode);
+  if (options.required && parsedLength === 0) {
     return telegramError(`Bad Request: ${field} must not be empty`);
   }
   const maxLength = field === "text" ? TELEGRAM_MAX_TEXT_LENGTH : TELEGRAM_MAX_CAPTION_LENGTH;
-  if (telegramTextLength(value, options.parseMode) > maxLength) {
+  if (parsedLength > maxLength) {
     return telegramError(`Bad Request: ${field} is too long`);
   }
   return value;
 }
 
 function telegramTextLength(value: string, parseMode: unknown): number {
-  if (parseMode !== "MarkdownV2") {
-    return value.length;
+  const normalizedParseMode = typeof parseMode === "string" ? parseMode.toLowerCase() : undefined;
+  if (normalizedParseMode === "html") {
+    return telegramHtmlText(value).length;
   }
-  let length = 0;
+  if (normalizedParseMode === "markdown" || normalizedParseMode === "markdownv2") {
+    return telegramMarkdownText(value, normalizedParseMode === "markdownv2").length;
+  }
+  return value.length;
+}
+
+function telegramHtmlText(value: string): string {
+  return value
+    .replace(TELEGRAM_HTML_TAG_PATTERN, "")
+    .replace(TELEGRAM_HTML_ENTITY_PATTERN, (entity) => {
+      const normalized = entity.toLowerCase();
+      if (normalized === "&amp;") {
+        return "&";
+      }
+      if (normalized === "&gt;") {
+        return ">";
+      }
+      if (normalized === "&lt;") {
+        return "<";
+      }
+      if (normalized === "&quot;") {
+        return '"';
+      }
+      const radix = normalized.startsWith("&#x") ? 16 : 10;
+      const digits = normalized.slice(radix === 16 ? 3 : 2, -1);
+      const codePoint = Number.parseInt(digits, radix);
+      return Number.isSafeInteger(codePoint) && codePoint <= 0x10ffff
+        ? String.fromCodePoint(codePoint)
+        : entity;
+    });
+}
+
+function protectTelegramMarkdownEscapes(value: string, versionTwo: boolean): string {
+  let protectedText = "";
   for (let index = 0; index < value.length; index += 1) {
-    if (value[index] === "\\" && index + 1 < value.length) {
+    const character = value[index]!;
+    const escapedCharacter = value[index + 1];
+    if (
+      character === "\\" &&
+      escapedCharacter !== undefined &&
+      (versionTwo
+        ? escapedCharacter.charCodeAt(0) >= 1 && escapedCharacter.charCodeAt(0) <= 0x7e
+        : "*_[]`".includes(escapedCharacter))
+    ) {
+      protectedText += "\0";
       index += 1;
+      continue;
     }
-    length += 1;
+    protectedText += character;
   }
-  return length;
+  return protectedText;
+}
+
+function telegramMarkdownLiteralMask(value: string): string {
+  return "\0".repeat(value.length);
+}
+
+function stripTelegramMarkdownExpandableMarker(line: string): string {
+  if (!line.endsWith("||")) {
+    return line;
+  }
+  let markers = 0;
+  for (let index = line.indexOf("||"); index >= 0; index = line.indexOf("||", index + 2)) {
+    markers += 1;
+  }
+  return markers % 2 === 1 ? line.slice(0, -2) : line;
+}
+
+function telegramMarkdownText(value: string, versionTwo: boolean): string {
+  let parsed = protectTelegramMarkdownEscapes(value, versionTwo)
+    .replace(/```(?:[^\n]*\n)?([\s\S]*?)```/gu, (_match, content: string) =>
+      telegramMarkdownLiteralMask(content),
+    )
+    .replace(/`([^`\n]*)`/gu, (_match, content: string) => telegramMarkdownLiteralMask(content))
+    .replace(
+      /!\[([^\]\n]+)\]\(tg:\/\/(?:emoji\?id=\d+|time\?unix=-?\d+(?:&format=[rwdDtT]+)?)\)/gu,
+      "$1",
+    )
+    .replace(/\[([^\]\n]+)\]\((?:\\.|[^)\n])*\)/gu, "$1");
+  if (versionTwo) {
+    parsed = parsed
+      .replace(/^(?:\*\*)?>[^\n]*$/gmu, stripTelegramMarkdownExpandableMarker)
+      .replace(/^\*\*(?=>)/gmu, "")
+      .replace(/^>/gmu, "")
+      .replace(/\|\|([\s\S]*?)\|\|/gu, "$1")
+      .replace(/__([\s\S]*?)__/gu, "$1")
+      .replace(/~([\s\S]*?)~/gu, "$1");
+  }
+  let previous: string;
+  do {
+    previous = parsed;
+    parsed = parsed.replace(/\*([\s\S]*?)\*/gu, "$1").replace(/_([\s\S]*?)_/gu, "$1");
+  } while (parsed !== previous);
+  return parsed;
 }
 
 function hasValidExplicitTelegramIdentities(body: Record<string, unknown>): boolean {

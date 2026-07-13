@@ -565,6 +565,18 @@ describe("telegram local provider server", () => {
       });
       expect(response.status).toBe(400);
     }
+    for (const [parseMode, text] of [
+      ["HTML", "<b></b>"],
+      ["Markdown", "**"],
+      ["MarkdownV2", "**"],
+    ]) {
+      const response = await fetch(`${apiRoot}/sendMessage`, {
+        body: JSON.stringify({ chat_id: 42, parse_mode: parseMode, text }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(response.status).toBe(400);
+    }
 
     for (const caption of [123, "x".repeat(1025)]) {
       const response = await fetch(`${apiRoot}/sendPhoto`, {
@@ -597,6 +609,40 @@ describe("telegram local provider server", () => {
         })
       ).status,
     ).toBe(200);
+    for (const text of [
+      `\`${"*".repeat(4096)}\``,
+      `\`\`\`\n${"*".repeat(4096)}\`\`\``,
+      `>${"x".repeat(4096)}`,
+      `>${"x".repeat(4096)}||`,
+      `**>${"x".repeat(4096)}||`,
+      `>||${"x".repeat(4096)}||`,
+      `>||${"x".repeat(4096)}||||`,
+    ]) {
+      expect(
+        (
+          await fetch(`${apiRoot}/sendMessage`, {
+            body: JSON.stringify({ chat_id: 42, parse_mode: "MarkdownV2", text }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          })
+        ).status,
+      ).toBe(200);
+    }
+    for (const text of [
+      `\`${"*".repeat(4097)}\``,
+      `\`\`\`\n${"*".repeat(4097)}\`\`\``,
+      `> ${"x".repeat(4096)}`,
+    ]) {
+      expect(
+        (
+          await fetch(`${apiRoot}/sendMessage`, {
+            body: JSON.stringify({ chat_id: 42, parse_mode: "MarkdownV2", text }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          })
+        ).status,
+      ).toBe(400);
+    }
     expect(
       (
         await fetch(`${apiRoot}/sendMessage`, {
@@ -610,6 +656,95 @@ describe("telegram local provider server", () => {
         })
       ).status,
     ).toBe(200);
+    expect(
+      (
+        await fetch(`${apiRoot}/sendMessage`, {
+          body: JSON.stringify({
+            chat_id: 42,
+            parse_mode: "MarkdownV2",
+            text: String.raw`\*`.repeat(4097),
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await fetch(`${apiRoot}/sendMessage`, {
+          body: JSON.stringify({
+            chat_id: 42,
+            parse_mode: "MarkdownV2",
+            text: "![x](tg://emoji?id=1)".repeat(4096),
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await fetch(`${apiRoot}/sendMessage`, {
+          body: JSON.stringify({
+            chat_id: 42,
+            parse_mode: "MarkdownV2",
+            text: "![x](tg://emoji?id=1)".repeat(4097),
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+      ).status,
+    ).toBe(400);
+    for (const [parseMode, text] of [
+      ["HTML", `<b>${"x".repeat(4096)}</b>`],
+      ["html", `<b>${"x".repeat(4096)}</b>`],
+      ["HTML", `<tg-time unix="1647531900">${"x".repeat(4096)}</tg-time>`],
+      ["Markdown", `*${"x".repeat(4096)}*`],
+      ["MARKDOWN", `*${"x".repeat(4096)}*`],
+      ["MarkdownV2", `*${"x".repeat(4096)}*`],
+      ["mArKdOwNv2", `*${"x".repeat(4096)}*`],
+      ["MarkdownV2", `![${"x".repeat(4096)}](tg://time?unix=1647531900&format=wDT)`],
+    ]) {
+      expect(
+        (
+          await fetch(`${apiRoot}/sendMessage`, {
+            body: JSON.stringify({ chat_id: 42, parse_mode: parseMode, text }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          })
+        ).status,
+      ).toBe(200);
+    }
+    for (const [parseMode, text] of [
+      ["HTML", "x".repeat(4097)],
+      ["Markdown", `~${"x".repeat(4095)}~`],
+      ["MarkdownV2", `*${"x".repeat(4097)}*`],
+      ["MarkdownV2", `${"x".repeat(4095)}\\${String.fromCharCode(0x7f)}`],
+    ]) {
+      expect(
+        (
+          await fetch(`${apiRoot}/sendMessage`, {
+            body: JSON.stringify({ chat_id: 42, parse_mode: parseMode, text }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          })
+        ).status,
+      ).toBe(400);
+    }
+    expect(
+      (
+        await fetch(`${apiRoot}/sendPhoto`, {
+          body: JSON.stringify({
+            caption: `<b>${"x".repeat(1025)}</b>`,
+            chat_id: 42,
+            parse_mode: "HTML",
+            photo: "fixture.png",
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+      ).status,
+    ).toBe(400);
   });
 
   it("rejects control characters in webhook secrets", async () => {
@@ -620,6 +755,7 @@ describe("telegram local provider server", () => {
 
     for (const invalidValue of [
       "value\r\nunsafe",
+      "value\n",
       `value${String.fromCharCode(0)}unsafe`,
       `value${String.fromCharCode(1)}unsafe`,
     ]) {
