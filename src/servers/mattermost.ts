@@ -484,6 +484,7 @@ function handleAdminInbound(params: {
   if (!previousChannel && params.state.channels.size >= params.state.maxCommittedChannels) {
     return committedStateFullResponse("channels");
   }
+  // buildNextPost always allocates a fresh ID, including against a synthesized root.
   const requiredPostSlots = 1 + (rootId && !existingRoot ? 1 : 0);
   if (params.state.posts.size + requiredPostSlots > params.state.maxCommittedPosts) {
     return committedStateFullResponse("posts");
