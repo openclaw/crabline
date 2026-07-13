@@ -148,10 +148,40 @@ function createMessageId(platform: ProviderPlatform) {
   return `${platform}-mock-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function unsafeGeneratedRecorderProviderId(providerId: string): boolean {
+  return (
+    path.posix.parse(providerId).root !== "" ||
+    path.win32.parse(providerId).root !== "" ||
+    providerId.split(/[\\/]/u).includes("..")
+  );
+}
+
+export function resolveGeneratedLocalMockRecorderPath(providerId: string, suffix = ""): string {
+  const recorderDirectory = path.resolve(".crabline", "recorders");
+  if (unsafeGeneratedRecorderProviderId(providerId)) {
+    throw new CrablineError("Provider ID cannot contain absolute or parent-directory paths.", {
+      kind: "config",
+    });
+  }
+
+  const recorderPath = path.resolve(recorderDirectory, `${providerId}${suffix}.jsonl`);
+  const relativePath = path.relative(recorderDirectory, recorderPath);
+  if (
+    relativePath === ".." ||
+    relativePath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativePath)
+  ) {
+    throw new CrablineError("Generated provider recorder path escapes its directory.", {
+      kind: "config",
+    });
+  }
+  return recorderPath;
+}
+
 function toRecorderPath(providerId: string, configuredPath?: string): string {
   return configuredPath
     ? path.resolve(configuredPath)
-    : path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
+    : resolveGeneratedLocalMockRecorderPath(providerId);
 }
 
 function authorFromPayload(payload: MockWebhookPayload): InboundEnvelope["author"] {

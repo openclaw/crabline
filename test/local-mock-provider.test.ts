@@ -98,6 +98,63 @@ function createContext(config: ProviderConfig): ProviderContext {
 }
 
 describe("local mock provider", () => {
+  it.each([
+    ["absolute", path.resolve("escaped-provider")],
+    ["parent traversal", "../escaped-provider"],
+    ["Windows parent traversal", "..\\escaped-provider"],
+    ["Windows drive path", "C:\\escaped-provider"],
+  ])("rejects %s provider IDs before generating recorder paths", (_label, providerId) => {
+    const config = createConfig();
+    const createLocalMock = () =>
+      new LocalMockProviderAdapter({
+        codec: createGenericLocalMockTargetCodec("slack"),
+        config,
+        id: providerId,
+        options: {
+          defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+          endpointLabel: "events endpoint",
+          platform: "slack",
+        },
+      });
+    const loopbackConfig: ProviderConfig = {
+      adapter: "loopback",
+      capabilities: ["probe", "send"],
+      env: [],
+      loopback: { delayMs: 0 },
+      platform: "loopback",
+      status: "active",
+    };
+
+    expect(createLocalMock).toThrow(
+      /Provider ID cannot contain absolute or parent-directory paths/u,
+    );
+    expect(() => new LoopbackProviderAdapter(providerId, loopbackConfig, "crabline")).toThrow(
+      /Provider ID cannot contain absolute or parent-directory paths/u,
+    );
+    expect(webhookMocks.startWebhookServer).not.toHaveBeenCalled();
+  });
+
+  it("preserves the generated recorder path for safe provider IDs", async () => {
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+      },
+    });
+    providers.push(provider);
+
+    await expect(provider.probe(createContext(config))).resolves.toMatchObject({
+      details: expect.arrayContaining([
+        `recorder path ${path.resolve(".crabline", "recorders", "provider-a.jsonl")}`,
+      ]),
+    });
+  });
+
   it("keeps nested thread precedence with a top-level fallback", () => {
     const threadRule = {
       example: "thread-1",
@@ -1314,5 +1371,17 @@ describe("local mock provider", () => {
     expect(firstRecorder).toBeDefined();
     expect(secondRecorder).toBeDefined();
     expect(firstRecorder).not.toBe(secondRecorder);
+    expect(firstRecorder).toMatch(
+      new RegExp(
+        `^recorder path ${path.resolve(".crabline", "recorders", "loopback-").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}[\\da-f-]+\\.jsonl$`,
+        "u",
+      ),
+    );
+    expect(secondRecorder).toMatch(
+      new RegExp(
+        `^recorder path ${path.resolve(".crabline", "recorders", "loopback-").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}[\\da-f-]+\\.jsonl$`,
+        "u",
+      ),
+    );
   });
 });
