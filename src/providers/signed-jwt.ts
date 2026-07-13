@@ -160,7 +160,12 @@ export function createCachedJwtKeyResolver<T>(params: {
   const refreshCooldownMs = params.refreshCooldownMs ?? DEFAULT_UNKNOWN_KEY_COOLDOWN_MS;
   const timeoutMs = params.timeoutMs ?? DEFAULT_KEY_FETCH_TIMEOUT_MS;
   let cached: RemoteJwtKeySet<T> | undefined;
-  let fetchInFlight: Promise<RemoteJwtKeySet<T>> | undefined;
+  let fetchInFlight:
+    | {
+        controller: AbortController;
+        promise: Promise<RemoteJwtKeySet<T>>;
+      }
+    | undefined;
   let refreshInFlight: Promise<RemoteJwtKeySet<T>> | undefined;
   let refreshCooldownUntil = 0;
   let fetchFailureCooldownUntil = 0;
@@ -184,46 +189,58 @@ export function createCachedJwtKeyResolver<T>(params: {
   };
 
   const fetchKeys = async (): Promise<RemoteJwtKeySet<T>> => {
-    if (fetchInFlight) {
-      return await fetchInFlight;
+    let inFlight = fetchInFlight;
+    if (!inFlight) {
+      if (fetchFailureCooldownUntil > now()) {
+        throw fetchFailureError;
+      }
+      const controller = new AbortController();
+      let keyFetch!: Promise<RemoteJwtKeySet<T>>;
+      keyFetch = Promise.resolve()
+        .then(() => params.fetchKeys(controller.signal))
+        .then(
+          (keySet) => {
+            cached = keySet.expiresAt > now() ? keySet : undefined;
+            fetchFailureCooldownUntil = 0;
+            fetchFailureError = undefined;
+            for (const value of keySet.values) {
+              const keyId = params.keyId(value);
+              if (keyId) {
+                negativeKeyIds.delete(keyId);
+              }
+            }
+            return keySet;
+          },
+          (error: unknown) => {
+            fetchFailureCooldownUntil = now() + refreshCooldownMs;
+            fetchFailureError = error;
+            throw error;
+          },
+        )
+        .finally(() => {
+          if (fetchInFlight?.promise === keyFetch) {
+            fetchInFlight = undefined;
+          }
+        });
+      inFlight = { controller, promise: keyFetch };
+      fetchInFlight = inFlight;
+      void keyFetch.catch(() => {});
     }
-    if (fetchFailureCooldownUntil > now()) {
-      throw fetchFailureError;
-    }
-    const controller = new AbortController();
+
     let timeout: NodeJS.Timeout | undefined;
     const timedOut = new Promise<never>((_, reject) => {
       timeout = setTimeout(() => {
-        controller.abort();
+        inFlight.controller.abort();
         reject(new Error("JWT signing key fetch timed out."));
       }, timeoutMs);
     });
-    const keyFetch = Promise.resolve().then(() => params.fetchKeys(controller.signal));
-    fetchInFlight = Promise.race([keyFetch, timedOut])
-      .then((keySet) => {
-        cached = keySet.expiresAt > now() ? keySet : undefined;
-        fetchFailureCooldownUntil = 0;
-        fetchFailureError = undefined;
-        for (const value of keySet.values) {
-          const keyId = params.keyId(value);
-          if (keyId) {
-            negativeKeyIds.delete(keyId);
-          }
-        }
-        return keySet;
-      })
-      .catch((error: unknown) => {
-        fetchFailureCooldownUntil = now() + refreshCooldownMs;
-        fetchFailureError = error;
-        throw error;
-      })
-      .finally(() => {
-        if (timeout) {
-          clearTimeout(timeout);
-        }
-        fetchInFlight = undefined;
-      });
-    return await fetchInFlight;
+    try {
+      return await Promise.race([inFlight.promise, timedOut]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
   };
 
   return async (header: JwtHeader): Promise<T> => {
