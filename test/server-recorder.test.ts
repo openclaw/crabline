@@ -1440,4 +1440,18 @@ describe("server recorder", () => {
       }),
     ).resolves.toBeUndefined();
   });
+
+  it("does not surface serialization failure after a committed mutation", async () => {
+    const event = serverEvent("/committed-cycle");
+    (event.query as Record<string, unknown>).cycle = event;
+
+    await expect(
+      recordCommittedServerEvent({
+        event,
+        onEvent: undefined,
+        recorderPath: path.join("/tmp", "crabline-server-recorder-committed-cycle.jsonl"),
+      }),
+    ).resolves.toBeUndefined();
+    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+  });
 });
