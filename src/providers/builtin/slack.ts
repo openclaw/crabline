@@ -78,11 +78,37 @@ function slackInlineText(value: unknown): string {
   if (!isRecord(value)) {
     return "";
   }
+  if (value.type === "link" && typeof value.url === "string") {
+    return typeof value.text === "string" && value.text.length > 0 ? value.text : value.url;
+  }
+  if (value.type === "user" && typeof value.user_id === "string") {
+    return `<@${value.user_id}>`;
+  }
+  if (value.type === "channel" && typeof value.channel_id === "string") {
+    return `<#${value.channel_id}>`;
+  }
+  if (value.type === "usergroup" && typeof value.usergroup_id === "string") {
+    return `<!subteam^${value.usergroup_id}>`;
+  }
+  if (value.type === "emoji" && typeof value.name === "string") {
+    return `:${value.name}:`;
+  }
+  if (value.type === "broadcast" && typeof value.range === "string") {
+    return `<!${value.range}>`;
+  }
+  if (value.type === "date") {
+    if (typeof value.fallback === "string" && value.fallback.length > 0) {
+      return value.fallback;
+    }
+    if (
+      (typeof value.timestamp === "number" || typeof value.timestamp === "string") &&
+      typeof value.format === "string"
+    ) {
+      return `<!date^${value.timestamp}^${value.format}>`;
+    }
+  }
   if (typeof value.text === "string") {
     return value.text;
-  }
-  if (value.type === "link" && typeof value.url === "string") {
-    return value.url;
   }
   return slackInlineText(value.elements);
 }

@@ -444,6 +444,19 @@ describe("slack provider", () => {
                 {
                   elements: [
                     { text: "inline-", type: "text" },
+                    { type: "user", user_id: "U1234567890" },
+                    { text: " in ", type: "text" },
+                    { channel_id: "C1234567890", type: "channel" },
+                    { name: "wave", type: "emoji" },
+                    { range: "here", type: "broadcast" },
+                    { type: "usergroup", usergroup_id: "S1234567890" },
+                    {
+                      fallback: "Jan 1",
+                      format: "{date_short}",
+                      timestamp: 1_700_000_000,
+                      type: "date",
+                    },
+                    { text: "-", type: "text" },
                     { type: "link", url: "https://example.test/nonce" },
                     { style: { bold: true }, text: "-tail", type: "text" },
                   ],
@@ -475,7 +488,7 @@ describe("slack provider", () => {
     expect(response.status).toBe(200);
     await expect(waiting).resolves.toMatchObject({
       id: "1700000001.000202",
-      text: "inline-https://example.test/nonce-tail\nrepeat\nrepeat",
+      text: "inline-<@U1234567890> in <#C1234567890>:wave:<!here><!subteam^S1234567890>Jan 1-https://example.test/nonce-tail\nrepeat\nrepeat",
     });
   });
 
