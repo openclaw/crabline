@@ -449,6 +449,9 @@ function handleAdminInbound(params: {
   if (existingRoot && existingRoot.channel_id !== channelId) {
     return jsonResponse({ error: "Root post belongs to another channel", ok: false }, 400);
   }
+  if (existingRoot?.root_id) {
+    return jsonResponse({ error: "Root post is itself a reply", ok: false }, 400);
+  }
   const rootPost =
     rootId && !existingRoot
       ? buildPost({
@@ -608,6 +611,9 @@ async function handleApi(params: {
       }
       if (rootPost.channel_id !== channelId) {
         return mattermostError("Root post belongs to another channel", 400);
+      }
+      if (rootPost.root_id) {
+        return mattermostError("Root post is itself a reply", 400);
       }
     }
     const pendingPost = buildNextPost(state, {
