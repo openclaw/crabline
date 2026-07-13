@@ -388,6 +388,94 @@ describe("signed JWT remote key cache", () => {
     await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toThrow("timed out");
   });
 
+  it("keeps timed-out key loads shared until a late success settles", async () => {
+    vi.useFakeTimers();
+    try {
+      let fetches = 0;
+      let resolveFetch!: (keySet: { expiresAt: number; values: string[] }) => void;
+      const resolveKey = createCachedJwtKeyResolver<string>({
+        fetchKeys: async () => {
+          fetches += 1;
+          return await new Promise((resolve) => {
+            resolveFetch = resolve;
+          });
+        },
+        keyId: (value) => value,
+        now: () => 1_700_000_000_000,
+        timeoutMs: 10,
+        unknownKeyMessage: "unknown key",
+      });
+
+      const first = resolveKey({ alg: "RS256", kid: "known" }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await first).toEqual(
+        expect.objectContaining({ message: expect.stringMatching(/timed out/u) }),
+      );
+
+      const second = resolveKey({ alg: "RS256", kid: "known" });
+      expect(fetches).toBe(1);
+      resolveFetch({ expiresAt: 1_700_000_060_000, values: ["known"] });
+
+      await expect(second).resolves.toBe("known");
+      await expect(resolveKey({ alg: "RS256", kid: "known" })).resolves.toBe("known");
+      expect(fetches).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds each waiter while a timed-out key load remains unsettled", async () => {
+    vi.useFakeTimers();
+    try {
+      let fetches = 0;
+      let rejectFetch!: (error: Error) => void;
+      const resolveKey = createCachedJwtKeyResolver<string>({
+        fetchKeys: async () => {
+          fetches += 1;
+          return await new Promise((_, reject) => {
+            rejectFetch = reject;
+          });
+        },
+        keyId: (value) => value,
+        now: () => 1_700_000_000_000,
+        timeoutMs: 10,
+        unknownKeyMessage: "unknown key",
+      });
+
+      const first = resolveKey({ alg: "RS256", kid: "missing" }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await first).toEqual(
+        expect.objectContaining({ message: expect.stringMatching(/timed out/u) }),
+      );
+
+      const secondPromise = resolveKey({ alg: "RS256", kid: "missing" });
+      const second = secondPromise.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(9);
+      expect(fetches).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await second).toEqual(
+        expect.objectContaining({ message: expect.stringMatching(/timed out/u) }),
+      );
+
+      rejectFetch(new Error("late loader rejection"));
+      await vi.runAllTicks();
+      expect(fetches).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("backs off failed key fetches", async () => {
     let now = 1_700_000_000_000;
     let fetches = 0;
