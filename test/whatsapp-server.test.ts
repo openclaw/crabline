@@ -896,7 +896,7 @@ describe("whatsapp local provider server", () => {
     expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
   });
 
-  it("deduplicates accepted evidence when acknowledgement retries", async () => {
+  it("deduplicates accepted evidence across reconnect acknowledgement retries", async () => {
     const recipientJid = "15551234567@s.whatsapp.net";
     const senderJid = "15550000001@s.whatsapp.net";
     const receiver = new WhatsAppSignalBundleStore(1);
@@ -980,8 +980,9 @@ describe("whatsapp local provider server", () => {
     expect(events).toHaveLength(1);
   });
 
-  it("preserves unresolved acknowledgements when their safety limit is reached", async () => {
-    const receiver = new WhatsAppSignalBundleStore(1, 1);
+  it("recovers expired pending acknowledgement capacity without duplicate delivery", async () => {
+    let now = 0;
+    const receiver = new WhatsAppSignalBundleStore(1, 1, 2, 100, () => now);
     const firstNode: BinaryNode = {
       attrs: { id: "first", to: "15557654321@s.whatsapp.net" },
       tag: "message",
@@ -1008,8 +1009,15 @@ describe("whatsapp local provider server", () => {
     );
     expect(events).toHaveLength(1);
 
-    receiver.markMessageAcknowledged("15557654321@s.whatsapp.net", "first");
+    now = 99;
+    await expect(persist(secondNode)).rejects.toThrow(
+      "WhatsApp pending acknowledgement limit exceeded (1).",
+    );
+    now = 100;
     await expect(persist(secondNode)).resolves.toBe(true);
+    expect(events).toHaveLength(2);
+
+    await expect(persist(firstNode)).resolves.toBe(true);
     expect(events).toHaveLength(2);
   });
 

@@ -42,6 +42,7 @@ export const WHATSAPP_WEBSOCKET_SEND_TIMEOUT_MS = 5_000;
 const MAX_PENDING_WEBSOCKET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_WEBSOCKET_MESSAGES = 32;
 const MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENTS = 10_000;
+const MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENT_AGE_MS = 5 * 60 * 1_000;
 const MAX_WHATSAPP_RECENT_ACKNOWLEDGEMENTS = 10_000;
 export const MAX_WHATSAPP_WEBSOCKET_FRAGMENTS = 1_024;
 export const MAX_WHATSAPP_SIGNAL_BUNDLES = 1_024;
@@ -121,7 +122,7 @@ export class WhatsAppSignalBundleStore {
   readonly #bundles = new Map<string, MockSignalBundle>();
   readonly #lidByPhoneNumber = new Map<string, string>();
   readonly #pendingMessageAcceptances = new Map<string, Promise<void>>();
-  readonly #pendingAcknowledgements = new Set<string>();
+  readonly #pendingAcknowledgements = new Map<string, number>();
   readonly #pendingTransactions = new Map<string, Promise<void>>();
   readonly #sessions = new Map<string, Map<string, SessionRecord>>();
 
@@ -129,6 +130,8 @@ export class WhatsAppSignalBundleStore {
     private readonly maxBundles = MAX_WHATSAPP_SIGNAL_BUNDLES,
     private readonly maxPendingAcknowledgements = MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENTS,
     private readonly maxRecentAcknowledgements = MAX_WHATSAPP_RECENT_ACKNOWLEDGEMENTS,
+    private readonly maxPendingAcknowledgementAgeMs = MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENT_AGE_MS,
+    private readonly now: () => number = Date.now,
   ) {
     if (!Number.isSafeInteger(maxBundles) || maxBundles < 1) {
       throw new Error("WhatsApp maxSignalBundles must be a positive safe integer.");
@@ -138,6 +141,12 @@ export class WhatsAppSignalBundleStore {
     }
     if (!Number.isSafeInteger(maxRecentAcknowledgements) || maxRecentAcknowledgements < 1) {
       throw new Error("WhatsApp maxRecentAcknowledgements must be a positive safe integer.");
+    }
+    if (
+      !Number.isSafeInteger(maxPendingAcknowledgementAgeMs) ||
+      maxPendingAcknowledgementAgeMs < 1
+    ) {
+      throw new Error("WhatsApp maxPendingAcknowledgementAgeMs must be a positive safe integer.");
     }
   }
 
@@ -151,6 +160,7 @@ export class WhatsAppSignalBundleStore {
 
   async acceptMessageOnce(messageKey: string, operation: () => Promise<boolean>): Promise<boolean> {
     return await this.#runSerialized(this.#pendingMessageAcceptances, "messages", async () => {
+      this.#recoverExpiredPendingAcknowledgements();
       if (this.#pendingAcknowledgements.has(messageKey)) {
         return true;
       }
@@ -167,7 +177,7 @@ export class WhatsAppSignalBundleStore {
       if (!accepted) {
         return false;
       }
-      this.#pendingAcknowledgements.add(messageKey);
+      this.#pendingAcknowledgements.set(messageKey, this.now());
       return true;
     });
   }
@@ -176,16 +186,11 @@ export class WhatsAppSignalBundleStore {
     const peer = canonicalizeWhatsAppUserCorrelationJid(peerJid);
     if (peer && messageId) {
       const messageKey = `${peer}\0${messageId}`;
+      this.#recoverExpiredPendingAcknowledgements();
       if (!this.#pendingAcknowledgements.delete(messageKey)) {
         return;
       }
-      this.#acknowledgedMessageIds.set(messageKey, true);
-      if (this.#acknowledgedMessageIds.size > this.maxRecentAcknowledgements) {
-        const oldestMessageKey = this.#acknowledgedMessageIds.keys().next().value;
-        if (oldestMessageKey !== undefined) {
-          this.#acknowledgedMessageIds.delete(oldestMessageKey);
-        }
-      }
+      this.#rememberAcknowledgedMessage(messageKey);
     }
   }
 
@@ -351,6 +356,28 @@ export class WhatsAppSignalBundleStore {
     };
     this.#bundles.set(bundleKey, bundle);
     return bundle;
+  }
+
+  #recoverExpiredPendingAcknowledgements(): void {
+    const now = this.now();
+    for (const [messageKey, acceptedAt] of this.#pendingAcknowledgements) {
+      if (now - acceptedAt < this.maxPendingAcknowledgementAgeMs) {
+        continue;
+      }
+      this.#pendingAcknowledgements.delete(messageKey);
+      this.#rememberAcknowledgedMessage(messageKey);
+    }
+  }
+
+  #rememberAcknowledgedMessage(messageKey: string): void {
+    this.#acknowledgedMessageIds.delete(messageKey);
+    this.#acknowledgedMessageIds.set(messageKey, true);
+    if (this.#acknowledgedMessageIds.size > this.maxRecentAcknowledgements) {
+      const oldestMessageKey = this.#acknowledgedMessageIds.keys().next().value;
+      if (oldestMessageKey !== undefined) {
+        this.#acknowledgedMessageIds.delete(oldestMessageKey);
+      }
+    }
   }
 
   async #runTransaction<T>(key: string, operation: () => Promise<T>): Promise<T> {
