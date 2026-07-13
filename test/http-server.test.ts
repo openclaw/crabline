@@ -2,7 +2,11 @@ import { get, type IncomingMessage } from "node:http";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MAX_REQUEST_BODY_BYTES,
   drainRequestBody,
+  InvalidJsonBodyError,
+  isLoopbackHost,
+  parseRequestBody,
   parseUnknownRequestBody,
   readBody,
   readInteger,
@@ -77,6 +81,53 @@ describe("server HTTP body reader", () => {
     const arbitraryParsed = parseUnknownRequestBody(arbitrary);
     arbitrary.end("value=%7B%22ok%22%3Atrue%7D");
     await expect(arbitraryParsed).resolves.toEqual({ value: '{"ok":true}' });
+  });
+
+  it("enforces the default request limit for JSON object parsing", async () => {
+    const declared = createRequest({
+      "content-length": String(DEFAULT_MAX_REQUEST_BODY_BYTES + 1),
+      "content-type": "application/json",
+    });
+    const declaredParsed = parseRequestBody(declared);
+    await expect(declaredParsed).rejects.toBeInstanceOf(RequestBodyTooLargeError);
+    declared.end();
+
+    const streamed = createRequest({ "content-type": "application/json" });
+    const streamedParsed = parseRequestBody(streamed);
+    streamed.end(Buffer.alloc(DEFAULT_MAX_REQUEST_BODY_BYTES + 1, 0x20));
+    await expect(streamedParsed).rejects.toBeInstanceOf(RequestBodyTooLargeError);
+  });
+
+  it("classifies malformed and non-object JSON without conflating their messages", async () => {
+    const malformed = createRequest({ "content-type": "application/json" });
+    const malformedParsed = parseRequestBody(malformed);
+    malformed.end("{");
+    await expect(malformedParsed).rejects.toMatchObject({
+      message: "Request body is not valid JSON.",
+      name: "InvalidJsonBodyError",
+    });
+
+    for (const value of ["null", "[]", '"text"', "1", "true"]) {
+      const request = createRequest({ "content-type": "application/json" });
+      const parsed = parseRequestBody(request);
+      request.end(value);
+      await expect(parsed).rejects.toMatchObject({
+        message: "Request body must be a JSON object.",
+        name: "InvalidJsonBodyError",
+      });
+      await expect(parsed).rejects.toBeInstanceOf(InvalidJsonBodyError);
+    }
+  });
+
+  it.each([
+    ["127.999.1.1", false],
+    ["::ffff:127.999.1.1", false],
+    ["0:0:0:0:0:0:0:1", true],
+    ["[0:0:0:0:0:0:0:1]", true],
+    ["::ffff:127.0.0.1", true],
+    ["0:0:0:0:0:ffff:7f00:1", true],
+  ])("classifies loopback host %s strictly", (host, expected) => {
+    expect(isLoopbackHost(host)).toBe(expected);
   });
 
   it.each([

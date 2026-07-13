@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+import { BlockList, isIP } from "node:net";
 import { CrablineError } from "../core/errors.js";
 
 export type ServerRequestEvent = {
@@ -22,10 +23,14 @@ export type HttpJsonHandlerResult =
 export const ADMIN_TOKEN_HEADER = "x-crabline-admin-token";
 export const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 export const DEFAULT_SERVER_SHUTDOWN_GRACE_MS = 250;
+const LOOPBACK_ADDRESSES = new BlockList();
+LOOPBACK_ADDRESSES.addSubnet("127.0.0.0", 8, "ipv4");
+LOOPBACK_ADDRESSES.addAddress("::1", "ipv6");
+LOOPBACK_ADDRESSES.addSubnet("::ffff:127.0.0.0", 104, "ipv6");
 
 export class InvalidJsonBodyError extends Error {
-  constructor(cause: unknown) {
-    super("Request body is not valid JSON.", { cause });
+  constructor(cause: unknown, message = "Request body is not valid JSON.") {
+    super(message, { cause });
     this.name = "InvalidJsonBodyError";
   }
 }
@@ -153,10 +158,11 @@ export function isJsonMediaType(value: string): boolean {
 }
 
 export async function parseRequestBody(request: IncomingMessage): Promise<Record<string, unknown>> {
-  return (await parseUnknownRequestBody(request, Number.MAX_SAFE_INTEGER)) as Record<
-    string,
-    unknown
-  >;
+  const body = await parseUnknownRequestBody(request);
+  if (!isJsonObject(body)) {
+    throw new InvalidJsonBodyError(undefined, "Request body must be a JSON object.");
+  }
+  return body;
 }
 
 export function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -175,14 +181,17 @@ export function isLoopbackHost(host: string): boolean {
   const normalized = host
     .trim()
     .replace(/^\[(.*)\]$/u, "$1")
-    .toLowerCase();
-  return (
-    normalized === "localhost" ||
-    normalized.endsWith(".localhost") ||
-    normalized === "::1" ||
-    normalized.startsWith("::ffff:127.") ||
-    /^127(?:\.\d{1,3}){3}$/u.test(normalized)
-  );
+    .toLowerCase()
+    .replace(/\.$/u, "");
+  if (normalized === "localhost" || normalized.endsWith(".localhost")) {
+    return true;
+  }
+  const family = isIP(normalized);
+  return family === 4
+    ? LOOPBACK_ADDRESSES.check(normalized, "ipv4")
+    : family === 6
+      ? LOOPBACK_ADDRESSES.check(normalized, "ipv6")
+      : false;
 }
 
 export async function writeResponse(
