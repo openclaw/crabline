@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   normalizeWhatsAppWebhookPayload,
   resolveWhatsAppAdapterConfig,
@@ -360,6 +360,159 @@ describe("WhatsApp webhook normalizer", () => {
       ]);
     } finally {
       await provider.cleanup();
+    }
+  });
+
+  it("uses runtime-only credentials when delayed webhook startup resolves config", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    delete config.whatsapp!.appSecret;
+    delete config.whatsapp!.phoneNumberId;
+    delete config.whatsapp!.verifyToken;
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline", {
+      env: {
+        WHATSAPP_APP_SECRET: "test-token-placeholder",
+        WHATSAPP_PHONE_NUMBER_ID: "runtime-phone",
+        WHATSAPP_VERIFY_TOKEN: "test-token-placeholder",
+      },
+    });
+    const context = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
+
+    try {
+      const endpoint = (await provider.probe(context)).details
+        .find((detail) => detail.startsWith("webhook endpoint "))
+        ?.replace("webhook endpoint ", "");
+      expect(endpoint).toBeDefined();
+
+      const verificationUrl = new URL(endpoint!);
+      verificationUrl.searchParams.set("hub.mode", "subscribe");
+      verificationUrl.searchParams.set("hub.verify_token", "test-token-placeholder");
+      verificationUrl.searchParams.set("hub.challenge", "runtime-challenge");
+      await expect(fetch(verificationUrl).then((response) => response.text())).resolves.toBe(
+        "runtime-challenge",
+      );
+
+      const body = JSON.stringify({
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  metadata: { phone_number_id: "runtime-phone" },
+                  messages: [
+                    {
+                      from: "15551234567",
+                      id: "wamid.runtime-only",
+                      text: { body: "runtime authenticated" },
+                      type: "text",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      });
+      const response = await fetch(endpoint!, {
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": whatsappSignature(body, "test-token-placeholder"),
+        },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(readRecordedInbound(config.whatsapp!.recorder.path!)).resolves.toEqual([
+        expect.objectContaining({ id: "wamid.runtime-only" }),
+      ]);
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
+  it("prefers the runtime environment over conflicting ambient credentials", async () => {
+    vi.stubEnv("WHATSAPP_APP_SECRET", "secret-token");
+    vi.stubEnv("WHATSAPP_PHONE_NUMBER_ID", "ambient-phone");
+    vi.stubEnv("WHATSAPP_VERIFY_TOKEN", "secret-token");
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    delete config.whatsapp!.appSecret;
+    delete config.whatsapp!.phoneNumberId;
+    delete config.whatsapp!.verifyToken;
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline", {
+      env: {
+        WHATSAPP_APP_SECRET: "test-token-placeholder",
+        WHATSAPP_PHONE_NUMBER_ID: "runtime-phone",
+        WHATSAPP_VERIFY_TOKEN: "test-token-placeholder",
+      },
+    });
+    const context = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
+
+    try {
+      const endpoint = (await provider.probe(context)).details
+        .find((detail) => detail.startsWith("webhook endpoint "))
+        ?.replace("webhook endpoint ", "");
+      expect(endpoint).toBeDefined();
+
+      const verificationUrl = new URL(endpoint!);
+      verificationUrl.searchParams.set("hub.mode", "subscribe");
+      verificationUrl.searchParams.set("hub.challenge", "precedence-challenge");
+      verificationUrl.searchParams.set("hub.verify_token", "secret-token");
+      expect((await fetch(verificationUrl)).status).toBe(403);
+      verificationUrl.searchParams.set("hub.verify_token", "test-token-placeholder");
+      expect((await fetch(verificationUrl)).status).toBe(200);
+
+      const body = JSON.stringify({
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  metadata: { phone_number_id: "runtime-phone" },
+                  messages: [
+                    {
+                      from: "15551234567",
+                      id: "wamid.runtime-precedence",
+                      text: { body: "runtime wins" },
+                      type: "text",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      });
+      const ambientSigned = await fetch(endpoint!, {
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": whatsappSignature(body, "secret-token"),
+        },
+        method: "POST",
+      });
+      expect(ambientSigned.status).toBe(401);
+
+      const runtimeSigned = await fetch(endpoint!, {
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": whatsappSignature(body, "test-token-placeholder"),
+        },
+        method: "POST",
+      });
+      expect(runtimeSigned.status).toBe(200);
+      await expect(readRecordedInbound(config.whatsapp!.recorder.path!)).resolves.toEqual([
+        expect.objectContaining({ id: "wamid.runtime-precedence" }),
+      ]);
+    } finally {
+      await provider.cleanup();
+      vi.unstubAllEnvs();
     }
   });
 
