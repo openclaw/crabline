@@ -203,8 +203,9 @@ const WINDOWS_JOB_HELPER_SOURCE = [
   "if(job!=IntPtr.Zero){CloseHandle(job);}",
   "}",
   "}",
-  "public static int Main(){",
+  "public static int Main(string[] arguments){",
   "try{",
+  'if(arguments.Length==1&&arguments[0]=="--probe"){return 0;}',
   `string shellValue=Environment.GetEnvironmentVariable("${WINDOWS_JOB_SHELL_ENV}");`,
   `string commandValue=Environment.GetEnvironmentVariable("${WINDOWS_JOB_COMMAND_ENV}");`,
   `Environment.SetEnvironmentVariable("${WINDOWS_JOB_SHELL_ENV}",null);`,
@@ -257,7 +258,7 @@ const WINDOWS_PROCESS_TERMINATOR_SOURCE = [
   "}",
 ].join("");
 
-let windowsJobHelperPath: string | undefined;
+let windowsJobHelperPath: string | null | undefined;
 
 function removeWindowsJobHelper(directory: string): void {
   try {
@@ -267,9 +268,9 @@ function removeWindowsJobHelper(directory: string): void {
   }
 }
 
-function ensureWindowsJobHelper(): string {
-  if (windowsJobHelperPath) {
-    return windowsJobHelperPath;
+function ensureWindowsJobHelper(): string | undefined {
+  if (windowsJobHelperPath !== undefined) {
+    return windowsJobHelperPath ?? undefined;
   }
   const directory = mkdtempSync(path.join(tmpdir(), "crabline-script-job-"));
   const helperPath = path.join(directory, "crabline-script-job.exe");
@@ -295,18 +296,15 @@ function ensureWindowsJobHelper(): string {
         windowsHide: true,
       },
     );
-  } catch (error) {
+    execFileSync(helperPath, ["--probe"], {
+      stdio: "ignore",
+      timeout: 5_000,
+      windowsHide: true,
+    });
+  } catch {
     removeWindowsJobHelper(directory);
-    const stderr =
-      typeof (error as { stderr?: unknown }).stderr === "string"
-        ? (error as { stderr: string }).stderr.trim()
-        : "";
-    throw new Error(
-      stderr
-        ? `Windows script job helper compilation failed.\n${stderr}`
-        : "Windows script job helper compilation failed.",
-      { cause: error },
-    );
+    windowsJobHelperPath = null;
+    return undefined;
   }
   windowsJobHelperPath = helperPath;
   process.once("exit", () => removeWindowsJobHelper(directory));
@@ -367,19 +365,29 @@ function spawnScriptChild(params: {
   let child: SpawnedScriptChild;
   if (process.platform === "win32") {
     const helperPath = ensureWindowsJobHelper();
-    const shellCommand = windowsShellCommand(params.command, params.shell);
     startedAtMs = Date.now();
-    child = spawn(helperPath, [], {
-      cwd,
-      env: {
-        ...process.env,
-        [WINDOWS_JOB_COMMAND_ENV]: Buffer.from(shellCommand.commandLine).toString("base64"),
-        [WINDOWS_JOB_SHELL_ENV]: Buffer.from(shellCommand.shell).toString("base64"),
-      },
-      shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    if (helperPath) {
+      const shellCommand = windowsShellCommand(params.command, params.shell);
+      child = spawn(helperPath, [], {
+        cwd,
+        env: {
+          ...process.env,
+          [WINDOWS_JOB_COMMAND_ENV]: Buffer.from(shellCommand.commandLine).toString("base64"),
+          [WINDOWS_JOB_SHELL_ENV]: Buffer.from(shellCommand.shell).toString("base64"),
+        },
+        shell: false,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } else {
+      child = spawn(params.command, {
+        cwd,
+        env: process.env,
+        shell: params.shell ?? true,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    }
   } else {
     startedAtMs = Date.now();
     child = spawn(params.command, {
