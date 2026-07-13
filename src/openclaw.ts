@@ -42,7 +42,11 @@ import {
 } from "./openclaw/shared.js";
 import { publishOpenClawCrablineArtifactGeneration } from "./openclaw/artifact-generation.js";
 import { isAcceptedOpenClawCrablineOutbound } from "./openclaw/outbound-contract.js";
-import { syncParentDirectory } from "./openclaw/private-file.js";
+import {
+  securePrivateDirectory,
+  syncParentDirectory,
+  type SecuredPrivateDirectory,
+} from "./openclaw/private-file.js";
 import {
   acquireOpenClawCrablineSmokeRunLock,
   releaseOpenClawCrablineSmokeRunLock,
@@ -96,17 +100,49 @@ function isOpenClawCrablineRecorderTemporary(name: string): boolean {
   return channel !== undefined && isCrablineServerChannel(channel);
 }
 
-function hasOpenClawCrablineRecorderEvidence(contents: string): boolean {
-  return contents.split(/\r?\n/u).some((line) => {
+function hasStringRecordValues(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function isOpenClawCrablineRecorderEvent(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.at === "string" &&
+    Number.isFinite(Date.parse(value.at)) &&
+    typeof value.method === "string" &&
+    value.method.length > 0 &&
+    typeof value.path === "string" &&
+    value.path.startsWith("/") &&
+    hasStringRecordValues(value.query) &&
+    (value.type === "admin" || value.type === "api")
+  );
+}
+
+function assertOpenClawCrablineRecorderEvidence(contents: string): void {
+  let recorderEvidence = false;
+  for (const line of contents.split(/\r?\n/u)) {
     if (!line.trim()) {
-      return false;
+      continue;
     }
+    let event: unknown;
     try {
-      return isRecord(JSON.parse(line));
-    } catch {
-      return false;
+      event = JSON.parse(line);
+    } catch (error) {
+      throw new Error(
+        "OpenClaw Crabline provider probe produced no valid JSONL recorder evidence.",
+        { cause: error },
+      );
     }
-  });
+    if (!isOpenClawCrablineRecorderEvent(event)) {
+      throw new Error(
+        "OpenClaw Crabline provider probe produced no valid JSONL recorder evidence.",
+      );
+    }
+    recorderEvidence = true;
+  }
+  if (!recorderEvidence) {
+    throw new Error("OpenClaw Crabline provider probe produced no valid JSONL recorder evidence.");
+  }
 }
 
 function isOpenClawCrablineRecorderTemporaryLock(name: string): boolean {
@@ -171,10 +207,13 @@ async function reclaimOpenClawCrablineRecorderTemporaryLock(
 }
 
 async function reclaimOpenClawCrablineRecorderTemporaries(
-  directoryPath: string,
+  directory: SecuredPrivateDirectory,
   lock: Awaited<ReturnType<typeof acquireOpenClawCrablineSmokeRunLock>>,
 ): Promise<void> {
+  const directoryPath = directory.directoryPath;
+  await directory.assertIdentityAt();
   for (const entry of await fs.readdir(directoryPath, { withFileTypes: true })) {
+    await directory.assertIdentityAt();
     const tombstoneBaseName = entry.isDirectory()
       ? openClawCrablineRecorderLockTombstoneBaseName(entry.name)
       : null;
@@ -199,7 +238,80 @@ async function reclaimOpenClawCrablineRecorderTemporaries(
     const temporaryPath = path.join(directoryPath, entry.name);
     await fs.rm(temporaryPath, { force: true });
     await syncParentDirectory(temporaryPath);
+    await directory.assertIdentityAt();
   }
+  await directory.assertIdentityAt();
+}
+
+type RecorderSnapshotIdentity = {
+  device: bigint;
+  inode: bigint;
+  userId: bigint;
+};
+
+function assertOwnedRecorderStats(
+  stats: BigIntStats,
+  expected?: RecorderSnapshotIdentity,
+): RecorderSnapshotIdentity {
+  const currentUserId = process.geteuid?.();
+  if (
+    !stats.isFile() ||
+    stats.nlink !== 1n ||
+    stats.ino <= 0n ||
+    (currentUserId !== undefined && stats.uid !== BigInt(currentUserId)) ||
+    (expected !== undefined &&
+      (stats.dev !== expected.device ||
+        stats.ino !== expected.inode ||
+        stats.uid !== expected.userId))
+  ) {
+    throw new Error("OpenClaw Crabline recorder snapshot identity is invalid.");
+  }
+  return {
+    device: stats.dev,
+    inode: stats.ino,
+    userId: stats.uid,
+  };
+}
+
+async function readOwnedRecorderSnapshot(
+  recorderPath: string,
+  directory: SecuredPrivateDirectory,
+): Promise<{ contents: string; identity: RecorderSnapshotIdentity }> {
+  await directory.assertIdentityAt();
+  const handle = await fs.open(recorderPath, "r");
+  try {
+    const identity = assertOwnedRecorderStats(await handle.stat({ bigint: true }));
+    assertOwnedRecorderStats(await fs.lstat(recorderPath, { bigint: true }), identity);
+    const contents = await handle.readFile("utf8");
+    await directory.assertIdentityAt();
+    assertOwnedRecorderStats(await fs.lstat(recorderPath, { bigint: true }), identity);
+    return { contents, identity };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function removeOwnedRecorderTemporary(params: {
+  directory: SecuredPrivateDirectory;
+  identity?: RecorderSnapshotIdentity;
+  recorderPath: string;
+  syncParent: (filePath: string) => Promise<void>;
+}): Promise<void> {
+  await params.directory.assertIdentityAt();
+  let stats: BigIntStats;
+  try {
+    stats = await fs.lstat(params.recorderPath, { bigint: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      await params.syncParent(params.recorderPath);
+      return;
+    }
+    throw error;
+  }
+  assertOwnedRecorderStats(stats, params.identity);
+  await fs.rm(params.recorderPath);
+  await params.directory.assertIdentityAt();
+  await params.syncParent(params.recorderPath);
 }
 
 function createOpenClawCrablineProviderAdapter(
@@ -369,14 +481,20 @@ export async function runOpenClawCrablineProviderReadiness(
   let outcome:
     | { committed: false; error: unknown }
     | { committed: true; result: OpenClawCrablineProviderReadinessResult };
+  let recorderDirectory: SecuredPrivateDirectory | undefined;
+  let recorderIdentity: RecorderSnapshotIdentity | undefined;
   let recorderPath: string | undefined;
 
   try {
-    const recorderDirectory = path.join(outputDir, "artifacts", "crabline");
-    await fs.mkdir(recorderDirectory, { recursive: true });
+    const artifactsDirectory = await securePrivateDirectory(path.join(outputDir, "artifacts"));
+    recorderDirectory = await securePrivateDirectory(
+      path.join(artifactsDirectory.directoryPath, "crabline"),
+    );
+    await artifactsDirectory.assertIdentityAt();
+    await recorderDirectory.assertIdentityAt();
     await reclaimOpenClawCrablineRecorderTemporaries(recorderDirectory, smokeLock);
     recorderPath = path.join(
-      recorderDirectory,
+      recorderDirectory.directoryPath,
       `.${params.selection.channel}-fake-provider.${randomUUID()}.jsonl.tmp`,
     );
     const adapter = await (dependencies.startAdapter ?? startOpenClawCrablineAdapter)({
@@ -428,12 +546,10 @@ export async function runOpenClawCrablineProviderReadiness(
     if (probeFailed) {
       throw probeFailure;
     }
-    const recorderSnapshotContents = await fs.readFile(recorderPath, "utf8");
-    if (!hasOpenClawCrablineRecorderEvidence(recorderSnapshotContents)) {
-      throw new Error(
-        "OpenClaw Crabline provider probe produced no valid JSONL recorder evidence.",
-      );
-    }
+    const recorderSnapshot = await readOwnedRecorderSnapshot(recorderPath, recorderDirectory);
+    recorderIdentity = recorderSnapshot.identity;
+    const recorderSnapshotContents = recorderSnapshot.contents;
+    assertOpenClawCrablineRecorderEvidence(recorderSnapshotContents);
 
     const capabilityReport = {
       result: {
@@ -469,8 +585,12 @@ export async function runOpenClawCrablineProviderReadiness(
     });
     let recorderCleanupWarning: string | undefined;
     try {
-      await fs.rm(recorderPath, { force: true });
-      await syncRecorderParent(recorderPath);
+      await removeOwnedRecorderTemporary({
+        directory: recorderDirectory,
+        identity: recorderIdentity,
+        recorderPath,
+        syncParent: syncRecorderParent,
+      });
       recorderPath = undefined;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -500,10 +620,14 @@ export async function runOpenClawCrablineProviderReadiness(
     };
   } catch (error) {
     let primaryError = error;
-    if (recorderPath) {
+    if (recorderPath && recorderDirectory) {
       try {
-        await fs.rm(recorderPath, { force: true });
-        await syncRecorderParent(recorderPath);
+        await removeOwnedRecorderTemporary({
+          directory: recorderDirectory,
+          ...(recorderIdentity ? { identity: recorderIdentity } : {}),
+          recorderPath,
+          syncParent: syncRecorderParent,
+        });
         recorderPath = undefined;
       } catch (cleanupError) {
         if (primaryError instanceof Error) {
