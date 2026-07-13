@@ -148,6 +148,23 @@ describe("manifest schema", () => {
     }
   });
 
+  it("accepts equivalent IPv6 loopback hosts for local-only ingress", () => {
+    for (const host of ["0:0:0:0:0:0:0:1", "[0:0:0:0:0:0:0:1]", "0:0:0:0:0:ffff:7f00:1"]) {
+      expect(() =>
+        ManifestSchema.parse({
+          configVersion: 1,
+          fixtures: [],
+          providers: {
+            matrix: {
+              adapter: "matrix",
+              matrix: { webhook: { host } },
+            },
+          },
+        }),
+      ).not.toThrow();
+    }
+  });
+
   it("rejects header-invalid Zalo secrets", () => {
     for (const [field, value] of [
       ["botToken", "token\r\nx-injected: yes"],
@@ -214,6 +231,24 @@ describe("manifest schema", () => {
                 client_email: "push@example.iam.gserviceaccount.com",
                 private_key: "secret",
               },
+              pubsubAudience: "https://chat.example.test/webhook",
+            },
+          },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it("allows Google Chat Pub/Sub audiences when signature verification is disabled", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          googlechat: {
+            adapter: "googlechat",
+            googlechat: {
+              disableSignatureVerification: true,
               pubsubAudience: "https://chat.example.test/webhook",
             },
           },

@@ -1,9 +1,14 @@
 import { validateHeaderValue } from "node:http";
+import { BlockList, isIP } from "node:net";
 import { z } from "zod";
 import { inboundRegexSafetyError } from "../core/safe-regex.js";
 
 export const FIXTURE_MODES = ["probe", "send", "roundtrip", "agent"] as const;
 const FIXTURE_ID_PATTERN = /^[a-z0-9-]+$/i;
+const LOOPBACK_ADDRESSES = new BlockList();
+LOOPBACK_ADDRESSES.addSubnet("127.0.0.0", 8, "ipv4");
+LOOPBACK_ADDRESSES.addAddress("::1", "ipv6");
+LOOPBACK_ADDRESSES.addSubnet("::ffff:127.0.0.0", 104, "ipv6");
 const MAX_FIXTURE_RETRIES = 10;
 const MAX_TIMER_MS = 2_147_483_647;
 export const INBOUND_AUTHORS = ["assistant", "user", "system", "any"] as const;
@@ -92,13 +97,15 @@ function isLoopbackHost(host: string): boolean {
     .trim()
     .replace(/^\[(.*)\]$/u, "$1")
     .toLowerCase();
-  return (
-    normalized === "localhost" ||
-    normalized.endsWith(".localhost") ||
-    normalized === "::1" ||
-    normalized.startsWith("::ffff:127.") ||
-    /^127(?:\.\d{1,3}){3}$/u.test(normalized)
-  );
+  if (normalized === "localhost" || normalized.endsWith(".localhost")) {
+    return true;
+  }
+  const family = isIP(normalized);
+  return family === 4
+    ? LOOPBACK_ADDRESSES.check(normalized, "ipv4")
+    : family === 6
+      ? LOOPBACK_ADDRESSES.check(normalized, "ipv6")
+      : false;
 }
 
 function inferProviderPlatform(adapter: BuiltinAdapterName): ProviderPlatformName | undefined {
@@ -325,6 +332,7 @@ const GoogleChatConfigSchema = z
   .superRefine((value, ctx) => {
     if (
       value.pubsubAudience &&
+      !value.disableSignatureVerification &&
       !value.pubsubServiceAccountEmail &&
       !value.credentials?.client_email
     ) {
