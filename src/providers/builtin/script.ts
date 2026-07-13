@@ -343,7 +343,7 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
       if (quote === '"' && /[$`%!]/u.test(character)) {
         return undefined;
       }
-      if (character === "\\" && quote === '"') {
+      if (character === "\\" && quote === '"' && process.platform !== "win32") {
         return undefined;
       }
       current += character;
@@ -370,7 +370,9 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
       return undefined;
     }
     if (character === "\\") {
-      return undefined;
+      if (process.platform !== "win32") {
+        return undefined;
+      }
     }
     current += character;
   }
