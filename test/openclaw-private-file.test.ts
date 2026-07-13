@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   applyOwnerOnlyWindowsDirectoryAcl,
+  createOwnerOnlyWindowsDirectoryAncestry,
   createOwnerOnlyWindowsFile,
   publishPrivateFileAtomically,
   securePrivateDirectory,
@@ -60,6 +61,27 @@ describe("OpenClaw private file publication", () => {
       await disposeTempDir(directory);
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "creates every POSIX publication ancestor with mode 0700 under a permissive umask",
+    async () => {
+      const directory = await createTempDir();
+      const previousUmask = process.umask(0);
+      try {
+        const firstParent = path.join(directory, "first");
+        const finalParent = path.join(firstParent, "nested");
+        const filePath = path.join(finalParent, "manifest.json");
+
+        await publishPrivateFileAtomically(filePath, "private\n", { platform: "linux" });
+
+        expect((await fs.stat(firstParent)).mode & 0o777).toBe(0o700);
+        expect((await fs.stat(finalParent)).mode & 0o777).toBe(0o700);
+      } finally {
+        process.umask(previousUmask);
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it("syncs a POSIX directory handle after persisting mode 0700", async () => {
     const directory = await createTempDir();
@@ -219,19 +241,23 @@ describe("OpenClaw private file publication", () => {
     const directory = await createTempDir();
     try {
       const generationPath = path.join(directory, "generation");
-      const secureWindowsDirectory = vi.fn(async (securedPath: string) => {
-        expect(securedPath).toBe(generationPath);
+      const createWindowsDirectories = vi.fn(async (securedPath: string) => {
+        await fs.mkdir(securedPath);
         expect(await fs.readdir(securedPath)).toEqual([]);
+        return securedPath;
       });
+      const secureWindowsDirectory = vi.fn<(directoryPath: string) => Promise<void>>();
 
       const secured = await securePrivateDirectory(generationPath, {
+        createWindowsDirectories,
         platform: "win32",
         secureWindowsDirectory,
       });
       await secured.assertIdentityAt();
       await fs.writeFile(path.join(generationPath, "manifest.json"), "private\n");
 
-      expect(secureWindowsDirectory).toHaveBeenCalledTimes(1);
+      expect(createWindowsDirectories).toHaveBeenCalledWith(generationPath);
+      expect(secureWindowsDirectory).not.toHaveBeenCalled();
     } finally {
       await disposeTempDir(directory);
     }
@@ -242,6 +268,7 @@ describe("OpenClaw private file publication", () => {
     try {
       const generationPath = path.join(directory, "generation");
       const originalPath = `${generationPath}.original`;
+      await fs.mkdir(generationPath);
 
       await expect(
         securePrivateDirectory(generationPath, {
@@ -737,6 +764,48 @@ describe("OpenClaw private file publication", () => {
     expect(script).toContain("SetAccessRuleProtection($true, $false)");
     expect(script).toContain("owner-only inheritable full control");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
+  });
+
+  it("uses CreateDirectoryW with a protected ACL for every missing Windows ancestor", async () => {
+    const calls: Parameters<WindowsAclRunner>[] = [];
+    const run: WindowsAclRunner = async (...args) => {
+      calls.push(args);
+      return String.raw`C:\Temp\private`;
+    };
+    const directoryPath = String.raw`C:\Temp\private\nested`;
+
+    await expect(
+      createOwnerOnlyWindowsDirectoryAncestry(directoryPath, run, String.raw`C:\Windows`),
+    ).resolves.toBe(String.raw`C:\Temp\private`);
+
+    expect(calls).toHaveLength(1);
+    const [command, args, options] = calls[0]!;
+    expect(command).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
+    const script = args.at(-1);
+    expect(script).toContain("CreateDirectory(");
+    expect(script).toContain("SecurityAttributes");
+    expect(script).toContain("SetAccessRuleProtection($true, $false)");
+    expect(script).toContain("New private directory was populated during creation.");
+    expect(script).not.toContain("Set-Acl");
+    expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
+  });
+
+  it("fails closed when a Windows ancestry component wins the CreateNew race", async () => {
+    const cause = Object.assign(new Error("already exists"), { code: 183 });
+
+    await expect(
+      createOwnerOnlyWindowsDirectoryAncestry(
+        String.raw`C:\Temp\private\nested`,
+        async () => {
+          throw cause;
+        },
+        String.raw`C:\Windows`,
+      ),
+    ).rejects.toMatchObject({
+      cause,
+      message:
+        "Could not atomically create and verify owner-only Windows private directory ancestry; Windows PowerShell security descriptor support is required.",
+    });
   });
 
   it("reports Windows ACL tooling failures with their cause", async () => {
