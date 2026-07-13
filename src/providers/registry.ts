@@ -266,11 +266,16 @@ export class LazyProviderAdapter implements ProviderAdapter {
         controller.abort();
         try {
           if (source.throw) {
-            return await source.throw(error);
+            const result = await source.throw(error);
+            if (result.done) {
+              finish();
+            }
+            return result;
           }
           throw error;
-        } finally {
+        } catch (thrownError) {
           finish();
+          throw thrownError;
         }
       },
       [Symbol.asyncIterator]() {

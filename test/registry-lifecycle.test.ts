@@ -782,6 +782,71 @@ describe("lazy provider lifecycle", () => {
     }
   });
 
+  it("keeps nonterminal iterator throws tracked until cleanup closes the watch", async () => {
+    const first = {
+      author: "assistant" as const,
+      id: "first",
+      provider: "test",
+      sentAt: new Date().toISOString(),
+      text: "first",
+      threadId: "thread",
+    };
+    const recovered = { ...first, id: "recovered", text: "recovered" };
+    let watchClosed = false;
+    const concrete: ProviderAdapter = {
+      id: "test",
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      async waitForInbound() {
+        return null;
+      },
+      async *watch() {
+        try {
+          try {
+            yield first;
+          } catch {
+            yield recovered;
+            yield first;
+          }
+        } finally {
+          watchClosed = true;
+        }
+      },
+    };
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory: async () => concrete,
+      id: "test",
+      normalizeTarget: concrete.normalizeTarget.bind(concrete),
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+    });
+    const { context } = createTelegramManifest("/tmp/unused.jsonl");
+    const iterator = provider.watch(context)[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: first });
+    await expect(iterator.throw!(new Error("recover"))).resolves.toEqual({
+      done: false,
+      value: recovered,
+    });
+    expect(watchClosed).toBe(false);
+
+    await provider.cleanup();
+
+    expect(watchClosed).toBe(true);
+  });
+
   it("cancels an admitted watch before cleaning up a materializing provider", async () => {
     let releaseFactory: (() => void) | undefined;
     const factoryBlocked = new Promise<void>((resolve) => {
