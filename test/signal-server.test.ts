@@ -278,10 +278,28 @@ describe("signal local provider server", () => {
 
     for (const [method, params] of [
       ["send", {}],
+      ["send", { message: "invalid optional account", recipient: "+15551234567", account: 42 }],
+      ["send", { message: "invalid optional username", recipient: "+15551234567", username: 42 }],
+      ["send", { message: "invalid attachment", recipient: "+15551234567", attachment: 42 }],
       ["sendReaction", { emoji: "👍", recipient: ["+15551234567"] }],
+      [
+        "sendReaction",
+        {
+          emoji: "👍",
+          groupId: 42,
+          recipient: "+15551234567",
+          targetAuthor: "+15557654321",
+          targetTimestamp: 1_700_000_000_000,
+        },
+      ],
       ["sendReceipt", { recipient: "+15551234567", targetTimestamp: [] }],
+      [
+        "sendReceipt",
+        { recipient: "+15551234567", targetTimestamp: 1_700_000_000_000, username: 42 },
+      ],
       ["sendTyping", { username: ["alice"] }],
       ["sendTyping", { noteToSelf: true }],
+      ["sendTyping", { groupId: 42, recipient: "+15551234567" }],
       ["sendTyping", { recipient: ["+15551234567"], stop: "yes" }],
     ] as const) {
       const invalid = await fetch(server.manifest.endpoints.rpcUrl, {
@@ -324,7 +342,6 @@ describe("signal local provider server", () => {
         sourceName: "Alice",
         sourceNumber: "+15557654321",
         text: "user nonce-1",
-        timestamp: 1_700_000_000_000,
       }),
       headers: {
         "content-type": "application/json",
@@ -333,6 +350,9 @@ describe("signal local provider server", () => {
       method: "POST",
     });
     expect(accepted.status).toBe(200);
+    const acceptedBody = (await accepted.json()) as {
+      event: { envelope: { timestamp: number } };
+    };
 
     const controller = new AbortController();
     const events = await fetch(server.manifest.endpoints.eventsUrl, { signal: controller.signal });
@@ -340,7 +360,7 @@ describe("signal local provider server", () => {
     const chunk = await reader?.read();
     controller.abort();
     expect(new TextDecoder().decode(chunk?.value)).toContain(
-      'event:receive\ndata:{"envelope":{"sourceName":"Alice","sourceNumber":"+15557654321","timestamp":1700000000000,"dataMessage":{"message":"user nonce-1","timestamp":1700000000000,"groupInfo":{"groupId":"signal-group-1"}}}}',
+      `event:receive\ndata:{"envelope":{"sourceName":"Alice","sourceNumber":"+15557654321","timestamp":${acceptedBody.event.envelope.timestamp},"dataMessage":{"message":"user nonce-1","timestamp":${acceptedBody.event.envelope.timestamp},"groupInfo":{"groupId":"signal-group-1"}}}}`,
     );
 
     const recorded = await fs.readFile(recorderPath, "utf8");
@@ -634,6 +654,58 @@ describe("signal local provider server", () => {
       event: { envelope: { timestamp: number } };
     };
     expect(generatedBody.event.envelope.timestamp).toBeGreaterThan(rpcBody.result.timestamp);
+  });
+
+  it("serializes admin and RPC timestamps and rejects stale explicit commits", async () => {
+    const now = 1_700_000_000_000;
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
+    const server = await startSignalServer({ adminToken: "admin" });
+    dateNow.mockRestore();
+    servers.push(server);
+    const sendRpc = (id: string) =>
+      fetch(server.manifest.endpoints.rpcUrl, {
+        body: JSON.stringify({
+          id,
+          jsonrpc: "2.0",
+          method: "send",
+          params: { message: id, recipient: "+15551234567" },
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }).then((response) => response.json() as Promise<{ result: { timestamp: number } }>);
+    const sendAdmin = (body: Record<string, unknown>) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          sourceNumber: "+15557654321",
+          text: "admin inbound",
+          ...body,
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+
+    const firstRpc = await sendRpc("first");
+    expect(firstRpc.result.timestamp).toBe(now);
+
+    const stale = await sendAdmin({ timestamp: now });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toEqual({
+      error: "timestamp must be greater than the last committed timestamp",
+      ok: false,
+    });
+
+    const [adminResponse, rpcResponse] = await Promise.all([sendAdmin({}), sendRpc("concurrent")]);
+    const adminBody = (await adminResponse.json()) as {
+      event: { envelope: { timestamp: number } };
+    };
+    expect(
+      [adminBody.event.envelope.timestamp, rpcResponse.result.timestamp].sort(
+        (left, right) => left - right,
+      ),
+    ).toEqual([now + 1, now + 2]);
   });
 
   it("does not commit or consume a send timestamp on definite recorder failure", async () => {
@@ -1198,6 +1270,73 @@ describe("signal local provider server", () => {
       }
     } finally {
       firstController.abort();
+      write.mockRestore();
+    }
+  });
+
+  it("removes disconnected clients from events buffered by other SSE clients", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const originalWrite = ServerResponse.prototype.write;
+    let matchingWrites = 0;
+    let backpressuredResponse: ServerResponse | undefined;
+    const write = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<typeof originalWrite>
+    ) {
+      const accepted = Reflect.apply(originalWrite, this, args) as boolean;
+      if (typeof args[0] === "string" && args[0].includes("shared buffered event")) {
+        matchingWrites += 1;
+        if (matchingWrites === 2) {
+          backpressuredResponse = this;
+          return false;
+        }
+      }
+      return accepted;
+    });
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const thirdController = new AbortController();
+    try {
+      const firstEvents = await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: firstController.signal,
+      });
+      await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: secondController.signal,
+      });
+      const sent = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          sourceNumber: "+15557654321",
+          text: "shared buffered event",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+      expect(sent.status).toBe(200);
+      await vi.waitFor(() => expect(backpressuredResponse).toBeDefined());
+
+      firstController.abort();
+      await firstEvents.body?.cancel().catch(() => undefined);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const thirdEvents = await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: thirdController.signal,
+      });
+      const reader = thirdEvents.body!.getReader();
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("timed out waiting for replay")), 500),
+        ),
+      ]);
+      expect(new TextDecoder().decode(chunk.value)).toContain("shared buffered event");
+    } finally {
+      firstController.abort();
+      secondController.abort();
+      thirdController.abort();
       write.mockRestore();
     }
   });

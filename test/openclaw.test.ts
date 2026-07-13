@@ -2047,8 +2047,8 @@ describe("OpenClaw local provider bridge", () => {
         providerTarget: "+15551234567",
       },
       { params: { groupIds: ["group-1"] }, providerTarget: "group:group-1" },
-      { params: { username: "alice.01" }, providerTarget: "alice.01" },
-      { params: { usernames: ["alice.01"] }, providerTarget: "alice.01" },
+      { params: { username: "qa-operator" }, providerTarget: directDelivery.to },
+      { params: { usernames: ["qa-operator"] }, providerTarget: directDelivery.to },
       { params: { noteToSelf: true }, providerTarget: signalManifest.account },
     ]) {
       expect(

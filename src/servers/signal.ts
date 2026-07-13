@@ -34,12 +34,13 @@ type SignalServerState = {
   clientBuffers: Map<ServerResponse, SignalClientBuffer>;
   maxPendingInboundEvents: number;
   maxSseClients: number;
+  lastCommittedTimestamp: number | undefined;
   nextEventSequence: number;
   nextTimestamp: number;
   onEvent: ServerEventObserver | undefined;
   pendingEventBytes: number;
   pendingEvents: SignalSseChunk[];
-  pendingRpcRequests: Promise<void>;
+  pendingTimestampCommits: Promise<void>;
   pendingSseClients: number;
   recorderPath: string;
 };
@@ -142,13 +143,20 @@ function removeSignalClient(
   const buffer = state.clientBuffers.get(client);
   state.clients.delete(client);
   state.clientBuffers.delete(client);
+  const bufferedEvents = new Set<SignalSseChunk>([
+    ...state.pendingEvents,
+    ...[...state.clientBuffers.values()].flatMap((entry) => [...entry.inFlight, ...entry.events]),
+    ...(buffer ? [...buffer.inFlight, ...buffer.events] : []),
+  ]);
+  for (const event of bufferedEvents) {
+    event.recipients?.delete(client);
+  }
   if (buffer) {
-    const undeliveredEvents = [...buffer.inFlight, ...buffer.events].filter((event) => {
-      event.recipients?.delete(client);
-      return event.sequence !== undefined && event.recipients?.size === 0;
-    });
-    const restoredEvents = undeliveredEvents.filter(
-      (event) => !state.pendingEvents.includes(event),
+    const restoredEvents = [...new Set([...buffer.inFlight, ...buffer.events])].filter(
+      (event) =>
+        event.sequence !== undefined &&
+        event.recipients?.size === 0 &&
+        !isSignalEventBuffered(state, event),
     );
     if (restoredEvents.length > 0) {
       state.pendingEvents.push(...restoredEvents);
@@ -390,6 +398,15 @@ function normalizeSignalPhoneNumber(value: unknown): string | undefined {
   return number && SIGNAL_PHONE_NUMBER_RE.test(number) ? number : undefined;
 }
 
+function nextSignalTimestamp(state: SignalServerState): number {
+  return Math.max(state.nextTimestamp, (state.lastCommittedTimestamp ?? -1) + 1);
+}
+
+function commitSignalTimestamp(state: SignalServerState, timestamp: number): void {
+  state.lastCommittedTimestamp = timestamp;
+  state.nextTimestamp = Math.max(state.nextTimestamp, timestamp + 1);
+}
+
 async function handleAdminInbound(params: {
   body: Record<string, unknown>;
   state: SignalServerState;
@@ -430,7 +447,17 @@ async function handleAdminInbound(params: {
       400,
     );
   }
-  const timestamp = suppliedTimestamp ?? params.state.nextTimestamp;
+  if (
+    suppliedTimestamp !== undefined &&
+    params.state.lastCommittedTimestamp !== undefined &&
+    suppliedTimestamp <= params.state.lastCommittedTimestamp
+  ) {
+    return jsonResponse(
+      { error: "timestamp must be greater than the last committed timestamp", ok: false },
+      409,
+    );
+  }
+  const timestamp = suppliedTimestamp ?? nextSignalTimestamp(params.state);
   if (timestamp >= Number.MAX_SAFE_INTEGER) {
     return jsonResponse({ error: "timestamp capacity exhausted", ok: false }, 503);
   }
@@ -457,7 +484,7 @@ async function handleAdminInbound(params: {
       503,
     );
   }
-  params.state.nextTimestamp = Math.max(params.state.nextTimestamp, timestamp + 1);
+  commitSignalTimestamp(params.state, timestamp);
   return jsonResponse({ event: payload, ok: true });
 }
 
@@ -518,7 +545,7 @@ async function handleRpc(params: {
           : rpcError(-32602, "Invalid params", id),
       };
     }
-    const timestamp = params.state.nextTimestamp;
+    const timestamp = nextSignalTimestamp(params.state);
     if (timestamp >= Number.MAX_SAFE_INTEGER) {
       return {
         accepted: false,
@@ -601,23 +628,58 @@ function hasStringArray(value: unknown): boolean {
   );
 }
 
+function readSignalRpcString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function hasValidSignalRecipientFieldTypes(params: Record<string, unknown>): boolean {
+  return ["recipient", "recipients", "groupId", "groupIds", "username", "usernames"].every(
+    (field) => {
+      const value = params[field];
+      return (
+        value === undefined ||
+        (typeof value === "string" && value.trim().length > 0) ||
+        hasStringArray(value)
+      );
+    },
+  );
+}
+
+function hasValidOptionalSignalString(params: Record<string, unknown>, field: string): boolean {
+  return params[field] === undefined || readSignalRpcString(params[field]) !== undefined;
+}
+
 function validSignalRpcParams(method: string, value: unknown): boolean {
-  if (!isJsonObject(value)) {
+  if (
+    !isJsonObject(value) ||
+    !hasValidSignalRecipientFieldTypes(value) ||
+    !hasValidOptionalSignalString(value, "account") ||
+    (value.noteToSelf !== undefined && typeof value.noteToSelf !== "boolean")
+  ) {
     return false;
   }
   if (method === "send") {
     return (
+      hasValidOptionalSignalString(value, "message") &&
+      hasValidOptionalSignalString(value, "attachment") &&
+      (value.attachments === undefined || hasStringArray(value.attachments)) &&
       hasRecipients(value) &&
-      (readTrimmedString(value.message) !== undefined ||
-        readTrimmedString(value.attachment) !== undefined ||
+      (readSignalRpcString(value.message) !== undefined ||
+        readSignalRpcString(value.attachment) !== undefined ||
         hasStringArray(value.attachments))
     );
   }
   if (method === "sendReaction") {
     return (
+      hasValidOptionalSignalString(value, "emoji") &&
+      hasValidOptionalSignalString(value, "targetAuthor") &&
       hasRecipients(value) &&
-      readTrimmedString(value.emoji) !== undefined &&
-      readTrimmedString(value.targetAuthor) !== undefined &&
+      readSignalRpcString(value.emoji) !== undefined &&
+      readSignalRpcString(value.targetAuthor) !== undefined &&
       validTimestamp(value.targetTimestamp)
     );
   }
@@ -625,8 +687,9 @@ function validSignalRpcParams(method: string, value: unknown): boolean {
     const targetTimestamps = value.targetTimestamps ?? value.targetTimestamp;
     const timestamps = Array.isArray(targetTimestamps) ? targetTimestamps : [targetTimestamps];
     return (
-      (readTrimmedString(value.recipient) !== undefined ||
-        readTrimmedString(value.username) !== undefined ||
+      hasValidOptionalSignalString(value, "type") &&
+      (readSignalRpcString(value.recipient) !== undefined ||
+        readSignalRpcString(value.username) !== undefined ||
         hasStringArray(value.usernames)) &&
       timestamps.length > 0 &&
       timestamps.every(validTimestamp) &&
@@ -636,45 +699,57 @@ function validSignalRpcParams(method: string, value: unknown): boolean {
   return method === "sendTyping" && hasTypingRecipients(value);
 }
 
+function serializeSignalTimestampCommit<T>(
+  state: SignalServerState,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const run = state.pendingTimestampCommits.catch(() => {}).then(operation);
+  state.pendingTimestampCommits = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function processSignalAdminInbound(params: {
+  body: Record<string, unknown>;
+  state: SignalServerState;
+}): Promise<Response> {
+  return serializeSignalTimestampCommit(params.state, () => handleAdminInbound(params));
+}
+
 async function processSignalRpc(params: {
   body: Record<string, unknown>;
   state: SignalServerState;
   url: URL;
 }): Promise<Response> {
-  const run = params.state.pendingRpcRequests
-    .catch(() => {})
-    .then(async () => {
-      const rpc = await handleRpc({ body: params.body, state: params.state });
-      if (rpc.record) {
-        const event: SignalRecorderEvent = {
-          accepted: rpc.accepted,
-          at: new Date().toISOString(),
-          body: params.body,
-          method: "POST",
-          path: params.url.pathname,
-          query: queryRecord(params.url),
-          type: "api",
-        };
-        if (rpc.accepted) {
-          try {
-            await appendEvent(params.state, event);
-          } catch (error) {
-            if (!(error instanceof ServerRecorderCommittedError)) {
-              throw error;
-            }
+  return serializeSignalTimestampCommit(params.state, async () => {
+    const rpc = await handleRpc({ body: params.body, state: params.state });
+    if (rpc.record) {
+      const event: SignalRecorderEvent = {
+        accepted: rpc.accepted,
+        at: new Date().toISOString(),
+        body: params.body,
+        method: "POST",
+        path: params.url.pathname,
+        query: queryRecord(params.url),
+        type: "api",
+      };
+      if (rpc.accepted) {
+        try {
+          await appendEvent(params.state, event);
+        } catch (error) {
+          if (!(error instanceof ServerRecorderCommittedError)) {
+            throw error;
           }
-          params.state.nextTimestamp = Math.max(params.state.nextTimestamp, rpc.timestamp + 1);
-        } else {
-          await appendEvent(params.state, event, rpc.response.status === 204);
         }
+        commitSignalTimestamp(params.state, rpc.timestamp);
+      } else {
+        await appendEvent(params.state, event, rpc.response.status === 204);
       }
-      return rpc.response;
-    });
-  params.state.pendingRpcRequests = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
+    }
+    return rpc.response;
+  });
 }
 
 function hasSignalJsonContentType(request: IncomingMessage): boolean {
@@ -760,7 +835,7 @@ async function handleRequest(params: {
         query: queryRecord(url),
         type: "admin",
       });
-      fetchResponse = await handleAdminInbound({ body, state: params.state });
+      fetchResponse = await processSignalAdminInbound({ body, state: params.state });
     }
   } else if (url.pathname === "/api/v1/check" && params.request.method === "GET") {
     await appendEvent(params.state, {
@@ -862,6 +937,7 @@ export async function startSignalServer(
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     clients: new Set(),
     clientBuffers: new Map(),
+    lastCommittedTimestamp: undefined,
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     maxSseClients:
       Number.isSafeInteger(params.maxSseClients) && (params.maxSseClients ?? 0) > 0
@@ -872,7 +948,7 @@ export async function startSignalServer(
     onEvent: params.onEvent,
     pendingEventBytes: 0,
     pendingEvents: [],
-    pendingRpcRequests: Promise.resolve(),
+    pendingTimestampCommits: Promise.resolve(),
     pendingSseClients: 0,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "signal.jsonl"),
   };
