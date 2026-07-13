@@ -277,6 +277,7 @@ describe("script provider Windows cleanup", () => {
     expect(terminationScript).toContain("GetProcessTimes");
     expect(terminationScript).toContain("TerminateProcess");
     expect(terminationScript).toContain("TerminateVerified");
+    expect(terminationScript).toContain("creationTime/10!=expectedCreationTime/10");
     expect(terminationScript).not.toContain("taskkill.exe");
     expect(terminationScript).toContain("CreationDate");
     expect(terminationScript).toContain("$ChildCreated -lt $ParentCreated");
