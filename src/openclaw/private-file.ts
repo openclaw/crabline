@@ -2016,12 +2016,12 @@ async function acquireDirectoryPrivateMutationClaim(
     }
     return candidate;
   };
-  let candidate = await createCandidate();
-
+  let candidate: Awaited<ReturnType<typeof createCandidate>> | undefined;
   let claimPath = rootClaimPath;
   let installedClaimPath: string | undefined;
   let expectedRootIdentity: FileIdentity | undefined;
   try {
+    candidate = await createCandidate();
     for (;;) {
       try {
         await fs.rename(candidatePath, claimPath);
@@ -2217,7 +2217,7 @@ async function acquireDirectoryPrivateMutationClaim(
     };
   } catch (error) {
     const cleanupErrors: unknown[] = [];
-    if (installedClaimPath !== undefined) {
+    if (installedClaimPath !== undefined && candidate !== undefined) {
       try {
         await removeInstalledPrivateMutationDirectoryClaim(
           installedClaimPath,
@@ -2283,7 +2283,7 @@ async function captureOwnerOnlyPrivateClaimAncestor(
 ): Promise<{ directory: SecuredPrivateDirectory; mutationRoot: boolean } | null> {
   if (platform === "win32" && process.platform === "win32") {
     try {
-      await verifySafeWindowsDirectoryMutationBoundary(directoryPath);
+      await verifyOwnerOnlyWindowsDirectoryAcl(directoryPath);
     } catch {
       return null;
     }
