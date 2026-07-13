@@ -47,25 +47,33 @@ describe("loopback chat adapter", () => {
     });
   });
 
-  it.each(["loopback+v2:%", "loopback+v2:channel:%", "loopback+v2:user::%"])(
-    "classifies malformed v2 thread addresses: %s",
-    (threadId) => {
-      adapter = new LoopbackChatAdapter("crabline");
+  it.each([
+    "loopback+v2:%",
+    "loopback+v2:channel:%",
+    "loopback+v2:user::%",
+    "loopback+v2:channel:user:ignored",
+    "loopback+v2:user::topic::ignored",
+    "loopback+v2:channel:",
+    "loopback+v2::user",
+    "loopback+v2:user::",
+    "loopback+v2:%75ser",
+    "loopback+v2:user%2f",
+  ])("classifies malformed v2 thread addresses: %s", (threadId) => {
+    adapter = new LoopbackChatAdapter("crabline");
 
-      let failure: unknown;
-      try {
-        adapter.decodeThreadId(threadId);
-      } catch (error) {
-        failure = error;
-      }
+    let failure: unknown;
+    try {
+      adapter.decodeThreadId(threadId);
+    } catch (error) {
+      failure = error;
+    }
 
-      expect(failure).toBeInstanceOf(CrablineError);
-      expect(failure).toMatchObject({
-        kind: "inbound",
-        message: "Loopback v2 thread address is malformed.",
-      });
-    },
-  );
+    expect(failure).toBeInstanceOf(CrablineError);
+    expect(failure).toMatchObject({
+      kind: "inbound",
+      message: "Loopback v2 thread address is malformed.",
+    });
+  });
 
   it("returns a cursor with the initial limited page", async () => {
     adapter = new LoopbackChatAdapter("crabline");
