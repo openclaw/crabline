@@ -2,10 +2,13 @@ import { extractNonces } from "./nonces.js";
 import { compileInboundRegex } from "./safe-regex.js";
 import type { InboundEnvelope, InboundMatchConfig } from "../providers/types.js";
 
+const EXACT_ACK_TOKEN = /(?<![\p{L}\p{N}_])ACK(?![\p{L}\p{N}_])/u;
+
 export function matchesInbound(
   envelope: InboundEnvelope,
   config: InboundMatchConfig,
   nonce: string,
+  options?: { requireAcknowledgement?: boolean },
 ): boolean {
   if (config.author !== "any" && envelope.author !== config.author) {
     return false;
@@ -13,6 +16,13 @@ export function matchesInbound(
 
   const text = envelope.text ?? "";
   const extractedNonces = extractNonces(text);
+
+  if (
+    options?.requireAcknowledgement &&
+    (!EXACT_ACK_TOKEN.test(text) || !extractedNonces.includes(nonce))
+  ) {
+    return false;
+  }
 
   if (config.nonce !== "ignore") {
     if (extractedNonces.length === 0) {

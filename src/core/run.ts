@@ -495,7 +495,11 @@ export async function runFixtureCommand(params: {
               }
               seenInbound.add(key);
 
-              if (matchesInbound(candidate, fixture.inboundMatch, nonce)) {
+              if (
+                matchesInbound(candidate, fixture.inboundMatch, nonce, {
+                  requireAcknowledgement: mode === "agent",
+                })
+              ) {
                 inbound = candidate;
                 break;
               }
