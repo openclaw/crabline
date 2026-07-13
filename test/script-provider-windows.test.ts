@@ -7,13 +7,13 @@ import { ScriptProviderAdapter } from "../src/providers/builtin/script.js";
 import type { ProviderContext } from "../src/providers/types.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
-const execFileSyncMock = vi.hoisted(() => vi.fn());
+const execFileMock = vi.hoisted(() => vi.fn());
 const mkdtempSyncMock = vi.hoisted(() => vi.fn(() => "C:\\Temp\\crabline-script-job-test"));
 const rmSyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
-  execFileSync: execFileSyncMock,
+  execFile: execFileMock,
   spawn: spawnMock,
 }));
 
@@ -57,6 +57,18 @@ function createCleanupChild(code: number, beforeClose?: () => void): FakeChild {
   return child;
 }
 
+function completeExecFileSuccessfully(...args: unknown[]): FakeChild {
+  const callback = args.at(-1) as (error: null, stdout: string, stderr: string) => void;
+  void Promise.resolve().then(() => callback(null, "", ""));
+  return createFakeChild(9000);
+}
+
+async function flushScriptSpawn(): Promise<void> {
+  for (let index = 0; index < 12; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 function createContext(): ProviderContext {
   return {
     config: {
@@ -91,7 +103,8 @@ function createContext(): ProviderContext {
 
 beforeEach(() => {
   vi.useFakeTimers();
-  execFileSyncMock.mockClear();
+  execFileMock.mockReset();
+  execFileMock.mockImplementation(completeExecFileSuccessfully);
   mkdtempSyncMock.mockClear();
   rmSyncMock.mockClear();
   spawnMock.mockReset();
@@ -114,18 +127,17 @@ describe("script provider Windows cleanup", () => {
     "falls back to direct shell execution when Job Object helper %s is blocked",
     async (blockedStage) => {
       vi.resetModules();
-      execFileSyncMock.mockReset();
       if (blockedStage === "temp") {
         mkdtempSyncMock.mockImplementationOnce(() => {
           throw new Error("blocked");
         });
       } else if (blockedStage === "compile") {
-        execFileSyncMock.mockImplementationOnce(() => {
+        execFileMock.mockImplementationOnce(() => {
           throw new Error("blocked");
         });
       } else {
-        execFileSyncMock
-          .mockImplementationOnce(() => undefined)
+        execFileMock
+          .mockImplementationOnce(completeExecFileSuccessfully)
           .mockImplementationOnce(() => {
             throw new Error("blocked");
           });
@@ -145,6 +157,7 @@ describe("script provider Windows cleanup", () => {
           text: "payload",
         })
         .catch((error: unknown) => error);
+      await flushScriptSpawn();
       scriptChild.emit("close", 7, null);
       await failurePromise;
 
@@ -155,6 +168,32 @@ describe("script provider Windows cleanup", () => {
       });
     },
   );
+
+  it("counts Job Object helper bootstrap against the command timeout", async () => {
+    vi.resetModules();
+    execFileMock.mockReset();
+    execFileMock.mockReturnValueOnce(createFakeChild(1109));
+    const { ScriptProviderAdapter: IsolatedScriptProviderAdapter } =
+      await import("../src/providers/builtin/script.js");
+    const context = createContext();
+    const provider = new IsolatedScriptProviderAdapter(context);
+
+    const failurePromise = provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(context.fixture.timeoutMs);
+    const failure = await failurePromise;
+
+    expect(ensureErrorMessage(failure)).toContain(
+      `Script command timed out after ${context.fixture.timeoutMs}ms.`,
+    );
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
 
   it("starts scripts inside an atomic kill-on-close Job Object", async () => {
     const scriptChild = createFakeChild(1111);
@@ -170,19 +209,20 @@ describe("script provider Windows cleanup", () => {
         text: "payload",
       })
       .catch((error: unknown) => error);
+    await flushScriptSpawn();
     scriptChild.emit("close", 7, null);
     await failurePromise;
 
-    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
-    const compileOptions = execFileSyncMock.mock.calls[0]?.[2] as
+    expect(execFileMock).toHaveBeenCalledTimes(2);
+    const compileOptions = execFileMock.mock.calls[0]?.[2] as
       | { env?: NodeJS.ProcessEnv }
       | undefined;
     const helperSource = compileOptions?.env?.CRABLINE_INTERNAL_SCRIPT_JOB_HELPER_SOURCE;
     expect(helperSource).toContain("JobObjectLimitKillOnJobClose");
     expect(helperSource).toContain("ProcThreadAttributeJobList");
     expect(helperSource).toContain("CreateSuspended|ExtendedStartupInfoPresent");
-    expect(execFileSyncMock.mock.calls[1]?.[1]).toEqual([]);
-    expect(execFileSyncMock.mock.calls[1]?.[2]).toMatchObject({
+    expect(execFileMock.mock.calls[1]?.[1]).toEqual([]);
+    expect(execFileMock.mock.calls[1]?.[2]).toMatchObject({
       env: {
         CRABLINE_INTERNAL_SCRIPT_JOB_COMMAND: expect.any(String),
         CRABLINE_INTERNAL_SCRIPT_JOB_SHELL: expect.any(String),
@@ -213,6 +253,7 @@ describe("script provider Windows cleanup", () => {
           text: "payload",
         })
         .catch((error: unknown) => error);
+      await flushScriptSpawn();
       scriptChild.stderr.write("opaque-value failed");
       scriptChild.emit("close", 7, null);
       const failure = await failurePromise;
@@ -237,6 +278,7 @@ describe("script provider Windows cleanup", () => {
         text: "payload",
       })
       .catch((error: unknown) => error);
+    await flushScriptSpawn();
     scriptChild.stderr.write("opaque-value failed");
     scriptChild.emit("close", 7, null);
     const failure = await failurePromise;
@@ -260,6 +302,7 @@ describe("script provider Windows cleanup", () => {
         text: "payload",
       })
       .catch((error: unknown) => error);
+    await flushScriptSpawn();
     scriptChild.stderr.write("opaque-value");
     scriptChild.emit("close", 7, null);
     const failure = await failurePromise;
@@ -283,6 +326,7 @@ describe("script provider Windows cleanup", () => {
         text: "payload",
       })
       .catch((error: unknown) => error);
+    await flushScriptSpawn();
     scriptChild.stderr.write('opaque"value');
     scriptChild.emit("close", 7, null);
     const failure = await failurePromise;
@@ -306,6 +350,7 @@ describe("script provider Windows cleanup", () => {
         text: "payload",
       })
       .catch((error: unknown) => error);
+    await flushScriptSpawn();
     scriptChild.stderr.write("opaque-value");
     scriptChild.emit("close", 7, null);
     const failure = await failurePromise;
@@ -332,6 +377,7 @@ describe("script provider Windows cleanup", () => {
           text: "payload",
         })
         .catch((error: unknown) => error);
+      await flushScriptSpawn();
       scriptChild.stderr.write("opaque-value");
       scriptChild.emit("close", 7, null);
       const failure = await failurePromise;

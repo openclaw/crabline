@@ -1,8 +1,9 @@
 import {
-  execFileSync,
+  execFile,
   spawn,
   type ChildProcess,
   type ChildProcessByStdio,
+  type ExecFileOptions,
 } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -258,6 +259,7 @@ const WINDOWS_PROCESS_TERMINATOR_SOURCE = [
 ].join("");
 
 let windowsJobHelperPath: string | null | undefined;
+let windowsJobHelperPromise: Promise<string | undefined> | undefined;
 
 function removeWindowsJobHelper(directory: string): void {
   try {
@@ -267,7 +269,27 @@ function removeWindowsJobHelper(directory: string): void {
   }
 }
 
-function ensureWindowsJobHelper(): string | undefined {
+function runWindowsJobHelperCommand(
+  executable: string,
+  args: string[],
+  options: ExecFileOptions,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    try {
+      execFile(executable, args, options, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+async function createWindowsJobHelper(): Promise<string | undefined> {
   if (windowsJobHelperPath !== undefined) {
     return windowsJobHelperPath ?? undefined;
   }
@@ -280,7 +302,7 @@ function ensureWindowsJobHelper(): string | undefined {
   }
   const helperPath = path.join(directory, "crabline-script-job.exe");
   try {
-    execFileSync(
+    await runWindowsJobHelperCommand(
       "powershell.exe",
       [
         "-NoLogo",
@@ -290,25 +312,22 @@ function ensureWindowsJobHelper(): string | undefined {
         `Add-Type -TypeDefinition $env:${WINDOWS_JOB_HELPER_SOURCE_ENV} -Language CSharp -OutputAssembly $env:${WINDOWS_JOB_HELPER_OUTPUT_ENV} -OutputType ConsoleApplication`,
       ],
       {
-        encoding: "utf8",
         env: {
           ...process.env,
           [WINDOWS_JOB_HELPER_OUTPUT_ENV]: helperPath,
           [WINDOWS_JOB_HELPER_SOURCE_ENV]: WINDOWS_JOB_HELPER_SOURCE,
         },
-        stdio: ["ignore", "pipe", "pipe"],
         timeout: 15_000,
         windowsHide: true,
       },
     );
     const probeCommand = windowsShellCommand("exit 0");
-    execFileSync(helperPath, [], {
+    await runWindowsJobHelperCommand(helperPath, [], {
       env: {
         ...process.env,
         [WINDOWS_JOB_COMMAND_ENV]: Buffer.from(probeCommand.commandLine).toString("base64"),
         [WINDOWS_JOB_SHELL_ENV]: Buffer.from(probeCommand.shell).toString("base64"),
       },
-      stdio: "ignore",
       timeout: 5_000,
       windowsHide: true,
     });
@@ -320,6 +339,41 @@ function ensureWindowsJobHelper(): string | undefined {
   windowsJobHelperPath = helperPath;
   process.once("exit", () => removeWindowsJobHelper(directory));
   return helperPath;
+}
+
+function ensureWindowsJobHelper(): Promise<string | undefined> {
+  if (windowsJobHelperPath !== undefined) {
+    return Promise.resolve(windowsJobHelperPath ?? undefined);
+  }
+  windowsJobHelperPromise ??= createWindowsJobHelper().finally(() => {
+    windowsJobHelperPromise = undefined;
+  });
+  return windowsJobHelperPromise;
+}
+
+function waitForPromiseOrAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    return Promise.reject(signal.reason ?? new Error("Script command aborted."));
+  }
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      reject(signal.reason ?? new Error("Script command aborted."));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    void promise.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function quoteWindowsArgument(value: string): string {
@@ -366,16 +420,22 @@ function windowsShellCommand(
   };
 }
 
-function spawnScriptChild(params: {
-  command: string;
-  cwd?: string | undefined;
-  shell?: string | undefined;
-}): { child: SpawnedScriptChild; observedAtMs: number; startedAtMs: number } {
+async function spawnScriptChild(
+  params: {
+    command: string;
+    cwd?: string | undefined;
+    shell?: string | undefined;
+  },
+  signal?: AbortSignal,
+): Promise<{ child: SpawnedScriptChild; observedAtMs: number; startedAtMs: number }> {
   const cwd = params.cwd ? path.resolve(params.cwd) : process.cwd();
   let startedAtMs: number;
   let child: SpawnedScriptChild;
   if (process.platform === "win32") {
-    const helperPath = ensureWindowsJobHelper();
+    const helperPath = await waitForPromiseOrAbort(ensureWindowsJobHelper(), signal);
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error("Script command aborted.");
+    }
     startedAtMs = Date.now();
     if (helperPath) {
       const shellCommand = windowsShellCommand(params.command, params.shell);
@@ -1181,42 +1241,17 @@ function runScript<T>(params: {
     params.shell,
   );
   return new Promise((resolve, reject) => {
-    let child: SpawnedScriptChild;
-    let childStartedAtMs: number;
-    let childObservedAtMs: number;
-    try {
-      ({
-        child,
-        observedAtMs: childObservedAtMs,
-        startedAtMs: childStartedAtMs,
-      } = spawnScriptChild(params));
-    } catch (error) {
-      reject(
-        new CrablineError(
-          formatScriptError(
-            "Script command failed to start.",
-            ensureErrorMessage(error),
-            params.command,
-            diagnostics,
-          ),
-          { kind: "connectivity" },
-        ),
-      );
-      return;
-    }
-
+    let child: SpawnedScriptChild | undefined;
+    let childStartedAtMs = 0;
+    let childObservedAtMs = 0;
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let deadlineExceeded = false;
     let outputBytes = 0;
     let settled = false;
+    let timeout: NodeJS.Timeout;
     let timeoutGrace: NodeJS.Timeout | undefined;
-    const abort = () => {
-      finish(async () => {
-        await terminateChild(child, childStartedAtMs, childObservedAtMs);
-        reject(params.signal?.reason ?? new Error("Script command aborted."));
-      });
-    };
+    const spawnAbortController = new AbortController();
 
     const finish = (callback: () => Promise<void> | void) => {
       if (settled) {
@@ -1225,13 +1260,27 @@ function runScript<T>(params: {
       settled = true;
       clearTimeout(timeout);
       clearTimeout(timeoutGrace);
+      spawnAbortController.abort();
       params.signal?.removeEventListener("abort", abort);
       void callback();
     };
 
+    const stopChild = async () => {
+      if (child) {
+        await terminateChild(child, childStartedAtMs, childObservedAtMs);
+      }
+    };
+
+    const abort = () => {
+      finish(async () => {
+        await stopChild();
+        reject(params.signal?.reason ?? new Error("Script command aborted."));
+      });
+    };
+
     const failForOutputLimit = () => {
       finish(async () => {
-        await terminateChild(child, childStartedAtMs, childObservedAtMs);
+        await stopChild();
         reject(
           new CrablineError(`Script command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of output.`, {
             kind: "connectivity",
@@ -1240,88 +1289,91 @@ function runScript<T>(params: {
       });
     };
 
-    child.stdout.on("data", (chunk) => {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      outputBytes += buffer.length;
-      if (outputBytes > MAX_SCRIPT_OUTPUT_BYTES) {
-        failForOutputLimit();
-        return;
-      }
-      stdout.push(buffer);
-    });
-
-    child.stderr.on("data", (chunk) => {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      outputBytes += buffer.length;
-      if (outputBytes > MAX_SCRIPT_OUTPUT_BYTES) {
-        failForOutputLimit();
-        return;
-      }
-      stderr.push(buffer);
-    });
-
-    child.stdin.on("error", () => {
-      // Child closure is reported through the process error/close handlers.
-    });
-    child.once("error", (error) => {
-      finish(() => {
-        reject(
-          new CrablineError(
-            formatScriptError(
-              "Script command failed to start.",
-              ensureErrorMessage(error),
-              params.command,
-              diagnostics,
-            ),
-            { kind: "connectivity" },
-          ),
-        );
+    const startChild = (spawnedChild: SpawnedScriptChild) => {
+      spawnedChild.stdout.on("data", (chunk) => {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        outputBytes += buffer.length;
+        if (outputBytes > MAX_SCRIPT_OUTPUT_BYTES) {
+          failForOutputLimit();
+          return;
+        }
+        stdout.push(buffer);
       });
-    });
-    child.once("close", (code, signal) => {
-      finish(() => {
-        const stdoutText = Buffer.concat(stdout).toString("utf8");
-        const stderrText = Buffer.concat(stderr).toString("utf8");
-        if (code !== 0) {
+
+      spawnedChild.stderr.on("data", (chunk) => {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        outputBytes += buffer.length;
+        if (outputBytes > MAX_SCRIPT_OUTPUT_BYTES) {
+          failForOutputLimit();
+          return;
+        }
+        stderr.push(buffer);
+      });
+
+      spawnedChild.stdin.on("error", () => {
+        // Child closure is reported through the process error/close handlers.
+      });
+      spawnedChild.once("error", (error) => {
+        finish(() => {
           reject(
             new CrablineError(
               formatScriptError(
-                `Script command failed${signal ? ` (${signal})` : ""}.`,
-                stderrText.trim() ? stderrText : stdoutText,
+                "Script command failed to start.",
+                ensureErrorMessage(error),
                 params.command,
                 diagnostics,
               ),
               { kind: "connectivity" },
             ),
           );
-          return;
-        }
-
-        try {
-          const result = parseScriptJson({
-            command: params.command,
-            diagnostics,
-            output: stdoutText,
-            schema: params.schema,
-          });
-          if (deadlineExceeded && !params.acceptResultDuringTimeoutGrace?.(result)) {
+        });
+      });
+      spawnedChild.once("close", (code, signal) => {
+        finish(() => {
+          const stdoutText = Buffer.concat(stdout).toString("utf8");
+          const stderrText = Buffer.concat(stderr).toString("utf8");
+          if (code !== 0) {
             reject(
-              new CrablineError(`Script command timed out after ${params.timeoutMs}ms.`, {
-                kind: "timeout",
-              }),
+              new CrablineError(
+                formatScriptError(
+                  `Script command failed${signal ? ` (${signal})` : ""}.`,
+                  stderrText.trim() ? stderrText : stdoutText,
+                  params.command,
+                  diagnostics,
+                ),
+                { kind: "connectivity" },
+              ),
             );
             return;
           }
-          resolve(result);
-        } catch (error) {
-          reject(error);
-        }
+
+          try {
+            const result = parseScriptJson({
+              command: params.command,
+              diagnostics,
+              output: stdoutText,
+              schema: params.schema,
+            });
+            if (deadlineExceeded && !params.acceptResultDuringTimeoutGrace?.(result)) {
+              reject(
+                new CrablineError(`Script command timed out after ${params.timeoutMs}ms.`, {
+                  kind: "timeout",
+                }),
+              );
+              return;
+            }
+            resolve(result);
+          } catch (error) {
+            reject(error);
+          }
+        });
       });
-    });
+      spawnedChild.stdin.end(serializedPayload);
+    };
 
     const failForTimeout = () => {
       finish(async () => {
-        await terminateChild(child, childStartedAtMs, childObservedAtMs);
+        await stopChild();
         reject(
           new CrablineError(`Script command timed out after ${params.timeoutMs}ms.`, {
             kind: "timeout",
@@ -1329,7 +1381,7 @@ function runScript<T>(params: {
         );
       });
     };
-    const timeout = setTimeout(() => {
+    timeout = setTimeout(() => {
       const timeoutGraceMs = params.timeoutGraceMs ?? 0;
       if (timeoutGraceMs <= 0) {
         failForTimeout();
@@ -1341,12 +1393,42 @@ function runScript<T>(params: {
     }, params.timeoutMs);
     timeout.unref();
 
+    params.signal?.addEventListener("abort", abort, { once: true });
     if (params.signal?.aborted) {
       abort();
       return;
     }
-    params.signal?.addEventListener("abort", abort, { once: true });
-    child.stdin.end(serializedPayload);
+
+    void spawnScriptChild(params, spawnAbortController.signal).then(
+      (spawned) => {
+        if (settled) {
+          void terminateChild(spawned.child, spawned.startedAtMs, spawned.observedAtMs);
+          return;
+        }
+        child = spawned.child;
+        childStartedAtMs = spawned.startedAtMs;
+        childObservedAtMs = spawned.observedAtMs;
+        startChild(spawned.child);
+      },
+      (error: unknown) => {
+        if (settled) {
+          return;
+        }
+        finish(() => {
+          reject(
+            new CrablineError(
+              formatScriptError(
+                "Script command failed to start.",
+                ensureErrorMessage(error),
+                params.command,
+                diagnostics,
+              ),
+              { kind: "connectivity" },
+            ),
+          );
+        });
+      },
+    );
   });
 }
 
@@ -1382,13 +1464,22 @@ function watchScript(params: {
     let child: SpawnedScriptChild;
     let childStartedAtMs: number;
     let childObservedAtMs: number;
+    const spawnSignal = params.context.signal
+      ? AbortSignal.any([params.cancelSignal, params.context.signal])
+      : params.cancelSignal;
     try {
       ({
         child,
         observedAtMs: childObservedAtMs,
         startedAtMs: childStartedAtMs,
-      } = spawnScriptChild(params));
+      } = await spawnScriptChild(params, spawnSignal));
     } catch (error) {
+      if (params.cancelSignal.aborted) {
+        return;
+      }
+      if (params.context.signal?.aborted) {
+        throw params.context.signal.reason ?? new Error("Script watch command aborted.");
+      }
       throw new CrablineError(
         formatScriptError(
           "Script watch command failed to start.",
