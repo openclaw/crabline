@@ -179,11 +179,31 @@ describe("Mattermost local provider server", () => {
     const server = await startMattermostServer({ adminToken: "admin" });
     servers.push(server);
 
-    for (const body of [
-      { channelId: "short", senderId: USER_ID, text: "invalid channel" },
-      { channelId: "A".repeat(26), senderId: USER_ID, text: "invalid channel alphabet" },
-      { channelId: CHANNEL_ID, senderId: "short", text: "invalid sender" },
-      { channelId: CHANNEL_ID, rootId: "short", senderId: USER_ID, text: "invalid root" },
+    for (const [body, error] of [
+      [
+        { channelId: "short", senderId: USER_ID, text: "invalid channel" },
+        "channelId must be a 26-character Mattermost ID",
+      ],
+      [
+        { channelId: "A".repeat(26), senderId: USER_ID, text: "invalid channel alphabet" },
+        "channelId must be a 26-character Mattermost ID",
+      ],
+      [
+        { channelId: CHANNEL_ID, senderId: "short", text: "invalid sender" },
+        "senderId must be a 26-character Mattermost ID",
+      ],
+      [
+        { channelId: CHANNEL_ID, rootId: "short", senderId: USER_ID, text: "invalid root" },
+        "rootId must be a 26-character Mattermost ID",
+      ],
+      [
+        { channelId: CHANNEL_ID, rootId: 123, senderId: USER_ID, text: "numeric root" },
+        "rootId must be a string",
+      ],
+      [
+        { channelId: CHANNEL_ID, root_id: {}, senderId: USER_ID, text: "object root" },
+        "root_id must be a string",
+      ],
     ]) {
       const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
         body: JSON.stringify(body),
@@ -195,7 +215,7 @@ describe("Mattermost local provider server", () => {
       });
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toMatchObject({
-        error: expect.stringContaining("26-character Mattermost ID"),
+        error,
         ok: false,
       });
     }
