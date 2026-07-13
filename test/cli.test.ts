@@ -411,7 +411,7 @@ describe("cli", () => {
     }
   });
 
-  it("loads serve secrets from a bounded file descriptor over env", async () => {
+  it("loads partial serve secrets from a bounded file descriptor over env", async () => {
     vi.stubEnv("CRABLINE_ACCESS_TOKEN", "example");
     vi.stubEnv("CRABLINE_ADMIN_TOKEN", "fake");
     vi.stubEnv("CRABLINE_BOT_TOKEN", "sample");
@@ -419,25 +419,14 @@ describe("cli", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const credentialsPath = path.join(directory, "credentials.json");
-    const fdAccess = ["fd", "access"].join("-");
-    const fdAdmin = ["fd", "admin"].join("-");
     const fdBot = ["fd", "bot"].join("-");
-    const fdSigning = ["fd", "signing"].join("-");
-    await writeText(
-      credentialsPath,
-      JSON.stringify({
-        accessToken: fdAccess,
-        adminToken: fdAdmin,
-        botToken: fdBot,
-        signingSecret: fdSigning,
-      }),
-    );
+    await writeText(credentialsPath, JSON.stringify({ botToken: fdBot }));
     const credentialsHandle = await fs.open(credentialsPath, "r");
     const startServer = vi.fn(
       async (_params: StartCrablineServerParams): Promise<StartedCrablineServer> => ({
         async close() {},
         manifest: {
-          adminToken: fdAdmin,
+          adminToken: "fake",
           baseUrl: "http://127.0.0.1:12345",
           botToken: fdBot,
           endpoints: {
@@ -448,11 +437,11 @@ describe("cli", () => {
           env: {
             SLACK_API_URL: "http://127.0.0.1:12345/api/",
             SLACK_BOT_TOKEN: fdBot,
-            SLACK_SIGNING_SECRET: fdSigning,
+            SLACK_SIGNING_SECRET: "test-token-placeholder",
           },
           provider: "slack" as const,
           recorderPath: "/tmp/slack.jsonl",
-          signingSecret: fdSigning,
+          signingSecret: "test-token-placeholder",
           version: 1 as const,
         },
       }),
@@ -477,12 +466,99 @@ describe("cli", () => {
 
     expect(startServer).toHaveBeenCalledWith(
       expect.objectContaining({
-        adminToken: fdAdmin,
+        adminToken: "fake",
         botToken: fdBot,
         channel: "slack",
-        signingSecret: fdSigning,
+        signingSecret: "test-token-placeholder",
       }),
     );
+  });
+
+  it("accepts credential JSON at the exact byte limit", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const credentialsPath = path.join(directory, "credentials.json");
+    const emptyDocumentBytes = Buffer.byteLength(JSON.stringify({ botToken: "" }));
+    const botToken = "x".repeat(64 * 1024 - emptyDocumentBytes);
+    const document = JSON.stringify({ botToken });
+    expect(Buffer.byteLength(document)).toBe(64 * 1024);
+    await writeText(credentialsPath, document);
+    const credentialsHandle = await fs.open(credentialsPath, "r");
+    const startServer = vi.fn(
+      async (): Promise<StartedCrablineServer> => ({
+        async close() {},
+        manifest: {
+          adminToken: "fake",
+          baseUrl: "http://127.0.0.1:12345",
+          botToken,
+          endpoints: {
+            adminInboundUrl: "http://127.0.0.1:12345/crabline/slack/inbound",
+            apiRoot: "http://127.0.0.1:12345/api/",
+            eventsUrl: "http://127.0.0.1:12345/slack/events",
+          },
+          env: {
+            SLACK_API_URL: "http://127.0.0.1:12345/api/",
+            SLACK_BOT_TOKEN: botToken,
+            SLACK_SIGNING_SECRET: "fake",
+          },
+          provider: "slack" as const,
+          recorderPath: "/tmp/slack.jsonl",
+          signingSecret: "fake",
+          version: 1 as const,
+        },
+      }),
+    );
+    const program = createProgram(() => undefined, { startServer });
+
+    try {
+      await captureWrites(async () => {
+        await program.parseAsync([
+          "node",
+          "crabline",
+          "serve",
+          "slack",
+          "--credentials-fd",
+          String(credentialsHandle.fd),
+          "--once",
+        ]);
+      });
+    } finally {
+      await credentialsHandle.close();
+    }
+
+    expect(startServer).toHaveBeenCalledWith(expect.objectContaining({ botToken }));
+  });
+
+  it("rejects unsupported or non-string credential fields", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+
+    for (const [index, [document, message]] of (
+      [
+        [JSON.stringify({ password: "hidden" }), "contains unsupported fields"],
+        [JSON.stringify({ botToken: 42 }), "values must be strings"],
+      ] as const
+    ).entries()) {
+      const credentialsPath = path.join(directory, `${index}.json`);
+      await writeText(credentialsPath, document);
+      const credentialsHandle = await fs.open(credentialsPath, "r");
+      const captured = await captureWrites(async () => {
+        expect(
+          await runCli([
+            "node",
+            "crabline",
+            "serve",
+            "slack",
+            "--once",
+            "--credentials-fd",
+            String(credentialsHandle.fd),
+          ]),
+        ).toBe(10);
+      }).finally(async () => await credentialsHandle.close());
+
+      expect(captured.stderr.join("")).toContain(message);
+      expect(captured.stderr.join("")).not.toContain(document);
+    }
   });
 
   it("rejects malformed credential streams without echoing their contents", async () => {
