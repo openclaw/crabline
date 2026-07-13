@@ -8,6 +8,7 @@ import {
   readString,
 } from "../shared.js";
 import {
+  canonicalizeWhatsAppChatCorrelationJid,
   canonicalizeWhatsAppChatJid,
   canonicalizeWhatsAppUserCorrelationJid,
   canonicalizeWhatsAppUserJid,
@@ -110,11 +111,12 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (parsed.threadId !== undefined) {
           throw new Error("WhatsApp does not support thread targets.");
         }
-        const to = requireWhatsAppJid(parsed.id, "WhatsApp target");
-        requireWhatsAppTargetKind(parsed, to);
-        if (to.endsWith("@g.us")) {
+        const nativeTo = requireWhatsAppJid(parsed.id, "WhatsApp target");
+        requireWhatsAppTargetKind(parsed, nativeTo);
+        if (nativeTo.endsWith("@g.us")) {
           throw new Error("WhatsApp Crabline WebSocket outbound supports direct targets only.");
         }
+        const to = canonicalizeWhatsAppUserCorrelationJid(nativeTo)!;
         return {
           channel: "whatsapp",
           to,
@@ -126,9 +128,11 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (input.threadId !== undefined) {
           throw new Error("WhatsApp does not support thread targets.");
         }
-        const chatJid = requireWhatsAppJid(input.conversation.id, "WhatsApp conversation");
-        requireWhatsAppConversationKind(input.conversation.kind, chatJid);
-        const senderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender", true);
+        const nativeChatJid = requireWhatsAppJid(input.conversation.id, "WhatsApp conversation");
+        requireWhatsAppConversationKind(input.conversation.kind, nativeChatJid);
+        const nativeSenderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender", true);
+        const chatJid = canonicalizeWhatsAppChatCorrelationJid(nativeChatJid)!;
+        const senderJid = canonicalizeWhatsAppUserCorrelationJid(nativeSenderJid)!;
         if (
           input.conversation.kind === "direct" &&
           canonicalizeWhatsAppUserCorrelationJid(chatJid) !==
@@ -172,7 +176,14 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         const baileysKey = isRecord(event.body.key) ? event.body.key : undefined;
         const baileysMessage = isRecord(event.body.message) ? event.body.message : undefined;
         const isBaileysSend = event.method === "WEBSOCKET" && event.path === "/ws/chat";
-        if (!isBaileysSend && event.path !== messagesPath) {
+        const isCloudTextSend =
+          event.method === "POST" &&
+          event.path === messagesPath &&
+          readString(event.body.messaging_product) === "whatsapp" &&
+          readString(event.body.type) === "text" &&
+          !("status" in event.body) &&
+          !("message_id" in event.body);
+        if (!isBaileysSend && !isCloudTextSend) {
           return null;
         }
         const to = isBaileysSend ? readString(baileysKey?.remoteJid) : readString(event.body.to);

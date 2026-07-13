@@ -31,6 +31,10 @@ export function canonicalizeWhatsAppChatJid(value: string): string | undefined {
   return canonicalizeWhatsAppUserJid(value) ?? canonicalizeWhatsAppGroupJid(value);
 }
 
+export function canonicalizeWhatsAppChatCorrelationJid(value: string): string | undefined {
+  return canonicalizeWhatsAppUserCorrelationJid(value) ?? canonicalizeWhatsAppGroupJid(value);
+}
+
 export function isWhatsAppGroupJid(value: string): boolean {
   return canonicalizeWhatsAppGroupJid(value) !== undefined;
 }
