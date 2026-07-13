@@ -185,22 +185,24 @@ function destroyChildPipes(child: ChildProcess): void {
   }
 }
 
+function isChildRunning(child: ChildProcess): boolean {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return false;
+  }
+  try {
+    return child.kill(0);
+  } catch {
+    return false;
+  }
+}
+
 async function terminateChild(
   child: ChildProcess,
   childStartedAtMs: number,
   childObservedAtMs: number,
 ): Promise<void> {
   try {
-    const childRunning =
-      child.exitCode === null &&
-      child.signalCode === null &&
-      (() => {
-        try {
-          return child.kill(0);
-        } catch {
-          return false;
-        }
-      })();
+    const childRunning = isChildRunning(child);
     if (process.platform === "win32") {
       if (child.pid) {
         const cleaned = await runTerminationCommand("powershell.exe", [
@@ -215,7 +217,7 @@ async function terminateChild(
             childRunning,
           ),
         ]);
-        if (!cleaned && childRunning) {
+        if (!cleaned && isChildRunning(child)) {
           await runTerminationCommand("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"]);
         }
       }
@@ -227,7 +229,7 @@ async function terminateChild(
       }
     }
 
-    if (childRunning) {
+    if (isChildRunning(child)) {
       try {
         child.kill("SIGKILL");
       } catch {
@@ -404,11 +406,17 @@ function snapshotCommandValues(
       executableSeen = true;
       continue;
     }
-    if (/^--?[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(token)) {
+    if (/^--[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(token)) {
       if (token.length < 3) {
         return undefined;
       }
       addRedactionRepresentations(exactValues, token);
+      continue;
+    }
+    if (/^-[A-Za-z0-9][A-Za-z0-9_-]+$/u.test(token)) {
+      addRedactionRepresentations(exactValues, token);
+      addCommandValueRedactions(substringValues, token.slice(1));
+      addCommandValueRedactions(substringValues, token.slice(2));
       continue;
     }
     const option = /^--?[A-Za-z0-9][A-Za-z0-9_-]*=(.*)$/u.exec(token);
