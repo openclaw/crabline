@@ -38,6 +38,27 @@ describe("test helpers", () => {
     ).rejects.toThrow("HTTP response closed before completion.");
   });
 
+  it("starts the HTTP deadline before a socket is assigned", async () => {
+    const request = Object.assign(new EventEmitter(), {
+      destroy: vi.fn((error: Error) => request.emit("error", error)),
+      end: vi.fn(),
+      setTimeout: vi.fn(),
+      write: vi.fn(),
+    });
+    const requestImpl = (() => request as unknown as ClientRequest) as typeof httpRequest;
+
+    await expect(
+      requestHttp({
+        method: "GET",
+        requestImpl,
+        timeoutMs: 10,
+        url: "http://127.0.0.1/",
+      }),
+    ).rejects.toThrow("HTTP request timed out after 10 ms.");
+    expect(request.destroy).toHaveBeenCalledOnce();
+    expect(request.setTimeout).not.toHaveBeenCalled();
+  });
+
   it("preserves write overload callbacks while capturing output", async () => {
     const captured = captureWrites();
     const stdoutCallback = vi.fn();
@@ -55,6 +76,27 @@ describe("test helpers", () => {
     expect(captured.stderr).toEqual(["bytes"]);
     expect(stdoutCallback).toHaveBeenCalledWith(null);
     expect(stderrCallback).toHaveBeenCalledWith(null);
+  });
+
+  it("restores nested output captures in either order", () => {
+    const stdoutWrite = process.stdout.write;
+    const stderrWrite = process.stderr.write;
+
+    for (const order of ["outer-first", "inner-first"] as const) {
+      const outer = captureWrites();
+      const inner = captureWrites();
+
+      if (order === "outer-first") {
+        outer.restore();
+        inner.restore();
+      } else {
+        inner.restore();
+        outer.restore();
+      }
+
+      expect(process.stdout.write).toBe(stdoutWrite);
+      expect(process.stderr.write).toBe(stderrWrite);
+    }
   });
 
   it("runs every cleanup operation before reporting failures", async () => {
