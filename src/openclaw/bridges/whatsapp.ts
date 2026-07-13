@@ -131,12 +131,11 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         const nativeChatJid = requireWhatsAppJid(input.conversation.id, "WhatsApp conversation");
         requireWhatsAppConversationKind(input.conversation.kind, nativeChatJid);
         const nativeSenderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender", true);
-        const chatJid = canonicalizeWhatsAppChatCorrelationJid(nativeChatJid)!;
-        const senderJid = canonicalizeWhatsAppUserCorrelationJid(nativeSenderJid)!;
+        const providerTargetKey = canonicalizeWhatsAppChatCorrelationJid(nativeChatJid)!;
         if (
           input.conversation.kind === "direct" &&
-          canonicalizeWhatsAppUserCorrelationJid(chatJid) !==
-            canonicalizeWhatsAppUserCorrelationJid(senderJid)
+          canonicalizeWhatsAppUserCorrelationJid(nativeChatJid) !==
+            canonicalizeWhatsAppUserCorrelationJid(nativeSenderJid)
         ) {
           throw new Error(
             "WhatsApp direct conversation and sender must identify the same recipient.",
@@ -145,19 +144,19 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         return {
           ...createAdminInboundRequest(whatsapp),
           providerBody: {
-            chatJid,
-            senderJid,
+            chatJid: nativeChatJid,
+            senderJid: nativeSenderJid,
             ...(input.senderName ? { pushName: input.senderName } : {}),
             text: input.text,
           },
-          providerTargetKey: chatJid,
+          providerTargetKey,
           qaTarget: qaTargetForInbound({
             ...input,
-            conversation: { ...input.conversation, id: chatJid },
+            conversation: { ...input.conversation, id: providerTargetKey },
           }),
           stateConversation: {
-            id: chatJid,
-            kind: chatJid.endsWith("@g.us") ? "group" : "direct",
+            id: nativeChatJid,
+            kind: nativeChatJid.endsWith("@g.us") ? "group" : "direct",
           },
         };
       },
@@ -176,11 +175,13 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         const baileysKey = isRecord(event.body.key) ? event.body.key : undefined;
         const baileysMessage = isRecord(event.body.message) ? event.body.message : undefined;
         const isBaileysSend = event.method === "WEBSOCKET" && event.path === "/ws/chat";
+        const messagingProduct = readString(event.body.messaging_product);
+        const messageType = readString(event.body.type);
         const isCloudTextSend =
           event.method === "POST" &&
           event.path === messagesPath &&
-          readString(event.body.messaging_product) === "whatsapp" &&
-          readString(event.body.type) === "text" &&
+          (messagingProduct === undefined || messagingProduct === "whatsapp") &&
+          (messageType === undefined || messageType === "text") &&
           !("status" in event.body) &&
           !("message_id" in event.body);
         if (!isBaileysSend && !isCloudTextSend) {
