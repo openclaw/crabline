@@ -154,16 +154,18 @@ describe("Feishu webhook normalizer", () => {
     ).toThrow(/truncated/u);
   });
 
-  it("authenticates encrypted URL verification before decryption", async () => {
+  it("accepts token-authenticated encrypted URL verification without signature headers", async () => {
     const config = await createLocalMockConfig("feishu", "/feishu/webhook");
     const encryptKey = "encrypt-key";
     config.feishu!.encryptKey = encryptKey;
+    config.feishu!.verificationToken = "sample";
     const now = 1_700_000_000_000;
     const authenticate = createFeishuWebhookAuthenticator(config, {}, { now: () => now });
     const encryptedPayload = {
       encrypt: encryptFeishuPayload(
         {
           challenge: "challenge-token",
+          token: "sample",
           type: "url_verification",
         },
         encryptKey,
@@ -178,7 +180,7 @@ describe("Feishu webhook normalizer", () => {
 
     await expect(
       authenticate!(new Request("https://feishu.example.test/webhook"), rawBody),
-    ).resolves.toMatchObject({ status: 401 });
+    ).resolves.toBeUndefined();
     await expect(
       authenticate!(
         new Request("https://feishu.example.test/webhook", {
@@ -191,6 +193,21 @@ describe("Feishu webhook normalizer", () => {
         rawBody,
       ),
     ).resolves.toBeUndefined();
+    await expect(
+      authenticate!(
+        new Request("https://feishu.example.test/webhook"),
+        JSON.stringify({
+          encrypt: encryptFeishuPayload(
+            {
+              challenge: "challenge-token",
+              token: "wrong",
+              type: "url_verification",
+            },
+            encryptKey,
+          ),
+        }),
+      ),
+    ).resolves.toMatchObject({ status: 401 });
     await expect(
       authenticate!(
         new Request("https://feishu.example.test/webhook", {

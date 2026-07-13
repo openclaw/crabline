@@ -115,15 +115,15 @@ function createFeishuWebhookAuthenticatorWithReplay(
       if (!resolved.encryptKey) {
         return unauthorizedFeishuWebhook();
       }
-      if (!verifyFeishuSignature(request, rawBody, resolved.encryptKey)) {
-        return unauthorizedFeishuWebhook();
-      }
       try {
         payload = decryptFeishuWebhookPayload(payload, resolved.encryptKey);
       } catch {
         return unauthorizedFeishuWebhook();
       }
-      signedRequest = true;
+      signedRequest = verifyFeishuSignature(request, rawBody, resolved.encryptKey);
+      if (!signedRequest && !(isFeishuUrlVerification(payload) && validateCallback)) {
+        return unauthorizedFeishuWebhook();
+      }
     } else if (resolved.encryptKey) {
       return unauthorizedFeishuWebhook();
     }
