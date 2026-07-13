@@ -646,10 +646,10 @@ async function secureRecorderLockRoot(
     ) {
       throw new Error("Provider recorder lock directory is not privately owned.");
     }
-    if ((identity.mode & 0o077n) !== 0n) {
+    if ((identity.mode & 0o777n) !== 0o700n) {
       await handle.chmod(0o700);
       const secured = await handle.stat({ bigint: true });
-      if ((secured.mode & 0o077n) !== 0n) {
+      if ((secured.mode & 0o777n) !== 0o700n) {
         throw new Error("Provider recorder lock directory permissions are not private.");
       }
     }
@@ -695,7 +695,12 @@ async function privateRecorderLockRoot(
     );
   }
   return await secureRecorderLockRoot(
-    path.join(path.dirname(filePath), ".crabline-provider-recorder-locks"),
+    path.join(
+      path.dirname(filePath),
+      currentUserId === undefined
+        ? ".crabline-provider-recorder-locks"
+        : `.crabline-provider-recorder-locks-${currentUserId}`,
+    ),
     currentUserId,
   );
 }
