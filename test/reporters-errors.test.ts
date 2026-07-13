@@ -11,11 +11,12 @@ describe("errors and reporters", () => {
   it("maps failure kinds to exit codes", () => {
     const error = new CrablineError("boom", { kind: "auth" });
     expect(error.exitCode).toBe(EXIT_CODES.AUTH);
+    expect(error.hasExplicitExitCode).toBe(false);
     expect(ensureErrorMessage(error)).toBe("boom");
     expect(ensureErrorMessage("plain")).toBe("plain");
-    expect(new CrablineError("failed", { exitCode: EXIT_CODES.SUCCESS }).exitCode).toBe(
-      EXIT_CODES.FAILURE,
-    );
+    const normalizedExit = new CrablineError("failed", { exitCode: EXIT_CODES.SUCCESS });
+    expect(normalizedExit.exitCode).toBe(EXIT_CODES.FAILURE);
+    expect(normalizedExit.hasExplicitExitCode).toBe(true);
     expect(ensureErrorMessage(Object.create(null))).toBe("Unknown error");
     const numericMessage = new Error("hidden");
     Object.defineProperty(numericMessage, "message", { value: 42 });

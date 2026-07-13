@@ -21,6 +21,7 @@ const KIND_TO_EXIT: Record<FailureKind, ExitCode> = {
 
 export class CrablineError extends Error {
   readonly exitCode: ExitCode;
+  readonly hasExplicitExitCode: boolean;
   readonly kind: FailureKind | undefined;
 
   constructor(
@@ -29,6 +30,7 @@ export class CrablineError extends Error {
   ) {
     super(message, options);
     this.name = "CrablineError";
+    this.hasExplicitExitCode = options?.exitCode !== undefined;
     this.kind = options?.kind;
     this.exitCode =
       options?.exitCode === EXIT_CODES.SUCCESS

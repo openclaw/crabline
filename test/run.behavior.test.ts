@@ -573,7 +573,60 @@ describe("run behavior", () => {
     stage = "send";
     expect((await run()).failureKind).toBe("outbound");
     stage = "wait";
-    expect((await run()).failureKind).toBe("inbound");
+    const waitFailure = await run();
+    expect(waitFailure.failureKind).toBe("inbound");
+    expect(waitFailure.diagnostics).toEqual(["accepted message sent", "wait exploded"]);
+  });
+
+  it("classifies untyped CrablineError failures by execution stage", async () => {
+    let stage: "probe" | "send" | "wait" = "probe";
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => {
+        throw new CrablineError("probe exploded");
+      },
+      send: async () => {
+        if (stage === "send") {
+          throw new CrablineError("send exploded");
+        }
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      waitForInbound: async () => {
+        throw new CrablineError("wait exploded");
+      },
+    };
+    const run = (modeOverride?: "probe") =>
+      runFixtureCommand({
+        fixtureId: "fixture",
+        manifest: withAllCapabilities(manifest),
+        manifestPath: "/tmp/crabline.yaml",
+        ...(modeOverride ? { modeOverride } : {}),
+        registry: buildRegistry(provider),
+      });
+
+    const probe = await run("probe");
+    expect(probe).toMatchObject({ failureKind: "connectivity", ok: false });
+    expect(probe.exitCode).toBeUndefined();
+    expect(computeExitCode(probe)).toBe(EXIT_CODES.CONNECTIVITY);
+
+    stage = "send";
+    const send = await run();
+    expect(send).toMatchObject({ failureKind: "outbound", ok: false });
+    expect(send.exitCode).toBeUndefined();
+    expect(computeExitCode(send)).toBe(EXIT_CODES.OUTBOUND);
+
+    stage = "wait";
+    const wait = await run();
+    expect(wait).toMatchObject({ failureKind: "inbound", ok: false });
+    expect(wait.exitCode).toBeUndefined();
+    expect(computeExitCode(wait)).toBe(EXIT_CODES.INBOUND);
+    expect(wait.diagnostics).toEqual(["accepted message sent", "wait exploded"]);
   });
 
   it("retries rejected outbound results and fails when rejection persists", async () => {
