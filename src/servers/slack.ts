@@ -716,6 +716,7 @@ async function deliverSlackEvent(
     try {
       const timestamp = Math.floor(Date.now() / 1000).toString();
       const headerEntries = [
+        ["content-type", "application/json"],
         ...(attempt > 0
           ? ([
               ["x-slack-retry-num", String(attempt)],
