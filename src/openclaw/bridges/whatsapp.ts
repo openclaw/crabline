@@ -129,6 +129,15 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         const chatJid = requireWhatsAppJid(input.conversation.id, "WhatsApp conversation");
         requireWhatsAppConversationKind(input.conversation.kind, chatJid);
         const senderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender", true);
+        if (
+          input.conversation.kind === "direct" &&
+          canonicalizeWhatsAppUserCorrelationJid(chatJid) !==
+            canonicalizeWhatsAppUserCorrelationJid(senderJid)
+        ) {
+          throw new Error(
+            "WhatsApp direct conversation and sender must identify the same recipient.",
+          );
+        }
         return {
           ...createAdminInboundRequest(whatsapp),
           providerBody: {
