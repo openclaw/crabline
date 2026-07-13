@@ -218,6 +218,32 @@ describe("signed JWT remote key cache", () => {
     }
   });
 
+  it("ignores extension directives whose HTTP token names start with max-age", () => {
+    const now = 1_700_000_000_000;
+    const expires = new Date(now + 30 * 60 * 1_000).toUTCString();
+
+    for (const directive of [
+      "max-age-fallback=3600",
+      "max-age.fallback=3600",
+      "max-age*fallback=3600",
+    ]) {
+      expect(
+        resolveHttpCacheExpiry(
+          new Response(null, { headers: { "cache-control": `public, ${directive}` } }),
+          now,
+        ),
+      ).toBe(now + 3_600_000);
+      expect(
+        resolveHttpCacheExpiry(
+          new Response(null, {
+            headers: { "cache-control": `public, ${directive}`, expires },
+          }),
+          now,
+        ),
+      ).toBe(now + 1_800_000);
+    }
+  });
+
   it("distinguishes absent Expires from invalid or stale values", () => {
     const now = 1_700_000_000_000;
 
