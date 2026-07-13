@@ -827,6 +827,60 @@ describe("script provider", () => {
     }
   });
 
+  it("redacts URL userinfo and Authorization credential forms", async () => {
+    const context = await createContext();
+    const urlEnvName = "CRABLINE_DATABASE_URL";
+    const headerEnvName = "CRABLINE_HTTP_HEADER";
+    const originalValues = new Map([
+      [urlEnvName, process.env[urlEnvName]],
+      [headerEnvName, process.env[headerEnvName]],
+    ]);
+    process.env[urlEnvName] = "https://sample:test-token-placeholder@service.test/database";
+    process.env[headerEnvName] = "Authorization: Bearer placeholder";
+
+    try {
+      const failingScript = path.join(path.dirname(context.manifestPath), "send-auth-forms.mjs");
+      await writeText(
+        failingScript,
+        `process.stderr.write([
+          process.env.${urlEnvName},
+          process.env.${headerEnvName},
+          "Authorization=Basic sample",
+          "API_TOKEN=dummy",
+          "--client-secret fake"
+        ].join("\\n"));process.exitCode=7;`,
+      );
+      context.config.script!.commands.send = `node ${JSON.stringify(failingScript)}`;
+      const provider = new ScriptProviderAdapter(context);
+      const failure = await provider
+        .send({
+          ...context,
+          mode: "send",
+          nonce: "nonce",
+          text: "payload",
+        })
+        .catch((error: unknown) => error);
+      const message = ensureErrorMessage(failure);
+
+      expect(message).toContain("https://[redacted credentials]@service.test/database");
+      expect(message).toContain("Authorization: Bearer [redacted credential]");
+      expect(message).toContain("Authorization=Basic [redacted credential]");
+      expect(message).toContain("API_TOKEN=[redacted credential]");
+      expect(message).toContain("--client-secret [redacted credential]");
+      for (const secret of ["sample", "test-token-placeholder", "placeholder", "dummy", "fake"]) {
+        expect(message).not.toContain(secret);
+      }
+    } finally {
+      for (const [name, originalValue] of originalValues) {
+        if (originalValue === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = originalValue;
+        }
+      }
+    }
+  });
+
   it("redacts environment secrets before configured command substrings", async () => {
     const context = await createContext();
     const envName = ["SCRIPT", "TOKEN"].join("_");
