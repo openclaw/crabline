@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { LocalMockProviderAdapter } from "../local-mock.js";
+import { LocalMockProviderAdapter, resolveGeneratedLocalMockRecorderPath } from "../local-mock.js";
 import { getBuiltinTargetCodec } from "../target-normalizers.js";
 import type { LoopbackMessage, LoopbackRawMessage, ProviderAdapter } from "../types.js";
 
@@ -308,7 +307,7 @@ export class LoopbackProviderAdapter extends LocalMockProviderAdapter implements
         defaultWebhook: { host: "127.0.0.1", path: "/loopback/webhook", port: 0 },
         endpointLabel: "webhook endpoint",
         platform: "loopback",
-        recorderPath: path.resolve(".crabline", "recorders", `${id}-${randomUUID()}.jsonl`),
+        recorderPath: resolveGeneratedLocalMockRecorderPath(id, `-${randomUUID()}`),
       },
     });
   }
