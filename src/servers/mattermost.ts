@@ -8,6 +8,7 @@ import {
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
+  isJsonMediaType,
   isLoopbackHost,
   jsonResponse,
   parseUnknownRequestBody,
@@ -29,6 +30,7 @@ const DEFAULT_WEBSOCKET_AUTHENTICATION_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_WEBSOCKET_BUFFERED_BYTES = 1024 * 1024;
 const DEFAULT_MAX_WEBSOCKET_MESSAGE_BYTES = 64 * 1024;
 const DEFAULT_MAX_UNAUTHENTICATED_WEBSOCKET_CLIENTS = 32;
+const MATTERMOST_ID_PATTERN = /^[a-z0-9]{26}$/u;
 
 function resolvePositiveLimit(value: number | undefined, name: string, fallback: number): number {
   if (value === undefined) {
@@ -50,6 +52,13 @@ type MattermostPost = {
   user_id: string;
 };
 
+type MattermostChannel = {
+  display_name: string;
+  id: string;
+  name: string;
+  type: string;
+};
+
 type MattermostWebSocketEvent = {
   broadcast: {
     channel_id: string;
@@ -69,7 +78,7 @@ type MattermostServerState = {
   botToken: string;
   botUserId: string;
   botUsername: string;
-  channels: Map<string, { id: string; name: string; display_name: string; type: string }>;
+  channels: Map<string, MattermostChannel>;
   maxPendingInboundEvents: number;
   maxWebSocketBufferedBytes: number;
   nextPost: number;
@@ -169,6 +178,17 @@ function readMattermostMessage(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+function isMattermostId(value: string): boolean {
+  return MATTERMOST_ID_PATTERN.test(value);
+}
+
+function requestHasJsonMediaType(request: IncomingMessage): boolean {
+  const contentType = request.headers["content-type"];
+  return Array.isArray(contentType)
+    ? contentType.some(isJsonMediaType)
+    : typeof contentType === "string" && isJsonMediaType(contentType);
+}
+
 function decodeMattermostPathSegment(value: string): string | Response {
   try {
     return decodeURIComponent(value);
@@ -194,19 +214,23 @@ function postEvent(
   event: "post_deleted" | "post_edited" | "posted",
   post: MattermostPost,
   senderName: string,
-  channelType: string,
+  channel: MattermostChannel,
 ): MattermostWebSocketEvent {
   return {
     event,
-    data: {
-      channel_display_name: post.channel_id,
-      channel_id: post.channel_id,
-      channel_name: post.channel_id,
-      channel_type: channelType,
-      post: JSON.stringify(post),
-      sender_name: senderName,
-    },
-    broadcast: eventBroadcast({ channelId: post.channel_id, userId: post.user_id }),
+    data:
+      event === "posted"
+        ? {
+            channel_display_name: channel.display_name,
+            channel_name: channel.name,
+            channel_type: channel.type,
+            post: JSON.stringify(post),
+            sender_name: senderName,
+            set_online: true,
+            team_id: "",
+          }
+        : { post: JSON.stringify(post) },
+    broadcast: eventBroadcast({ channelId: post.channel_id }),
   };
 }
 
@@ -350,6 +374,29 @@ function handleAdminInbound(params: {
   if (!channelId || !senderId || !text) {
     return jsonResponse({ error: "channelId, senderId, and text are required", ok: false }, 400);
   }
+  if (!isMattermostId(channelId)) {
+    return jsonResponse(
+      { error: "channelId must be a 26-character Mattermost ID", ok: false },
+      400,
+    );
+  }
+  if (!isMattermostId(senderId)) {
+    return jsonResponse({ error: "senderId must be a 26-character Mattermost ID", ok: false }, 400);
+  }
+  const rootId = readMattermostString(params.body.rootId ?? params.body.root_id);
+  if (rootId && !isMattermostId(rootId)) {
+    return jsonResponse({ error: "rootId must be a 26-character Mattermost ID", ok: false }, 400);
+  }
+  for (const field of [
+    "channelName",
+    "channel_name",
+    "channelDisplayName",
+    "channel_display_name",
+  ] as const) {
+    if (params.body[field] !== undefined && typeof params.body[field] !== "string") {
+      return jsonResponse({ error: `${field} must be a string`, ok: false }, 400);
+    }
+  }
   if (
     params.state.websocketClients.size === 0 &&
     params.state.pendingEvents.length >= params.state.maxPendingInboundEvents
@@ -361,18 +408,27 @@ function handleAdminInbound(params: {
   const senderName =
     readMattermostString(params.body.senderName) ?? previousUser?.username ?? senderId;
   const channelType = readMattermostString(params.body.channelType) ?? previousChannel?.type ?? "D";
+  const channelName =
+    readMattermostString(params.body.channelName ?? params.body.channel_name) ??
+    previousChannel?.name ??
+    channelId;
+  const channelDisplayName =
+    readMattermostString(params.body.channelDisplayName ?? params.body.channel_display_name) ??
+    previousChannel?.display_name ??
+    channelName;
   const previousNextPost = params.state.nextPost;
   params.state.users.set(senderId, { id: senderId, update_at: Date.now(), username: senderName });
   params.state.channels.set(channelId, {
-    display_name: previousChannel?.display_name ?? channelId,
+    display_name: channelDisplayName,
     id: channelId,
-    name: previousChannel?.name ?? channelId,
+    name: channelName,
     type: channelType,
   });
+  const channel = params.state.channels.get(channelId)!;
   const post = createPost({
     channelId,
     message: text,
-    rootId: readMattermostString(params.body.rootId ?? params.body.root_id),
+    rootId,
     state: params.state,
     userId: senderId,
   });
@@ -390,7 +446,7 @@ function handleAdminInbound(params: {
       params.state.channels.delete(channelId);
     }
   };
-  const event = postEvent("posted", post, senderName, channelType);
+  const event = postEvent("posted", post, senderName, channel);
   if (webSocketEventBytes(event) > params.state.maxWebSocketBufferedBytes) {
     rollback();
     return jsonResponse({ error: "Inbound event is too large", ok: false }, 413);
@@ -515,7 +571,7 @@ async function handleApi(params: {
       state,
       userId: state.botUserId,
     });
-    broadcast(state, postEvent("posted", post, state.botUsername, channel.type), false);
+    broadcast(state, postEvent("posted", post, state.botUsername, channel), false);
     return jsonResponse(post, 201);
   }
   const postMatch = /^\/posts\/([^/]+)$/u.exec(apiPath);
@@ -535,12 +591,7 @@ async function handleApi(params: {
     state.posts.set(updated.id, updated);
     broadcast(
       state,
-      postEvent(
-        "post_edited",
-        updated,
-        state.botUsername,
-        state.channels.get(updated.channel_id)?.type ?? "O",
-      ),
+      postEvent("post_edited", updated, state.botUsername, state.channels.get(updated.channel_id)!),
       false,
     );
     return jsonResponse(updated);
@@ -556,12 +607,7 @@ async function handleApi(params: {
     state.posts.delete(post.id);
     broadcast(
       state,
-      postEvent(
-        "post_deleted",
-        post,
-        state.botUsername,
-        state.channels.get(post.channel_id)?.type ?? "O",
-      ),
+      postEvent("post_deleted", post, state.botUsername, state.channels.get(post.channel_id)!),
       false,
     );
     return jsonResponse({ status: "OK" });
@@ -606,8 +652,16 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
       requestId,
     });
   }
-  const body =
-    method === "GET" || method === "DELETE" ? {} : await parseUnknownRequestBody(request);
+  const bodylessMethod = method === "GET" || method === "DELETE";
+  if (bodylessMethod) {
+    drainRequestBody(request);
+  }
+  const requiresJsonPost =
+    method === "POST" && url.pathname === "/api/v4/posts" && !requestHasJsonMediaType(request);
+  if (requiresJsonPost) {
+    drainRequestBody(request);
+  }
+  const body = bodylessMethod || requiresJsonPost ? {} : await parseUnknownRequestBody(request);
   const event: MattermostRecorderEvent = {
     at: new Date().toISOString(),
     ...(typeof body === "object" && body !== null && Object.keys(body).length > 0 ? { body } : {}),
@@ -616,12 +670,17 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
     query: queryRecord(url),
     type: "api",
   };
-  const response = await handleApi({
-    body,
-    method,
-    path: url.pathname.slice("/api/v4".length),
-    state,
-  });
+  const response = requiresJsonPost
+    ? mattermostError("Content-Type must be application/json.", 415, {
+        id: "api.context.unsupported_content_type.app_error",
+        requestId,
+      })
+    : await handleApi({
+        body,
+        method,
+        path: url.pathname.slice("/api/v4".length),
+        state,
+      });
   if (method === "POST" && url.pathname === "/api/v4/posts") {
     event.accepted = response.status === 201;
   }
