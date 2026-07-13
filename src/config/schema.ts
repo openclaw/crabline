@@ -376,7 +376,13 @@ const TelegramConfigSchema = z.strictObject({
   longPolling: TelegramLongPollingSchema.optional(),
   mode: z.enum(["auto", "polling", "webhook"]).default("auto"),
   recorder: TelegramRecorderSchema.default({}),
-  secretToken: z.string().min(1).optional(),
+  secretToken: z
+    .string()
+    .regex(
+      /^[A-Za-z0-9_-]{1,256}$/u,
+      "Telegram secretToken must use 1-256 letters, digits, underscores, or hyphens",
+    )
+    .optional(),
   userName: z.string().min(1).optional(),
   webhook: TelegramWebhookSchema.default({
     host: "127.0.0.1",

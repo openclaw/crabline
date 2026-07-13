@@ -342,6 +342,16 @@ describe("telegram provider", () => {
     expect(accepted.status).toBe(200);
   });
 
+  it("rejects header-unsafe webhook secrets from the environment", async () => {
+    const config = await createTelegramConfig(0);
+    expect(
+      () =>
+        new TelegramProviderAdapter("telegram", config, "crabline", {
+          env: { TELEGRAM_WEBHOOK_SECRET_TOKEN: "unsafe\r\nsecret" },
+        }),
+    ).toThrow(/Telegram secretToken/u);
+  });
+
   it("returns channel-like webhook errors for malformed inbound events", async () => {
     const config = await createTelegramConfig(0);
     const provider = new TelegramProviderAdapter("telegram", config, "crabline");

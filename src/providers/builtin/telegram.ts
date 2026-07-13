@@ -27,6 +27,8 @@ type TelegramEnvironment = Partial<
   >
 >;
 
+const TELEGRAM_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u;
+
 export function resolveTelegramAdapterConfig(
   config: ProviderConfig,
   env: TelegramEnvironment = process.env,
@@ -169,8 +171,18 @@ export function normalizeTelegramWebhookPayload(payload: unknown) {
 }
 
 export class TelegramProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
-  constructor(id: string, config: ProviderConfig, _userName: string) {
-    const resolvedConfig = resolveTelegramAdapterConfig(config);
+  constructor(id: string, config: ProviderConfig, _userName: string, runtime?: unknown) {
+    const env = (runtime as { env?: TelegramEnvironment } | undefined)?.env ?? process.env;
+    const resolvedConfig = resolveTelegramAdapterConfig(config, env);
+    if (
+      resolvedConfig.secretToken &&
+      !TELEGRAM_WEBHOOK_SECRET_PATTERN.test(resolvedConfig.secretToken)
+    ) {
+      throw new CrablineError(
+        "Telegram secretToken must use 1-256 letters, digits, underscores, or hyphens",
+        { kind: "config" },
+      );
+    }
     const authenticateWebhook = resolvedConfig.secretToken
       ? createSecretVerifier(resolvedConfig.secretToken)
       : undefined;
