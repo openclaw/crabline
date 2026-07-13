@@ -55,6 +55,13 @@ describe("Google Chat webhook authentication", () => {
 
     config.googlechat!.disableSignatureVerification = false;
     expect(() => new GoogleChatProviderAdapter("googlechat", config, "crabline")).not.toThrow();
+
+    config.googlechat!.webhook.publicUrl = "http://chat.example.test/googlechat/webhook";
+    expect(() => new GoogleChatProviderAdapter("googlechat", config, "crabline")).toThrow(
+      /require HTTPS/u,
+    );
+    config.googlechat!.webhook.publicUrl = "https://chat.example.test/googlechat/webhook";
+    expect(() => new GoogleChatProviderAdapter("googlechat", config, "crabline")).not.toThrow();
   });
 
   it("verifies HTTP endpoint audience ID tokens", async () => {

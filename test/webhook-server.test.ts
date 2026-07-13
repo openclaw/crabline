@@ -252,6 +252,7 @@ describe("webhook server", () => {
       host: "127.0.0.1",
       path: "/slack/events",
       port: 0,
+      shutdownGraceMs: 50,
     });
     const endpoint = new URL(server.endpointUrl);
     const socket = connect(Number(endpoint.port), endpoint.hostname);
@@ -259,14 +260,55 @@ describe("webhook server", () => {
     socket.write("POST /slack/events HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 5\r\n\r\n1");
     socket.on("error", () => {});
     const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
 
+    const closingStartedAt = Date.now();
     await expect(
       Promise.race([
         server.close().then(() => "closed"),
-        new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 250)),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 500)),
       ]),
     ).resolves.toBe("closed");
+    expect(Date.now() - closingStartedAt).toBeGreaterThanOrEqual(30);
     await closed;
+  });
+
+  it("drains an admitted HTTP response before closing its connection", async () => {
+    let reportAdmission!: () => void;
+    const admitted = new Promise<void>((resolve) => {
+      reportAdmission = resolve;
+    });
+    let releaseHandler!: () => void;
+    const handlerReleased = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    const server = await startWebhookServer({
+      async handle() {
+        reportAdmission();
+        await handlerReleased;
+        return new Response("admitted response", { status: 202 });
+      },
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+      shutdownGraceMs: 500,
+    });
+    cleanups.push(() => server.close());
+    const responsePromise = fetch(server.endpointUrl, { body: "{}", method: "POST" });
+    await admitted;
+
+    let closeResolved = false;
+    const closing = server.close().then(() => {
+      closeResolved = true;
+    });
+    await Promise.resolve();
+    expect(closeResolved).toBe(false);
+
+    releaseHandler();
+    const response = await responsePromise;
+    expect(response.status).toBe(202);
+    await expect(response.text()).resolves.toBe("admitted response");
+    await expect(closing).resolves.toBeUndefined();
   });
 
   it("survives clients aborting incomplete request bodies", async () => {

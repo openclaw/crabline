@@ -31,8 +31,20 @@ describe("external webhook authentication policy", () => {
       requireExternalWebhookAuthentication({
         ...base,
         authenticated: true,
-        authenticatedIngressUrl: "http://hooks.example.test/events",
+        authenticatedIngressUrls: ["http://hooks.example.test/events"],
         webhook: { host: "0.0.0.0" },
+      }),
+    ).toThrow(/require HTTPS/u);
+
+    expect(() =>
+      requireExternalWebhookAuthentication({
+        ...base,
+        authenticated: true,
+        authenticatedIngressUrls: ["https://hooks.example.test/events"],
+        webhook: {
+          host: "127.0.0.1",
+          publicUrl: "http://hooks.example.test/secondary",
+        },
       }),
     ).toThrow(/require HTTPS/u);
 
@@ -83,7 +95,7 @@ describe("external webhook authentication policy", () => {
       requireExternalWebhookAuthentication({
         ...base,
         authenticated: true,
-        authenticatedIngressUrl: "https://hooks.example.test/events",
+        authenticatedIngressUrls: ["https://hooks.example.test/events"],
         webhook: { host: "0.0.0.0" },
       }),
     ).not.toThrow();
@@ -101,6 +113,18 @@ describe("external webhook authentication policy", () => {
         }),
       ).not.toThrow();
     }
+
+    expect(() =>
+      requireExternalWebhookAuthentication({
+        ...base,
+        authenticated: true,
+        authenticatedIngressUrls: ["http://localhost:8787/primary"],
+        webhook: {
+          host: "127.0.0.1",
+          publicUrl: "http://127.0.0.1:8787/secondary",
+        },
+      }),
+    ).not.toThrow();
   });
 
   it("allows unauthenticated ingress only when it stays on loopback", () => {

@@ -1,5 +1,6 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isCanonicalHttpPath } from "../core/http-path.js";
+import { closeServer } from "../servers/http.js";
 
 export type StartedWebhookServer = {
   close(): Promise<void>;
@@ -128,19 +129,6 @@ function clearUnsentResponseHeaders(response: ServerResponse<IncomingMessage>): 
   }
 }
 
-function closeServer(server: Server): Promise<void> {
-  return new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-    server.closeAllConnections();
-  });
-}
-
 function formatUrlHost(host: string): string {
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
@@ -154,6 +142,7 @@ export async function startWebhookServer(params: {
   onError?: ((error: unknown) => void) | undefined;
   path: string;
   port: number;
+  shutdownGraceMs?: number | undefined;
 }): Promise<StartedWebhookServer> {
   if (!isCanonicalHttpPath(params.path)) {
     throw new Error("Webhook path must be a canonical URL pathname.");
@@ -161,8 +150,20 @@ export async function startWebhookServer(params: {
   const methods = new Set(params.methods ?? ["POST"]);
   const maxBodyBytes = params.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const bodyTimeoutMs = params.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
+  let closing = false;
   const server = createServer(async (request, response) => {
     try {
+      if (closing) {
+        request.resume();
+        await writeFetchResponse(
+          response,
+          new Response("provider is shutting down", {
+            headers: { connection: "close" },
+            status: 503,
+          }),
+        );
+        return;
+      }
       const method = request.method ?? "GET";
       const host = request.headers.host ?? "127.0.0.1";
       const url = new URL(request.url ?? "/", `http://${host}`);
@@ -219,9 +220,12 @@ export async function startWebhookServer(params: {
     throw new Error("Unable to resolve webhook server address.");
   }
 
+  let closingPromise: Promise<void> | null = null;
   return {
     async close() {
-      await closeServer(server);
+      closing = true;
+      closingPromise ??= closeServer(server, params.shutdownGraceMs);
+      await closingPromise;
     },
     endpointUrl: `http://${formatUrlHost(params.host)}:${address.port}${params.path}`,
   };
