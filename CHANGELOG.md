@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bind npm and GitHub release mutations to the revalidated tag commit and fail closed on release lookup errors.
 - Harden provider adapter authentication, target identity, credential redaction, and webhook lifecycle behavior.
 - Harden release provenance retries, provider-native contract tests, cross-platform tooling, cleanup ordering, and channel setup coverage.
 - Stop `serve` after closed-pipe output, withdraw readiness before shutdown, and retain ownership when server close fails.
