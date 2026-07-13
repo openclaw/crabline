@@ -1,6 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { ClientEvent, createClient, RoomEvent, SyncState, type MatrixEvent } from "matrix-js-sdk";
+import {
+  ClientEvent,
+  createClient,
+  EventType,
+  RoomEvent,
+  SyncState,
+  type MatrixEvent,
+} from "matrix-js-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startMatrixServer, type StartedMatrixServer } from "../src/index.js";
 import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
@@ -921,6 +928,34 @@ describe("Matrix local provider server", () => {
       is_direct: true,
       membership: "join",
     });
+
+    const { accessToken, baseUrl, botUserId: userId, deviceId } = server.manifest;
+    const client = createClient({
+      accessToken,
+      baseUrl,
+      deviceId,
+      userId,
+      useAuthorizationHeader: true,
+    });
+    const ready = new Promise<void>((resolve, reject) => {
+      client.on(ClientEvent.Sync, (state) => {
+        if (state === SyncState.Prepared || state === SyncState.Syncing) {
+          resolve();
+        }
+        if (state === SyncState.Error) {
+          reject(new Error("Matrix SDK entered an error sync state"));
+        }
+      });
+    });
+    client.startClient({ initialSyncLimit: 10 });
+    try {
+      await ready;
+      expect(client.getAccountData(EventType.Direct)?.getContent()).toEqual({
+        "@alice:matrix.test": [roomId],
+      });
+    } finally {
+      client.stopClient();
+    }
   });
 
   it("publishes typing and receipt updates through room ephemeral sync", async () => {

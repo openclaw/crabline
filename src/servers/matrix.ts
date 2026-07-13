@@ -61,6 +61,8 @@ type MatrixServerState = {
   adminToken: string;
   botUserId: string;
   deviceId: string;
+  directRooms: Map<string, Set<string>>;
+  directRoomsSequence: number | undefined;
   filterBytes: number;
   filters: Map<string, { body: Record<string, unknown>; bytes: number }>;
   nextEvent: number;
@@ -319,6 +321,33 @@ function publishTypingState(state: MatrixServerState, room: MatrixRoom): void {
   notifySyncWaiters(state);
 }
 
+function publishDirectRoom(state: MatrixServerState, userId: string, roomId: string): void {
+  const roomIds = state.directRooms.get(userId) ?? new Set<string>();
+  if (roomIds.has(roomId)) {
+    return;
+  }
+  roomIds.add(roomId);
+  state.directRooms.set(userId, roomIds);
+  state.directRoomsSequence = state.nextSequence++;
+}
+
+function syncAccountData(state: MatrixServerState, since: number | undefined) {
+  const sequence = state.directRoomsSequence;
+  if (sequence === undefined || (since !== undefined && sequence <= since)) {
+    return { events: [] };
+  }
+  return {
+    events: [
+      {
+        content: Object.fromEntries(
+          [...state.directRooms].map(([userId, roomIds]) => [userId, [...roomIds]]),
+        ),
+        type: "m.direct",
+      },
+    ],
+  };
+}
+
 function rememberTransaction(
   state: MatrixServerState,
   key: string,
@@ -446,11 +475,14 @@ async function handleSync(url: URL, state: MatrixServerState): Promise<Response>
   }
   const timelineLimit = readTimelineLimit(filter);
   const timeout = Math.min(readInteger(url.searchParams.get("timeout")) ?? 0, 1_000);
-  const hasNewEvents = [...state.rooms.values()].some((room) =>
-    [...room.timeline, ...room.ephemeral].some(
-      (entry) => since === undefined || entry.sequence > since,
-    ),
-  );
+  const hasNewEvents =
+    (state.directRoomsSequence !== undefined &&
+      (since === undefined || state.directRoomsSequence > since)) ||
+    [...state.rooms.values()].some((room) =>
+      [...room.timeline, ...room.ephemeral].some(
+        (entry) => since === undefined || entry.sequence > since,
+      ),
+    );
   if (since !== undefined && !hasNewEvents && timeout > 0) {
     await waitForSyncEvent(state, timeout);
   }
@@ -458,7 +490,7 @@ async function handleSync(url: URL, state: MatrixServerState): Promise<Response>
     [...state.rooms.values()].map((room) => [room.id, syncRoom(room, since, timelineLimit)]),
   );
   return jsonResponse({
-    account_data: { events: [] },
+    account_data: syncAccountData(state, since),
     device_lists: { changed: [], left: [] },
     device_one_time_keys_count: {},
     next_batch: `s${state.nextSequence - 1}`,
@@ -503,6 +535,9 @@ async function handleAdminInbound(params: {
       state: params.state,
     });
   params.state.rooms.set(roomId, room);
+  if (direct) {
+    publishDirectRoom(params.state, sender, roomId);
+  }
   const senderName = readTrimmedString(params.body.senderName);
   if (senderName) {
     params.state.profiles.set(sender, {
@@ -826,6 +861,8 @@ export async function startMatrixServer(
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     botUserId: params.botUserId ?? `@openclaw:${serverName}`,
     deviceId: params.deviceId ?? "CRABLINE",
+    directRooms: new Map(),
+    directRoomsSequence: undefined,
     filterBytes: 0,
     filters: new Map(),
     nextEvent: 1,
