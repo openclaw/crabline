@@ -441,11 +441,13 @@ function readFeishuCallbackKeys(payload: unknown, encryptedEnvelope: unknown): s
   const encrypted = isRecord(encryptedEnvelope)
     ? optionalString(encryptedEnvelope, "encrypt")
     : undefined;
-  return [
-    ...(messageId ? [`message:${messageId}`] : []),
-    ...(eventId ? [`event:${eventId}`] : []),
-    ...(encrypted ? [`encrypted:${createHash("sha256").update(encrypted).digest("hex")}`] : []),
-  ];
+  if (eventId) {
+    return [`event:${eventId}`];
+  }
+  if (messageId) {
+    return [`message:${messageId}`];
+  }
+  return encrypted ? [`encrypted:${createHash("sha256").update(encrypted).digest("hex")}`] : [];
 }
 
 function reserveFeishuCallback(replayState: FeishuReplayState, callbackKeys: string[]): void {
