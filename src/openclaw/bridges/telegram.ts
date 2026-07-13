@@ -8,6 +8,11 @@ import {
   readNonBlankString,
   readString,
 } from "../shared.js";
+import {
+  canonicalizeTelegramUsername,
+  telegramUsernameChatId,
+  TELEGRAM_USERNAME_PATTERN,
+} from "../../servers/telegram-identity.js";
 
 const TELEGRAM_SYMBOLIC_DIRECT_ID_BASE = 1n << 51n;
 const TELEGRAM_SYMBOLIC_DIRECT_ID_MASK = TELEGRAM_SYMBOLIC_DIRECT_ID_BASE - 1n;
@@ -15,8 +20,6 @@ const TELEGRAM_SYMBOLIC_GROUP_ID_BASE = 1_000_000_000_000n;
 const TELEGRAM_SYMBOLIC_GROUP_ID_RANGE = 10_000_000_000n;
 const TELEGRAM_OUTBOUND_METHOD_RE =
   /\/(sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/iu;
-const TELEGRAM_USERNAME_RE = /^@[A-Za-z][A-Za-z0-9_]{3,31}$/u;
-
 function normalizeTelegramChatId(
   kind: "direct" | "group",
   id: string,
@@ -40,12 +43,15 @@ function normalizeTelegramChatId(
     return numericId.toString();
   }
   if (value.startsWith("@")) {
-    if (!TELEGRAM_USERNAME_RE.test(value)) {
+    const username = canonicalizeTelegramUsername(value);
+    if (!username) {
       throw new Error("Telegram usernames must contain 4-32 letters, digits, or underscores.");
     }
-    const username = value.toLowerCase();
     if (kind === "group" && options.preserveGroupUsername) {
       return username;
+    }
+    if (kind === "group") {
+      return String(telegramUsernameChatId(username));
     }
     return syntheticTelegramChatId(kind, username);
   }
@@ -80,7 +86,8 @@ function canonicalTelegramRecorderChatId(value: unknown): string | undefined {
     }
     return numericId.toString();
   }
-  return TELEGRAM_USERNAME_RE.test(chatId) ? chatId : undefined;
+  const usernameChatId = telegramUsernameChatId(chatId);
+  return usernameChatId === undefined ? undefined : String(usernameChatId);
 }
 
 function telegramBotCommandEntity(text: string, commandName: string) {
@@ -151,7 +158,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           !readNonBlankString(result.first_name) ||
           (result.username !== undefined &&
             (typeof result.username !== "string" ||
-              !TELEGRAM_USERNAME_RE.test(`@${result.username}`)))
+              !TELEGRAM_USERNAME_PATTERN.test(`@${result.username}`)))
         ) {
           throw new Error("Crabline Telegram getMe probe failed: invalid response.");
         }
@@ -211,7 +218,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
       createAgentDelivery(parsed) {
         const kind =
           parsed.native &&
-          (/^-\d+$/u.test(parsed.id.trim()) || TELEGRAM_USERNAME_RE.test(parsed.id.trim()))
+          (/^-\d+$/u.test(parsed.id.trim()) || TELEGRAM_USERNAME_PATTERN.test(parsed.id.trim()))
             ? "group"
             : parsed.kind;
         const chatId = normalizeTelegramChatId(kind, parsed.id, {

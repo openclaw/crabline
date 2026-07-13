@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import path from "node:path";
 import { CrablineError } from "../core/errors.js";
@@ -26,13 +26,13 @@ import {
   validateWebhookTarget,
   type WebhookAddress,
 } from "./webhook-target.js";
+import { telegramUsernameChatId } from "./telegram-identity.js";
 
 const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 const TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT = 5;
 const TELEGRAM_WEBHOOK_RETRY_BASE_MS = 100;
 const TELEGRAM_WEBHOOK_DELIVERY_TIMEOUT_MS = 3_000;
 const MAX_ACTIVE_TELEGRAM_WEBHOOK_VALIDATIONS = 8;
-const TELEGRAM_CHAT_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{3,31}$/u;
 const TELEGRAM_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{1,256}(?![\s\S])/u;
 const TELEGRAM_MAX_TEXT_LENGTH = 4096;
 const TELEGRAM_MAX_CAPTION_LENGTH = 1024;
@@ -335,11 +335,6 @@ function toBooleanValue(value: unknown): boolean {
   return value === true || (typeof value === "string" && value.toLowerCase() === "true");
 }
 
-function telegramUsernameChatId(username: string): number {
-  const hash = createHash("sha256").update(username.toLowerCase()).digest();
-  return -1_000_000_000_000 - (hash.readUIntBE(0, 6) % 10_000_000_000);
-}
-
 function telegramChatId(value: unknown): number | undefined {
   const stringValue = toStringValue(value);
   if (!stringValue) {
@@ -349,9 +344,7 @@ function telegramChatId(value: unknown): number | undefined {
     const integerValue = toIntegerValue(stringValue);
     return integerValue === 0 ? undefined : integerValue;
   }
-  return TELEGRAM_CHAT_USERNAME_PATTERN.test(stringValue)
-    ? telegramUsernameChatId(stringValue)
-    : undefined;
+  return telegramUsernameChatId(stringValue);
 }
 
 async function appendEvent(state: TelegramServerState, event: TelegramServerEvent) {

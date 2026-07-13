@@ -1273,6 +1273,70 @@ describe("OpenClaw local provider bridge", () => {
     });
   });
 
+  it("keeps Telegram username identity consistent across the bridge and provider server", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-telegram-identity-"));
+    const adapter = await startOpenClawCrablineAdapter({
+      channel: "telegram",
+      recorderPath: path.join(outputDir, "telegram.jsonl"),
+    });
+    try {
+      const telegram = adapter.manifest;
+      expect(telegram.provider).toBe("telegram");
+      if (telegram.provider !== "telegram") {
+        throw new Error("Expected Telegram provider manifest.");
+      }
+      const delivery = adapter.createAgentDelivery({ target: "channel:@ExampleGroup" });
+      const inbound = adapter.createInbound({
+        input: {
+          conversation: { id: "@examplegroup", kind: "group" },
+          senderId: "@Alice",
+          text: "inbound topic message",
+          threadId: "42",
+        },
+      });
+      const response = await fetch(`${telegram.baseUrl}/bot${telegram.botToken}/sendMessage`, {
+        body: JSON.stringify({
+          chat_id: delivery.to,
+          message_thread_id: 42,
+          text: "outbound topic message",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      const payload = (await response.json()) as {
+        result: { chat: { id: number }; message_thread_id: number };
+      };
+
+      expect(delivery.to).toBe("@examplegroup");
+      expect(response.status).toBe(200);
+      expect(String(payload.result.chat.id)).toBe(inbound.providerBody.chatId);
+      expect(payload.result.message_thread_id).toBe(42);
+      expect(inbound.providerTargetKey).toBe(`${payload.result.chat.id}:topic:42`);
+      expect(
+        adapter.createOutboundFromRecorderEvent({
+          event: {
+            accepted: true,
+            body: {
+              chat_id: "@EXAMPLEGROUP",
+              message_thread_id: 42,
+              text: "outbound topic message",
+            },
+            method: "POST",
+            path: "/bot<redacted>/sendMessage",
+            type: "api",
+          },
+          targetByProviderTarget: new Map([[inbound.providerTargetKey, inbound.qaTarget]]),
+        }),
+      ).toMatchObject({
+        text: "outbound topic message",
+        to: inbound.qaTarget,
+      });
+    } finally {
+      await adapter.close();
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects blank or unknown inbound conversations before provider translation", () => {
     expect(() =>
       createOpenClawCrablineInbound({
