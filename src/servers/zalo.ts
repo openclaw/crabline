@@ -687,6 +687,7 @@ async function handleAdminInbound(
   state.inboundAdmission = new Promise<void>((resolve) => {
     releaseAdmission = resolve;
   });
+  let admissionPending = true;
   try {
     const parsedBody = await parseUnknownRequestBody(request);
     await previousAdmission;
@@ -736,17 +737,23 @@ async function handleAdminInbound(
       if (error) {
         return error;
       }
-    } else if (!deliverPollingUpdate(state, update)) {
-      return zaloError(
-        `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
-        429,
-      );
+    } else {
+      state.pendingInboundAdmissions -= 1;
+      admissionPending = false;
+      if (!deliverPollingUpdate(state, update)) {
+        return zaloError(
+          `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
+          429,
+        );
+      }
     }
     return zaloOk(update);
   } finally {
     await previousAdmission;
     releaseAdmission();
-    state.pendingInboundAdmissions -= 1;
+    if (admissionPending) {
+      state.pendingInboundAdmissions -= 1;
+    }
   }
 }
 
