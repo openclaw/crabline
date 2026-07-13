@@ -641,6 +641,13 @@ async function handleAdminInbound(params: {
       sequence: params.state.nextSequence++,
     });
   }
+  const roomAvatarUrl = room.users.get(sender)?.avatar_url;
+  if (roomAvatarUrl) {
+    params.state.profiles.set(sender, {
+      ...params.state.profiles.get(sender),
+      avatar_url: roomAvatarUrl,
+    });
+  }
   const content: Record<string, unknown> = { body: text, msgtype: "m.text" };
   if (threadId) {
     content["m.relates_to"] = {
