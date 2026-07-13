@@ -668,17 +668,24 @@ async function privateRecorderLockRoot(
   filePath: string,
   identity: RecorderFileIdentity,
 ): Promise<string> {
-  const account = userInfo();
   const currentUserId = process.platform === "win32" ? undefined : process.geteuid?.();
-  const sharedRoot =
-    process.platform === "win32"
-      ? path.join(account.homedir, "AppData", "Local", "Crabline", "locks", "provider-recorder")
-      : path.join(account.homedir, ".cache", "crabline", "locks", "provider-recorder");
+  let sharedRoot: string | undefined;
   try {
-    return await secureRecorderLockRoot(sharedRoot, currentUserId);
-  } catch (error) {
-    if (!recorderLockRootUnavailable(error)) {
-      throw error;
+    const account = userInfo();
+    sharedRoot =
+      process.platform === "win32"
+        ? path.join(account.homedir, "AppData", "Local", "Crabline", "locks", "provider-recorder")
+        : path.join(account.homedir, ".cache", "crabline", "locks", "provider-recorder");
+  } catch {
+    // Arbitrary container UIDs may not have an OS account entry.
+  }
+  if (sharedRoot) {
+    try {
+      return await secureRecorderLockRoot(sharedRoot, currentUserId);
+    } catch (error) {
+      if (!recorderLockRootUnavailable(error)) {
+        throw error;
+      }
     }
   }
 
