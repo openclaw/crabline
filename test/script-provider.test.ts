@@ -664,11 +664,11 @@ describe("script provider", () => {
     expect(inspect(failure, { depth: null })).not.toContain(sentinel);
   });
 
-  it.each(["--password:unsupported-secret", "-api.unsupported-secret"])(
+  it.each(["--opaque:fixture-value", "-opaque.fixture-value"])(
     "suppresses diagnostics for unsupported option syntax %s",
     async (argument) => {
       const context = await createContext();
-      const sentinel = "unsupported-secret";
+      const sentinel = "fixture-value";
       const failingScript = path.join(
         path.dirname(context.manifestPath),
         "send-unsupported-option.mjs",
