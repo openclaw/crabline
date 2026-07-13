@@ -803,6 +803,60 @@ describe("OpenClaw private file publication", () => {
   });
 
   it.skipIf(process.platform === "win32")(
+    "compacts stale directory claim chains before publication",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+        let staleClaimPath = claimPath;
+        for (let index = 0; index < 12; index += 1) {
+          await fs.mkdir(staleClaimPath, { mode: 0o700 });
+          await fs.writeFile(
+            path.join(staleClaimPath, "owner.json"),
+            `${JSON.stringify({
+              ownerId: `stale-directory-owner-${index}`,
+              pid: 900_000 + index,
+              processIdentity: `dead:stale-directory-owner-${index}`,
+              processStartedAtMs: 100 + index,
+            })}\n`,
+            { mode: 0o600 },
+          );
+          staleClaimPath = path.join(staleClaimPath, ".next");
+        }
+
+        await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
+          beforeCommitRename: async () => {
+            await expect(fs.readdir(claimPath)).resolves.toEqual(["owner.json"]);
+            const owner = JSON.parse(
+              await fs.readFile(path.join(claimPath, "owner.json"), "utf8"),
+            ) as { ownerId: string };
+            expect(owner.ownerId).toBe("replacement-owner");
+          },
+          claimRuntime: {
+            getProcessIdentity: () => null,
+            isProcessAlive: () => false,
+            ownerId: "replacement-owner",
+            pid: process.pid,
+            processIdentity: "test:replacement-owner",
+            processStartedAtMs: 200,
+          },
+        });
+
+        await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
+          "private\n",
+        );
+        expect(
+          (await fs.readdir(directory)).filter((entry) =>
+            entry.startsWith(".crabline-private-mutation"),
+          ),
+        ).toEqual([]);
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
     "rejects a permissive live directory claim instead of trusting its owner metadata",
     async () => {
       const directory = await createTempDir();
