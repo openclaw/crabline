@@ -1,7 +1,7 @@
 import path from "node:path";
 import { chmod, link, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendRecordedInbound,
   ProviderRecorderCommittedError,
@@ -22,6 +22,8 @@ const fsMocks = vi.hoisted(() => ({
   serverDirectory: "",
   serverDirectorySync: vi.fn<(directoryPath: string) => Promise<void>>(),
   serverFileExists: false,
+  serverFileStat:
+    vi.fn<() => Promise<{ dev: number; ino: number; nlink?: number; size: number }>>(),
   serverOpen: vi.fn<(filePath: string, flags: string) => void>(),
   serverStat: vi.fn<(filePath: string) => Promise<{ dev: number; ino: number; size: number }>>(),
   serverSync: vi.fn<(filePath: string) => Promise<void>>(),
@@ -91,7 +93,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
           chmod: async () => {},
           close: async () => {},
           read: async (buffer: Buffer) => ({ buffer, bytesRead: 0 }),
-          stat: async () => ({ dev: 1, ino: 1, size: 0 }),
+          stat: async () => await fsMocks.serverFileStat(),
           sync: async () => await fsMocks.serverSync(filePath),
           truncate: async () => {},
         } as unknown as Awaited<ReturnType<typeof actual.open>>;
@@ -172,6 +174,8 @@ beforeEach(() => {
   fsMocks.serverDirectorySync.mockReset();
   fsMocks.serverDirectorySync.mockResolvedValue(undefined);
   fsMocks.serverFileExists = false;
+  fsMocks.serverFileStat.mockReset();
+  fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
   fsMocks.serverOpen.mockReset();
   fsMocks.serverStat.mockReset();
   fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
@@ -190,6 +194,10 @@ beforeEach(() => {
         addPendingWrite(data, resolve);
       }),
   );
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 async function expectSerializedWrites(
@@ -246,7 +254,7 @@ describe("recorder append serialization", () => {
     ]);
     expect(fsMocks.serverSync).toHaveBeenCalledTimes(2);
     expect(fsMocks.serverDirectorySync).toHaveBeenCalledOnce();
-    expect(fsMocks.lock).toHaveBeenCalledTimes(4);
+    expect(fsMocks.lock).toHaveBeenCalledTimes(2);
     expect(fsMocks.serverOpen.mock.calls.map(([, flags]) => flags)).toEqual(["ax+", "ax+", "a+"]);
   });
 
@@ -259,6 +267,8 @@ describe("recorder append serialization", () => {
       );
       fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
       fsMocks.serverWrite.mockResolvedValue(undefined);
+      fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, nlink: 2, size: 0 });
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", tmpdir());
       const pathRelease = vi.fn(async () => {});
       const releaseFailure = new Error("identity lock cleanup failed");
       const identityRelease = vi.fn(async () => {
@@ -305,6 +315,8 @@ describe("recorder append serialization", () => {
       );
       fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
       fsMocks.serverWrite.mockResolvedValue(undefined);
+      fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, nlink: 2, size: 0 });
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", tmpdir());
       const sharedFailure = Object.assign(new Error("shared lock filesystem full"), {
         code: "ENOSPC",
       });
@@ -328,6 +340,36 @@ describe("recorder append serialization", () => {
       expect(pathRelease).toHaveBeenCalledOnce();
     },
   );
+
+  it("rejects hardlinked server recorders without a shared lock namespace", async () => {
+    const recorderPath = path.join(
+      "/tmp",
+      `crabline-server-recorder-hardlink-unconfigured-${process.pid}-${Date.now()}.jsonl`,
+    );
+    fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+    fsMocks.serverWrite.mockResolvedValue(undefined);
+    fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, nlink: 2, size: 0 });
+    const pathRelease = vi.fn(async () => {});
+    fsMocks.lock.mockResolvedValueOnce(pathRelease);
+
+    await expect(
+      recordServerEvent({
+        event: {
+          at: "2026-07-12T10:00:00.000Z",
+          method: "POST",
+          path: "/hardlink-unconfigured",
+          query: {},
+          type: "api",
+        },
+        onEvent: undefined,
+        recorderPath,
+      }),
+    ).rejects.toThrow(
+      "Server recorder hardlinks require CRABLINE_RECORDER_LOCK_DIR to name one shared writable lock directory for every writer.",
+    );
+    expect(fsMocks.serverWrite).not.toHaveBeenCalled();
+    expect(pathRelease).toHaveBeenCalledOnce();
+  });
 
   it("serializes provider inbound appends to the same JSONL file", async () => {
     const recorderPath = path.join(

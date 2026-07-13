@@ -286,6 +286,12 @@ outcome together with the provider's exact send method and path. Rejected
 requests and lookalike route suffixes can remain diagnostic recorder entries,
 but they are never exposed as successful outbound deliveries.
 
+Use one filesystem name per recorder file. When multiple server processes must
+write through hardlinks to the same recorder inode, set
+`CRABLINE_RECORDER_LOCK_DIR` to one absolute writable directory shared by every
+writer and pre-create its ownership, group, or ACLs. Hardlinked server-recorder
+writes fail closed when this shared lock namespace is absent.
+
 Slack:
 
 ```bash

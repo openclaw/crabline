@@ -111,7 +111,11 @@ type RecorderProcess = {
   stdout: () => string;
 };
 
-function startRecorderProcess(recorderPath: string, pathname: string): RecorderProcess {
+function startRecorderProcess(
+  recorderPath: string,
+  pathname: string,
+  recorderLockDirectory?: string,
+): RecorderProcess {
   const recorderModuleUrl = new URL("../src/servers/recorder.ts", import.meta.url).href;
   const script = `
     import { recordServerEvent } from ${JSON.stringify(recorderModuleUrl)};
@@ -140,7 +144,13 @@ function startRecorderProcess(recorderPath: string, pathname: string): RecorderP
   const child = spawn(
     process.execPath,
     ["--import", "tsx", "--input-type=module", "--eval", script, recorderPath, pathname],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    {
+      env:
+        recorderLockDirectory === undefined
+          ? process.env
+          : { ...process.env, CRABLINE_RECORDER_LOCK_DIR: recorderLockDirectory },
+      stdio: ["pipe", "pipe", "pipe"],
+    },
   );
   let stdout = "";
   let stderr = "";
@@ -286,12 +296,12 @@ describe("server recorder", () => {
       stale: 30_000,
       update: 10_000,
     });
-    expect(lockMocks.release).toHaveBeenCalledTimes(2);
+    expect(lockMocks.release).toHaveBeenCalledOnce();
     expect(fsMocks.file.chmod.mock.invocationCallOrder[0]).toBeLessThan(
       fsMocks.file.appendFile.mock.invocationCallOrder[0]!,
     );
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
-    expect(fsMocks.directory.close).toHaveBeenCalledTimes(4);
+    expect(fsMocks.directory.close).toHaveBeenCalledTimes(3);
   });
 
   it("resyncs recorder ancestry after an interrupted first-append attempt", async () => {
@@ -493,9 +503,9 @@ describe("server recorder", () => {
       recorderPath: path.join("/tmp", "crabline-server-recorder-contention.jsonl"),
     });
 
-    expect(lockMocks.lock).toHaveBeenCalledTimes(3);
+    expect(lockMocks.lock).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
-    expect(lockMocks.release).toHaveBeenCalledTimes(2);
+    expect(lockMocks.release).toHaveBeenCalledOnce();
   });
 
   it("repairs managed directories without chmodding existing recorder files or parents", async () => {
@@ -1179,24 +1189,15 @@ describe("server recorder", () => {
       try {
         await actualFs.writeFile(recorderPath, initialContents, { mode: 0o600 });
         const identity = await actualFs.stat(recorderPath, { bigint: true });
-        const lockRoot = path.join(
-          os.userInfo().homedir,
-          ".cache",
-          "crabline",
-          "locks",
-          "server-recorder",
-        );
+        const lockRoot = path.join(directory, "shared-locks");
         await actualFs.mkdir(lockRoot, { mode: 0o700, recursive: true });
         await actualFs.chmod(lockRoot, 0o700);
-        releaseGate = await actualLockfile.lock(
-          path.join(lockRoot, `recorder-${identity.dev}-${identity.ino}`),
-          {
-            realpath: false,
-            stale: 30_000,
-            update: 10_000,
-          },
-        );
-        const first = startRecorderProcess(recorderPath, "/process-a");
+        releaseGate = await actualLockfile.lock(path.join(lockRoot, `recorder-${identity.ino}`), {
+          realpath: false,
+          stale: 30_000,
+          update: 10_000,
+        });
+        const first = startRecorderProcess(recorderPath, "/process-a", lockRoot);
         processes.push(first);
 
         await vi.waitFor(
@@ -1210,7 +1211,7 @@ describe("server recorder", () => {
           await expect(actualFs.stat(`${recorderPath}.lock`)).resolves.toBeDefined();
         });
         await actualFs.link(recorderPath, aliasPath);
-        const second = startRecorderProcess(aliasPath, "/process-b");
+        const second = startRecorderProcess(aliasPath, "/process-b", lockRoot);
         processes.push(second);
         await vi.waitFor(
           () => {
