@@ -307,7 +307,17 @@ describe("Matrix local provider server", () => {
       { roomId: "!short", senderId: "@alice:matrix.test", text: "bad room hash" },
       { roomId: "!room:matrix.test", senderId: "alice", text: "bad sender" },
       { roomId: "!room:bad/name", senderId: "@alice:matrix.test", text: "bad room host" },
+      {
+        roomId: "!room:invalid_host",
+        senderId: "@alice:matrix.test",
+        text: "bad DNS room host",
+      },
       { roomId: "!room:matrix.test", senderId: "@alice:bad?host", text: "bad sender host" },
+      {
+        roomId: "!room:matrix.test",
+        senderId: "@alice:invalid_host",
+        text: "bad DNS sender host",
+      },
       { roomId: "!room:256.2.3.4", senderId: "@alice:matrix.test", text: "bad IPv4" },
       {
         roomId: "!room:matrix.test",
@@ -454,6 +464,33 @@ describe("Matrix local provider server", () => {
       event: {
         room_id: "!room:123",
         sender: "@alice:123",
+      },
+      ok: true,
+    });
+  });
+
+  it("accepts five-digit Matrix ports", async () => {
+    const server = await startMatrixServer();
+    servers.push(server);
+
+    const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        roomId: "!room:matrix.test:99999",
+        senderId: "@:matrix.test:99999",
+        text: "five-digit port and historical empty localpart",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      event: {
+        room_id: "!room:matrix.test:99999",
+        sender: "@:matrix.test:99999",
       },
       ok: true,
     });
