@@ -308,7 +308,7 @@ describe("Matrix local provider server", () => {
 
   it("bounds committed room and user state before mutation", async () => {
     const server = await startMatrixServer({
-      accessToken: "test-token",
+      accessToken: "fake",
       adminToken: "admin",
       maxCommittedRooms: 2,
       maxCommittedUsers: 2,
@@ -358,19 +358,19 @@ describe("Matrix local provider server", () => {
     });
 
     const rooms = await fetch(`${server.manifest.endpoints.clientApiRoot}/joined_rooms`, {
-      headers: auth("test-token"),
+      headers: auth("fake"),
     });
     await expect(rooms.json()).resolves.toEqual({
       joined_rooms: ["!default:matrix.test", "!dynamic:matrix.test"],
     });
     const bobProfile = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/profile/${encodeURIComponent("@bob:matrix.test")}`,
-      { headers: auth("test-token") },
+      { headers: auth("fake") },
     );
     expect(bobProfile.status).toBe(404);
     const members = await fetch(
       `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!dynamic:matrix.test")}/joined_members`,
-      { headers: auth("test-token") },
+      { headers: auth("fake") },
     );
     await expect(members.json()).resolves.toEqual({
       joined: {
