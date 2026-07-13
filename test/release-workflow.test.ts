@@ -184,6 +184,8 @@ describe("release workflow", () => {
     expect(contents).not.toContain(
       "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6",
     );
+    expect(contents).toContain('      - ".github/actions/**"');
+    expect(contents).toContain('      - ".github/workflows/**"');
   });
 
   it("isolates package verification, OIDC publication, and GitHub release authority", async () => {
