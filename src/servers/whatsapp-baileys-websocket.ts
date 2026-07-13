@@ -194,6 +194,7 @@ export class WhatsAppSignalBundleStore {
     }
     this.#recoverExpiredPendingAcknowledgements();
     if (this.#pendingAcknowledgements.has(messageKey)) {
+      // Unsettled operations remain in #inFlightMessageAcceptances; this state is accepted and awaiting ack.
       return true;
     }
     if (this.#acknowledgedMessageIds.delete(messageKey)) {
