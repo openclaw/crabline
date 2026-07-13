@@ -1623,6 +1623,32 @@ describe("telegram local provider server", () => {
     }
   });
 
+  it("accepts callbacks after the referenced chat exhausts generated message IDs", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    expect(
+      (
+        await injectUpdate(server, {
+          chatId: 123,
+          messageId: Number.MAX_SAFE_INTEGER - 1,
+          text: "last generated message ID",
+          updateId: 1,
+        })
+      ).status,
+    ).toBe(200);
+
+    const callback = await injectUpdate(server, {
+      callback_query: {
+        id: "callback-after-message-exhaustion",
+        message: { chat: { id: 123 }, message_id: 1 },
+      },
+      update_id: 2,
+    });
+    expect(callback.status).toBe(200);
+    await expect(callback.json()).resolves.toEqual({ ok: true });
+  });
+
   it("tracks explicit message IDs independently per chat", async () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);

@@ -286,6 +286,49 @@ describe("whatsapp local provider server", () => {
     expect(new URL(replacement.manifest.baseUrl).port).toBe(String(port));
   });
 
+  it("waits for admitted Baileys recorder work before shutdown completes", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    let releaseRecorder!: () => void;
+    const recorderBlocked = new Promise<void>((resolve) => {
+      releaseRecorder = resolve;
+    });
+    let markRecorderStarted!: () => void;
+    const recorderStarted = new Promise<void>((resolve) => {
+      markRecorderStarted = resolve;
+    });
+    let blockNextWebSocketEvent = true;
+    const server = await startWhatsAppServer({
+      onEvent: async (event) => {
+        if (blockNextWebSocketEvent && event.method === "WEBSOCKET") {
+          blockNextWebSocketEvent = false;
+          markRecorderStarted();
+          await recorderBlocked;
+        }
+      },
+      recorderPath: path.join(directory, "whatsapp-shutdown.jsonl"),
+    });
+    const socket = createBaileysTestSocket(server);
+    let closePromise: Promise<void> | undefined;
+
+    try {
+      await recorderStarted;
+      let closeSettled = false;
+      closePromise = server.close().finally(() => {
+        closeSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(closeSettled).toBe(false);
+
+      releaseRecorder();
+      await closePromise;
+    } finally {
+      releaseRecorder();
+      socket.end(undefined);
+      await closePromise?.catch(() => undefined);
+    }
+  });
+
   it("serves Cloud API sends and injected inbound webhook payloads", async () => {
     const directory = await createTempDir();
     directories.push(directory);

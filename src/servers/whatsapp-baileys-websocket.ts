@@ -554,8 +554,8 @@ class WhatsAppBaileysWebSocketSession {
     return this.#handshakeState === "open" && this.socket.readyState === WebSocket.OPEN;
   }
 
-  handleMessage(data: WhatsAppWebSocketRawData): void {
-    void this.#handleSerializedMessage(data);
+  handleMessage(data: WhatsAppWebSocketRawData): Promise<void> {
+    return this.#handleSerializedMessage(data);
   }
 
   async deliverInboundMessage(message: WhatsAppBaileysInboundMessage): Promise<boolean> {
@@ -921,6 +921,7 @@ export function attachWhatsAppBaileysWebSocketServer(
 ): WhatsAppBaileysWebSocketServer {
   const signalBundles = new WhatsAppSignalBundleStore();
   const sessions = new Set<WhatsAppBaileysWebSocketSession>();
+  const pendingSessionMessages = new Set<Promise<void>>();
   const pendingMessages: WhatsAppBaileysInboundMessage[] = [];
   const maxPendingInboundMessages = resolveMaxPendingWhatsAppInboundMessages(
     params.maxPendingInboundMessages,
@@ -998,7 +999,14 @@ export function attachWhatsAppBaileysWebSocketServer(
       sessions.delete(session);
       socket.terminate();
     });
-    socket.on("message", (data) => session.handleMessage(data));
+    socket.on("message", (data) => {
+      const pending = session.handleMessage(data);
+      pendingSessionMessages.add(pending);
+      void pending.then(
+        () => pendingSessionMessages.delete(pending),
+        () => pendingSessionMessages.delete(pending),
+      );
+    });
   });
   return {
     async close() {
@@ -1006,6 +1014,7 @@ export function attachWhatsAppBaileysWebSocketServer(
       params.httpServer.off("upgrade", handleUpgrade);
       pendingMessages.length = 0;
       await closeWebSocketServer(wss);
+      await Promise.all([...pendingSessionMessages]);
       await flushPromise;
     },
     prepareInboundMessage(message) {
