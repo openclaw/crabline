@@ -258,6 +258,35 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("replaces a legacy generation without recorder evidence", async () => {
+    const outputDir = await createTempDir();
+    try {
+      const first = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      });
+      const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
+      const legacyPointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      delete legacyPointer.recorderSnapshotPath;
+      legacyPointer.version = 1;
+      await fs.writeFile(pointerPath, `${JSON.stringify(legacyPointer, null, 2)}\n`);
+
+      const replacement = await publishOpenClawCrablineArtifactGeneration(
+        publishParams(outputDir),
+        { createGenerationId: () => "22222222-2222-4222-8222-222222222222" },
+      );
+
+      expect(replacement).toMatchObject({
+        previousGeneration: first.generation,
+        version: 2,
+      });
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("rejects a current pointer downgraded without a legacy manifest shape", async () => {
     const outputDir = await createTempDir();
     try {

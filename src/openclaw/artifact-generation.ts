@@ -301,12 +301,13 @@ async function assertCurrentGenerationExists(
   if (manifest.recorderPath !== undefined && typeof manifest.recorderPath !== "string") {
     throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
   }
+  // The artifact store is owner-only; v1 compatibility covers historical layouts, not hostile same-owner rewrites.
   if (
     pointer.version === 1 &&
-    manifestRecorderPath !== undefined &&
     providerReadinessRecorderPath === undefined &&
     smokeRecorderPath === undefined &&
-    path.dirname(path.resolve(outputDir, manifestRecorderPath)) !== generationDirectory
+    (manifestRecorderPath === undefined ||
+      path.dirname(path.resolve(outputDir, manifestRecorderPath)) !== generationDirectory)
   ) {
     return;
   }
