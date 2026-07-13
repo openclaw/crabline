@@ -126,15 +126,16 @@ function windowsProcessTreeTermination(
     "$ErrorActionPreference='Stop'",
     `$RootProcessId=${pid}`,
     `$RootExpectedAlive=$${rootExpectedAlive ? "true" : "false"}`,
-    `$RootNotBefore=([datetime]'1970-01-01T00:00:00Z').AddMilliseconds(${rootNotBeforeMs})`,
-    `$RootObservedBy=([datetime]'1970-01-01T00:00:00Z').AddMilliseconds(${rootObservedByMs})`,
+    `$RootNotBefore=[DateTimeOffset]::FromUnixTimeMilliseconds(${rootNotBeforeMs}).UtcDateTime`,
+    `$RootObservedBy=[DateTimeOffset]::FromUnixTimeMilliseconds(${rootObservedByMs}).UtcDateTime`,
     "$SnapshotAt=[datetime]::UtcNow",
     "$AllProcesses=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate)",
     "$Snapshot=[System.Collections.Generic.List[object]]::new()",
     "$Pending=[System.Collections.Generic.Queue[object]]::new()",
     "$Visited=[System.Collections.Generic.HashSet[string]]::new()",
     "$RootProcess=$AllProcesses | Where-Object { [int]$_.ProcessId -eq $RootProcessId } | Select-Object -First 1",
-    "$RootMatches=$null -ne $RootProcess -and [datetime]$RootProcess.CreationDate -ge $RootNotBefore -and [datetime]$RootProcess.CreationDate -le $RootObservedBy",
+    "$RootCreated=if($null -ne $RootProcess){([datetime]$RootProcess.CreationDate).ToUniversalTime()}else{$null}",
+    "$RootMatches=$null -ne $RootProcess -and $RootCreated -ge $RootNotBefore -and $RootCreated -le $RootObservedBy",
     "$RootPidReused=$null -ne $RootProcess -and (!$RootExpectedAlive -or !$RootMatches)",
     "$KillRoot=$RootExpectedAlive -and $RootMatches",
     "if($KillRoot){",
@@ -147,8 +148,8 @@ function windowsProcessTreeTermination(
     "while($Pending.Count -gt 0){",
     "$Parent=$Pending.Dequeue()",
     "foreach($Process in @($AllProcesses | Where-Object { [int]$_.ParentProcessId -eq [int]$Parent.ProcessId })){",
-    "$ChildCreated=[datetime]$Process.CreationDate",
-    "$ParentCreated=[datetime]$Parent.CreationDate",
+    "$ChildCreated=([datetime]$Process.CreationDate).ToUniversalTime()",
+    "$ParentCreated=([datetime]$Parent.CreationDate).ToUniversalTime()",
     "if($ChildCreated -lt $ParentCreated -or $ChildCreated -gt $SnapshotAt){continue}",
     '$Identity="$([int]$Process.ProcessId)|$($ChildCreated.ToFileTimeUtc())"',
     "if(!$Visited.Add($Identity)){continue}",
@@ -406,16 +407,22 @@ function snapshotCommandValues(
       continue;
     }
     if (/^--[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(token)) {
-      if (token.length < 3) {
+      const value = token.slice(2);
+      if (value.length < 3) {
         return undefined;
       }
       addRedactionRepresentations(exactValues, token);
+      addCommandValueRedactions(substringValues, value);
       continue;
     }
     if (/^-[A-Za-z0-9][A-Za-z0-9_-]+$/u.test(token)) {
+      const value = token.slice(2);
+      if (value.length < 3) {
+        return undefined;
+      }
       addRedactionRepresentations(exactValues, token);
       addCommandValueRedactions(substringValues, token.slice(1));
-      addCommandValueRedactions(substringValues, token.slice(2));
+      addCommandValueRedactions(substringValues, value);
       continue;
     }
     const option = /^--?[A-Za-z0-9][A-Za-z0-9_-]*=(.*)$/u.exec(token);

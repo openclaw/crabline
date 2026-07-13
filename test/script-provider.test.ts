@@ -640,6 +640,30 @@ describe("script provider", () => {
     expect(inspect(failure, { depth: null })).not.toContain(sentinel);
   });
 
+  it("redacts values parsed from bare double-dash arguments", async () => {
+    const context = await createContext();
+    const sentinel = "double-dash-secret";
+    const failingScript = path.join(path.dirname(context.manifestPath), "send-double-dash.mjs");
+    await writeText(
+      failingScript,
+      "process.stderr.write(process.argv[2].slice(2));process.exitCode=7;",
+    );
+    context.config.script!.commands.send = `node ${JSON.stringify(failingScript)} --${sentinel}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    const failure = await provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+
+    expect(ensureErrorMessage(failure)).toContain("[redacted command value]");
+    expect(inspect(failure, { depth: null })).not.toContain(sentinel);
+  });
+
   it("suppresses diagnostics when positional arguments require shell expansion", async () => {
     const context = await createContext();
     const sentinel = "expanded-positional-secret";
