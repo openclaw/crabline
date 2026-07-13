@@ -166,23 +166,57 @@ export function createGenericLocalMockTargetCodec(
       });
     }
   };
-  const encodeChannel = (value: string) => `${prefix}${encodeComponent(value, "channelId")}`;
+  const requireCanonicalComponent = (value: string, label: string) => {
+    try {
+      if (
+        !value ||
+        value.includes(":") ||
+        encodeURIComponent(decodeURIComponent(value)) !== value
+      ) {
+        throw new Error("non-canonical component");
+      }
+    } catch (error) {
+      throw new CrablineError(`${platform} canonical ${label} is malformed.`, {
+        cause: error,
+        kind: "config",
+      });
+    }
+  };
+  const normalizeChannel = (value: string) => {
+    if (!value.startsWith(prefix)) {
+      return `${prefix}${encodeComponent(value, "channelId")}`;
+    }
+    requireCanonicalComponent(value.slice(prefix.length), "channelId");
+    return value;
+  };
   return {
     normalize(target): NormalizedTarget {
-      const channelId = encodeChannel(target.channelId ?? target.id);
+      const channelId = normalizeChannel(target.channelId ?? target.id);
       const normalized: NormalizedTarget = {
         channelId,
         id: target.id,
         metadata: target.metadata,
       };
       if (target.threadId) {
-        normalized.threadId = `${channelId}:${encodeComponent(target.threadId, "threadId")}`;
+        if (target.threadId.startsWith(prefix)) {
+          const canonicalPrefix = `${channelId}:`;
+          if (!target.threadId.startsWith(canonicalPrefix)) {
+            throw new CrablineError(
+              `${platform} canonical thread parent must match the target channel.`,
+              { kind: "config" },
+            );
+          }
+          requireCanonicalComponent(target.threadId.slice(canonicalPrefix.length), "threadId");
+          normalized.threadId = target.threadId;
+        } else {
+          normalized.threadId = `${channelId}:${encodeComponent(target.threadId, "threadId")}`;
+        }
       }
       return normalized;
     },
     resolveThreadId(target) {
       const normalized = this.normalize(target);
-      return normalized.threadId ?? normalized.channelId ?? encodeChannel(normalized.id);
+      return normalized.threadId ?? normalized.channelId ?? normalizeChannel(normalized.id);
     },
   };
 }
