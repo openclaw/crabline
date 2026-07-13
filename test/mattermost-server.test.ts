@@ -733,11 +733,13 @@ describe("Mattermost local provider server", () => {
       method: "POST",
     });
     expect(reply.status).toBe(201);
-    await expect(reply.json()).resolves.toMatchObject({ root_id: root.id });
+    const replyPost = (await reply.json()) as { id: string; root_id: string };
+    expect(replyPost).toMatchObject({ root_id: root.id });
 
     for (const [rootId, status, message] of [
       ["missing-root", 404, "Root post not found"],
       [otherRoot.id, 400, "Root post belongs to another channel"],
+      [replyPost.id, 400, "Root post is itself a reply"],
     ] as const) {
       const response = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
         body: JSON.stringify({
@@ -754,6 +756,25 @@ describe("Mattermost local provider server", () => {
       expect(response.status).toBe(status);
       await expect(response.json()).resolves.toMatchObject({ message });
     }
+
+    const nestedAdminReply = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        channelId: root.channel_id,
+        rootId: replyPost.id,
+        senderId: USER_ID,
+        text: "invalid nested reply",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(nestedAdminReply.status).toBe(400);
+    await expect(nestedAdminReply.json()).resolves.toEqual({
+      error: "Root post is itself a reply",
+      ok: false,
+    });
 
     for (const method of ["PUT", "DELETE"] as const) {
       const response = await fetch(`${server.manifest.endpoints.apiRoot}/posts/${root.id}`, {
