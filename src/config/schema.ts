@@ -2,10 +2,10 @@ import { validateHeaderValue } from "node:http";
 import { BlockList, isIP } from "node:net";
 import { z } from "zod";
 import { isCanonicalHttpPath } from "../core/http-path.js";
+import { isValidNonceFixtureId, NONCE_FIXTURE_ID_ERROR } from "../core/nonces.js";
 import { inboundRegexSafetyError } from "../core/safe-regex.js";
 
 export const FIXTURE_MODES = ["probe", "send", "roundtrip", "agent"] as const;
-const FIXTURE_ID_PATTERN = /^[a-z0-9-]+$/i;
 const LOOPBACK_ADDRESSES = new BlockList();
 LOOPBACK_ADDRESSES.addSubnet("127.0.0.0", 8, "ipv4");
 LOOPBACK_ADDRESSES.addAddress("::1", "ipv6");
@@ -705,10 +705,7 @@ export const ProviderConfigSchema = z
 export const FixtureSchema = z.strictObject({
   accountId: z.string().min(1).optional(),
   env: z.array(z.string().min(1)).default([]),
-  id: z
-    .string()
-    .min(1)
-    .regex(FIXTURE_ID_PATTERN, "fixture id must contain only letters, numbers, and hyphens"),
+  id: z.string().min(1).refine(isValidNonceFixtureId, NONCE_FIXTURE_ID_ERROR),
   inboundMatch: InboundMatchSchema.default({
     author: "assistant",
     nonce: "contains",

@@ -8,6 +8,14 @@ describe("nonce + matcher", () => {
     expect(extractNonce(`hello ${nonce}`)).toBe(nonce);
   });
 
+  it("rejects fixture ids outside the extractor alphabet", () => {
+    for (const fixtureId of ["fixture_id", "fixture\n"]) {
+      expect(() => createNonce(fixtureId)).toThrow(
+        /fixture id must contain only letters, numbers, and hyphens/u,
+      );
+    }
+  });
+
   it("requires boundaries outside the nonce alphabet", () => {
     const nonce = "mp-demo-abc-1234abcd";
 
