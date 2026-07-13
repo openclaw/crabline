@@ -132,13 +132,23 @@ def write_fixture_file(repo: Path, content: str) -> None:
 
 
 def run(command: list[str], cwd: Path) -> None:
-    env = os.environ.copy()
+    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    if command and command[0] == "git":
+        command = [
+            "git",
+            "-c",
+            f"core.hooksPath={cwd / '.git-safe-hooks'}",
+            *command[1:],
+        ]
     subprocess.run(command, cwd=cwd, check=True, env=env)
 
 
 def create_fixture_repo(repo: Path, fixture: str) -> None:
+    (repo / ".git-safe-hooks").mkdir()
     run(["git", "-c", "init.templateDir=", "init", "--quiet"], repo)
     run(["git", "config", "user.name", "Review Fixture"], repo)
     run(["git", "config", "user.email", "review-fixture@example.com"], repo)

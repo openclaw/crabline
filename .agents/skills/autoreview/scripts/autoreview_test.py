@@ -131,6 +131,40 @@ class AutoreviewCompatibilityTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             namespace["parse_args"](["--engine", "cursor"])
 
+    def test_harness_ignores_hostile_git_environment_and_hooks(self) -> None:
+        harness_path = SCRIPT_PATH.with_name("test-review-harness.py")
+        namespace = runpy.run_path(str(harness_path))
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo = root / "repo"
+            repo.mkdir()
+            hostile_hooks = root / "hooks"
+            hostile_hooks.mkdir()
+            marker = root / "hook-ran"
+            hook = hostile_hooks / "pre-commit"
+            hook.write_text(
+                f"#!/bin/sh\nprintf owned > {marker}\n",
+                encoding="utf-8",
+            )
+            hook.chmod(0o755)
+            foreign_git_dir = root / "foreign.git"
+            subprocess.run(["git", "init", "--bare", "--quiet", str(foreign_git_dir)], check=True)
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "core.hooksPath",
+                    "GIT_CONFIG_VALUE_0": str(hostile_hooks),
+                    "GIT_DIR": str(foreign_git_dir),
+                },
+                clear=False,
+            ):
+                namespace["create_fixture_repo"](repo, "malicious")
+
+            self.assertTrue((repo / ".git").is_dir())
+            self.assertFalse(marker.exists())
+
     def test_cursor_agent_bin_cli_alias(self) -> None:
         with mock.patch.object(
             sys,
