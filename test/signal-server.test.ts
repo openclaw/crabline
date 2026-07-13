@@ -133,6 +133,13 @@ describe("signal local provider server", () => {
     });
     expect(allowedDns.status).toBe(200);
 
+    const allowedFqdn = await requestHttp({
+      headers: { host: `signal.internal.:${url.port}` },
+      method: "GET",
+      url: `${url.origin}/api/v1/check`,
+    });
+    expect(allowedFqdn.status).toBe(200);
+
     for (const host of [
       "attacker.invalid@signal.internal",
       "signal.internal/path",
