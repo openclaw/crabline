@@ -463,6 +463,18 @@ async function prepareRecorderPathForAppend(
   return { created: opened.created, identity: recorderIdentity };
 }
 
+function providerRecorderCloseError(
+  filePath: string,
+  operationError: unknown,
+  closeError: unknown,
+): AggregateError {
+  return new AggregateError(
+    [operationError, closeError],
+    `Provider recorder operation and file close both failed for "${filePath}".`,
+    { cause: closeError },
+  );
+}
+
 async function appendCommittedLine(
   publicationPath: string,
   logicalPath: string,
@@ -480,6 +492,7 @@ async function appendCommittedLine(
     syncCreatedParent ||
     durableRecorderIdentities.get(publicationPath) !== recorderFileIdentityKey(recorderIdentity);
   let published = false;
+  let operationError: unknown;
   try {
     if (
       expectedIdentity !== undefined &&
@@ -498,19 +511,21 @@ async function appendCommittedLine(
       rememberDurableRecorderIdentity(publicationPath, recorderIdentity);
     }
   } catch (error) {
-    if (published) {
-      throw new ProviderRecorderCommittedError(logicalPath, error);
-    }
-    throw error;
-  } finally {
-    try {
-      await handle.close();
-    } catch (error) {
+    operationError = published ? new ProviderRecorderCommittedError(logicalPath, error) : error;
+  }
+  try {
+    await handle.close();
+  } catch (closeError) {
+    if (operationError !== undefined) {
       if (published) {
-        throw new ProviderRecorderCommittedError(logicalPath, error);
+        throw new ProviderRecorderCommittedError(logicalPath, operationError, [closeError]);
       }
-      throw error;
+      throw providerRecorderCloseError(logicalPath, operationError, closeError);
     }
+    throw published ? new ProviderRecorderCommittedError(logicalPath, closeError) : closeError;
+  }
+  if (operationError !== undefined) {
+    throw operationError;
   }
 
   if (
