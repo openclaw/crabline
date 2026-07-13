@@ -1,16 +1,45 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { once } from "node:events";
+import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerRequestEvent } from "../src/servers/http.js";
 import { recordCommittedServerEvent, recordServerEvent } from "../src/servers/recorder.js";
 
+const lockMocks = vi.hoisted(() => {
+  const release = vi.fn<() => Promise<void>>();
+  return {
+    lock: vi.fn<
+      (filePath: string, options: Record<string, unknown>) => Promise<() => Promise<void>>
+    >(),
+    release,
+  };
+});
+
 const fsMocks = vi.hoisted(() => {
+  const directory = {
+    close: vi.fn<() => Promise<void>>(),
+    sync: vi.fn<() => Promise<void>>(),
+  };
   const file = {
     appendFile: vi.fn<(data: string, options: { encoding: "utf8" }) => Promise<void>>(),
     chmod: vi.fn<(mode: number) => Promise<void>>(),
     close: vi.fn<() => Promise<void>>(),
+    read: vi.fn<
+      (
+        buffer: Buffer,
+        offset: number,
+        length: number,
+        position: number,
+      ) => Promise<{ bytesRead: number; buffer: Buffer }>
+    >(),
+    stat: vi.fn<() => Promise<{ dev?: number; ino?: number; size: number }>>(),
+    sync: vi.fn<() => Promise<void>>(),
+    truncate: vi.fn<(length: number) => Promise<void>>(),
   };
   return {
     chmod: vi.fn<(filePath: string, mode: number) => Promise<void>>(),
+    directory,
     file,
     mkdir:
       vi.fn<
@@ -19,7 +48,17 @@ const fsMocks = vi.hoisted(() => {
           options: { mode: number; recursive: true },
         ) => Promise<string | undefined>
       >(),
-    open: vi.fn<(filePath: string, flags: string, mode: number) => Promise<typeof file>>(),
+    open: vi.fn<
+      (filePath: string, flags: string, mode?: number) => Promise<typeof directory | typeof file>
+    >(),
+  };
+});
+
+vi.mock("proper-lockfile", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("proper-lockfile")>();
+  return {
+    ...actual,
+    lock: lockMocks.lock,
   };
 });
 
@@ -33,6 +72,60 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
+type RecorderProcess = {
+  child: ChildProcessWithoutNullStreams;
+  exited: Promise<number | null>;
+  stderr: () => string;
+  stdout: () => string;
+};
+
+function startRecorderProcess(recorderPath: string, pathname: string): RecorderProcess {
+  const recorderModuleUrl = new URL("../src/servers/recorder.ts", import.meta.url).href;
+  const script = `
+    import { recordServerEvent } from ${JSON.stringify(recorderModuleUrl)};
+    process.stdout.write("ready\\n");
+    process.stdin.once("data", async () => {
+      process.stdin.destroy();
+      try {
+        await recordServerEvent({
+          event: {
+            at: "2026-07-12T12:00:00.000Z",
+            method: "POST",
+            path: process.argv[2],
+            query: {},
+            type: "api",
+          },
+          onEvent: undefined,
+          recorderPath: process.argv[1],
+        });
+        process.stdout.write("done\\n");
+      } catch (error) {
+        console.error(error);
+        process.exitCode = 1;
+      }
+    });
+  `;
+  const child = spawn(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", script, recorderPath, pathname],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  return {
+    child,
+    exited: once(child, "exit").then(([code]) => code as number | null),
+    stderr: () => stderr,
+    stdout: () => stdout,
+  };
+}
+
 function serverEvent(pathname: string): ServerRequestEvent {
   return {
     at: "2026-07-12T12:00:00.000Z",
@@ -44,44 +137,263 @@ function serverEvent(pathname: string): ServerRequestEvent {
 }
 
 beforeEach(() => {
+  lockMocks.release.mockReset();
+  lockMocks.release.mockResolvedValue();
+  lockMocks.lock.mockReset();
+  lockMocks.lock.mockResolvedValue(lockMocks.release);
   fsMocks.chmod.mockReset();
   fsMocks.chmod.mockResolvedValue();
+  fsMocks.directory.close.mockReset();
+  fsMocks.directory.close.mockResolvedValue();
+  fsMocks.directory.sync.mockReset();
+  fsMocks.directory.sync.mockResolvedValue();
   fsMocks.file.appendFile.mockReset();
   fsMocks.file.appendFile.mockResolvedValue();
   fsMocks.file.chmod.mockReset();
   fsMocks.file.chmod.mockResolvedValue();
   fsMocks.file.close.mockReset();
   fsMocks.file.close.mockResolvedValue();
+  fsMocks.file.read.mockReset();
+  fsMocks.file.read.mockResolvedValue({ buffer: Buffer.alloc(0), bytesRead: 0 });
+  fsMocks.file.stat.mockReset();
+  fsMocks.file.stat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
+  fsMocks.file.sync.mockReset();
+  fsMocks.file.sync.mockResolvedValue();
+  fsMocks.file.truncate.mockReset();
+  fsMocks.file.truncate.mockResolvedValue();
   fsMocks.mkdir.mockReset();
   fsMocks.mkdir.mockResolvedValue(undefined);
   fsMocks.open.mockReset();
-  fsMocks.open.mockResolvedValue(fsMocks.file);
+  fsMocks.open.mockImplementation(async (_filePath, flags) => {
+    if (flags === "ax+") {
+      throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
+    }
+    return flags === "r" ? fsMocks.directory : fsMocks.file;
+  });
 });
 
 describe("server recorder", () => {
-  it("creates recorder artifacts with owner-only permissions before append", async () => {
-    const recorderPath = path.join("/tmp", "private", "events.jsonl");
-    fsMocks.mkdir.mockResolvedValueOnce(path.join("/tmp", "private"));
+  it("makes a recursively created recorder path durable before observing its first append", async () => {
+    const firstParent = path.join("/tmp", "private");
+    const finalParent = path.join(firstParent, "nested");
+    const recorderPath = path.join(finalParent, "events.jsonl");
+    const observer = vi.fn<(event: ServerRequestEvent) => void>();
+    fsMocks.mkdir.mockResolvedValueOnce(firstParent);
+    fsMocks.open.mockImplementation(async (_filePath, flags) =>
+      flags === "r" ? fsMocks.directory : fsMocks.file,
+    );
     await recordServerEvent({
       event: serverEvent("/private"),
-      onEvent: undefined,
+      onEvent: observer,
       recorderPath,
     });
 
-    expect(fsMocks.mkdir).toHaveBeenCalledWith(path.join("/tmp", "private"), {
+    expect(fsMocks.mkdir).toHaveBeenCalledWith(finalParent, {
       mode: 0o700,
       recursive: true,
     });
-    expect(fsMocks.chmod).toHaveBeenCalledWith(path.join("/tmp", "private"), 0o700);
-    expect(fsMocks.open).toHaveBeenCalledWith(recorderPath, "a", 0o600);
+    expect(fsMocks.chmod).toHaveBeenCalledWith(finalParent, 0o700);
+    expect(fsMocks.open.mock.calls).toEqual([
+      [recorderPath, "ax+", 0o600],
+      [finalParent, "r"],
+      [firstParent, "r"],
+      [path.dirname(firstParent), "r"],
+    ]);
     expect(fsMocks.file.chmod).toHaveBeenCalledWith(0o600);
     expect(fsMocks.file.appendFile).toHaveBeenCalledWith(expect.any(String), {
       encoding: "utf8",
     });
+    expect(fsMocks.file.sync).toHaveBeenCalledOnce();
+    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(3);
+    expect(fsMocks.file.sync.mock.invocationCallOrder[0]).toBeLessThan(
+      fsMocks.directory.sync.mock.invocationCallOrder[0]!,
+    );
+    expect(fsMocks.directory.sync.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      observer.mock.invocationCallOrder[0]!,
+    );
+    expect(lockMocks.lock).toHaveBeenCalledWith(path.resolve(recorderPath), {
+      realpath: false,
+      retries: 0,
+      stale: 30_000,
+      update: 10_000,
+    });
+    expect(lockMocks.release).toHaveBeenCalledOnce();
     expect(fsMocks.file.chmod.mock.invocationCallOrder[0]).toBeLessThan(
       fsMocks.file.appendFile.mock.invocationCallOrder[0]!,
     );
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
+    expect(fsMocks.directory.close).toHaveBeenCalledTimes(3);
+  });
+
+  it("resyncs recorder ancestry after an interrupted first-append attempt", async () => {
+    const firstParent = path.join("/tmp", "retry-private");
+    const finalParent = path.join(firstParent, "nested");
+    const recorderPath = path.join(finalParent, "events.jsonl");
+    const ancestrySyncFailure = new Error("simulated recorder ancestry sync interruption");
+    const observer = vi.fn<(event: ServerRequestEvent) => void>();
+    let recorderExists = false;
+    fsMocks.mkdir.mockResolvedValueOnce(firstParent).mockResolvedValueOnce(undefined);
+    fsMocks.file.stat.mockResolvedValue({ dev: 42, ino: 84, size: 0 });
+    fsMocks.directory.sync.mockRejectedValueOnce(ancestrySyncFailure).mockResolvedValue(undefined);
+    fsMocks.open.mockImplementation(async (openedPath, flags) => {
+      if (flags === "r") {
+        if (openedPath === path.dirname(firstParent)) {
+          throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
+        }
+        return fsMocks.directory;
+      }
+      if (flags === "ax+") {
+        if (recorderExists) {
+          throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
+        }
+        recorderExists = true;
+      }
+      return fsMocks.file;
+    });
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/interrupted"),
+        onEvent: observer,
+        recorderPath,
+      }),
+    ).rejects.toBe(ancestrySyncFailure);
+    expect(observer).not.toHaveBeenCalled();
+
+    const retryEvent = serverEvent("/retry");
+    await recordServerEvent({
+      event: retryEvent,
+      onEvent: observer,
+      recorderPath,
+    });
+
+    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+    expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
+    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(3);
+    expect(fsMocks.open).not.toHaveBeenCalledWith(path.parse(recorderPath).root, "r");
+    expect(observer).toHaveBeenCalledOnce();
+    expect(observer).toHaveBeenCalledWith(retryEvent);
+    expect(fsMocks.directory.sync.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      observer.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("fails an immediate parent sync without caching durability or notifying observers", async () => {
+    const finalParent = path.join("/tmp", "recorder-immediate-denied");
+    const recorderPath = path.join(finalParent, "events.jsonl");
+    const syncFailure = Object.assign(new Error("recorder parent denied"), { code: "EACCES" });
+    const observer = vi.fn<(event: ServerRequestEvent) => void>();
+    let immediateAttempts = 0;
+    fsMocks.file.stat.mockResolvedValue({ dev: 61, ino: 62, size: 0 });
+    fsMocks.open.mockImplementation(async (openedPath, flags) => {
+      if (flags === "ax+") {
+        throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
+      }
+      if (flags === "r") {
+        if (openedPath === finalParent && immediateAttempts++ === 0) {
+          throw syncFailure;
+        }
+        if (openedPath === path.dirname(finalParent)) {
+          throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
+        }
+        return fsMocks.directory;
+      }
+      return fsMocks.file;
+    });
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/denied"),
+        onEvent: observer,
+        recorderPath,
+      }),
+    ).rejects.toBe(syncFailure);
+    expect(observer).not.toHaveBeenCalled();
+
+    const retryEvent = serverEvent("/retry-after-denial");
+    await recordServerEvent({
+      event: retryEvent,
+      onEvent: observer,
+      recorderPath,
+    });
+
+    expect(immediateAttempts).toBe(2);
+    expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
+    expect(fsMocks.directory.sync).toHaveBeenCalledOnce();
+    expect(observer).toHaveBeenCalledOnce();
+    expect(observer).toHaveBeenCalledWith(retryEvent);
+  });
+
+  it("fails newly created recorder ancestry sync and retries the uncached inode", async () => {
+    const firstParent = path.join("/tmp", "recorder-created-denied");
+    const finalParent = path.join(firstParent, "nested");
+    const recorderPath = path.join(finalParent, "events.jsonl");
+    const syncFailure = Object.assign(new Error("created recorder ancestry denied"), {
+      code: "EPERM",
+    });
+    const observer = vi.fn<(event: ServerRequestEvent) => void>();
+    let recorderExists = false;
+    let denyCreatedBoundary = true;
+    fsMocks.mkdir.mockResolvedValueOnce(firstParent).mockResolvedValueOnce(undefined);
+    fsMocks.file.stat.mockResolvedValue({ dev: 71, ino: 72, size: 0 });
+    fsMocks.open.mockImplementation(async (openedPath, flags) => {
+      if (flags === "ax+") {
+        if (recorderExists) {
+          throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
+        }
+        recorderExists = true;
+        return fsMocks.file;
+      }
+      if (flags === "r") {
+        if (openedPath === path.dirname(firstParent)) {
+          if (denyCreatedBoundary) {
+            denyCreatedBoundary = false;
+            throw syncFailure;
+          }
+          throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
+        }
+        return fsMocks.directory;
+      }
+      return fsMocks.file;
+    });
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/created-denied"),
+        onEvent: observer,
+        recorderPath,
+      }),
+    ).rejects.toBe(syncFailure);
+    expect(observer).not.toHaveBeenCalled();
+
+    const retryEvent = serverEvent("/retry-created-denial");
+    await recordServerEvent({
+      event: retryEvent,
+      onEvent: observer,
+      recorderPath,
+    });
+
+    expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
+    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(4);
+    expect(observer).toHaveBeenCalledOnce();
+    expect(observer).toHaveBeenCalledWith(retryEvent);
+  });
+
+  it("keeps retrying while another recorder owner remains live", async () => {
+    const contention = Object.assign(new Error("Lock file is already being held"), {
+      code: "ELOCKED",
+    });
+    lockMocks.lock.mockRejectedValueOnce(contention).mockResolvedValueOnce(lockMocks.release);
+
+    await recordServerEvent({
+      event: serverEvent("/after-contention"),
+      onEvent: undefined,
+      recorderPath: path.join("/tmp", "crabline-server-recorder-contention.jsonl"),
+    });
+
+    expect(lockMocks.lock).toHaveBeenCalledTimes(2);
+    expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    expect(lockMocks.release).toHaveBeenCalledOnce();
   });
 
   it("repairs managed recorder directories without chmodding caller-owned parents", async () => {
@@ -164,12 +476,337 @@ describe("server recorder", () => {
     expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
   });
 
-  it("invokes observers only after the event is durable", async () => {
-    let releaseAppend: (() => void) | undefined;
-    const appendBlocked = new Promise<void>((resolve) => {
-      releaseAppend = resolve;
+  it("fills short tail reads before repairing a torn final append", async () => {
+    const recorderPath = path.join("/tmp", "crabline-server-recorder-torn.jsonl");
+    const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
+    const torn = '{"type":"api","path":"/torn"';
+    const contents = Buffer.from(completed + torn);
+    fsMocks.file.stat.mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
+    fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
+      const source = contents.subarray(position, position + Math.min(length, 3));
+      source.copy(buffer, offset);
+      return { buffer, bytesRead: source.length };
     });
-    fsMocks.file.appendFile.mockReturnValueOnce(appendBlocked);
+
+    await recordServerEvent({
+      event: serverEvent("/after-recovery"),
+      onEvent: () => undefined,
+      recorderPath,
+    });
+
+    expect(fsMocks.file.truncate).toHaveBeenCalledWith(Buffer.byteLength(completed));
+    expect(fsMocks.file.read.mock.calls.length).toBeGreaterThan(3);
+    expect(fsMocks.file.appendFile).toHaveBeenLastCalledWith(
+      `${JSON.stringify(serverEvent("/after-recovery"))}\n`,
+      { encoding: "utf8" },
+    );
+    expect(fsMocks.file.sync).toHaveBeenCalledOnce();
+  });
+
+  it("appends server records larger than four MiB", async () => {
+    const event = {
+      ...serverEvent("/oversized"),
+      query: { payload: "x".repeat(4 * 1024 * 1024) },
+    };
+
+    await expect(
+      recordServerEvent({
+        event,
+        onEvent: undefined,
+        recorderPath: path.join("/tmp", "crabline-server-recorder-oversized.jsonl"),
+      }),
+    ).resolves.toBeUndefined();
+
+    const recordedLine = fsMocks.file.appendFile.mock.calls[0]?.[0];
+    expect(recordedLine).toBeDefined();
+    expect(Buffer.byteLength(recordedLine!)).toBeGreaterThan(4 * 1024 * 1024);
+    expect(JSON.parse(recordedLine!).query.payload).toHaveLength(4 * 1024 * 1024);
+  });
+
+  it("preserves a valid oversized legacy tail and restores its missing newline", async () => {
+    const recorderPath = path.join("/tmp", "crabline-server-recorder-valid-oversized-tail.jsonl");
+    const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
+    const legacyEvent = JSON.stringify({
+      ...serverEvent("/legacy-oversized"),
+      query: { payload: "x".repeat(4 * 1024 * 1024) },
+    });
+    const contents = Buffer.from(completed + legacyEvent);
+    fsMocks.file.stat.mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
+    fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
+      const source = contents.subarray(position, position + length);
+      source.copy(buffer, offset);
+      return { buffer, bytesRead: source.length };
+    });
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/after-valid-oversized-tail"),
+        onEvent: undefined,
+        recorderPath,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(fsMocks.file.truncate).not.toHaveBeenCalled();
+    expect(fsMocks.file.appendFile.mock.calls).toEqual([
+      ["\n", { encoding: "utf8" }],
+      [`${JSON.stringify(serverEvent("/after-valid-oversized-tail"))}\n`, { encoding: "utf8" }],
+    ]);
+  });
+
+  it("repairs an exact 64 MiB valid tail after scanning its preceding delimiter", async () => {
+    const recorderPath = path.join("/tmp", "crabline-server-recorder-valid-boundary-tail.jsonl");
+    const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
+    const completedBuffer = Buffer.from(completed);
+    const validationBudget = 64 * 1024 * 1024;
+    const tailStart = completedBuffer.length;
+    const fileSize = tailStart + validationBudget;
+    fsMocks.file.stat.mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize });
+    fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
+      const bytesRead = Math.max(0, Math.min(length, fileSize - position));
+      if (bytesRead === 0) {
+        return { buffer, bytesRead };
+      }
+      buffer.fill(0x78, offset, offset + bytesRead);
+      const completedStart = Math.max(0, position);
+      const completedEnd = Math.min(position + bytesRead, tailStart);
+      if (completedStart < completedEnd) {
+        completedBuffer
+          .subarray(completedStart, completedEnd)
+          .copy(buffer, offset + completedStart - position);
+      }
+      if (position <= tailStart && tailStart < position + bytesRead) {
+        buffer[offset + tailStart - position] = 0x22;
+      }
+      const tailEnd = fileSize - 1;
+      if (position <= tailEnd && tailEnd < position + bytesRead) {
+        buffer[offset + tailEnd - position] = 0x22;
+      }
+      return { buffer, bytesRead };
+    });
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/after-valid-boundary-tail"),
+        onEvent: undefined,
+        recorderPath,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(fsMocks.file.read).toHaveBeenCalledWith(expect.any(Buffer), 0, 1, tailStart - 1);
+    expect(fsMocks.file.read).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      0,
+      validationBudget,
+      tailStart,
+    );
+    expect(fsMocks.file.truncate).not.toHaveBeenCalled();
+    expect(fsMocks.file.appendFile.mock.calls).toEqual([
+      ["\n", { encoding: "utf8" }],
+      [`${JSON.stringify(serverEvent("/after-valid-boundary-tail"))}\n`, { encoding: "utf8" }],
+    ]);
+  });
+
+  it("truncates an invalid oversized torn tail without wedging later appends", async () => {
+    const recorderPath = path.join("/tmp", "crabline-server-recorder-oversized-tail.jsonl");
+    const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
+    const contents = Buffer.from(`${completed}{"payload":"${"x".repeat(4 * 1024 * 1024)}"`);
+    fsMocks.file.stat.mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
+    fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
+      const source = contents.subarray(position, position + length);
+      source.copy(buffer, offset);
+      return { buffer, bytesRead: source.length };
+    });
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/after-oversized-tail"),
+        onEvent: undefined,
+        recorderPath,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(fsMocks.file.truncate).toHaveBeenCalledWith(Buffer.byteLength(completed));
+    expect(fsMocks.file.appendFile).toHaveBeenLastCalledWith(
+      `${JSON.stringify(serverEvent("/after-oversized-tail"))}\n`,
+      { encoding: "utf8" },
+    );
+  });
+
+  it("stops scanning a sparse no-newline tail at the validation budget without modifying it", async () => {
+    const recorderPath = path.join("/tmp", "crabline-server-recorder-unvalidated-tail.jsonl");
+    const fileSize = 8 * 1024 * 1024 * 1024;
+    const validationBudget = 64 * 1024 * 1024;
+    fsMocks.file.stat.mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize });
+    fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
+      if (length === 1 && position === fileSize - 1) {
+        buffer[offset] = 0x7d;
+        return { buffer, bytesRead: 1 };
+      }
+      buffer.fill(0, offset, offset + length);
+      return { buffer, bytesRead: length };
+    });
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/after-unvalidated-tail"),
+        onEvent: undefined,
+        recorderPath,
+      }),
+    ).rejects.toThrow(
+      "Server recorder final record is too large to validate safely; refusing to modify it.",
+    );
+
+    const scanCalls = fsMocks.file.read.mock.calls.filter(([, , length]) => length !== 1);
+    expect(scanCalls).toHaveLength(1024);
+    expect(scanCalls.reduce((total, [, , length]) => total + length, 0)).toBe(validationBudget);
+    expect(Math.min(...scanCalls.map(([, , , position]) => position))).toBe(
+      fileSize - validationBudget,
+    );
+    expect(fsMocks.file.read).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      0,
+      1,
+      fileSize - validationBudget - 1,
+    );
+    expect(fsMocks.file.truncate).not.toHaveBeenCalled();
+    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+  });
+
+  it("serializes torn-tail recovery and append across recorder processes", async () => {
+    const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const actualLockfile =
+      await vi.importActual<typeof import("proper-lockfile")>("proper-lockfile");
+    const directory = await actualFs.mkdtemp(
+      path.join(os.tmpdir(), "crabline-server-recorder-process-"),
+    );
+    const recorderPath = path.join(directory, "events.jsonl");
+    const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
+    const initialContents = `${completed}{"type":"api","path":"/torn"`;
+    let releaseGate: (() => Promise<void>) | undefined;
+    const processes: RecorderProcess[] = [];
+    try {
+      await actualFs.writeFile(recorderPath, initialContents, { mode: 0o600 });
+      releaseGate = await actualLockfile.lock(recorderPath, {
+        realpath: false,
+        stale: 30_000,
+        update: 10_000,
+      });
+      const first = startRecorderProcess(recorderPath, "/process-a");
+      const second = startRecorderProcess(recorderPath, "/process-b");
+      processes.push(first, second);
+
+      await vi.waitFor(
+        () => {
+          expect(first.stdout()).toContain("ready\n");
+          expect(second.stdout()).toContain("ready\n");
+        },
+        { timeout: 5_000 },
+      );
+      first.child.stdin.end("go\n");
+      second.child.stdin.end("go\n");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(first.stdout()).not.toContain("done\n");
+      expect(second.stdout()).not.toContain("done\n");
+      await expect(actualFs.readFile(recorderPath, "utf8")).resolves.toBe(initialContents);
+
+      await releaseGate();
+      releaseGate = undefined;
+      await vi.waitFor(
+        () => {
+          expect(first.stdout()).toContain("done\n");
+          expect(second.stdout()).toContain("done\n");
+        },
+        { timeout: 5_000 },
+      );
+      await expect(Promise.all(processes.map((process) => process.exited))).resolves.toEqual([
+        0, 0,
+      ]);
+
+      const recordedPaths = (await actualFs.readFile(recorderPath, "utf8"))
+        .trimEnd()
+        .split("\n")
+        .map((line) => (JSON.parse(line) as ServerRequestEvent).path)
+        .sort();
+      expect(recordedPaths).toEqual(["/completed", "/process-a", "/process-b"]);
+    } finally {
+      await releaseGate?.();
+      for (const process of processes) {
+        if (process.child.exitCode === null) {
+          process.child.kill();
+        }
+      }
+      await Promise.all(processes.map((process) => process.exited));
+      await actualFs.rm(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("waits beyond five seconds for a live recorder owner", async () => {
+    const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const actualLockfile =
+      await vi.importActual<typeof import("proper-lockfile")>("proper-lockfile");
+    const directory = await actualFs.mkdtemp(
+      path.join(os.tmpdir(), "crabline-server-recorder-long-lock-"),
+    );
+    const recorderPath = path.join(directory, "events.jsonl");
+    const initialContents = `${JSON.stringify(serverEvent("/completed"))}\n`;
+    let releaseGate: (() => Promise<void>) | undefined;
+    let recorderProcess: RecorderProcess | undefined;
+    try {
+      await actualFs.writeFile(recorderPath, initialContents, { mode: 0o600 });
+      releaseGate = await actualLockfile.lock(recorderPath, {
+        realpath: false,
+        stale: 30_000,
+        update: 10_000,
+      });
+      recorderProcess = startRecorderProcess(recorderPath, "/after-long-lock");
+
+      await vi.waitFor(
+        () => {
+          expect(recorderProcess?.stdout()).toContain("ready\n");
+        },
+        { timeout: 5_000 },
+      );
+      recorderProcess.child.stdin.end("go\n");
+      await new Promise((resolve) => setTimeout(resolve, 5_500));
+
+      expect(recorderProcess.stdout()).not.toContain("done\n");
+      expect(recorderProcess.child.exitCode).toBeNull();
+      await expect(actualFs.readFile(recorderPath, "utf8")).resolves.toBe(initialContents);
+
+      await releaseGate();
+      releaseGate = undefined;
+      await vi.waitFor(
+        () => {
+          expect(recorderProcess?.stdout()).toContain("done\n");
+        },
+        { timeout: 5_000 },
+      );
+      await expect(recorderProcess.exited).resolves.toBe(0);
+
+      const recordedPaths = (await actualFs.readFile(recorderPath, "utf8"))
+        .trimEnd()
+        .split("\n")
+        .map((line) => (JSON.parse(line) as ServerRequestEvent).path);
+      expect(recordedPaths).toEqual(["/completed", "/after-long-lock"]);
+    } finally {
+      await releaseGate?.();
+      if (recorderProcess?.child.exitCode === null) {
+        recorderProcess.child.kill();
+      }
+      if (recorderProcess) {
+        await recorderProcess.exited;
+      }
+      await actualFs.rm(directory, { force: true, recursive: true });
+    }
+  }, 15_000);
+
+  it("invokes observers only after the event is durable", async () => {
+    let releaseSync: (() => void) | undefined;
+    const syncBlocked = new Promise<void>((resolve) => {
+      releaseSync = resolve;
+    });
+    fsMocks.file.sync.mockReturnValueOnce(syncBlocked);
     const observer = vi.fn<(event: ServerRequestEvent) => void>();
     const event = serverEvent("/ordered");
 
@@ -178,10 +815,10 @@ describe("server recorder", () => {
       onEvent: observer,
       recorderPath: path.join("/tmp", "crabline-server-recorder-order.jsonl"),
     });
-    await vi.waitFor(() => expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(fsMocks.file.sync).toHaveBeenCalledTimes(1));
     expect(observer).not.toHaveBeenCalled();
 
-    releaseAppend?.();
+    releaseSync?.();
     await recording;
     expect(observer).toHaveBeenCalledWith(event);
   });

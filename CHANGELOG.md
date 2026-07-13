@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Recover interrupted artifact and recorder writes, publish immutable readiness evidence, and harden private-directory and smoke-lock durability.
+
 ## 0.1.10 - 2026-07-13
 
 - Emit nested OpenClaw streaming config from the Matrix and Mattermost provider bridges.

@@ -22,6 +22,10 @@ import type { OpenClawCrablineSmokeRunLock } from "./smoke-lock.js";
 
 const GENERATION_NAME_PATTERN =
   /^generation-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+const STAGING_NAME_PATTERN =
+  /^\.staging-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+const REMOVAL_TOMBSTONE_PATTERN =
+  /^\.(.+)\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove$/iu;
 export type OpenClawCrablineArtifactPointer = {
   capabilityMatrixPath: string;
   generation: string;
@@ -49,6 +53,11 @@ type PublishGenerationDependencies = {
   syncParent?: typeof syncParentDirectory;
 };
 
+type RecorderSnapshot = {
+  contents: string;
+  fileName: string;
+};
+
 function resolveProviderReadinessArtifactPath(
   selection: OpenClawCrablineChannelDriverSelection,
 ): typeof OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH {
@@ -74,6 +83,31 @@ function assertGenerationName(value: unknown, field: string): asserts value is s
 
 function generationArtifactPath(generation: string, fileName: string): string {
   return path.join(OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY, generation, fileName);
+}
+
+function artifactRemovalTombstoneBaseName(name: string): string | null {
+  const originalName = REMOVAL_TOMBSTONE_PATTERN.exec(name)?.[1];
+  return originalName !== undefined &&
+    (GENERATION_NAME_PATTERN.test(originalName) || STAGING_NAME_PATTERN.test(originalName))
+    ? originalName
+    : null;
+}
+
+function withRecorderSnapshotPath(
+  providerReadiness: Record<string, unknown>,
+  recorderPath: string,
+): Record<string, unknown> {
+  const result = providerReadiness.result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("OpenClaw Crabline provider readiness result is malformed.");
+  }
+  return {
+    ...providerReadiness,
+    result: {
+      ...result,
+      recorderPath,
+    },
+  };
 }
 
 function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer {
@@ -181,12 +215,16 @@ async function pruneArtifactStore(params: {
       : [],
   );
   for (const entry of await fs.readdir(params.store.directoryPath, { withFileTypes: true })) {
-    const isAbandonedStaging = entry.isDirectory() && entry.name.startsWith(".staging-");
+    const isAbandonedStaging = entry.isDirectory() && STAGING_NAME_PATTERN.test(entry.name);
     const isObsoleteGeneration =
       entry.isDirectory() &&
       GENERATION_NAME_PATTERN.test(entry.name) &&
       !retainedGenerations.has(entry.name);
-    if (!isAbandonedStaging && !isObsoleteGeneration) {
+    const removalTombstoneBaseName = entry.isDirectory()
+      ? artifactRemovalTombstoneBaseName(entry.name)
+      : null;
+    const isRemovalTombstone = removalTombstoneBaseName !== null;
+    if (!isAbandonedStaging && !isObsoleteGeneration && !isRemovalTombstone) {
       continue;
     }
     await params.lock.assertOwned();
@@ -195,7 +233,11 @@ async function pruneArtifactStore(params: {
       path.join(params.store.directoryPath, entry.name),
       params.directoryOptions,
     );
-    await removeSecuredPrivateDirectory(obsolete);
+    await removeSecuredPrivateDirectory(
+      obsolete,
+      undefined,
+      removalTombstoneBaseName ?? entry.name,
+    );
     await params.store.assertIdentityAt();
   }
 }
@@ -206,6 +248,7 @@ export async function publishOpenClawCrablineArtifactGeneration(
     lock: OpenClawCrablineSmokeRunLock;
     manifest: CrablineServerManifest;
     outputDir: string;
+    recorderSnapshot?: RecorderSnapshot;
     selection: OpenClawCrablineChannelDriverSelection;
     providerReadiness: Record<string, unknown>;
   },
@@ -222,6 +265,7 @@ export async function publishOpenClawCrablineArtifactGeneration(
     ...(dependencies.secureWindowsDirectory
       ? { secureWindowsDirectory: dependencies.secureWindowsDirectory }
       : {}),
+    ...(dependencies.syncParent ? { syncParent: dependencies.syncParent } : {}),
   };
   const store = await securePrivateDirectory(storePath, directoryOptions);
   await output.assertIdentityAt();
@@ -283,13 +327,29 @@ export async function publishOpenClawCrablineArtifactGeneration(
       smokeArtifactPath: generationArtifactPath(generation, providerReadinessArtifactPath),
       version: 1,
     };
+    if (
+      params.recorderSnapshot &&
+      (path.basename(params.recorderSnapshot.fileName) !== params.recorderSnapshot.fileName ||
+        !params.recorderSnapshot.fileName.endsWith(".jsonl"))
+    ) {
+      throw new Error("OpenClaw Crabline recorder snapshot filename is malformed.");
+    }
+    const recorderSnapshotPath = params.recorderSnapshot
+      ? generationArtifactPath(generation, params.recorderSnapshot.fileName)
+      : undefined;
+    const publishedManifest = recorderSnapshotPath
+      ? { ...params.manifest, recorderPath: recorderSnapshotPath }
+      : params.manifest;
+    const providerReadinessBase = recorderSnapshotPath
+      ? withRecorderSnapshotPath(params.providerReadiness, recorderSnapshotPath)
+      : params.providerReadiness;
     const providerReadiness = {
-      ...params.providerReadiness,
+      ...providerReadinessBase,
       manifestPath: pointer.manifestPath,
     };
-    const artifactContents = [
+    const artifactContents: { contents: string; fileName: string }[] = [
       {
-        contents: `${JSON.stringify(params.manifest, null, 2)}\n`,
+        contents: `${JSON.stringify(publishedManifest, null, 2)}\n`,
         fileName: OPENCLAW_CRABLINE_MANIFEST_PATH,
       },
       {
@@ -323,7 +383,15 @@ export async function publishOpenClawCrablineArtifactGeneration(
         )}\n`,
         fileName: providerReadinessArtifactPath,
       },
-    ] as const;
+      ...(params.recorderSnapshot
+        ? [
+            {
+              contents: params.recorderSnapshot.contents,
+              fileName: params.recorderSnapshot.fileName,
+            },
+          ]
+        : []),
+    ];
 
     await params.lock.assertOwned();
     for (const artifact of artifactContents) {

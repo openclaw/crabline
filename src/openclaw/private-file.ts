@@ -250,6 +250,7 @@ async function assertPathIdentity(filePath: string, expected: FileIdentity): Pro
 type DirectoryIdentity = {
   device: bigint;
   inode: bigint;
+  userId: bigint;
 };
 
 async function readDirectoryHandleIdentity(handle: FileHandle): Promise<DirectoryIdentity> {
@@ -260,6 +261,7 @@ async function readDirectoryHandleIdentity(handle: FileHandle): Promise<Director
   return {
     device: stats.dev,
     inode: stats.ino,
+    userId: stats.uid,
   };
 }
 
@@ -319,13 +321,62 @@ export async function syncParentDirectory(
   }
 }
 
+async function syncParentAtAccessibleBoundary(
+  filePath: string,
+  syncParent: (filePath: string, platform?: NodeJS.Platform) => Promise<void>,
+  platform?: NodeJS.Platform,
+): Promise<boolean> {
+  try {
+    await syncParent(filePath, platform);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function syncPathAncestry(
+  filePath: string,
+  syncParent: (filePath: string, platform?: NodeJS.Platform) => Promise<void>,
+  platform?: NodeJS.Platform,
+  firstCreatedDirectory?: string,
+): Promise<void> {
+  const resolvedFilePath = path.resolve(filePath);
+  let currentPath = resolvedFilePath;
+  const syncThroughPath =
+    firstCreatedDirectory === undefined ? undefined : path.resolve(firstCreatedDirectory);
+  for (;;) {
+    const mandatory = syncThroughPath !== undefined || currentPath === resolvedFilePath;
+    if (mandatory) {
+      await syncParent(currentPath, platform);
+    } else if (!(await syncParentAtAccessibleBoundary(currentPath, syncParent, platform))) {
+      return;
+    }
+    if (currentPath === syncThroughPath) {
+      return;
+    }
+    const parentPath = path.dirname(currentPath);
+    if (path.dirname(parentPath) === parentPath) {
+      return;
+    }
+    currentPath = parentPath;
+  }
+}
+
 export async function removeSecuredPrivateDirectory(
   secured: SecuredPrivateDirectory,
   currentPath = secured.directoryPath,
+  quarantineBaseName = path.basename(currentPath),
 ): Promise<void> {
+  if (path.basename(quarantineBaseName) !== quarantineBaseName || quarantineBaseName.length === 0) {
+    throw new Error("Private directory quarantine basename is malformed.");
+  }
   const quarantinePath = path.join(
     path.dirname(currentPath),
-    `.${path.basename(currentPath)}.${process.pid}.${randomUUID()}.remove`,
+    `.${quarantineBaseName}.${process.pid}.${randomUUID()}.remove`,
   );
   await secured.assertIdentityAt(currentPath);
   await fs.rename(currentPath, quarantinePath);
@@ -338,8 +389,10 @@ export async function removeSecuredPrivateDirectory(
 export async function securePrivateDirectory(
   directoryPath: string,
   options: {
+    currentUserId?: number;
     platform?: NodeJS.Platform;
     secureWindowsDirectory?: (directoryPath: string) => Promise<void>;
+    syncParent?: (filePath: string, platform?: NodeJS.Platform) => Promise<void>;
   } = {},
 ): Promise<SecuredPrivateDirectory> {
   let created = false;
@@ -388,9 +441,24 @@ export async function securePrivateDirectory(
     if ((options.platform ?? process.platform) === "win32") {
       await (options.secureWindowsDirectory ?? applyOwnerOnlyWindowsDirectoryAcl)(directoryPath);
     } else {
+      const currentUserId = options.currentUserId ?? process.geteuid?.();
+      if (
+        currentUserId === undefined ||
+        !Number.isSafeInteger(currentUserId) ||
+        currentUserId < 0 ||
+        identity.userId !== BigInt(currentUserId)
+      ) {
+        throw new Error("Private directory must be owned by the current POSIX user.");
+      }
       await handle.chmod(0o700);
     }
     await secured.assertIdentityAt();
+    const syncParent = options.syncParent ?? syncParentDirectory;
+    if (created) {
+      await syncParent(directoryPath, options.platform);
+    } else {
+      await syncParentAtAccessibleBoundary(directoryPath, syncParent, options.platform);
+    }
   } catch (error) {
     let primaryError = error;
     try {
@@ -441,7 +509,8 @@ export async function publishPrivateFileAtomically(
     path.dirname(filePath),
     `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
   );
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const parentDirectory = path.resolve(path.dirname(filePath));
+  const firstCreatedDirectory = await fs.mkdir(parentDirectory, { recursive: true });
   let handle: FileHandle | undefined;
   let publicationFailed = false;
   let primaryError: unknown;
@@ -461,7 +530,12 @@ export async function publishPrivateFileAtomically(
     await options.beforeRename?.(temporaryPath);
     await assertPathIdentity(temporaryPath, identity);
     await fs.rename(temporaryPath, filePath);
-    await (options.syncParent ?? syncParentDirectory)(filePath, options.platform);
+    await syncPathAncestry(
+      filePath,
+      options.syncParent ?? syncParentDirectory,
+      options.platform,
+      firstCreatedDirectory,
+    );
     await options.afterRename?.(filePath);
     await assertPathIdentity(filePath, identity);
   } catch (error) {

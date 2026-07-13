@@ -539,22 +539,28 @@ function needsLiveOwnerConfirmation(record: SmokeLockRecord, runtime: SmokeLockR
   );
 }
 
-async function observedOwnerChangedDuringConfirmation(
+type OwnerConfirmation = "changed" | "renewed" | "unchanged";
+
+async function confirmObservedOwner(
   lockDirectory: string,
   observed: SmokeLockRecord,
   runtime: SmokeLockRuntime,
-): Promise<boolean> {
+): Promise<OwnerConfirmation> {
   if (!needsLiveOwnerConfirmation(observed, runtime)) {
-    return false;
+    return "unchanged";
   }
   await runtime.sleep(runtime.leaseMs);
   const revalidated = await readLockRecord(lockDirectory);
-  return (
-    revalidated.kind === "record" &&
-    (revalidated.record.owner.token !== observed.owner.token ||
-      revalidated.record.renewedAtMs !== observed.renewedAtMs ||
-      isLockOwnerActive(revalidated.record, runtime))
-  );
+  if (revalidated.kind !== "record") {
+    return "unchanged";
+  }
+  if (revalidated.record.owner.token !== observed.owner.token) {
+    return "changed";
+  }
+  return revalidated.record.renewedAtMs !== observed.renewedAtMs ||
+    isLockOwnerActive(revalidated.record, runtime)
+    ? "renewed"
+    : "unchanged";
 }
 
 function activeRunError(params: {
@@ -785,13 +791,28 @@ async function resolveLockClaim(params: {
       requestedChannel: params.requestedChannel,
     });
   }
-  if (
-    await observedOwnerChangedDuringConfirmation(
-      params.claim.directoryPath,
-      observed.record,
-      params.runtime,
-    )
-  ) {
+  const confirmation = await confirmObservedOwner(
+    params.claim.directoryPath,
+    observed.record,
+    params.runtime,
+  );
+  if (confirmation === "renewed") {
+    if (params.claim.kind === "recovering") {
+      try {
+        await fs.rename(params.claim.directoryPath, params.lockDirectory);
+      } catch (error) {
+        if (!(await pathExists(params.lockDirectory))) {
+          throw error;
+        }
+      }
+    }
+    throw activeRunError({
+      channel: observed.record.owner.channel,
+      outputDir: params.outputDir,
+      requestedChannel: params.requestedChannel,
+    });
+  }
+  if (confirmation === "changed") {
     await resolveLockClaim(params);
     return;
   }
@@ -855,16 +876,23 @@ async function resolveLockContention(params: {
       requestedChannel: params.requestedChannel,
     });
   }
-  if (
-    observed.kind === "record" &&
-    (await observedOwnerChangedDuringConfirmation(
+  if (observed.kind === "record") {
+    const confirmation = await confirmObservedOwner(
       params.lockDirectory,
       observed.record,
       params.runtime,
-    ))
-  ) {
-    await resolveLockContention(params);
-    return;
+    );
+    if (confirmation === "renewed") {
+      throw activeRunError({
+        channel: observed.record.owner.channel,
+        outputDir: params.outputDir,
+        requestedChannel: params.requestedChannel,
+      });
+    }
+    if (confirmation === "changed") {
+      await resolveLockContention(params);
+      return;
+    }
   }
 
   await params.beforeRecoveryClaim();
@@ -1078,13 +1106,34 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     }
 
     let ownedDirectory = lockDirectory;
+    let clockRegressed = false;
+    let lastObservedNowMs = createdAtMs;
+    let lastRenewedAtMs = createdAtMs;
+    let pendingRenewal = Promise.resolve();
     let commitFenceConsumed = false;
     let heartbeat: HeartbeatController;
     const renew = async () => {
-      const renewedAtMs = runtime.now();
-      if (!(await renewOwnedLock(ownedDirectory, token, renewedAtMs))) {
-        throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
-      }
+      const renewal = pendingRenewal
+        .catch(() => undefined)
+        .then(async () => {
+          const nowMs = runtime.now();
+          if (nowMs < lastObservedNowMs) {
+            clockRegressed = true;
+          } else if (clockRegressed && nowMs >= lastRenewedAtMs) {
+            clockRegressed = false;
+          }
+          lastObservedNowMs = nowMs;
+          const renewedAtMs = clockRegressed ? lastRenewedAtMs + 1 : nowMs;
+          if (!Number.isSafeInteger(renewedAtMs)) {
+            throw new Error("OpenClaw Crabline smoke lock renewal timestamp overflowed.");
+          }
+          if (!(await renewOwnedLock(ownedDirectory, token, renewedAtMs))) {
+            throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
+          }
+          lastRenewedAtMs = renewedAtMs;
+        });
+      pendingRenewal = renewal;
+      await renewal;
     };
     try {
       heartbeat = (dependencies.startHeartbeat ?? startHeartbeat)(

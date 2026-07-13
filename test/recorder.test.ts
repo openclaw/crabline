@@ -416,6 +416,66 @@ describe("recorder", () => {
     ]);
   });
 
+  it("retries a single append against a recorder rotated during append", async () => {
+    const filePath = await createRecorderPath();
+    const rotatedPath = `${filePath}.rotated`;
+    const event = {
+      author: "assistant" as const,
+      id: "rotated-single",
+      provider: "slack",
+      sentAt: new Date().toISOString(),
+      text: "preserve both generations",
+      threadId: "slack:C123",
+    };
+
+    const probeHandle = await open(filePath, "a+");
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+      writeFile(data: string, encoding: BufferEncoding): Promise<void>;
+    };
+    await probeHandle.close();
+    const originalWriteFile = fileHandlePrototype.writeFile;
+    let releaseWrite!: () => void;
+    let reportWrite!: () => void;
+    const writeReported = new Promise<void>((resolve) => {
+      reportWrite = resolve;
+    });
+    const writeReleased = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let interceptAppend = true;
+    fileHandlePrototype.writeFile = async function (
+      this: FileHandle,
+      data: string,
+      encoding: BufferEncoding,
+    ) {
+      await originalWriteFile.call(this, data, encoding);
+      if (interceptAppend && data.includes('"id":"rotated-single"')) {
+        interceptAppend = false;
+        reportWrite();
+        await writeReleased;
+      }
+    };
+
+    const append = appendRecordedInbound(filePath, event);
+    try {
+      await writeReported;
+      await rename(filePath, rotatedPath);
+      await writeFile(filePath, "", "utf8");
+      releaseWrite();
+      await expect(append).resolves.toMatchObject({ id: event.id });
+    } finally {
+      releaseWrite();
+      fileHandlePrototype.writeFile = originalWriteFile;
+    }
+
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: event.id }),
+    ]);
+    await expect(readRecordedInbound(rotatedPath)).resolves.toEqual([
+      expect.objectContaining({ id: event.id }),
+    ]);
+  });
+
   it("retries against a symlinked recorder retargeted during append", async () => {
     const filePath = await createRecorderPath();
     const firstTarget = path.join(path.dirname(filePath), "first-target.jsonl");
