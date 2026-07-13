@@ -250,6 +250,35 @@ describe("WhatsApp provider recorder cursors", () => {
     await Promise.all(waits.slice(1));
   });
 
+  it("prunes inactive cursor entries after a concurrent burst settles", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    providers.push(provider);
+    const baseContext = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
+    const startingOffsets: number[] = [];
+    recorderMocks.waitForRecordedInbound.mockImplementation(async ({ cursor }) => {
+      startingOffsets.push(cursor!.readState.offset);
+      cursor!.readState.offset = 1;
+      return null;
+    });
+    const contexts = Array.from({ length: 65 }, (_, index) => ({
+      ...baseContext,
+      nonce: `settled-cursor-${index}`,
+      since: new Date(0).toISOString(),
+      threadId: "15551234567",
+      timeoutMs: 100,
+    }));
+
+    await Promise.all(contexts.map((context) => provider.waitForInbound(context)));
+    await provider.waitForInbound(contexts[0]!);
+
+    expect(startingOffsets).toHaveLength(66);
+    expect(startingOffsets.at(-1)).toBe(0);
+  });
+
   it("retains recorder progress after a timeout", async () => {
     const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
     const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
