@@ -272,7 +272,13 @@ function ensureWindowsJobHelper(): string | undefined {
   if (windowsJobHelperPath !== undefined) {
     return windowsJobHelperPath ?? undefined;
   }
-  const directory = mkdtempSync(path.join(tmpdir(), "crabline-script-job-"));
+  let directory: string;
+  try {
+    directory = mkdtempSync(path.join(tmpdir(), "crabline-script-job-"));
+  } catch {
+    windowsJobHelperPath = null;
+    return undefined;
+  }
   const helperPath = path.join(directory, "crabline-script-job.exe");
   try {
     execFileSync(

@@ -8,11 +8,19 @@ import type { ProviderContext } from "../src/providers/types.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const execFileSyncMock = vi.hoisted(() => vi.fn());
+const mkdtempSyncMock = vi.hoisted(() => vi.fn(() => "C:\\Temp\\crabline-script-job-test"));
+const rmSyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
   execFileSync: execFileSyncMock,
   spawn: spawnMock,
+}));
+
+vi.mock("node:fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs")>()),
+  mkdtempSync: mkdtempSyncMock,
+  rmSync: rmSyncMock,
 }));
 
 type FakeChild = ChildProcess & {
@@ -84,6 +92,8 @@ function createContext(): ProviderContext {
 beforeEach(() => {
   vi.useFakeTimers();
   execFileSyncMock.mockClear();
+  mkdtempSyncMock.mockClear();
+  rmSyncMock.mockClear();
   spawnMock.mockReset();
   Object.defineProperty(process, "platform", {
     configurable: true,
@@ -100,12 +110,16 @@ afterEach(() => {
 });
 
 describe("script provider Windows cleanup", () => {
-  it.each(["compile", "probe"] as const)(
+  it.each(["temp", "compile", "probe"] as const)(
     "falls back to direct shell execution when Job Object helper %s is blocked",
     async (blockedStage) => {
       vi.resetModules();
       execFileSyncMock.mockReset();
-      if (blockedStage === "compile") {
+      if (blockedStage === "temp") {
+        mkdtempSyncMock.mockImplementationOnce(() => {
+          throw new Error("blocked");
+        });
+      } else if (blockedStage === "compile") {
         execFileSyncMock.mockImplementationOnce(() => {
           throw new Error("blocked");
         });
