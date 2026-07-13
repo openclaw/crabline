@@ -248,21 +248,22 @@ async function assertCurrentGenerationExists(
     OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
     pointer.generation,
   );
-  const generationRecorderPaths = recorderPaths.filter(
-    (recorderPath): recorderPath is string =>
-      recorderPath !== undefined &&
-      path.dirname(path.resolve(outputDir, recorderPath)) === generationDirectory,
-  );
-  if (generationRecorderPaths.length === 0) {
+  if (recorderPaths[1] === undefined && recorderPaths[2] === undefined) {
     return;
   }
+  const resolvedRecorderPaths = recorderPaths.map((recorderPath) =>
+    recorderPath === undefined ? undefined : path.resolve(outputDir, recorderPath),
+  );
   if (
-    recorderPaths.some((recorderPath) => recorderPath === undefined) ||
-    new Set(recorderPaths.map((recorderPath) => path.resolve(outputDir, recorderPath!))).size !== 1
+    resolvedRecorderPaths.some(
+      (recorderPath) =>
+        recorderPath === undefined || path.dirname(recorderPath) !== generationDirectory,
+    ) ||
+    new Set(resolvedRecorderPaths).size !== 1
   ) {
     throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
   }
-  const recorderPath = path.resolve(outputDir, generationRecorderPaths[0]!);
+  const recorderPath = resolvedRecorderPaths[0]!;
   try {
     const recorderStats = await fs.lstat(recorderPath, { bigint: true });
     if (recorderStats.isFile() && recorderStats.nlink === 1n) {
