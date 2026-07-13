@@ -33,7 +33,7 @@ export type OpenClawCrablineArtifactPointer = {
   previousGeneration?: string;
   providerReadinessArtifactPath: string;
   smokeArtifactPath: string;
-  version: 1;
+  version: 1 | 2;
 };
 
 export type PublishedOpenClawCrablineArtifactGeneration = OpenClawCrablineArtifactPointer & {
@@ -121,7 +121,7 @@ function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer
     throw new Error("OpenClaw Crabline artifact pointer is malformed.");
   }
   const value = parsed as Partial<OpenClawCrablineArtifactPointer>;
-  if (value.version !== 1) {
+  if (value.version !== 1 && value.version !== 2) {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.");
   }
   assertGenerationName(value.generation, "generation");
@@ -167,7 +167,7 @@ function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer
     manifestPath: value.manifestPath,
     providerReadinessArtifactPath: value.providerReadinessArtifactPath ?? value.smokeArtifactPath!,
     smokeArtifactPath: value.smokeArtifactPath ?? value.providerReadinessArtifactPath!,
-    version: 1,
+    version: value.version,
   };
 }
 
@@ -202,6 +202,9 @@ async function assertCurrentGenerationExists(
     if (!stats.isFile()) {
       throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
     }
+  }
+  if (pointer.version === 1) {
+    return;
   }
 
   const readArtifactObject = async (artifactPath: string): Promise<Record<string, unknown>> => {
@@ -401,7 +404,7 @@ export async function publishOpenClawCrablineArtifactGeneration(
         providerReadinessArtifactPath,
       ),
       smokeArtifactPath: generationArtifactPath(generation, providerReadinessArtifactPath),
-      version: 1,
+      version: 2,
     };
     if (
       params.recorderSnapshot &&
