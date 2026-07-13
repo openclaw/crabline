@@ -10,9 +10,31 @@ import {
 async function validate(address: string) {
   return await validateWebhookTarget({
     allowLoopbackHttp: false,
+    dnsLookupPool: new WebhookDnsLookupPool(1, async (hostname) =>
+      hostname === "ipv4only.arpa" ? [{ address: "192.0.0.170", family: 4 }] : [],
+    ),
     restrictPrivateAddresses: true,
     url: new URL(`https://${address}/webhook`),
   });
+}
+
+function rfc6052Address(prefixLength: 32 | 40 | 48 | 56 | 64 | 96, ipv4: string): string {
+  const prefix = [0x20, 0x01, 0x48, 0x60, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22];
+  const ipv4Bytes = ipv4.split(".").map(Number);
+  const bytes = Array.from({ length: 16 }, () => 0);
+  const prefixBytes = prefixLength / 8;
+  bytes.splice(0, prefixBytes, ...prefix.slice(0, prefixBytes));
+  if (prefixLength === 96) {
+    bytes.splice(12, 4, ...ipv4Bytes);
+  } else {
+    const leadingIpv4Bytes = 8 - prefixBytes;
+    bytes.splice(prefixBytes, leadingIpv4Bytes, ...ipv4Bytes.slice(0, leadingIpv4Bytes));
+    bytes[8] = 0;
+    bytes.splice(9, 4 - leadingIpv4Bytes, ...ipv4Bytes.slice(leadingIpv4Bytes));
+  }
+  return Array.from({ length: 8 }, (_, index) =>
+    ((bytes[index * 2]! << 8) | bytes[index * 2 + 1]!).toString(16),
+  ).join(":");
 }
 
 describe("webhook target validation", () => {
@@ -129,6 +151,59 @@ describe("webhook target validation", () => {
     ).resolves.toEqual({ error: "private-address" });
   });
 
+  it.each([32, 40, 48, 56, 64, 96] as const)(
+    "blocks private IPv4 targets embedded under a network-specific /%i NAT64 prefix",
+    async (prefixLength) => {
+      const dnsLookupPool = new WebhookDnsLookupPool(1, async (hostname) =>
+        hostname === "ipv4only.arpa"
+          ? [
+              { address: rfc6052Address(prefixLength, "192.0.0.170"), family: 6 },
+              { address: rfc6052Address(prefixLength, "192.0.0.171"), family: 6 },
+            ]
+          : [],
+      );
+      const privateAddress = rfc6052Address(prefixLength, "127.0.0.1");
+      const publicAddress = rfc6052Address(prefixLength, "93.184.216.34");
+      const normalizedPublicAddress = new URL(
+        `https://[${publicAddress}]/webhook`,
+      ).hostname.replace(/^\[(.*)\]$/u, "$1");
+
+      await expect(
+        validateWebhookTarget({
+          allowLoopbackHttp: false,
+          dnsLookupPool,
+          restrictPrivateAddresses: true,
+          url: new URL(`https://[${privateAddress}]/webhook`),
+        }),
+      ).resolves.toEqual({ error: "private-address" });
+      await expect(
+        validateWebhookTarget({
+          allowLoopbackHttp: false,
+          dnsLookupPool,
+          restrictPrivateAddresses: true,
+          url: new URL(`https://[${publicAddress}]/webhook`),
+        }),
+      ).resolves.toEqual({
+        addresses: [{ address: normalizedPublicAddress, family: 6 }],
+      });
+    },
+  );
+
+  it("fails closed for IPv6 targets when NAT64 prefix discovery fails", async () => {
+    const dnsLookupPool = new WebhookDnsLookupPool(1, async () => {
+      throw new Error("resolver unavailable");
+    });
+
+    await expect(
+      validateWebhookTarget({
+        allowLoopbackHttp: false,
+        dnsLookupPool,
+        restrictPrivateAddresses: true,
+        url: new URL("https://[2001:4860:4860::8888]/webhook"),
+      }),
+    ).resolves.toEqual({ error: "private-address" });
+  });
+
   it("bounds DNS lookup concurrency and cancels queued registrations", async () => {
     const started: string[] = [];
     const releases = new Map<
@@ -157,6 +232,43 @@ describe("webhook target validation", () => {
     releases.get("second.test")?.([{ address: "93.184.216.35", family: 4 }]);
     await expect(first).resolves.toEqual([{ address: "93.184.216.34", family: 4 }]);
     await expect(second).resolves.toEqual([{ address: "93.184.216.35", family: 4 }]);
+  });
+
+  it("releases an aborted active lookup without letting its late result release a newer slot", async () => {
+    const started: string[] = [];
+    const releases = new Map<
+      string,
+      (addresses: Array<{ address: string; family: number }>) => void
+    >();
+    const pool = new WebhookDnsLookupPool(
+      1,
+      async (hostname) =>
+        await new Promise((resolve) => {
+          started.push(hostname);
+          releases.set(hostname, resolve);
+        }),
+    );
+    const controller = new AbortController();
+    const first = pool.resolve("first.test", controller.signal);
+    const second = pool.resolve("second.test");
+    const third = pool.resolve("third.test");
+
+    expect(started).toEqual(["first.test"]);
+    controller.abort();
+    await expect(first).rejects.toMatchObject({ name: "AbortError" });
+    expect(started).toEqual(["first.test", "second.test"]);
+
+    releases.get("first.test")?.([{ address: "93.184.216.34", family: 4 }]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual(["first.test", "second.test"]);
+
+    releases.get("second.test")?.([{ address: "93.184.216.35", family: 4 }]);
+    await expect(second).resolves.toEqual([{ address: "93.184.216.35", family: 4 }]);
+    expect(started).toEqual(["first.test", "second.test", "third.test"]);
+
+    releases.get("third.test")?.([{ address: "93.184.216.36", family: 4 }]);
+    await expect(third).resolves.toEqual([{ address: "93.184.216.36", family: 4 }]);
   });
 
   it("does not reuse sockets for DNS-pinned webhook delivery", async () => {
