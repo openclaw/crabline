@@ -1203,29 +1203,49 @@ describe("server recorder", () => {
     expect(order).toEqual(["first:start", "first:end", "second"]);
   });
 
-  it("allows observers to append reentrantly without overtaking the active observer", async () => {
+  it("allows observers to append reentrantly to the same recorder", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-reentrant.jsonl");
-    const observations: string[] = [];
 
     await recordServerEvent({
       event: serverEvent("/outer"),
       onEvent: async () => {
-        observations.push("outer:start");
         await recordServerEvent({
           event: serverEvent("/nested"),
-          onEvent: () => {
-            observations.push("nested");
-          },
+          onEvent: undefined,
           recorderPath,
         });
-        observations.push("outer:end");
       },
       recorderPath,
     });
-    await vi.waitFor(() => expect(observations).toEqual(["outer:start", "outer:end", "nested"]));
 
     expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects nested observer registration before appending the nested event", async () => {
+    const recorderPath = path.join("/tmp", "crabline-server-recorder-nested-observer.jsonl");
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/outer"),
+        onEvent: async () => {
+          await recordServerEvent({
+            event: serverEvent("/nested"),
+            onEvent: () => undefined,
+            recorderPath,
+          });
+        },
+        recorderPath,
+      }),
+    ).rejects.toMatchObject({
+      cause: expect.objectContaining({
+        message: "Server recorder observers cannot register nested observers.",
+      }),
+      committed: true,
+      name: "ServerRecorderCommittedError",
+    });
+
+    expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
   });
 
   it("keeps later appends available after an observer failure", async () => {
