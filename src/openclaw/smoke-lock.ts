@@ -506,6 +506,17 @@ const getProcessIdentityV2: GetProcessIdentity = (pid) => {
   return identity?.includes(":us:") ? identity : null;
 };
 
+let cachedCurrentProcessIdentity: string | null = null;
+let cachedCurrentProcessIdentityV2: string | null = null;
+
+function getCachedCurrentProcessIdentity(): string | null {
+  return (cachedCurrentProcessIdentity ??= getProcessIdentity(process.pid));
+}
+
+function getCachedCurrentProcessIdentityV2(): string | null {
+  return (cachedCurrentProcessIdentityV2 ??= getProcessIdentityV2(process.pid));
+}
+
 function hasExactProcessIdentity(owner: SmokeLockOwner): owner is (
   | ProcessIdentifiedSmokeLockOwner
   | RenewableSmokeLockOwner
@@ -1174,8 +1185,13 @@ export async function acquireOpenClawCrablineSmokeRunLock(
   const lockDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
   const token = randomUUID();
   const currentPid = dependencies.pid ?? process.pid;
-  const getRuntimeProcessIdentity = dependencies.getProcessIdentity ?? getProcessIdentity;
-  const getRuntimeProcessIdentityV2 = dependencies.getProcessIdentityV2 ?? getProcessIdentityV2;
+  const getRuntimeProcessIdentity =
+    dependencies.getProcessIdentity ??
+    ((pid) => (pid === process.pid ? getCachedCurrentProcessIdentity() : getProcessIdentity(pid)));
+  const getRuntimeProcessIdentityV2 =
+    dependencies.getProcessIdentityV2 ??
+    ((pid) =>
+      pid === process.pid ? getCachedCurrentProcessIdentityV2() : getProcessIdentityV2(pid));
   const runtime: SmokeLockRuntime = {
     currentPid,
     currentProcessIdentity:
