@@ -368,11 +368,13 @@ describe("OpenClaw private file publication", () => {
       const filePath = path.join(directory, "manifest.json");
       await fs.writeFile(filePath, "stale\n");
       let originalTemporaryPath: string | undefined;
+      let substituteTemporaryPath: string | undefined;
 
       await expect(
         publishPrivateFileAtomically(filePath, "private\n", {
           platform: "win32",
           secureWindowsFile: async (temporaryPath) => {
+            substituteTemporaryPath = temporaryPath;
             originalTemporaryPath = `${temporaryPath}.original`;
             await fs.rename(temporaryPath, originalTemporaryPath);
             await fs.writeFile(temporaryPath, "substitute\n");
@@ -383,7 +385,7 @@ describe("OpenClaw private file publication", () => {
       expect(await fs.readFile(filePath, "utf8")).toBe("stale\n");
       expect(originalTemporaryPath).toBeDefined();
       expect(await fs.readFile(originalTemporaryPath!, "utf8")).toBe("");
-      expect((await fs.readdir(directory)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+      expect(await fs.readFile(substituteTemporaryPath!, "utf8")).toBe("substitute\n");
     } finally {
       await disposeTempDir(directory);
     }
@@ -609,10 +611,12 @@ describe("OpenClaw private file publication", () => {
       const filePath = path.join(directory, "manifest.json");
       await fs.writeFile(filePath, "stale\n");
       let originalTemporaryPath: string | undefined;
+      let substituteTemporaryPath: string | undefined;
 
       await expect(
         publishPrivateFileAtomically(filePath, "private\n", {
           beforeCommitRename: async (temporaryPath) => {
+            substituteTemporaryPath = temporaryPath;
             originalTemporaryPath = `${temporaryPath}.original`;
             await fs.rename(temporaryPath, originalTemporaryPath);
             await fs.writeFile(temporaryPath, "substitute\n");
@@ -622,6 +626,7 @@ describe("OpenClaw private file publication", () => {
 
       await expect(fs.readFile(filePath, "utf8")).resolves.toBe("stale\n");
       await expect(fs.readFile(originalTemporaryPath!, "utf8")).resolves.toBe("private\n");
+      await expect(fs.readFile(substituteTemporaryPath!, "utf8")).resolves.toBe("substitute\n");
     } finally {
       await disposeTempDir(directory);
     }
@@ -1750,6 +1755,35 @@ describe("OpenClaw private file publication", () => {
 
       expect(ancestorReleaseAttempts).toBe(2);
       await expect(fs.stat(ancestorClaimPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("releases the leaf claim when recursive removal leaves its container in place", async () => {
+    const directory = await createTempDir();
+    let quarantinePath: string | undefined;
+    try {
+      const generationPath = path.join(directory, "generation");
+      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+      await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+
+      await expect(
+        removeSecuredPrivateDirectory(secured, undefined, undefined, {
+          platform: "linux",
+          removeDirectory: async (candidatePath) => {
+            quarantinePath = candidatePath;
+          },
+        }),
+      ).rejects.toThrow("Private directory path still exists after recursive removal.");
+
+      expect(quarantinePath).toBeDefined();
+      await expect(fs.readdir(quarantinePath!)).resolves.toEqual(["private.json"]);
+      expect(
+        (await fs.readdir(directory)).filter((entry) =>
+          entry.startsWith(".crabline-private-mutation"),
+        ),
+      ).toEqual([]);
     } finally {
       await disposeTempDir(directory);
     }

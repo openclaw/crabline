@@ -792,6 +792,23 @@ async function assertPathIdentity(filePath: string, expected: FileIdentity): Pro
   throw new Error("Private file path identity changed during publication.");
 }
 
+async function pathHasFileIdentity(filePath: string, expected: FileIdentity): Promise<boolean> {
+  try {
+    const stats = await fs.lstat(filePath, { bigint: true });
+    return (
+      stats.isFile() &&
+      stats.nlink === 1n &&
+      stats.dev === expected.device &&
+      stats.ino === expected.inode
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 type DirectoryIdentity = {
   device: bigint;
   inode: bigint;
@@ -1852,10 +1869,10 @@ async function acquireHardLinkPrivateMutationClaim(
             }
             throw closeError;
           }
-          released = true;
           if (completionError !== undefined) {
             throw completionError;
           }
+          released = true;
         },
         async prepareContainerRemoval() {
           if (released) {
@@ -2541,10 +2558,10 @@ async function acquirePrivateMutationClaimChain(
         }
         throw releaseError;
       }
-      released = true;
       if (primaryError !== undefined) {
         throw primaryError;
       }
+      released = true;
     },
     async prepareContainerRemoval() {
       if (leafClaim === undefined) {
@@ -2642,17 +2659,18 @@ export async function publishPrivateFileAtomically(
     ...(options.platform ? { platform: options.platform } : {}),
   });
   let handle: FileHandle | undefined;
+  let identity: FileIdentity | undefined;
   let publicationFailed = false;
   let primaryError: unknown;
   try {
-    let identity: FileIdentity;
     if (platform === "win32" && options.secureWindowsFile === undefined) {
       const createdIdentity = await (options.createWindowsFile ?? createOwnerOnlyWindowsFile)(
         temporaryPath,
       );
+      identity = createdIdentity;
       handle = await fs.open(temporaryPath, "r+");
-      identity = await readHandleIdentity(handle);
-      assertSameFileIdentity(identity, createdIdentity);
+      const openedIdentity = await readHandleIdentity(handle);
+      assertSameFileIdentity(openedIdentity, createdIdentity);
     } else {
       handle = await fs.open(temporaryPath, "wx+", 0o600);
       identity = await readHandleIdentity(handle);
@@ -2702,15 +2720,17 @@ export async function publishPrivateFileAtomically(
     cleanupErrors.push(error);
   }
   try {
-    await claim.release();
+    if (identity !== undefined && (await pathHasFileIdentity(temporaryPath, identity))) {
+      await (
+        options.removeTemporaryFile ??
+        ((candidatePath: string) => fs.rm(candidatePath, { force: true }))
+      )(temporaryPath);
+    }
   } catch (error) {
     cleanupErrors.push(error);
   }
   try {
-    await (
-      options.removeTemporaryFile ??
-      ((candidatePath: string) => fs.rm(candidatePath, { force: true }))
-    )(temporaryPath);
+    await claim.release();
   } catch (error) {
     cleanupErrors.push(error);
   }
