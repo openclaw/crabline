@@ -37,6 +37,7 @@ describe("Feishu webhook normalizer", () => {
     );
 
     config.feishu!.encryptKey = "encrypt-key";
+    config.feishu!.webhook.publicUrl = "https://hooks.example.test/feishu/webhook";
     expect(
       () => new FeishuProviderAdapter("feishu", config, "crabline", { env: {} }),
     ).not.toThrow();
