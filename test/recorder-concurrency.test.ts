@@ -213,7 +213,7 @@ async function expectSerializedWrites(
 describe("recorder append serialization", () => {
   it("serializes server event appends to the same JSONL file", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder.jsonl");
-    fsMocks.serverDirectory = path.dirname(recorderPath);
+    fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
     const firstEvent = {
       at: "2026-07-12T10:00:00.000Z",
       method: "GET",
