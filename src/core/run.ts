@@ -503,7 +503,6 @@ export async function runFixtureCommand(params: {
                 await sleep(Math.min(10, Math.max(0, inboundDeadline - Date.now())));
                 continue;
               }
-              seenInbound.add(key);
 
               if (
                 matchesInbound(candidate, preparedInboundMatch, nonce, {
@@ -514,13 +513,14 @@ export async function runFixtureCommand(params: {
                 inbound = candidate;
                 break;
               }
+              if (seenInbound.size >= MAX_EXCLUDED_INBOUND_IDS) {
+                const diagnostic = excludedInboundIds.has(candidate.id)
+                  ? `Provider returned more than ${MAX_EXCLUDED_INBOUND_IDS} distinct unmatched inbound envelopes.`
+                  : `Provider returned more than ${MAX_EXCLUDED_INBOUND_IDS} unmatched inbound message IDs.`;
+                throw new CrablineError(diagnostic, { kind: "inbound" });
+              }
+              seenInbound.add(key);
               if (!excludedInboundIds.has(candidate.id)) {
-                if (excludedInboundIds.size >= MAX_EXCLUDED_INBOUND_IDS) {
-                  throw new CrablineError(
-                    `Provider returned more than ${MAX_EXCLUDED_INBOUND_IDS} unmatched inbound message IDs.`,
-                    { kind: "inbound" },
-                  );
-                }
                 excludedInboundIds.add(candidate.id);
               }
             }
