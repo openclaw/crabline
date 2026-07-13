@@ -731,7 +731,7 @@ function createInboundUpdate(
     (fromIdValue !== undefined && (fromId === undefined || fromId < 1)) ||
     (fromUsernameValue !== undefined && !fromUsername) ||
     (threadIdValue !== undefined && parsedThreadId === undefined) ||
-    (messageIdValue !== undefined && (messageId === undefined || messageId < 1)) ||
+    (messageIdValue !== undefined && (messageId === undefined || messageId < 0)) ||
     (updateIdValue !== undefined && (updateId === undefined || updateId < 1))
   ) {
     return undefined;
@@ -828,6 +828,7 @@ function explicitTelegramId(
   body: Record<string, unknown>,
   names: readonly string[],
   additionalValues: readonly unknown[] = [],
+  options: { allowZero?: boolean } = {},
 ): { present: false } | { present: true; value: number } | undefined {
   const values = [
     ...names.flatMap((name) => (body[name] === undefined ? [] : [body[name]])),
@@ -837,8 +838,11 @@ function explicitTelegramId(
     return { present: false };
   }
   const parsed = values.map(toIntegerValue);
+  const minimum = options.allowZero ? 0 : 1;
   if (
-    parsed.some((value) => value === undefined || value < 1 || value >= Number.MAX_SAFE_INTEGER) ||
+    parsed.some(
+      (value) => value === undefined || value < minimum || value >= Number.MAX_SAFE_INTEGER,
+    ) ||
     new Set(parsed).size !== 1
   ) {
     return undefined;
@@ -1053,12 +1057,14 @@ function isValidIgnoredTelegramUpdate(body: Record<string, unknown>): boolean {
   if (isJsonObject(body.message)) {
     const message = body.message;
     const chat = isJsonObject(message.chat) ? message.chat : undefined;
+    const messageId = toIntegerValue(message.message_id);
     if (
       updateId === undefined ||
       updateId < 1 ||
       !chat ||
       telegramNumericChatId(chat.id) === undefined ||
-      (toIntegerValue(message.message_id) ?? 0) < 1 ||
+      messageId === undefined ||
+      messageId < 0 ||
       (message.from !== undefined &&
         (!isJsonObject(message.from) || (toIntegerValue(message.from.id) ?? 0) < 1)) ||
       (message.message_thread_id !== undefined &&
@@ -1103,6 +1109,7 @@ async function handleTelegramAdminInbound(params: {
       params.body,
       ["messageId", "message_id"],
       explicitTelegramMessageIdValues(params.body),
+      { allowZero: true },
     );
     const explicitMessageChatId = explicitTelegramMessageChatId(params.body);
     const explicitUpdateId = explicitTelegramId(params.body, ["updateId", "update_id"]);

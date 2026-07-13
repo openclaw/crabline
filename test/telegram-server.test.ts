@@ -1939,7 +1939,7 @@ describe("telegram local provider server", () => {
       { chatId: 123, messageId: 11, text: "duplicate update", updateId: 20 },
       { chatId: 123, messageId: 9, text: "decreasing message", updateId: 21 },
       { chatId: 123, messageId: 11, text: "decreasing update", updateId: 19 },
-      { chatId: 123, messageId: 0, text: "zero message", updateId: 21 },
+      { chatId: 123, messageId: -1, text: "negative message", updateId: 21 },
       { chatId: 123, messageId: 11, text: "negative update", updateId: -1 },
       {
         chatId: 123,
@@ -2001,6 +2001,27 @@ describe("telegram local provider server", () => {
     });
     await expect(afterChannelPost.json()).resolves.toMatchObject({
       update: { message: { message_id: 31 }, update_id: 31 },
+    });
+  });
+
+  it("accepts scheduled message ID zero without advancing generated IDs", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    const scheduled = await injectUpdate(server, {
+      chatId: 123,
+      messageId: 0,
+      text: "scheduled message",
+      updateId: 1,
+    });
+    expect(scheduled.status).toBe(200);
+    await expect(scheduled.json()).resolves.toMatchObject({
+      update: { message: { message_id: 0 }, update_id: 1 },
+    });
+
+    const generated = await injectUpdate(server, { chatId: 123, text: "generated message" });
+    await expect(generated.json()).resolves.toMatchObject({
+      update: { message: { message_id: 1 }, update_id: 2 },
     });
   });
 
