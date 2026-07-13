@@ -24,6 +24,23 @@ describe("webhook server", () => {
     expect(response.status).toBe(200);
   });
 
+  it.each([
+    ["0.0.0.0", "127.0.0.1"],
+    ["::", "[::1]"],
+  ])("advertises loopback instead of the %s wildcard bind", async (host, advertisedHost) => {
+    const server = await startWebhookServer({
+      handle: async () => new Response("ok"),
+      host,
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+
+    expect(new URL(server.endpointUrl).hostname).toBe(advertisedHost);
+    const response = await fetch(server.endpointUrl, { method: "POST" });
+    expect(response.status).toBe(200);
+  });
+
   it("serves the configured POST path", async () => {
     const server = await startWebhookServer({
       async handle(request) {
@@ -163,6 +180,41 @@ describe("webhook server", () => {
     expect(response.headers.get("x-response-kind")).toBeNull();
     await expect(response.text()).resolves.toBe("internal server error");
     expect(observedErrors).toEqual([expect.objectContaining({ message: "response body failed" })]);
+  });
+
+  it("filters response framing and hop-by-hop headers while preserving distinct cookies", async () => {
+    const server = await startWebhookServer({
+      async handle() {
+        const headers = new Headers({
+          connection: "close, x-internal",
+          "content-length": "999",
+          trailer: "x-checksum",
+          "transfer-encoding": "chunked",
+          "x-internal": "secret",
+          "x-safe": "visible",
+        });
+        headers.append("set-cookie", "first=1; Path=/");
+        headers.append("set-cookie", "second=2; Path=/");
+        return new Response("ok", { headers });
+      },
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+
+    const response = await fetch(server.endpointUrl, {
+      method: "POST",
+      signal: AbortSignal.timeout(1_000),
+    });
+
+    expect(response.headers.get("content-length")).not.toBe("999");
+    expect(response.headers.get("connection")).toBe("close");
+    expect(response.headers.get("trailer")).toBeNull();
+    expect(response.headers.get("x-internal")).toBeNull();
+    expect(response.headers.get("x-safe")).toBe("visible");
+    expect(response.headers.getSetCookie()).toEqual(["first=1; Path=/", "second=2; Path=/"]);
+    await expect(response.text()).resolves.toBe("ok");
   });
 
   it("streams response chunks before the provider body completes", async () => {

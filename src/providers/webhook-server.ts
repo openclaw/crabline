@@ -1,6 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isCanonicalHttpPath } from "../core/http-path.js";
-import { closeServer } from "../servers/http.js";
+import {
+  advertisedHostForBindAddress,
+  closeServer,
+  formatUrlHost,
+  writeFetchResponseHeaders,
+} from "../servers/http.js";
 
 export type StartedWebhookServer = {
   close(): Promise<void>;
@@ -107,10 +112,7 @@ async function writeFetchResponse(
   fetchResponse: Response,
 ): Promise<void> {
   response.statusCode = fetchResponse.status;
-
-  for (const [name, value] of fetchResponse.headers) {
-    response.setHeader(name, value);
-  }
+  writeFetchResponseHeaders(response, fetchResponse);
 
   const reader = fetchResponse.body?.getReader();
   let cancellation: Promise<void> | undefined;
@@ -202,10 +204,6 @@ function clearUnsentResponseHeaders(response: ServerResponse<IncomingMessage>): 
   for (const name of response.getHeaderNames()) {
     response.removeHeader(name);
   }
-}
-
-function formatUrlHost(host: string): string {
-  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
 export async function startWebhookServer(params: {
@@ -306,6 +304,7 @@ export async function startWebhookServer(params: {
   if (!address || typeof address === "string") {
     throw new Error("Unable to resolve webhook server address.");
   }
+  const advertisedHost = advertisedHostForBindAddress(params.host, address.address);
 
   let closingPromise: Promise<void> | null = null;
   return {
@@ -314,6 +313,6 @@ export async function startWebhookServer(params: {
       closingPromise ??= closeServer(server, params.shutdownGraceMs);
       await closingPromise;
     },
-    endpointUrl: `http://${formatUrlHost(params.host)}:${address.port}${params.path}`,
+    endpointUrl: `http://${formatUrlHost(advertisedHost)}:${address.port}${params.path}`,
   };
 }
