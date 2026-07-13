@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -219,12 +220,15 @@ describe("server recorder", () => {
     expect(fsMocks.directory.sync.mock.invocationCallOrder.at(-1)).toBeLessThan(
       observer.mock.invocationCallOrder[0]!,
     );
-    expect(lockMocks.lock).toHaveBeenCalledWith(path.resolve(recorderPath), {
-      realpath: false,
-      retries: 0,
-      stale: 30_000,
-      update: 10_000,
-    });
+    expect(lockMocks.lock).toHaveBeenCalledWith(
+      path.join(await realpath("/tmp"), "private/nested/events.jsonl"),
+      {
+        realpath: false,
+        retries: 0,
+        stale: 30_000,
+        update: 10_000,
+      },
+    );
     expect(lockMocks.release).toHaveBeenCalledOnce();
     expect(fsMocks.file.chmod.mock.invocationCallOrder[0]).toBeLessThan(
       fsMocks.file.appendFile.mock.invocationCallOrder[0]!,

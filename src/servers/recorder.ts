@@ -1,4 +1,4 @@
-import { chmod, mkdir, open, stat as statPath } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readlink, realpath, stat as statPath } from "node:fs/promises";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import type { ServerRequestEvent } from "./http.js";
@@ -26,8 +26,10 @@ const MAX_DURABLE_RECORDER_IDENTITIES = 128;
 const MAX_RECOVERY_VALIDATION_BYTES = 64 * 1024 * 1024;
 const MAX_RECOVERY_SCAN_BYTES = MAX_RECOVERY_VALIDATION_BYTES + 1;
 const RECORDER_LOCK_RETRY_MS = 100;
+const RECORDER_LOCK_ATTEMPTS = 300;
 const RECORDER_LOCK_STALE_MS = 30_000;
 const RECORDER_LOCK_UPDATE_MS = 10_000;
+const RECORDER_ROTATION_ATTEMPTS = 3;
 const TAIL_SCAN_CHUNK_BYTES = 64 * 1024;
 
 function isManagedRecorderDirectory(directory: string): boolean {
@@ -213,7 +215,7 @@ function isRecorderLockContention(error: unknown): boolean {
 }
 
 async function acquireRecorderLock(filePath: string): Promise<() => Promise<void>> {
-  while (true) {
+  for (let attempt = 0; attempt < RECORDER_LOCK_ATTEMPTS; attempt++) {
     try {
       return await lock(filePath, {
         realpath: false,
@@ -225,9 +227,13 @@ async function acquireRecorderLock(filePath: string): Promise<() => Promise<void
       if (!isRecorderLockContention(error)) {
         throw error;
       }
+      if (attempt + 1 >= RECORDER_LOCK_ATTEMPTS) {
+        throw error;
+      }
       await new Promise((resolve) => setTimeout(resolve, RECORDER_LOCK_RETRY_MS));
     }
   }
+  throw new Error(`Server recorder lock retries exhausted for "${filePath}".`);
 }
 
 async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
@@ -259,10 +265,18 @@ async function rollbackRecorderAppend(
   filePath: string,
   file: Awaited<ReturnType<typeof open>>,
   appendStart: number,
+  appendLength: number,
   operationError: unknown,
 ): Promise<void> {
   try {
+    const size = (await file.stat()).size;
+    const suffixStart = appendStart + appendLength;
+    const suffix =
+      size > suffixStart ? await readBufferAt(file, size - suffixStart, suffixStart) : undefined;
     await file.truncate(appendStart);
+    if (suffix?.length) {
+      await file.appendFile(suffix);
+    }
     await file.sync();
   } catch (rollbackError) {
     throw new ServerRecorderCommittedError(filePath, operationError, [rollbackError]);
@@ -364,6 +378,7 @@ async function appendRecorderAttempt(params: {
               params.filePath,
               file,
               appendStart,
+              Buffer.byteLength(params.line),
               new ServerRecorderRotationError("Server recorder rotated during append."),
             );
             result = "retry";
@@ -379,6 +394,7 @@ async function appendRecorderAttempt(params: {
                 params.filePath,
                 file,
                 appendStart,
+                Buffer.byteLength(params.line),
                 new ServerRecorderRotationError(
                   "Server recorder rotated while syncing path ancestry.",
                 ),
@@ -395,10 +411,22 @@ async function appendRecorderAttempt(params: {
             error instanceof ServerRecorderCommittedError &&
             error.cause instanceof ServerRecorderRotationError
           ) {
-            await rollbackRecorderAppend(params.filePath, file, appendStart, error);
+            await rollbackRecorderAppend(
+              params.filePath,
+              file,
+              appendStart,
+              Buffer.byteLength(params.line),
+              error,
+            );
             result = "retry";
           } else if (result !== "retry") {
-            await rollbackRecorderAppend(params.filePath, file, appendStart, error);
+            await rollbackRecorderAppend(
+              params.filePath,
+              file,
+              appendStart,
+              Buffer.byteLength(params.line),
+              error,
+            );
             throw error;
           }
         }
@@ -418,28 +446,55 @@ async function appendRecorderAttempt(params: {
   return result ?? "retry";
 }
 
+async function resolveRecorderPath(filePath: string): Promise<string> {
+  try {
+    return await realpath(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  try {
+    if ((await lstat(filePath)).isSymbolicLink()) {
+      const target = await readlink(filePath);
+      return await resolveRecorderPath(path.resolve(path.dirname(filePath), target));
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  return path.join(await resolveRecorderPath(path.dirname(filePath)), path.basename(filePath));
+}
+
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
-  const key = path.resolve(filePath);
+  const logicalPath = path.resolve(filePath);
+  const key = await resolveRecorderPath(logicalPath);
   const previous = pendingAppends.get(key) ?? Promise.resolve();
   const current = previous
     .catch(() => {})
     .then(async () => {
-      const directory = path.dirname(filePath);
+      const directory = path.dirname(logicalPath);
       const createdDirectory = await mkdir(directory, { mode: 0o700, recursive: true });
-      if (createdDirectory !== undefined || isManagedRecorderDirectory(path.resolve(directory))) {
+      if (createdDirectory !== undefined || isManagedRecorderDirectory(directory)) {
         await chmod(directory, 0o700);
       }
       // Keep the cross-process lock through append verification and any rollback.
       await withRecorderLock(key, async () => {
-        while (
-          (await appendRecorderAttempt({
-            createdDirectory,
-            filePath,
-            line,
-          })) === "retry"
-        ) {
-          // Reopen until the descriptor matches the current recorder path.
+        for (let attempt = 0; attempt < RECORDER_ROTATION_ATTEMPTS; attempt++) {
+          if (
+            (await appendRecorderAttempt({
+              createdDirectory,
+              filePath: logicalPath,
+              line,
+            })) === "committed"
+          ) {
+            return;
+          }
         }
+        throw new ServerRecorderRotationError(
+          `Server recorder rotation retries exhausted for "${logicalPath}".`,
+        );
       });
     });
   pendingAppends.set(key, current);
