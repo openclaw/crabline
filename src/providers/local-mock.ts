@@ -541,7 +541,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       const id = payload.message?.id ?? payload.id ?? createMessageId(this.platform);
       const threadId = payload.message?.threadId ?? payload.threadId;
       const text = payload.message?.text ?? payload.text;
-      if (threadId === undefined || text === undefined) {
+      if (!threadId || text === undefined) {
         return respond(
           new Response("payload requires message.threadId and message.text", { status: 400 }),
         );
