@@ -25,11 +25,24 @@ const fsMocks = vi.hoisted(() => ({
   serverWrite: vi.fn<(filePath: string, data: string) => Promise<void>>(),
 }));
 
+const osMocks = vi.hoisted(() => ({
+  userInfo: vi.fn<typeof import("node:os").userInfo>(),
+}));
+
 vi.mock("proper-lockfile", async (importOriginal) => {
   const actual = await importOriginal<typeof import("proper-lockfile")>();
   return {
     ...actual,
     lock: fsMocks.lock,
+  };
+});
+
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  osMocks.userInfo.mockImplementation(actual.userInfo);
+  return {
+    ...actual,
+    userInfo: osMocks.userInfo,
   };
 });
 
@@ -269,6 +282,43 @@ describe("recorder append serialization", () => {
       await rm(recorderPath, { force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "falls back to a private adjacent lock namespace without an OS account entry",
+    async () => {
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-provider-recorder-unknown-user-${process.pid}-${Date.now()}.jsonl`,
+      );
+      fsMocks.providerDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.providerWrite.mockResolvedValue(undefined);
+      osMocks.userInfo.mockImplementationOnce(() => {
+        throw Object.assign(new Error("unknown uid"), { code: "ENOENT" });
+      });
+
+      try {
+        await expect(
+          appendRecordedInbound(recorderPath, {
+            author: "assistant",
+            id: "unknown-user-lock-root",
+            provider: "slack",
+            sentAt: "2026-07-12T10:00:00.000Z",
+            text: "container uid",
+            threadId: "slack:C123",
+          }),
+        ).resolves.toMatchObject({ id: "unknown-user-lock-root" });
+        const identityLockPath = fsMocks.lock.mock.calls
+          .map(([lockPath]) => String(lockPath))
+          .find((lockPath) => path.basename(lockPath).startsWith("recorder-"));
+        expect(identityLockPath).toBeDefined();
+        expect(path.dirname(identityLockPath!)).toBe(
+          path.join(fsMocks.providerDirectory, ".crabline-provider-recorder-locks"),
+        );
+      } finally {
+        await rm(recorderPath, { force: true });
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "uses one private UID-scoped lock namespace for hardlinked provider recorders",
