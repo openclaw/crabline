@@ -102,11 +102,18 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
           throw new Error("Mattermost conversation id is required.");
         }
         const senderId = nativeId(input.senderId);
+        const recipientId = kind === "direct" ? nativeId(conversationId) : undefined;
+        if (recipientId !== undefined && recipientId !== senderId) {
+          throw new Error(
+            "Mattermost direct conversation and sender must identify the same recipient.",
+          );
+        }
         const channelId =
           kind === "direct"
             ? directChannelId(mattermost.botUserId, senderId)
             : nativeId(conversationId);
-        const rootId = input.threadId ? threadRootId(channelId, input.threadId) : undefined;
+        const threadId = input.threadId?.trim();
+        const rootId = threadId ? threadRootId(channelId, threadId) : undefined;
         return {
           ...createAdminInboundRequest(mattermost),
           providerBody: {

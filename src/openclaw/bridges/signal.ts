@@ -126,6 +126,14 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           throw new Error("Signal conversation and sender are required.");
         }
         const senderIdentity = signalDirectIdentity(senderId);
+        if (
+          kind === "direct" &&
+          signalDirectIdentity(conversationId).recipient !== senderIdentity.recipient
+        ) {
+          throw new Error(
+            "Signal direct conversation and sender must identify the same recipient.",
+          );
+        }
         return {
           ...createAdminInboundRequest(signal),
           providerBody: {

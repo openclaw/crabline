@@ -61,6 +61,31 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
+  it("syncs a POSIX directory handle after persisting mode 0700", async () => {
+    const directory = await createTempDir();
+    try {
+      const generationPath = path.join(directory, "generation");
+      const events: string[] = [];
+      await fs.mkdir(generationPath, { mode: 0o777 });
+      await fs.chmod(generationPath, 0o777);
+
+      await securePrivateDirectory(generationPath, {
+        platform: "linux",
+        syncDirectory: async () => {
+          events.push("directory");
+          expect((await fs.stat(generationPath)).mode & 0o777).toBe(0o700);
+        },
+        syncParent: async () => {
+          events.push("parent");
+        },
+      });
+
+      expect(events).toEqual(["directory", "parent"]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
   it("resyncs an existing private directory after an interrupted creation", async () => {
     const directory = await createTempDir();
     try {

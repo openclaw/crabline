@@ -55,6 +55,7 @@ type ProviderReadinessTestDependencies = {
   publishGeneration?: typeof publishOpenClawCrablineArtifactGeneration;
   releaseLock?: (lock: { release(): Promise<void> }) => Promise<void>;
   startAdapter?: typeof startOpenClawCrablineAdapter;
+  syncParent?: (filePath: string) => Promise<void>;
 };
 
 const runProviderReadinessWithDependencies = runOpenClawCrablineProviderReadiness as unknown as (
@@ -1763,6 +1764,16 @@ describe("OpenClaw local provider bridge", () => {
     });
     expect(directInbound.providerBody).toMatchObject({ sourceUuid: directDelivery.to });
     expect(directInbound.providerTargetKey).toBe(directDelivery.to);
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest: signalManifest,
+        input: {
+          conversation: { id: "qa-operator", kind: "direct" },
+          senderId: "different-recipient",
+          text: "hello",
+        },
+      }),
+    ).toThrow("Signal direct conversation and sender must identify the same recipient.");
 
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
@@ -2154,6 +2165,16 @@ describe("OpenClaw local provider bridge", () => {
       },
     });
     expect(inbound.providerBody.senderId).toBe(delivery.to.slice("user:".length));
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest: mattermostManifest,
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          senderId: "bob",
+          text: "hello",
+        },
+      }),
+    ).toThrow("Mattermost direct conversation and sender must identify the same recipient.");
     for (const conversationId of ["", " \n\t"]) {
       expect(() =>
         createOpenClawCrablineInbound({
@@ -2228,6 +2249,33 @@ describe("OpenClaw local provider bridge", () => {
       },
     });
     expect(otherThreadInbound.providerBody.rootId).not.toBe(threadInbound.providerBody.rootId);
+    const blankThreadInbound = createOpenClawCrablineInbound({
+      manifest: mattermostManifest,
+      input: {
+        conversation: { id: "general", kind: "group" },
+        senderId: "alice",
+        text: "top-level reply",
+        threadId: " \n\t",
+      },
+    });
+    expect(blankThreadInbound).not.toHaveProperty("threadId");
+    expect(blankThreadInbound.providerBody).not.toHaveProperty("rootId");
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: mattermostManifest,
+        targetByProviderTarget: new Map([[blankThreadInbound.providerTargetKey, "group:general"]]),
+        event: {
+          body: {
+            channel_id: blankThreadInbound.providerBody.channelId,
+            message: "top-level response",
+            root_id: " \n\t",
+          },
+          method: "POST",
+          path: "/api/v4/posts",
+          type: "api",
+        },
+      }),
+    ).toMatchObject({ to: "group:general" });
     const nativeRootId = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
     expect(
       createOpenClawCrablineInbound({
@@ -2409,6 +2457,28 @@ describe("OpenClaw local provider bridge", () => {
         kind: "group",
       },
       threadId: "$root:matrix.test",
+    });
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: matrixManifest,
+        targetByProviderTarget: new Map(),
+        event: {
+          body: {
+            body: "unmapped thread reply",
+            msgtype: "m.text",
+            "m.relates_to": {
+              event_id: "$root:matrix.test",
+              rel_type: "m.thread",
+            },
+          },
+          method: "PUT",
+          path: `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/thread-fallback`,
+          type: "api",
+        },
+      }),
+    ).toMatchObject({
+      text: "unmapped thread reply",
+      to: `${roomId}:thread:$root:matrix.test`,
     });
 
     expect(() =>
@@ -2675,6 +2745,53 @@ describe("OpenClaw local provider bridge", () => {
       await fs.rm(outputDir, { recursive: true, force: true });
     }
   });
+
+  it.each(["committed", "failed"] as const)(
+    "syncs the recorder directory after the final %s temporary unlink",
+    async (outcome) => {
+      const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-unlink-"));
+      const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+      const probeFailure = new Error("probe failed");
+      let recorderPath: string | undefined;
+      const syncParent = vi.fn(async (unlinkedPath: string) => {
+        expect(unlinkedPath).toBe(recorderPath);
+        await expect(fs.stat(unlinkedPath)).rejects.toMatchObject({ code: "ENOENT" });
+      });
+      try {
+        const readiness = runProviderReadinessWithDependencies(
+          { outputDir, selection },
+          {
+            startAdapter: async (params) => {
+              recorderPath = params.recorderPath;
+              await fs.writeFile(recorderPath!, '{"event":"probe"}\n');
+              return {
+                close: async () => undefined,
+                manifest: { ...manifest, recorderPath: recorderPath! },
+                probe: async () => {
+                  if (outcome === "failed") {
+                    throw probeFailure;
+                  }
+                  return { ok: true };
+                },
+              } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
+            },
+            syncParent,
+          },
+        );
+
+        const settled = await readiness.then(
+          () => ({ outcome: "committed" as const }),
+          (error: unknown) => ({ error, outcome: "failed" as const }),
+        );
+        expect(settled).toEqual(
+          outcome === "failed" ? { error: probeFailure, outcome } : { outcome },
+        );
+        expect(syncParent).toHaveBeenCalledTimes(1);
+      } finally {
+        await fs.rm(outputDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("keeps readiness recorder snapshots immutable across later generations", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-snapshots-"));

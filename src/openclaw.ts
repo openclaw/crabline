@@ -331,6 +331,7 @@ type ProviderReadinessDependencies = {
   publishGeneration?: typeof publishOpenClawCrablineArtifactGeneration;
   releaseLock?: typeof releaseOpenClawCrablineSmokeRunLock;
   startAdapter?: typeof startOpenClawCrablineAdapter;
+  syncParent?: typeof syncParentDirectory;
 };
 
 export function runOpenClawCrablineProviderReadiness(params: {
@@ -346,6 +347,7 @@ export async function runOpenClawCrablineProviderReadiness(
 ): Promise<OpenClawCrablineProviderReadinessResult> {
   const outputDir = path.resolve(params.outputDir);
   const releaseLock = dependencies.releaseLock ?? releaseOpenClawCrablineSmokeRunLock;
+  const syncRecorderParent = dependencies.syncParent ?? syncParentDirectory;
   const smokeLock = await (dependencies.acquireLock ?? acquireOpenClawCrablineSmokeRunLock)({
     channel: params.selection.channel,
     outputDir,
@@ -456,6 +458,7 @@ export async function runOpenClawCrablineProviderReadiness(
     let recorderCleanupWarning: string | undefined;
     try {
       await fs.rm(recorderPath, { force: true });
+      await syncRecorderParent(recorderPath);
       recorderPath = undefined;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -488,6 +491,7 @@ export async function runOpenClawCrablineProviderReadiness(
     if (recorderPath) {
       try {
         await fs.rm(recorderPath, { force: true });
+        await syncRecorderParent(recorderPath);
         recorderPath = undefined;
       } catch (cleanupError) {
         if (primaryError instanceof Error) {
