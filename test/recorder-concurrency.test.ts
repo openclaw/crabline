@@ -345,6 +345,49 @@ describe("recorder append serialization", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")(
+    "falls back when shared identity lock creation exhausts its filesystem",
+    async () => {
+      const tempRoot = await mkdtemp(
+        path.join(tmpdir(), "crabline-provider-recorder-lock-fallback-"),
+      );
+      const recorderPath = path.join(tempRoot, "events.jsonl");
+      fsMocks.providerDirectory = await realpath(tempRoot);
+      fsMocks.providerWrite.mockResolvedValue(undefined);
+      const sharedFailure = Object.assign(new Error("shared lock filesystem full"), {
+        code: "ENOSPC",
+      });
+      fsMocks.lock
+        .mockResolvedValueOnce(fsMocks.lockRelease)
+        .mockRejectedValueOnce(sharedFailure)
+        .mockResolvedValueOnce(fsMocks.lockRelease);
+
+      try {
+        await expect(
+          appendRecordedInbound(recorderPath, {
+            author: "assistant",
+            id: "identity-lock-fallback",
+            provider: "slack",
+            sentAt: "2026-07-12T10:00:00.000Z",
+            text: "fallback",
+            threadId: "slack:C123",
+          }),
+        ).resolves.toMatchObject({ id: "identity-lock-fallback" });
+        expect(fsMocks.lock).toHaveBeenCalledTimes(3);
+        expect(path.dirname(String(fsMocks.lock.mock.calls[1]?.[0]))).not.toBe(tempRoot);
+        expect(path.dirname(String(fsMocks.lock.mock.calls[2]?.[0]))).toBe(
+          path.join(
+            fsMocks.providerDirectory,
+            `.crabline-provider-recorder-locks-${process.geteuid?.()}`,
+          ),
+        );
+        expect(fsMocks.lockRelease).toHaveBeenCalledTimes(2);
+      } finally {
+        await rm(tempRoot, { force: true, recursive: true });
+      }
+    },
+  );
+
   it("releases both recorder locks when identity verification fails", async () => {
     const recorderPath = path.join(
       "/tmp",
