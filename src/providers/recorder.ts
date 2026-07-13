@@ -39,6 +39,20 @@ const RECORDER_ROTATION_ATTEMPTS = 3;
 
 class RecorderRotatedError extends Error {}
 
+export class ProviderRecorderCommittedError extends AggregateError {
+  readonly committed = true;
+  readonly indeterminate = true;
+
+  constructor(filePath: string, cause: unknown, relatedErrors: unknown[] = []) {
+    super(
+      [cause, ...relatedErrors],
+      `Provider recorder append was published for "${filePath}", but durability or identity confirmation failed.`,
+      { cause },
+    );
+    this.name = "ProviderRecorderCommittedError";
+  }
+}
+
 type IncrementalReadState = {
   caughtUp: boolean;
   continuity: Buffer;
@@ -465,6 +479,7 @@ async function appendCommittedLine(
     opened.created ||
     syncCreatedParent ||
     durableRecorderIdentities.get(publicationPath) !== recorderFileIdentityKey(recorderIdentity);
+  let published = false;
   try {
     if (
       expectedIdentity !== undefined &&
@@ -474,6 +489,7 @@ async function appendCommittedLine(
     }
     await prepareRecorderTailForAppend(handle);
     await handle.writeFile(line, "utf8");
+    published = true;
     if (durable) {
       await handle.sync();
     }
@@ -481,8 +497,20 @@ async function appendCommittedLine(
       await syncParentDirectory(publicationPath);
       rememberDurableRecorderIdentity(publicationPath, recorderIdentity);
     }
+  } catch (error) {
+    if (published) {
+      throw new ProviderRecorderCommittedError(logicalPath, error);
+    }
+    throw error;
   } finally {
-    await handle.close();
+    try {
+      await handle.close();
+    } catch (error) {
+      if (published) {
+        throw new ProviderRecorderCommittedError(logicalPath, error);
+      }
+      throw error;
+    }
   }
 
   if (

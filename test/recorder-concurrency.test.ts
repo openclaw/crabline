@@ -1,7 +1,10 @@
 import path from "node:path";
 import { realpath, rm } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { appendRecordedInbound } from "../src/providers/recorder.js";
+import {
+  appendRecordedInbound,
+  ProviderRecorderCommittedError,
+} from "../src/providers/recorder.js";
 import { recordServerEvent } from "../src/servers/recorder.js";
 
 const fsMocks = vi.hoisted(() => ({
@@ -284,7 +287,14 @@ describe("recorder append serialization", () => {
       };
 
       try {
-        await expect(appendRecordedInbound(recorderPath, event)).rejects.toBe(parentSyncFailure);
+        const failedAppend = appendRecordedInbound(recorderPath, event);
+        await expect(failedAppend).rejects.toMatchObject({
+          cause: parentSyncFailure,
+          committed: true,
+          indeterminate: true,
+          name: "ProviderRecorderCommittedError",
+        });
+        await expect(failedAppend).rejects.toBeInstanceOf(ProviderRecorderCommittedError);
         await expect(
           appendRecordedInbound(recorderPath, { ...event, id: "retry" }),
         ).resolves.toMatchObject({ id: "retry" });

@@ -649,6 +649,31 @@ describe("recorder", () => {
     ]);
   });
 
+  it("deduplicates concurrent batches through real and symlink aliases", async () => {
+    const filePath = await createRecorderPath();
+    const aliasPath = `${filePath}.alias`;
+    await writeFile(filePath, "", "utf8");
+    await symlink(filePath, aliasPath, "file");
+    const event = {
+      author: "user" as const,
+      id: "alias-batch",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "one logical recorder",
+      threadId: "15551234567",
+    };
+
+    const results = await Promise.all([
+      appendRecordedInboundBatch(filePath, [event]),
+      appendRecordedInboundBatch(aliasPath, [event]),
+    ]);
+
+    expect(results.flat()).toHaveLength(1);
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: event.id }),
+    ]);
+  });
+
   it("repairs an interrupted recorder tail before publishing a batch", async () => {
     const filePath = await createRecorderPath();
     const sentAt = new Date().toISOString();
