@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { CrablineError } from "../core/errors.js";
@@ -1310,6 +1310,32 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
   });
 }
 
+async function serveRequest(params: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  state: TelegramServerState;
+}): Promise<void> {
+  let fetchResponse: Response;
+  try {
+    fetchResponse = await handleRequest({ request: params.request, state: params.state });
+  } catch (error) {
+    fetchResponse =
+      error instanceof InvalidJsonBodyError
+        ? telegramError("Bad Request: can't parse JSON object")
+        : error instanceof RequestBodyTooLargeError
+          ? telegramError("Request Entity Too Large", 413)
+          : jsonResponse({ error: "internal server error", ok: false }, 500);
+  }
+
+  try {
+    await writeResponse(params.response, fetchResponse);
+  } catch {
+    // A disconnected client cannot receive an error fallback. End delivery here
+    // so the Node request callback never leaks an unhandled rejection.
+    params.response.destroy();
+  }
+}
+
 export async function startTelegramServer(
   params: StartTelegramServerParams = {},
 ): Promise<StartedTelegramServer> {
@@ -1348,19 +1374,8 @@ export async function startTelegramServer(
     webhookRetryUpdateId: undefined,
   };
   const port = params.port ?? 0;
-  const server = createServer(async (request, response) => {
-    try {
-      await writeResponse(response, await handleRequest({ request, state }));
-    } catch (error) {
-      await writeResponse(
-        response,
-        error instanceof InvalidJsonBodyError
-          ? telegramError("Bad Request: can't parse JSON object")
-          : error instanceof RequestBodyTooLargeError
-            ? telegramError("Request Entity Too Large", 413)
-            : jsonResponse({ error: "internal server error", ok: false }, 500),
-      );
-    }
+  const server = createServer((request, response) => {
+    void serveRequest({ request, response, state });
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
