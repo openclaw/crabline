@@ -108,9 +108,16 @@ export type MockSignalBundle = {
   signedPreKey: SignedKeyPair;
 };
 
+export type WhatsAppSignalDecryptResult<T> =
+  | { status: "accepted"; value: T }
+  | { error: unknown; status: "decrypt-failed" }
+  | { status: "unavailable" }
+  | { status: "rejected" };
+
 export class WhatsAppSignalBundleStore {
   readonly #bundles = new Map<string, MockSignalBundle>();
   readonly #lidByPhoneNumber = new Map<string, string>();
+  readonly #pendingTransactions = new Map<string, Promise<void>>();
   readonly #sessions = new Map<string, Map<string, SessionRecord>>();
 
   constructor(private readonly maxBundles = MAX_WHATSAPP_SIGNAL_BUNDLES) {
@@ -123,13 +130,33 @@ export class WhatsAppSignalBundleStore {
     return this.#bundles.size;
   }
 
+  get lidMappingSize(): number {
+    return this.#lidByPhoneNumber.size;
+  }
+
   associateLid(phoneNumberJid: string, lidJid: string): void {
     const phoneNumber = canonicalizeWhatsAppUserCorrelationJid(phoneNumberJid);
     const lid = canonicalizeWhatsAppUserCorrelationJid(lidJid);
     if (!phoneNumber?.endsWith("@s.whatsapp.net") || !lid?.endsWith("@lid")) {
       throw new Error("Invalid WhatsApp PN/LID signal mapping.");
     }
-    this.#lidByPhoneNumber.set(signalBundleIdentityKey(phoneNumber), signalBundleIdentityKey(lid));
+    const phoneNumberKey = signalBundleIdentityKey(phoneNumber);
+    this.#lidByPhoneNumber.delete(phoneNumberKey);
+    this.#lidByPhoneNumber.set(phoneNumberKey, signalBundleIdentityKey(lid));
+    if (this.#lidByPhoneNumber.size > this.maxBundles) {
+      const oldestPhoneNumber = this.#lidByPhoneNumber.keys().next().value;
+      if (oldestPhoneNumber !== undefined) {
+        this.#lidByPhoneNumber.delete(oldestPhoneNumber);
+      }
+    }
+  }
+
+  resolveAssociatedLid(phoneNumberJid: string): string | undefined {
+    const phoneNumber = canonicalizeWhatsAppUserCorrelationJid(phoneNumberJid);
+    if (!phoneNumber?.endsWith("@s.whatsapp.net")) {
+      return undefined;
+    }
+    return this.#lidByPhoneNumber.get(signalBundleIdentityKey(phoneNumber));
   }
 
   resolveMany(jids: string[]): MockSignalBundle[] {
@@ -158,10 +185,27 @@ export class WhatsAppSignalBundleStore {
     remoteJid: string;
     type: "msg" | "pkmsg";
   }): Promise<Buffer | undefined> {
+    const result = await this.transactDirectMessage({
+      ...params,
+      accept: async (plaintext) => plaintext,
+    });
+    if (result.status === "decrypt-failed") {
+      throw result.error;
+    }
+    return result.status === "accepted" ? result.value : undefined;
+  }
+
+  async transactDirectMessage<T>(params: {
+    accept(plaintext: Buffer): Promise<T | undefined>;
+    ciphertext: Uint8Array;
+    recipientJid: string;
+    remoteJid: string;
+    type: "msg" | "pkmsg";
+  }): Promise<WhatsAppSignalDecryptResult<T>> {
     const recipientJid = canonicalizeWhatsAppUserCorrelationJid(params.recipientJid);
     const recipientIdentityKey = recipientJid ? signalBundleIdentityKey(recipientJid) : undefined;
     const mappedLidIdentityKey = recipientIdentityKey
-      ? this.#lidByPhoneNumber.get(recipientIdentityKey)
+      ? this.resolveAssociatedLid(recipientIdentityKey)
       : undefined;
     const identityKey =
       mappedLidIdentityKey && this.#bundles.has(mappedLidIdentityKey)
@@ -169,47 +213,71 @@ export class WhatsAppSignalBundleStore {
         : recipientIdentityKey;
     const bundle = identityKey ? this.#bundles.get(identityKey) : undefined;
     if (!identityKey || !bundle) {
-      return undefined;
+      return { status: "unavailable" };
     }
     const remoteAddress = signalProtocolAddress(params.remoteJid);
     if (!remoteAddress) {
-      return undefined;
+      return { status: "unavailable" };
     }
-    const sessions = this.#sessions.get(identityKey) ?? new Map<string, SessionRecord>();
-    this.#sessions.set(identityKey, sessions);
-    const stagedSessions = new Map<string, SessionRecord>();
-    const storage: SignalStorage = {
-      async loadSession(id) {
-        const session = stagedSessions.get(id) ?? sessions.get(id);
-        return session ? cloneSignalSession(session) : undefined;
-      },
-      async storeSession(id, session) {
-        stagedSessions.set(id, cloneSignalSession(session));
-      },
-      isTrustedIdentity: () => true,
-      async loadPreKey(id) {
-        if (String(id) !== String(bundle.preKeyId)) {
-          return undefined;
-        }
-        return signalKeyPair(bundle.preKey);
-      },
-      removePreKey: () => undefined,
-      loadSignedPreKey: () => signalKeyPair(bundle.signedPreKey.keyPair),
-      getOurRegistrationId: () => bundle.registrationId,
-      getOurIdentity: () => signalKeyPair(bundle.identityKey),
-    };
-    const cipher = new SessionCipher(
-      storage,
-      new ProtocolAddress(remoteAddress.name, remoteAddress.deviceId),
-    );
-    const plaintext =
-      params.type === "pkmsg"
-        ? await cipher.decryptPreKeyWhisperMessage(params.ciphertext)
-        : await cipher.decryptWhisperMessage(params.ciphertext);
-    for (const [id, session] of stagedSessions) {
-      sessions.set(id, session);
-    }
-    return plaintext;
+    const address = new ProtocolAddress(remoteAddress.name, remoteAddress.deviceId);
+    return await this.#runTransaction(address.toString(), async () => {
+      const sessions = this.#sessions.get(identityKey) ?? new Map<string, SessionRecord>();
+      const stagedPreKeyRemovals = new Set<number>();
+      const stagedSessions = new Map<string, SessionRecord>();
+      const storage: SignalStorage = {
+        async loadSession(id) {
+          const session = stagedSessions.get(id) ?? sessions.get(id);
+          return session ? cloneSignalSession(session) : undefined;
+        },
+        async storeSession(id, session) {
+          stagedSessions.set(id, cloneSignalSession(session));
+        },
+        isTrustedIdentity: () => true,
+        async loadPreKey(id) {
+          if (String(id) !== String(bundle.preKeyId)) {
+            return undefined;
+          }
+          return signalKeyPair(bundle.preKey);
+        },
+        removePreKey(id) {
+          stagedPreKeyRemovals.add(id);
+        },
+        loadSignedPreKey: () => signalKeyPair(bundle.signedPreKey.keyPair),
+        getOurRegistrationId: () => bundle.registrationId,
+        getOurIdentity: () => signalKeyPair(bundle.identityKey),
+      };
+      const cipher = new SessionCipher(storage, address);
+      let plaintext: Buffer;
+      try {
+        plaintext =
+          params.type === "pkmsg"
+            ? await cipher.decryptPreKeyWhisperMessage(params.ciphertext)
+            : await cipher.decryptWhisperMessage(params.ciphertext);
+      } catch (error) {
+        return { error, status: "decrypt-failed" };
+      }
+      const accepted = await params.accept(plaintext);
+      if (accepted === undefined) {
+        return { status: "rejected" };
+      }
+      const replacementPreKey = stagedPreKeyRemovals.has(bundle.preKeyId)
+        ? {
+            id: bundle.preKeyId === 0xff_ff_ff ? 1 : bundle.preKeyId + 1,
+            keyPair: Curve.generateKeyPair(),
+          }
+        : undefined;
+      for (const [id, session] of stagedSessions) {
+        sessions.set(id, session);
+      }
+      if (stagedSessions.size > 0) {
+        this.#sessions.set(identityKey, sessions);
+      }
+      if (replacementPreKey) {
+        bundle.preKey = replacementPreKey.keyPair;
+        bundle.preKeyId = replacementPreKey.id;
+      }
+      return { status: "accepted", value: accepted };
+    });
   }
 
   #resolve(bundleKey: string): MockSignalBundle {
@@ -227,6 +295,23 @@ export class WhatsAppSignalBundleStore {
     };
     this.#bundles.set(bundleKey, bundle);
     return bundle;
+  }
+
+  async #runTransaction<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.#pendingTransactions.get(key) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(operation);
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#pendingTransactions.set(key, settled);
+    try {
+      return await result;
+    } finally {
+      if (this.#pendingTransactions.get(key) === settled) {
+        this.#pendingTransactions.delete(key);
+      }
+    }
   }
 }
 
@@ -608,11 +693,16 @@ class WhatsAppBaileysWebSocketSession {
     }
     if (node.tag === "message") {
       const peer = requireAttr(node, "to");
-      const normalizedMessage = await normalizeAcceptedBaileysMessage({
+      const accepted = await persistAcceptedBaileysMessage({
+        appendEvent: this.params.appendEvent,
         node,
+        path: this.params.path,
         remoteJid: this.params.selfJid,
         signalBundles: this.params.signalBundles,
       });
+      if (!accepted) {
+        return;
+      }
       await this.#sendNode({
         attrs: {
           class: "message",
@@ -623,17 +713,6 @@ class WhatsAppBaileysWebSocketSession {
         },
         tag: "ack",
       });
-      if (normalizedMessage) {
-        await this.params.appendEvent({
-          accepted: true,
-          at: new Date().toISOString(),
-          body: normalizedMessage,
-          method: "WEBSOCKET",
-          path: this.params.path,
-          query: {},
-          type: "api",
-        } as ServerRequestEvent & { accepted: true });
-      }
     }
   }
 
@@ -1119,15 +1198,17 @@ function children(node: BinaryNode): BinaryNode[] {
   return Array.isArray(node.content) ? node.content : [];
 }
 
-async function normalizeAcceptedBaileysMessage(params: {
+async function persistAcceptedBaileysMessage(params: {
+  appendEvent(event: ServerRequestEvent): Promise<void>;
   node: BinaryNode;
+  path: string;
   remoteJid: string;
   signalBundles: WhatsAppSignalBundleStore;
-}): Promise<WhatsAppBaileysInboundMessage | undefined> {
+}): Promise<boolean> {
   const peer = canonicalizeWhatsAppUserCorrelationJid(params.node.attrs.to ?? "");
   const messageId = params.node.attrs.id;
   if (!peer || !messageId) {
-    return undefined;
+    return false;
   }
   const candidates = encryptedMessageCandidates(params.node);
   const remoteCorrelationJid = canonicalizeWhatsAppUserCorrelationJid(params.remoteJid);
@@ -1139,16 +1220,18 @@ async function normalizeAcceptedBaileysMessage(params: {
     return Number(leftIsSelf) - Number(rightIsSelf);
   });
   for (const candidate of candidates) {
-    try {
-      const decrypted = await params.signalBundles.decryptDirectMessage({
-        ciphertext: candidate.ciphertext,
-        recipientJid: candidate.recipientJid,
-        remoteJid: params.remoteJid,
-        type: candidate.type,
-      });
-      const text = decrypted ? readWhatsAppConversation(unpadRandomMax16(decrypted)) : undefined;
-      if (text) {
-        return {
+    const result = await params.signalBundles.transactDirectMessage({
+      accept: async (decrypted) => {
+        let text: string | undefined;
+        try {
+          text = readWhatsAppConversation(unpadRandomMax16(decrypted));
+        } catch {
+          return undefined;
+        }
+        if (!text) {
+          return undefined;
+        }
+        const message: WhatsAppBaileysInboundMessage = {
           key: {
             fromMe: true,
             id: messageId,
@@ -1157,12 +1240,27 @@ async function normalizeAcceptedBaileysMessage(params: {
           message: { conversation: text },
           messageTimestamp: Math.floor(Date.now() / 1000),
         };
-      }
-    } catch {
-      // Other participant envelopes may not belong to this mock server identity.
+        await params.appendEvent({
+          accepted: true,
+          at: new Date().toISOString(),
+          body: message,
+          method: "WEBSOCKET",
+          path: params.path,
+          query: {},
+          type: "api",
+        } as ServerRequestEvent & { accepted: true });
+        return message;
+      },
+      ciphertext: candidate.ciphertext,
+      recipientJid: candidate.recipientJid,
+      remoteJid: params.remoteJid,
+      type: candidate.type,
+    });
+    if (result.status === "accepted") {
+      return true;
     }
   }
-  return undefined;
+  return false;
 }
 
 function encryptedMessageCandidates(node: BinaryNode): Array<{

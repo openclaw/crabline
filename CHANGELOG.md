@@ -11,6 +11,7 @@
 - Harden provider recorder durability and replacement recovery, JWT cache expiry refresh, and LocalMock webhook shutdown draining.
 - Harden recorder append durability, Baileys shutdown draining, and provider-native HTTP, identity, profile, authentication, ingress, and redaction fidelity.
 - Preserve OpenClaw thread and direct-recipient identity, persist recorder and directory metadata, and prevent stale smoke-lock release from fencing successors.
+- Make WhatsApp Web inbound acceptance failure-atomic across recorder persistence, Signal ratchets, one-time prekeys, and acknowledgements; bound identity mappings and tighten request and crypto fallback handling.
 
 ## 0.1.11 - 2026-07-13
 
