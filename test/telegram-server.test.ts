@@ -1884,6 +1884,39 @@ describe("telegram local provider server", () => {
     ]);
   });
 
+  it("survives a client disconnect while preparing a response", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    let releaseObserver: (() => void) | undefined;
+    const observerReleased = new Promise<void>((resolve) => {
+      releaseObserver = resolve;
+    });
+    let markObserverEntered: (() => void) | undefined;
+    const observerEntered = new Promise<void>((resolve) => {
+      markObserverEntered = resolve;
+    });
+    const server = await startTelegramServer({
+      botToken: "test-token-placeholder",
+      onEvent: async () => {
+        markObserverEntered?.();
+        await observerReleased;
+      },
+      recorderPath: path.join(directory, "telegram-disconnect.jsonl"),
+    });
+    servers.push(server);
+
+    const request = httpRequest(`${server.manifest.baseUrl}/bottest-token-placeholder/getMe`);
+    request.on("error", () => {});
+    request.end();
+    await observerEntered;
+    request.destroy();
+    releaseObserver?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const response = await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/getMe`);
+    await expect(response.json()).resolves.toMatchObject({ ok: true });
+  });
+
   it("bounds webhook DNS validation with the delivery deadline", async () => {
     const controller = new AbortController();
     await expect(

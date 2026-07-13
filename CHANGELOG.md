@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.11 - 2026-07-13
 
+- Contain Telegram response delivery failures when clients disconnect during request handling.
 - Recover interrupted artifact and recorder writes, publish immutable readiness evidence, and harden private-directory and smoke-lock durability.
 
 ## 0.1.10 - 2026-07-13
