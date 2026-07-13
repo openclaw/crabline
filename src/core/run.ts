@@ -520,9 +520,11 @@ export async function runFixtureCommand(params: {
                 break;
               }
               if (seenInbound.size >= MAX_EXCLUDED_INBOUND_IDS) {
-                const diagnostic = excludedInboundIds.has(candidate.id)
-                  ? `Provider returned more than ${MAX_EXCLUDED_INBOUND_IDS} distinct unmatched inbound envelopes.`
-                  : `Provider returned more than ${MAX_EXCLUDED_INBOUND_IDS} unmatched inbound message IDs.`;
+                const diagnostic =
+                  excludedInboundIds.size >= MAX_EXCLUDED_INBOUND_IDS &&
+                  !excludedInboundIds.has(candidate.id)
+                    ? `Provider returned more than ${MAX_EXCLUDED_INBOUND_IDS} unmatched inbound message IDs.`
+                    : `Provider returned more than ${MAX_EXCLUDED_INBOUND_IDS} distinct unmatched inbound envelopes.`;
                 throw new CrablineError(diagnostic, { kind: "inbound" });
               }
               seenInbound.add(key);

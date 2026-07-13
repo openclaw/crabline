@@ -934,6 +934,49 @@ describe("run behavior", () => {
     expect(maxExcludedIds).toBe(1);
   });
 
+  it("reports composite overflow after mixed reused and new inbound IDs", async () => {
+    let waitCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["roundtrip"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => ({ accepted: true, messageId: "sent", threadId: "thread" }),
+      waitForInbound: async () => {
+        waitCalls += 1;
+        return {
+          author: "assistant",
+          id: waitCalls > 1024 ? "new" : "reused",
+          provider: "mock",
+          sentAt: new Date().toISOString(),
+          text: "not the requested nonce",
+          threadId: `thread-${waitCalls}`,
+        };
+      },
+    };
+    const boundedManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, timeoutMs: 5_000 }],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: boundedManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.failureKind).toBe("inbound");
+    expect(result.diagnostics).toContain(
+      "Provider returned more than 1024 distinct unmatched inbound envelopes.",
+    );
+    expect(waitCalls).toBe(1025);
+  });
+
   it("bounds a hung inbound provider by the core deadline", async () => {
     let rejectWait: ((error: Error) => void) | undefined;
     const provider: ProviderAdapter = {
