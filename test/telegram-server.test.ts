@@ -2129,15 +2129,31 @@ describe("telegram local provider server", () => {
     const first = await uploadDocument(100, "first bytes");
     const different = await uploadDocument(200, "different bytes");
     const repeated = await uploadDocument(300, "first bytes");
+    const photoBody = new FormData();
+    photoBody.set("chat_id", "400");
+    photoBody.set(
+      "photo",
+      new Blob(["first bytes"], { type: "application/octet-stream" }),
+      "shared-name.bin",
+    );
+    const photoResponse = await fetch(`${apiRoot}/sendPhoto`, {
+      body: photoBody,
+      method: "POST",
+    });
+    expect(photoResponse.status).toBe(200);
+    const photo = (await photoResponse.json()) as {
+      result: { photo: Array<{ file_unique_id: string }> };
+    };
 
     expect(first.result.document.file_name).toBe("shared-name.bin");
     expect(different.result.document.file_name).toBe("shared-name.bin");
     expect(repeated.result.document.file_name).toBe("shared-name.bin");
     expect(different.result.document.file_unique_id).not.toBe(first.result.document.file_unique_id);
     expect(repeated.result.document.file_unique_id).toBe(first.result.document.file_unique_id);
+    expect(photo.result.photo[0]?.file_unique_id).not.toBe(first.result.document.file_unique_id);
 
     const collidingName = await uploadDocument(
-      400,
+      500,
       "unrelated bytes",
       first.result.document.file_id,
     );
@@ -2148,7 +2164,7 @@ describe("telegram local provider server", () => {
 
     const reused = await fetch(`${apiRoot}/sendDocument`, {
       body: JSON.stringify({
-        chat_id: 500,
+        chat_id: 600,
         document: first.result.document.file_id,
       }),
       headers: { "content-type": "application/json" },
