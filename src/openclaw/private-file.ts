@@ -235,6 +235,159 @@ if (
 }
 `;
 
+const WINDOWS_CREATE_OWNER_ONLY_DIRECTORY_ANCESTRY_SCRIPT = String.raw`
+$ErrorActionPreference = "Stop"
+$directoryPath = $env:CRABLINE_PRIVATE_DIRECTORY_PATH
+if ([string]::IsNullOrWhiteSpace($directoryPath)) {
+  throw "CRABLINE_PRIVATE_DIRECTORY_PATH is required."
+}
+
+Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class CrablinePrivateDirectory
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecurityAttributes
+    {
+        public int Length;
+        public IntPtr SecurityDescriptor;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool InheritHandle;
+    }
+
+    [DllImport(
+        "kernel32.dll",
+        CharSet = CharSet.Unicode,
+        SetLastError = true
+    )]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateDirectory(
+        string path,
+        ref SecurityAttributes securityAttributes
+    );
+
+    public static void CreateNew(string path, byte[] securityDescriptor)
+    {
+        GCHandle descriptorHandle = GCHandle.Alloc(
+            securityDescriptor,
+            GCHandleType.Pinned
+        );
+        try {
+            SecurityAttributes attributes = new SecurityAttributes {
+                Length = Marshal.SizeOf(typeof(SecurityAttributes)),
+                SecurityDescriptor = descriptorHandle.AddrOfPinnedObject(),
+                InheritHandle = false
+            };
+            if (!CreateDirectory(path, ref attributes)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        } finally {
+            descriptorHandle.Free();
+        }
+    }
+}
+"@
+
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$sid = $identity.User
+if ($null -eq $sid) {
+  throw "Could not resolve the current Windows user SID."
+}
+
+$acl = [System.Security.AccessControl.DirectorySecurity]::new()
+$acl.SetOwner($sid)
+$acl.SetAccessRuleProtection($true, $false)
+$inheritance = (
+  [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+  [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+)
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $sid,
+  [System.Security.AccessControl.FileSystemRights]::FullControl,
+  $inheritance,
+  [System.Security.AccessControl.PropagationFlags]::None,
+  [System.Security.AccessControl.AccessControlType]::Allow
+)
+$acl.SetAccessRule($rule)
+$descriptor = $acl.GetSecurityDescriptorBinaryForm()
+
+$target = [System.IO.Path]::GetFullPath($directoryPath)
+$missing = [System.Collections.Generic.List[string]]::new()
+$current = $target
+while (-not [System.IO.Directory]::Exists($current)) {
+  if ([System.IO.File]::Exists($current)) {
+    throw "Private directory ancestry contains a non-directory entry."
+  }
+  $missing.Add($current)
+  $parent = [System.IO.Directory]::GetParent($current)
+  if ($null -eq $parent) {
+    throw "Private directory ancestry has no existing parent."
+  }
+  $current = $parent.FullName
+}
+
+$paths = $missing.ToArray()
+[Array]::Reverse($paths)
+$created = [System.Collections.Generic.List[string]]::new()
+try {
+  foreach ($candidate in $paths) {
+    [CrablinePrivateDirectory]::CreateNew($candidate, $descriptor)
+    $created.Add($candidate)
+
+    $actual = [System.IO.DirectoryInfo]::new($candidate).GetAccessControl()
+    $ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
+    $rules = @($actual.GetAccessRules(
+      $true,
+      $true,
+      [System.Security.Principal.SecurityIdentifier]
+    ))
+    if (-not $actual.AreAccessRulesProtected) {
+      throw "Private directory DACL still inherits permissions."
+    }
+    if ($ownerSid.Value -ne $sid.Value) {
+      throw "Private directory owner SID does not match the current user."
+    }
+    if ($rules.Count -ne 1) {
+      throw "Private directory DACL must contain exactly one access rule."
+    }
+    $actualRule = $rules[0]
+    if (
+      $actualRule.IsInherited -or
+      $actualRule.IdentityReference.Value -ne $sid.Value -or
+      $actualRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+      (($actualRule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) -or
+      (($actualRule.InheritanceFlags -band $inheritance) -ne $inheritance)
+    ) {
+      throw "Private directory DACL is not owner-only inheritable full control."
+    }
+
+    $entries = [System.IO.Directory]::EnumerateFileSystemEntries($candidate).GetEnumerator()
+    try {
+      if ($entries.MoveNext()) {
+        throw "New private directory was populated during creation."
+      }
+    } finally {
+      $entries.Dispose()
+    }
+  }
+} catch {
+  for ($index = $created.Count - 1; $index -ge 0; $index--) {
+    try {
+      [System.IO.Directory]::Delete($created[$index], $false)
+    } catch {
+    }
+  }
+  throw
+}
+
+if ($created.Count -gt 0) {
+  [Console]::Out.Write($created[0])
+}
+`;
+
 export type WindowsAclRunner = (
   command: string,
   args: string[],
@@ -328,6 +481,40 @@ export async function applyOwnerOnlyWindowsDirectoryAcl(
   } catch (error) {
     throw new Error(
       "Could not apply and verify an owner-only Windows directory ACL; powershell.exe with Set-Acl is required.",
+      { cause: error },
+    );
+  }
+}
+
+export async function createOwnerOnlyWindowsDirectoryAncestry(
+  directoryPath: string,
+  run: WindowsAclRunner = runWindowsAclCommand,
+  systemRoot: string | null | undefined = process.env.SystemRoot,
+): Promise<string | undefined> {
+  try {
+    const powershellPath = resolveWindowsPowerShellPath(systemRoot);
+    const output = await run(
+      powershellPath,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        WINDOWS_CREATE_OWNER_ONLY_DIRECTORY_ANCESTRY_SCRIPT,
+      ],
+      {
+        env: {
+          ...process.env,
+          CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
+        },
+        windowsHide: true,
+      },
+    );
+    const firstCreatedDirectory = output.trim();
+    return firstCreatedDirectory.length > 0 ? firstCreatedDirectory : undefined;
+  } catch (error) {
+    throw new Error(
+      "Could not atomically create and verify owner-only Windows private directory ancestry; Windows PowerShell security descriptor support is required.",
       { cause: error },
     );
   }
@@ -514,6 +701,7 @@ export async function removeSecuredPrivateDirectory(
 export async function securePrivateDirectory(
   directoryPath: string,
   options: {
+    createWindowsDirectories?: (directoryPath: string) => Promise<string | undefined>;
     currentUserId?: number;
     platform?: NodeJS.Platform;
     secureWindowsDirectory?: (directoryPath: string) => Promise<void>;
@@ -521,13 +709,31 @@ export async function securePrivateDirectory(
     syncParent?: (filePath: string, platform?: NodeJS.Platform) => Promise<void>;
   } = {},
 ): Promise<SecuredPrivateDirectory> {
+  const platform = options.platform ?? process.platform;
   let created = false;
-  try {
-    await fs.mkdir(directoryPath, { mode: 0o700 });
-    created = true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      throw error;
+  if (platform === "win32") {
+    try {
+      await fs.lstat(directoryPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+      const firstCreatedDirectory = await (
+        options.createWindowsDirectories ?? createOwnerOnlyWindowsDirectoryAncestry
+      )(directoryPath);
+      if (firstCreatedDirectory === undefined) {
+        throw new Error("Windows private directory creation did not create the requested path.");
+      }
+      created = true;
+    }
+  } else {
+    try {
+      await fs.mkdir(directoryPath, { mode: 0o700 });
+      created = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
     }
   }
 
@@ -564,8 +770,10 @@ export async function securePrivateDirectory(
   };
   try {
     await secured.assertIdentityAt();
-    if ((options.platform ?? process.platform) === "win32") {
-      await (options.secureWindowsDirectory ?? applyOwnerOnlyWindowsDirectoryAcl)(directoryPath);
+    if (platform === "win32") {
+      if (!created) {
+        await (options.secureWindowsDirectory ?? applyOwnerOnlyWindowsDirectoryAcl)(directoryPath);
+      }
     } else {
       const currentUserId = options.currentUserId ?? process.geteuid?.();
       if (
@@ -627,6 +835,7 @@ export async function publishPrivateFileAtomically(
     afterRename?: (filePath: string) => Promise<void>;
     beforeRename?: (temporaryPath: string) => Promise<void>;
     createWindowsFile?: (temporaryPath: string) => Promise<FileIdentity>;
+    createWindowsDirectories?: (directoryPath: string) => Promise<string | undefined>;
     platform?: NodeJS.Platform;
     removeTemporaryFile?: (temporaryPath: string) => Promise<void>;
     secureWindowsFile?: (temporaryPath: string) => Promise<void>;
@@ -638,12 +847,27 @@ export async function publishPrivateFileAtomically(
     `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
   );
   const parentDirectory = path.resolve(path.dirname(filePath));
-  const firstCreatedDirectory = await fs.mkdir(parentDirectory, { recursive: true });
+  const platform = options.platform ?? process.platform;
+  const firstCreatedDirectory =
+    platform === "win32"
+      ? await (async () => {
+          try {
+            await fs.lstat(parentDirectory);
+            return undefined;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+              throw error;
+            }
+            return await (
+              options.createWindowsDirectories ?? createOwnerOnlyWindowsDirectoryAncestry
+            )(parentDirectory);
+          }
+        })()
+      : await fs.mkdir(parentDirectory, { recursive: true, mode: 0o700 });
   let handle: FileHandle | undefined;
   let publicationFailed = false;
   let primaryError: unknown;
   try {
-    const platform = options.platform ?? process.platform;
     let identity: FileIdentity;
     if (platform === "win32" && options.secureWindowsFile === undefined) {
       const createdIdentity = await (options.createWindowsFile ?? createOwnerOnlyWindowsFile)(
