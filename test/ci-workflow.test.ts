@@ -120,19 +120,25 @@ describe("CI workflow hardening", () => {
     expect(dependencyReview).toContain("      - pnpm-workspace.yaml");
   });
 
-  it("protects and scans local action changes", async () => {
-    const [codeowners, codeqlWorkflow, actionsConfig] = await Promise.all([
+  it("protects and scans local action and executable tool changes", async () => {
+    const [codeowners, codeqlWorkflow, actionsConfig, typescriptConfig] = await Promise.all([
       fs.readFile(".github/CODEOWNERS", "utf8"),
       readWorkflow(".github/workflows/codeql.yml"),
       fs
         .readFile(".github/codeql/codeql-actions-security.yml", "utf8")
+        .then((contents) => parse(contents) as { paths?: string[] }),
+      fs
+        .readFile(".github/codeql/codeql-typescript-security.yml", "utf8")
         .then((contents) => parse(contents) as { paths?: string[] }),
     ]);
 
     expect(codeowners).toContain("/.github/actions/ @openclaw/openclaw-secops");
     expect(codeqlWorkflow.on?.push?.paths).toContain(".github/actions/**");
     expect(codeqlWorkflow.on?.pull_request?.paths).toContain(".github/actions/**");
+    expect(codeqlWorkflow.on?.push?.paths).toContain("tools/**");
+    expect(codeqlWorkflow.on?.pull_request?.paths).toContain("tools/**");
     expect(actionsConfig.paths).toContain(".github/actions");
+    expect(typescriptConfig.paths).toContain("tools");
   });
 
   it("exempts security pull requests from stale automation", async () => {
