@@ -1754,6 +1754,42 @@ describe("telegram local provider server", () => {
     });
   });
 
+  it("advances per-chat message IDs from edits and callbacks", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    for (const body of [
+      {
+        edited_message: {
+          chat: { id: 100 },
+          message_id: 10,
+          text: "edited existing message",
+        },
+        update_id: 1,
+      },
+      {
+        callback_query: {
+          id: "callback-existing-message",
+          message: { chat: { id: 200 }, message_id: 20 },
+        },
+        update_id: 2,
+      },
+    ]) {
+      expect((await injectUpdate(server, body)).status).toBe(200);
+    }
+
+    await expect(
+      (await injectUpdate(server, { chatId: 100, text: "after edit" })).json(),
+    ).resolves.toMatchObject({
+      update: { message: { message_id: 11 }, update_id: 3 },
+    });
+    await expect(
+      (await injectUpdate(server, { chatId: 200, text: "after callback" })).json(),
+    ).resolves.toMatchObject({
+      update: { message: { message_id: 21 }, update_id: 4 },
+    });
+  });
+
   it("allocates forum topic roots from the chat message sequence", async () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
