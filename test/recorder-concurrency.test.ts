@@ -264,7 +264,7 @@ describe("recorder append serialization", () => {
       const identityLockPath = fsMocks.lock.mock.calls
         .map(([lockPath]) => String(lockPath))
         .find((lockPath) => path.basename(lockPath).startsWith("recorder-"));
-      expect(identityLockPath).toBeDefined();
+      expect(identityLockPath).toBeUndefined();
     } finally {
       await rm(recorderPath, { force: true });
     }
