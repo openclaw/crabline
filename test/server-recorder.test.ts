@@ -143,6 +143,15 @@ function serverEvent(pathname: string): ServerRequestEvent {
   };
 }
 
+function directoryAncestryCount(directory: string): number {
+  let count = 1;
+  while (path.dirname(directory) !== directory) {
+    count += 1;
+    directory = path.dirname(directory);
+  }
+  return count;
+}
+
 beforeEach(() => {
   lockMocks.release.mockReset();
   lockMocks.release.mockResolvedValue();
@@ -190,8 +199,11 @@ describe("server recorder", () => {
     const firstParent = path.join("/tmp", "private");
     const finalParent = path.join(firstParent, "nested");
     const recorderPath = path.join(finalParent, "events.jsonl");
+    const canonicalFirstParent = path.join(await realpath("/tmp"), "private");
+    const canonicalFinalParent = path.join(canonicalFirstParent, "nested");
+    const canonicalRecorderPath = path.join(canonicalFinalParent, "events.jsonl");
     const observer = vi.fn<(event: ServerRequestEvent) => void>();
-    fsMocks.mkdir.mockResolvedValueOnce(firstParent);
+    fsMocks.mkdir.mockResolvedValueOnce(canonicalFirstParent);
     fsMocks.open.mockImplementation(async (_filePath, flags) =>
       flags === "r" ? fsMocks.directory : fsMocks.file,
     );
@@ -201,16 +213,16 @@ describe("server recorder", () => {
       recorderPath,
     });
 
-    expect(fsMocks.mkdir).toHaveBeenCalledWith(finalParent, {
+    expect(fsMocks.mkdir).toHaveBeenCalledWith(canonicalFinalParent, {
       mode: 0o700,
       recursive: true,
     });
-    expect(fsMocks.chmod).toHaveBeenCalledWith(finalParent, 0o700);
+    expect(fsMocks.chmod).toHaveBeenCalledWith(canonicalFinalParent, 0o700);
     expect(fsMocks.open.mock.calls).toEqual([
-      [recorderPath, "ax+", 0o600],
-      [finalParent, "r"],
-      [firstParent, "r"],
-      [path.dirname(firstParent), "r"],
+      [canonicalRecorderPath, "ax+", 0o600],
+      [canonicalFinalParent, "r"],
+      [canonicalFirstParent, "r"],
+      [path.dirname(canonicalFirstParent), "r"],
     ]);
     expect(fsMocks.file.chmod).toHaveBeenCalledWith(0o600);
     expect(fsMocks.file.appendFile).toHaveBeenCalledWith(expect.any(String), {
@@ -224,15 +236,12 @@ describe("server recorder", () => {
     expect(fsMocks.directory.sync.mock.invocationCallOrder.at(-1)).toBeLessThan(
       observer.mock.invocationCallOrder[0]!,
     );
-    expect(lockMocks.lock).toHaveBeenCalledWith(
-      path.join(await realpath("/tmp"), "private/nested/events.jsonl"),
-      {
-        realpath: false,
-        retries: 0,
-        stale: 30_000,
-        update: 10_000,
-      },
-    );
+    expect(lockMocks.lock).toHaveBeenCalledWith(canonicalRecorderPath, {
+      realpath: false,
+      retries: 0,
+      stale: 30_000,
+      update: 10_000,
+    });
     expect(lockMocks.release).toHaveBeenCalledOnce();
     expect(fsMocks.file.chmod.mock.invocationCallOrder[0]).toBeLessThan(
       fsMocks.file.appendFile.mock.invocationCallOrder[0]!,
@@ -245,16 +254,18 @@ describe("server recorder", () => {
     const firstParent = path.join("/tmp", "retry-private");
     const finalParent = path.join(firstParent, "nested");
     const recorderPath = path.join(finalParent, "events.jsonl");
+    const canonicalRoot = await realpath("/tmp");
+    const canonicalFirstParent = path.join(canonicalRoot, "retry-private");
     const ancestrySyncFailure = new Error("simulated recorder ancestry sync interruption");
     const observer = vi.fn<(event: ServerRequestEvent) => void>();
     let recorderExists = false;
-    fsMocks.mkdir.mockResolvedValueOnce(firstParent).mockResolvedValueOnce(undefined);
+    fsMocks.mkdir.mockResolvedValueOnce(canonicalFirstParent).mockResolvedValueOnce(undefined);
     fsMocks.file.stat.mockResolvedValue({ dev: 42, ino: 84, size: 0 });
     fsMocks.stat.mockResolvedValue({ dev: 42, ino: 84, size: 0 });
     fsMocks.directory.sync.mockRejectedValueOnce(ancestrySyncFailure).mockResolvedValue(undefined);
     fsMocks.open.mockImplementation(async (openedPath, flags) => {
       if (flags === "r") {
-        if (openedPath === path.dirname(firstParent)) {
+        if (openedPath === canonicalRoot) {
           throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
         }
         return fsMocks.directory;
@@ -303,6 +314,8 @@ describe("server recorder", () => {
   it("fails an immediate parent sync without caching durability or notifying observers", async () => {
     const finalParent = path.join("/tmp", "recorder-immediate-denied");
     const recorderPath = path.join(finalParent, "events.jsonl");
+    const canonicalRoot = await realpath("/tmp");
+    const canonicalFinalParent = path.join(canonicalRoot, "recorder-immediate-denied");
     const syncFailure = Object.assign(new Error("recorder parent denied"), { code: "EACCES" });
     const observer = vi.fn<(event: ServerRequestEvent) => void>();
     let immediateAttempts = 0;
@@ -313,10 +326,10 @@ describe("server recorder", () => {
         throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
       }
       if (flags === "r") {
-        if (openedPath === finalParent && immediateAttempts++ === 0) {
+        if (openedPath === canonicalFinalParent && immediateAttempts++ === 0) {
           throw syncFailure;
         }
-        if (openedPath === path.dirname(finalParent)) {
+        if (openedPath === canonicalRoot) {
           throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
         }
         return fsMocks.directory;
@@ -356,13 +369,15 @@ describe("server recorder", () => {
     const firstParent = path.join("/tmp", "recorder-created-denied");
     const finalParent = path.join(firstParent, "nested");
     const recorderPath = path.join(finalParent, "events.jsonl");
+    const canonicalRoot = await realpath("/tmp");
+    const canonicalFirstParent = path.join(canonicalRoot, "recorder-created-denied");
     const syncFailure = Object.assign(new Error("created recorder ancestry denied"), {
       code: "EPERM",
     });
     const observer = vi.fn<(event: ServerRequestEvent) => void>();
     let recorderExists = false;
     let denyCreatedBoundary = true;
-    fsMocks.mkdir.mockResolvedValueOnce(firstParent).mockResolvedValueOnce(undefined);
+    fsMocks.mkdir.mockResolvedValueOnce(canonicalFirstParent).mockResolvedValueOnce(undefined);
     fsMocks.file.stat.mockResolvedValue({ dev: 71, ino: 72, size: 0 });
     fsMocks.stat.mockResolvedValue({ dev: 71, ino: 72, size: 0 });
     fsMocks.open.mockImplementation(async (openedPath, flags) => {
@@ -374,7 +389,7 @@ describe("server recorder", () => {
         return fsMocks.file;
       }
       if (flags === "r") {
-        if (openedPath === path.dirname(firstParent)) {
+        if (openedPath === canonicalRoot) {
           if (denyCreatedBoundary) {
             denyCreatedBoundary = false;
             throw syncFailure;
@@ -653,7 +668,9 @@ describe("server recorder", () => {
     expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
     expect(fsMocks.file.truncate).not.toHaveBeenCalled();
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
-    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(2);
+    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(
+      directoryAncestryCount(await realpath("/tmp")),
+    );
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
   });
 
