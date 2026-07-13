@@ -114,25 +114,54 @@ function runTerminationCommand(command: string, args: string[]): Promise<boolean
   });
 }
 
-function windowsProcessTreeTermination(pid: number): string {
+function windowsProcessTreeTermination(
+  pid: number,
+  childStartedAtMs: number,
+  childObservedAtMs: number,
+  rootExpectedAlive: boolean,
+): string {
+  const rootNotBeforeMs = Math.max(0, Math.floor(childStartedAtMs));
+  const rootObservedByMs = Math.max(rootNotBeforeMs, Math.ceil(childObservedAtMs));
+  const snapshotAtMs = Date.now();
   return [
     "$ErrorActionPreference='Stop'",
     `$RootProcessId=${pid}`,
+    `$RootExpectedAlive=$${rootExpectedAlive ? "true" : "false"}`,
+    `$RootNotBefore=([datetime]'1970-01-01T00:00:00Z').AddMilliseconds(${rootNotBeforeMs})`,
+    `$RootObservedBy=([datetime]'1970-01-01T00:00:00Z').AddMilliseconds(${rootObservedByMs})`,
+    `$SnapshotAt=([datetime]'1970-01-01T00:00:00Z').AddMilliseconds(${snapshotAtMs})`,
     "$AllProcesses=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate)",
     "$Snapshot=[System.Collections.Generic.List[object]]::new()",
-    "$Pending=[System.Collections.Generic.Queue[int]]::new()",
+    "$Pending=[System.Collections.Generic.Queue[object]]::new()",
+    "$Visited=[System.Collections.Generic.HashSet[string]]::new()",
     "$RootProcess=$AllProcesses | Where-Object { [int]$_.ProcessId -eq $RootProcessId } | Select-Object -First 1",
-    "if($null -ne $RootProcess){$Snapshot.Add($RootProcess)}",
-    "$Pending.Enqueue($RootProcessId)",
+    "$RootMatches=$null -ne $RootProcess -and [datetime]$RootProcess.CreationDate -ge $RootNotBefore -and [datetime]$RootProcess.CreationDate -le $RootObservedBy",
+    "$RootPidReused=$null -ne $RootProcess -and (!$RootExpectedAlive -or !$RootMatches)",
+    "$KillRoot=$RootExpectedAlive -and $RootMatches",
+    "if($KillRoot){",
+    "$Snapshot.Add($RootProcess)",
+    '$Visited.Add("$([int]$RootProcess.ProcessId)|$(([datetime]$RootProcess.CreationDate).ToFileTimeUtc())") | Out-Null',
+    "$Pending.Enqueue($RootProcess)",
+    "}elseif(!$RootPidReused){",
+    "$Pending.Enqueue([pscustomobject]@{ProcessId=$RootProcessId;CreationDate=$RootNotBefore})",
+    "}",
     "while($Pending.Count -gt 0){",
-    "$ParentProcessId=$Pending.Dequeue()",
-    "foreach($Process in @($AllProcesses | Where-Object { [int]$_.ParentProcessId -eq $ParentProcessId })){",
+    "$Parent=$Pending.Dequeue()",
+    "foreach($Process in @($AllProcesses | Where-Object { [int]$_.ParentProcessId -eq [int]$Parent.ProcessId })){",
+    "$ChildCreated=[datetime]$Process.CreationDate",
+    "$ParentCreated=[datetime]$Parent.CreationDate",
+    "if($ChildCreated -lt $ParentCreated -or $ChildCreated -gt $SnapshotAt){continue}",
+    '$Identity="$([int]$Process.ProcessId)|$($ChildCreated.ToFileTimeUtc())"',
+    "if(!$Visited.Add($Identity)){continue}",
     "$Snapshot.Add($Process)",
-    "$Pending.Enqueue([int]$Process.ProcessId)",
+    "$Pending.Enqueue($Process)",
     "}",
     "}",
+    "$TaskkillExitCode=-1",
+    "if($KillRoot){",
     '$Taskkill=Start-Process taskkill.exe -ArgumentList @("/PID","$RootProcessId","/T","/F") -WindowStyle Hidden -PassThru',
     "if($Taskkill.WaitForExit(1000)){$TaskkillExitCode=$Taskkill.ExitCode}else{$Taskkill.Kill();$TaskkillExitCode=-1}",
+    "}",
     "if($TaskkillExitCode -ne 0){",
     "$Entries=@($Snapshot)",
     "[array]::Reverse($Entries)",
@@ -156,7 +185,11 @@ function destroyChildPipes(child: ChildProcess): void {
   }
 }
 
-async function terminateChild(child: ChildProcess): Promise<void> {
+async function terminateChild(
+  child: ChildProcess,
+  childStartedAtMs: number,
+  childObservedAtMs: number,
+): Promise<void> {
   try {
     const childRunning =
       child.exitCode === null &&
@@ -169,14 +202,22 @@ async function terminateChild(child: ChildProcess): Promise<void> {
         }
       })();
     if (process.platform === "win32") {
-      if (child.pid && childRunning) {
-        await runTerminationCommand("powershell.exe", [
+      if (child.pid) {
+        const cleaned = await runTerminationCommand("powershell.exe", [
           "-NoLogo",
           "-NoProfile",
           "-NonInteractive",
           "-Command",
-          windowsProcessTreeTermination(child.pid),
+          windowsProcessTreeTermination(
+            child.pid,
+            childStartedAtMs,
+            childObservedAtMs,
+            childRunning,
+          ),
         ]);
+        if (!cleaned && childRunning) {
+          await runTerminationCommand("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"]);
+        }
       }
     } else if (child.pid) {
       try {
@@ -285,12 +326,8 @@ function addRedactionRepresentations(values: Set<string>, value: string): void {
   values.add(serialized.slice(1, -1));
 }
 
-function addExactOrSubstringCommandValue(
-  exactValues: Set<string>,
-  substringValues: Set<string>,
-  value: string,
-): void {
-  addRedactionRepresentations(value.length >= 8 ? substringValues : exactValues, value);
+function addCommandValueRedactions(substringValues: Set<string>, value: string): void {
+  addRedactionRepresentations(substringValues, value);
 }
 
 function tokenizeLiteralCommand(command: string): string[] | undefined {
@@ -361,7 +398,7 @@ function snapshotCommandValues(
     if (!executableSeen) {
       const assignment = /^([A-Za-z_][A-Za-z0-9_]*)\+?=(.*)$/u.exec(token);
       if (assignment) {
-        addExactOrSubstringCommandValue(exactValues, substringValues, assignment[2] ?? "");
+        addCommandValueRedactions(substringValues, assignment[2] ?? "");
         continue;
       }
       executableSeen = true;
@@ -380,14 +417,14 @@ function snapshotCommandValues(
       if (value.length < 3) {
         return undefined;
       }
-      addExactOrSubstringCommandValue(exactValues, substringValues, value);
+      addCommandValueRedactions(substringValues, value);
       continue;
     }
     if (token.length < 3) {
       return undefined;
     }
     if (token.startsWith("-")) {
-      addExactOrSubstringCommandValue(exactValues, substringValues, token);
+      addCommandValueRedactions(substringValues, token);
     } else {
       addRedactionRepresentations(substringValues, token);
     }
@@ -644,6 +681,8 @@ function runScript<T>(params: {
     params.shell,
   );
   return new Promise((resolve, reject) => {
+    const childStartedAtMs = Date.now();
+    let childObservedAtMs = childStartedAtMs;
     let child: SpawnedScriptChild;
     try {
       child = spawn(params.command, {
@@ -653,6 +692,7 @@ function runScript<T>(params: {
         detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
       });
+      childObservedAtMs = Date.now();
     } catch (error) {
       reject(
         new CrablineError(
@@ -676,7 +716,7 @@ function runScript<T>(params: {
     let timeoutGrace: NodeJS.Timeout | undefined;
     const abort = () => {
       finish(async () => {
-        await terminateChild(child);
+        await terminateChild(child, childStartedAtMs, childObservedAtMs);
         reject(params.signal?.reason ?? new Error("Script command aborted."));
       });
     };
@@ -694,7 +734,7 @@ function runScript<T>(params: {
 
     const failForOutputLimit = () => {
       finish(async () => {
-        await terminateChild(child);
+        await terminateChild(child, childStartedAtMs, childObservedAtMs);
         reject(
           new CrablineError(`Script command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of output.`, {
             kind: "connectivity",
@@ -784,7 +824,7 @@ function runScript<T>(params: {
 
     const failForTimeout = () => {
       finish(async () => {
-        await terminateChild(child);
+        await terminateChild(child, childStartedAtMs, childObservedAtMs);
         reject(
           new CrablineError(`Script command timed out after ${params.timeoutMs}ms.`, {
             kind: "timeout",
@@ -842,6 +882,8 @@ function watchScript(params: {
       serializedPayload,
       params.shell,
     );
+    const childStartedAtMs = Date.now();
+    let childObservedAtMs = childStartedAtMs;
     let child: SpawnedScriptChild;
     try {
       child = spawn(params.command, {
@@ -851,6 +893,7 @@ function watchScript(params: {
         detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
       });
+      childObservedAtMs = Date.now();
     } catch (error) {
       throw new CrablineError(
         formatScriptError(
@@ -869,7 +912,7 @@ function watchScript(params: {
     let outputLimitError: CrablineError | undefined;
     let termination: Promise<void> | undefined;
     const stopChild = () => {
-      termination ??= terminateChild(child);
+      termination ??= terminateChild(child, childStartedAtMs, childObservedAtMs);
       return termination;
     };
     const requestStopChild = () => {

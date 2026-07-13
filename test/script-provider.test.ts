@@ -592,6 +592,30 @@ describe("script provider", () => {
     expect(inspect(failure, { depth: null })).not.toContain(positionalSentinel);
   });
 
+  it("redacts short command values when diagnostics append punctuation", async () => {
+    const context = await createContext();
+    const sentinel = "abc123";
+    const failingScript = path.join(path.dirname(context.manifestPath), "send-short-secret.mjs");
+    await writeText(
+      failingScript,
+      `process.stderr.write(${JSON.stringify(`${sentinel}-invalid`)});process.exitCode=7;`,
+    );
+    context.config.script!.commands.send = `node ${JSON.stringify(failingScript)} --label=${sentinel}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    const failure = await provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+
+    expect(ensureErrorMessage(failure)).toContain("[redacted command value]-invalid");
+    expect(inspect(failure, { depth: null })).not.toContain(sentinel);
+  });
+
   it("suppresses diagnostics when positional arguments require shell expansion", async () => {
     const context = await createContext();
     const sentinel = "expanded-positional-secret";
@@ -1151,7 +1175,7 @@ describe("script provider", () => {
       );
       context.config.script!.commands.send =
         `${previousDirectoryEnvName}=/tmp/previous-directory ` +
-        `node ${JSON.stringify(failingScript)} "--path-prefix=/tmp"`;
+        `node ${JSON.stringify(failingScript)} "--path-prefix=/var/lib/crabline-prefix"`;
       const provider = new ScriptProviderAdapter(context);
 
       await expect(

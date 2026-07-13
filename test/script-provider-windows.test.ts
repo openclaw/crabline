@@ -123,7 +123,11 @@ describe("script provider Windows cleanup", () => {
     expect(terminationScript).toContain("$Taskkill.ExitCode");
     expect(terminationScript).toContain("$Taskkill.Kill()");
     expect(terminationScript).toContain("CreationDate");
+    expect(terminationScript).toContain("$ChildCreated -lt $ParentCreated");
     expect(terminationScript).toContain("$Current.CreationDate -eq $Entry.CreationDate");
+    expect(terminationScript).toContain("HashSet[string]");
+    expect(terminationScript).toContain("$RootPidReused");
+    expect(terminationScript).toContain("$RootObservedBy");
     expect(scriptChild.kill).toHaveBeenCalledWith("SIGKILL");
     expect(scriptChild.stdin.destroyed).toBe(true);
     expect(scriptChild.stdout.destroyed).toBe(true);
@@ -156,5 +160,57 @@ describe("script provider Windows cleanup", () => {
     await expect(failurePromise).resolves.toBe(primaryFailure);
     expect(scriptChild.stdout.destroyed).toBe(true);
     expect(spawnMock.mock.calls[1]?.[0]).toBe("powershell.exe");
+  });
+
+  it("cleans descendants after the direct shell has already exited", async () => {
+    const scriptChild = createFakeChild(6789);
+    Object.defineProperty(scriptChild, "exitCode", {
+      configurable: true,
+      value: 0,
+    });
+    spawnMock.mockReturnValueOnce(scriptChild).mockImplementationOnce(() => createCleanupChild(0));
+    const context = createContext();
+    const provider = new ScriptProviderAdapter(context);
+
+    const failurePromise = provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(context.fixture.timeoutMs);
+    await failurePromise;
+
+    expect(spawnMock.mock.calls[1]?.[0]).toBe("powershell.exe");
+    const terminationScript = String(spawnMock.mock.calls[1]?.[1]?.at(-1));
+    expect(terminationScript).toContain("$RootExpectedAlive=$false");
+    expect(terminationScript).toContain("CreationDate=$RootNotBefore");
+    expect(scriptChild.kill).not.toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it("falls back to bounded taskkill when PowerShell cleanup fails for a live shell", async () => {
+    const scriptChild = createFakeChild(7890);
+    spawnMock
+      .mockReturnValueOnce(scriptChild)
+      .mockImplementationOnce(() => createCleanupChild(1))
+      .mockImplementationOnce(() => createCleanupChild(0));
+    const context = createContext();
+    const provider = new ScriptProviderAdapter(context);
+
+    const failurePromise = provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(context.fixture.timeoutMs);
+    await failurePromise;
+
+    expect(spawnMock.mock.calls[2]?.[0]).toBe("taskkill.exe");
+    expect(spawnMock.mock.calls[2]?.[1]).toEqual(["/PID", "7890", "/T", "/F"]);
   });
 });
