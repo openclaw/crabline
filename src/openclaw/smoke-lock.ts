@@ -57,6 +57,7 @@ type GetProcessIdentity = (pid: number) => string | null;
 type StartHeartbeat = (renew: () => Promise<void>, intervalMs: number) => HeartbeatController;
 type BeforeRecoveryClaim = () => Promise<void>;
 type BeforeRecoveryDeleteClaim = () => Promise<void>;
+type BeforeCompatibilityMarkerRenew = () => Promise<void>;
 type BeforeReleaseClaim = () => Promise<void>;
 type BeforeReleaseRename = () => Promise<void>;
 type BeforeCommitClaim = () => Promise<void>;
@@ -1055,6 +1056,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     beforeCommitClaim?: BeforeCommitClaim;
     beforeCommitFileRename?: BeforeCommitFileRename;
     beforeCommitRename?: BeforeCommitRename;
+    beforeCompatibilityMarkerRenew?: BeforeCompatibilityMarkerRenew;
     beforeRecoveryDeleteClaim?: BeforeRecoveryDeleteClaim;
     beforeRecoveryClaim?: BeforeRecoveryClaim;
     beforeReleaseClaim?: BeforeReleaseClaim;
@@ -1318,6 +1320,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           if (!(await renewOwnedLock(ownedDirectory, token, renewedAtMs))) {
             throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
           }
+          await dependencies.beforeCompatibilityMarkerRenew?.();
           if (
             !(await renewCompatibilityMarker({
               handle: markerHandle,
@@ -1361,7 +1364,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     let released = false;
     return {
       async assertOwned() {
-        if (released) {
+        if (released || heartbeatStopped) {
           throw new Error("OpenClaw Crabline smoke lock has already been released.");
         }
         heartbeat.assertHealthy();
@@ -1474,8 +1477,14 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           return;
         }
         if (!heartbeatStopped) {
-          await heartbeat.stop();
           heartbeatStopped = true;
+          try {
+            await heartbeat.stop();
+          } finally {
+            await pendingRenewal.catch(() => undefined);
+          }
+        } else {
+          await pendingRenewal.catch(() => undefined);
         }
         await removeOwnedLock({
           ...(dependencies.beforeReleaseClaim
