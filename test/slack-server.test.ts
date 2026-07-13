@@ -9,7 +9,7 @@ import {
   type StartSlackServerParams,
 } from "../src/index.js";
 import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
-import { classifySlackRetryReason } from "../src/servers/slack.js";
+import { classifySlackRetryReason, postSlackEventToAddresses } from "../src/servers/slack.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedSlackServer[] = [];
@@ -1297,6 +1297,42 @@ describe("slack local provider server", () => {
     for (const { expected, failure } of failures) {
       expect(classifySlackRetryReason(failure)).toBe(expected);
     }
+  });
+
+  it("shares the Events API deadline fairly across resolved addresses", async () => {
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const addresses = [
+      { address: "192.0.2.1", family: 4 },
+      { address: "192.0.2.2", family: 4 },
+    ] as const;
+    const attemptedAddresses: string[] = [];
+    const attemptTimeouts: number[] = [];
+    const request: NonNullable<Parameters<typeof postSlackEventToAddresses>[0]["request"]> = async (
+      params,
+    ) => {
+      attemptedAddresses.push(params.address?.address ?? "unresolved");
+      attemptTimeouts.push(params.timeoutMs);
+      if (params.address?.address === addresses[0].address) {
+        now += params.timeoutMs;
+        throw new DOMException("first address timed out", "TimeoutError");
+      }
+      return { headers: {}, status: 200 };
+    };
+
+    await expect(
+      postSlackEventToAddresses({
+        addresses,
+        body: "{}",
+        headerEntries: [],
+        request,
+        signal: new AbortController().signal,
+        timeoutAt: now + 3_000,
+        url: new URL("https://events.example.test/slack/events"),
+      }),
+    ).resolves.toEqual({ headers: {}, status: 200 });
+    expect(attemptedAddresses).toEqual(["192.0.2.1", "192.0.2.2"]);
+    expect(attemptTimeouts).toEqual([1_500, 1_500]);
   });
 
   it("cancels unread Events API response bodies", async () => {
