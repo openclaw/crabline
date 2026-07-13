@@ -739,7 +739,7 @@ describe("whatsapp local provider server", () => {
     expect(store.size).toBe(2);
   });
 
-  it("bounds Signal sessions per bundle and commits eviction only after acceptance", async () => {
+  it("rejects new Signal sessions at capacity without evicting established peers", async () => {
     const recipientJid = "15551234567@s.whatsapp.net";
     const receiver = new WhatsAppSignalBundleStore(1, undefined, undefined, undefined, undefined, {
       maxSessionsPerBundle: 1,
@@ -800,21 +800,21 @@ describe("whatsapp local provider server", () => {
         remoteJid: second.senderJid,
         type: "pkmsg",
       }),
-    ).resolves.toEqual({ status: "accepted", value: Buffer.from("second sender") });
+    ).resolves.toEqual({ status: "rejected" });
     expect(receiver.sessionCount).toBe(1);
 
-    const followUp = await second.cipher.encrypt(Buffer.from("second sender follow-up"));
+    const followUp = await first.cipher.encrypt(Buffer.from("first sender follow-up"));
     await expect(
       receiver.transactDirectMessage({
         accept,
         ciphertext: signalCiphertext(followUp.body),
         recipientJid,
-        remoteJid: second.senderJid,
+        remoteJid: first.senderJid,
         type: followUp.type === 3 ? "pkmsg" : "msg",
       }),
     ).resolves.toEqual({
       status: "accepted",
-      value: Buffer.from("second sender follow-up"),
+      value: Buffer.from("first sender follow-up"),
     });
   });
 

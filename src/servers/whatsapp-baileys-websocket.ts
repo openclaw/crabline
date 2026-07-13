@@ -351,7 +351,7 @@ export class WhatsAppSignalBundleStore {
         },
         async storeSession(id, session) {
           if (!sessions.has(id) && !stagedSessions.has(id)) {
-            if (stagedNewSessionCount >= maxSessionsPerBundle) {
+            if (sessions.size + stagedNewSessionCount >= maxSessionsPerBundle) {
               throw sessionLimitError;
             }
             stagedNewSessionCount += 1;
@@ -395,28 +395,7 @@ export class WhatsAppSignalBundleStore {
       if (accepted === undefined) {
         return { status: "rejected" };
       }
-      const sessionsToEvict: string[] = [];
-      const evictionCount = Math.max(
-        0,
-        sessions.size + stagedNewSessionCount - maxSessionsPerBundle,
-      );
-      for (const id of sessions.keys()) {
-        if (sessionsToEvict.length >= evictionCount) {
-          break;
-        }
-        if (!stagedSessions.has(id)) {
-          sessionsToEvict.push(id);
-        }
-      }
-      if (sessionsToEvict.length < evictionCount) {
-        return { status: "rejected" };
-      }
-      for (const id of sessionsToEvict) {
-        sessions.delete(id);
-      }
       for (const [id, session] of stagedSessions) {
-        // Refresh insertion order so future reclamation evicts the least-recently used session.
-        sessions.delete(id);
         sessions.set(id, session);
       }
       if (stagedSessions.size > 0) {
