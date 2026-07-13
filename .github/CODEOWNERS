@@ -1,5 +1,6 @@
 # Protect ownership and automation rules.
 /.github/CODEOWNERS @openclaw/openclaw-secops
+/.github/actions/ @openclaw/openclaw-secops
 /.github/actionlint.yaml @openclaw/openclaw-secops
 /.github/codeql/ @openclaw/openclaw-secops
 /.github/dependabot.yml @openclaw/openclaw-secops
