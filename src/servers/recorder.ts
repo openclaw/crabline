@@ -374,9 +374,21 @@ async function appendRecorderAttempt(params: {
                 (opened.created ? path.resolve(params.filePath) : undefined);
               await syncRecorderPathAncestry(params.filePath, firstCreatedPath);
             }
-            rememberDurableRecorderIdentity(path.resolve(params.filePath), identity);
-            committed = true;
-            result = "committed";
+            if (!(await recorderPathHasIdentity(params.filePath, identity))) {
+              await rollbackRecorderAppend(
+                params.filePath,
+                file,
+                appendStart,
+                new ServerRecorderRotationError(
+                  "Server recorder rotated while syncing path ancestry.",
+                ),
+              );
+              result = "retry";
+            } else {
+              rememberDurableRecorderIdentity(path.resolve(params.filePath), identity);
+              committed = true;
+              result = "committed";
+            }
           }
         } catch (error) {
           if (
