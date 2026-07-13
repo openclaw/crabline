@@ -225,9 +225,17 @@ describe("Google Chat webhook authentication", () => {
         iss: "https://accounts.google.com",
       });
 
-      for (const type of ["ADDED_TO_SPACE", "REMOVED_FROM_SPACE"]) {
+      for (const type of ["ADDED_TO_SPACE", "REMOVED_FROM_SPACE", "CARD_CLICKED"]) {
         const response = await fetch(endpoint, {
-          body: JSON.stringify({ space: { name: "spaces/AAAABbbbCCC" }, type }),
+          body: JSON.stringify({
+            message: {
+              name: "spaces/AAAABbbbCCC/messages/must-not-record",
+              space: { name: "spaces/AAAABbbbCCC" },
+              text: "must not record",
+            },
+            space: { name: "spaces/AAAABbbbCCC" },
+            type,
+          }),
           headers: { authorization: `Bearer ${jwt}`, "content-type": "application/json" },
           method: "POST",
         });
@@ -366,6 +374,21 @@ describe("Google Chat webhook authentication", () => {
         },
       }),
     ).toThrow(/message\.name must belong to message\.space\.name/u);
+
+    for (const name of [
+      "spaces/AAAABbbbCCC/messages/",
+      "spaces/AAAABbbbCCC/messages/msg-native/extra",
+    ]) {
+      expect(() =>
+        normalizeGoogleChatWebhookPayload({
+          message: {
+            name,
+            space: { name: "spaces/AAAABbbbCCC" },
+            text: "malformed resource",
+          },
+        }),
+      ).toThrow(/valid message resource name/u);
+    }
   });
 
   it("requires configured thread targets to belong to their space", async () => {
