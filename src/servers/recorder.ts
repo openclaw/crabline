@@ -670,16 +670,28 @@ async function appendJsonLine(params: {
   await result.observation;
 }
 
+function snapshotServerEvent(event: ServerRequestEvent): {
+  event: ServerRequestEvent;
+  line: string;
+} {
+  const serialized = JSON.stringify(event);
+  if (serialized === undefined) {
+    throw new TypeError("Server recorder event is not JSON-serializable.");
+  }
+  return {
+    event: JSON.parse(serialized) as ServerRequestEvent,
+    line: `${serialized}\n`,
+  };
+}
+
 export async function recordServerEvent(params: {
   event: ServerRequestEvent;
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
 }): Promise<void> {
-  const serialized = JSON.stringify(params.event);
-  const event = JSON.parse(serialized) as ServerRequestEvent;
+  const snapshot = snapshotServerEvent(params.event);
   await appendJsonLine({
-    event,
-    line: `${serialized}\n`,
+    ...snapshot,
     onEvent: params.onEvent,
     recorderPath: params.recorderPath,
   });
@@ -690,12 +702,10 @@ export async function recordCommittedServerEvent(params: {
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
 }): Promise<void> {
-  const serialized = JSON.stringify(params.event);
-  const event = JSON.parse(serialized) as ServerRequestEvent;
   try {
+    const snapshot = snapshotServerEvent(params.event);
     await appendJsonLine({
-      event,
-      line: `${serialized}\n`,
+      ...snapshot,
       onEvent: params.onEvent,
       recorderPath: params.recorderPath,
     });

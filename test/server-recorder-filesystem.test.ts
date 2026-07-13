@@ -238,6 +238,7 @@ it.skipIf(process.platform === "win32")(
     const lines = (await readFile(targetPath, "utf8")).trimEnd().split("\n");
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toMatchObject({ path: "/dangling" });
+    expect((await stat(targetPath)).mode & 0o777).toBe(0o600);
   },
 );
 
