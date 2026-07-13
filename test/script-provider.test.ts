@@ -326,6 +326,49 @@ describe("script provider", () => {
     },
   );
 
+  it.runIf(process.platform === "win32")(
+    "kills descendants when the direct Windows shell exits",
+    async () => {
+      const context = await createContext();
+      const watchScript = path.join(
+        path.dirname(context.manifestPath),
+        "watch-windows-descendant.mjs",
+      );
+      await writeText(
+        watchScript,
+        'import {spawn} from "node:child_process";const descendant=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:["ignore","inherit","ignore"]});descendant.unref();process.stdout.write(JSON.stringify({author:"assistant",id:String(descendant.pid),raw:{leaderPid:process.pid},sentAt:new Date().toISOString(),text:"watch payload",threadId:"thread-1"})+"\\n");',
+      );
+      context.config.script!.commands.watch = `node ${JSON.stringify(watchScript)}`;
+      const provider = new ScriptProviderAdapter(context);
+      const iterator = provider.watch(context);
+      let descendantPid = 0;
+      let descendantExited = false;
+      try {
+        const watched = await iterator.next();
+        descendantPid = Number(watched.value?.id);
+        const leaderPid = Number(
+          (watched.value?.raw as { leaderPid?: number } | undefined)?.leaderPid,
+        );
+        expect(Number.isInteger(descendantPid)).toBe(true);
+        expect(Number.isInteger(leaderPid)).toBe(true);
+        await expect(waitForProcessExit(leaderPid, 2000)).resolves.toBe(true);
+
+        descendantExited = await waitForProcessExit(descendantPid, 2000);
+        expect(descendantExited).toBe(true);
+        await expect(iterator.next()).resolves.toMatchObject({ done: true });
+      } finally {
+        if (descendantPid > 0 && !descendantExited) {
+          try {
+            process.kill(descendantPid, "SIGKILL");
+          } catch {
+            // The Job Object cleanup already stopped the descendant.
+          }
+        }
+        await iterator.return();
+      }
+    },
+  );
+
   it("enforces command deadlines in the parent process", async () => {
     const context = await createContext();
     const sendScript = path.join(path.dirname(context.manifestPath), "send-hanging.mjs");

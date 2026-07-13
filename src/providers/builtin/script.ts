@@ -1,4 +1,11 @@
-import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
+import {
+  execFileSync,
+  spawn,
+  type ChildProcess,
+  type ChildProcessByStdio,
+} from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { z } from "zod";
@@ -16,6 +23,200 @@ const MAX_SCRIPT_OUTPUT_BYTES = 1024 * 1024;
 const SCRIPT_WAIT_EXIT_GRACE_MS = 250;
 const CHILD_CLOSE_TIMEOUT_MS = 1_000;
 const WINDOWS_TERMINATION_COMMAND_TIMEOUT_MS = 2_500;
+const WINDOWS_JOB_COMMAND_ENV = "CRABLINE_INTERNAL_SCRIPT_JOB_COMMAND";
+const WINDOWS_JOB_SHELL_ENV = "CRABLINE_INTERNAL_SCRIPT_JOB_SHELL";
+const WINDOWS_JOB_HELPER_SOURCE_ENV = "CRABLINE_INTERNAL_SCRIPT_JOB_HELPER_SOURCE";
+const WINDOWS_JOB_HELPER_OUTPUT_ENV = "CRABLINE_INTERNAL_SCRIPT_JOB_HELPER_OUTPUT";
+const WINDOWS_JOB_HELPER_SOURCE = [
+  "using System;",
+  "using System.ComponentModel;",
+  "using System.Runtime.InteropServices;",
+  "using System.Text;",
+  "public static class CrablineScriptJob{",
+  "private const uint CreateSuspended=0x00000004;",
+  "private const uint ExtendedStartupInfoPresent=0x00080000;",
+  "private const uint Infinite=0xffffffff;",
+  "private const uint JobObjectLimitKillOnJobClose=0x00002000;",
+  "private const int ProcThreadAttributeJobList=0x0002000d;",
+  "private const uint StartfUseStdHandles=0x00000100;",
+  "private const uint DuplicateSameAccess=0x00000002;",
+  "private const uint ResumeThreadFailed=0xffffffff;",
+  "private const int JobObjectExtendedLimitInformationClass=9;",
+  "private const int StdInputHandle=-10;",
+  "private const int StdOutputHandle=-11;",
+  "private const int StdErrorHandle=-12;",
+  "[StructLayout(LayoutKind.Sequential)]",
+  "private struct ProcessInformation{",
+  "public IntPtr Process;",
+  "public IntPtr Thread;",
+  "public uint ProcessId;",
+  "public uint ThreadId;",
+  "}",
+  "[StructLayout(LayoutKind.Sequential)]",
+  "private struct StartupInfo{",
+  "public int Size;",
+  "public IntPtr Reserved;",
+  "public IntPtr Desktop;",
+  "public IntPtr Title;",
+  "public int X;",
+  "public int Y;",
+  "public int XSize;",
+  "public int YSize;",
+  "public int XCountChars;",
+  "public int YCountChars;",
+  "public int FillAttribute;",
+  "public uint Flags;",
+  "public short ShowWindow;",
+  "public short Reserved2Size;",
+  "public IntPtr Reserved2;",
+  "public IntPtr StandardInput;",
+  "public IntPtr StandardOutput;",
+  "public IntPtr StandardError;",
+  "}",
+  "[StructLayout(LayoutKind.Sequential)]",
+  "private struct StartupInfoEx{",
+  "public StartupInfo StartupInfo;",
+  "public IntPtr AttributeList;",
+  "}",
+  "[StructLayout(LayoutKind.Sequential)]",
+  "private struct JobObjectBasicLimitInformation{",
+  "public long PerProcessUserTimeLimit;",
+  "public long PerJobUserTimeLimit;",
+  "public uint LimitFlags;",
+  "public UIntPtr MinimumWorkingSetSize;",
+  "public UIntPtr MaximumWorkingSetSize;",
+  "public uint ActiveProcessLimit;",
+  "public IntPtr Affinity;",
+  "public uint PriorityClass;",
+  "public uint SchedulingClass;",
+  "}",
+  "[StructLayout(LayoutKind.Sequential)]",
+  "private struct IoCounters{",
+  "public ulong ReadOperationCount;",
+  "public ulong WriteOperationCount;",
+  "public ulong OtherOperationCount;",
+  "public ulong ReadTransferCount;",
+  "public ulong WriteTransferCount;",
+  "public ulong OtherTransferCount;",
+  "}",
+  "[StructLayout(LayoutKind.Sequential)]",
+  "private struct JobObjectExtendedLimitInformation{",
+  "public JobObjectBasicLimitInformation BasicLimitInformation;",
+  "public IoCounters IoInfo;",
+  "public UIntPtr ProcessMemoryLimit;",
+  "public UIntPtr JobMemoryLimit;",
+  "public UIntPtr PeakProcessMemoryUsed;",
+  "public UIntPtr PeakJobMemoryUsed;",
+  "}",
+  '[DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]',
+  "[return:MarshalAs(UnmanagedType.Bool)]",
+  "private static extern bool CreateProcess(string applicationName,StringBuilder commandLine,IntPtr processAttributes,IntPtr threadAttributes,bool inheritHandles,uint creationFlags,IntPtr environment,string currentDirectory,ref StartupInfoEx startupInfo,out ProcessInformation processInformation);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "private static extern IntPtr CreateJobObject(IntPtr jobAttributes,string name);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "[return:MarshalAs(UnmanagedType.Bool)]",
+  "private static extern bool SetInformationJobObject(IntPtr job,int informationClass,ref JobObjectExtendedLimitInformation information,uint informationLength);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "[return:MarshalAs(UnmanagedType.Bool)]",
+  "private static extern bool InitializeProcThreadAttributeList(IntPtr attributeList,int attributeCount,int flags,ref IntPtr size);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "[return:MarshalAs(UnmanagedType.Bool)]",
+  "private static extern bool UpdateProcThreadAttribute(IntPtr attributeList,uint flags,IntPtr attribute,IntPtr value,IntPtr size,IntPtr previousValue,IntPtr returnSize);",
+  '[DllImport("kernel32.dll")]',
+  "private static extern void DeleteProcThreadAttributeList(IntPtr attributeList);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "[return:MarshalAs(UnmanagedType.Bool)]",
+  "private static extern bool DuplicateHandle(IntPtr sourceProcess,IntPtr sourceHandle,IntPtr targetProcess,out IntPtr targetHandle,uint desiredAccess,bool inheritHandle,uint options);",
+  '[DllImport("kernel32.dll")]',
+  "private static extern IntPtr GetCurrentProcess();",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "private static extern IntPtr GetStdHandle(int standardHandle);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "private static extern uint ResumeThread(IntPtr thread);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "private static extern uint WaitForSingleObject(IntPtr handle,uint milliseconds);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "[return:MarshalAs(UnmanagedType.Bool)]",
+  "private static extern bool GetExitCodeProcess(IntPtr process,out uint exitCode);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "[return:MarshalAs(UnmanagedType.Bool)]",
+  "private static extern bool TerminateProcess(IntPtr process,uint exitCode);",
+  '[DllImport("kernel32.dll")]',
+  "[return:MarshalAs(UnmanagedType.Bool)]",
+  "private static extern bool CloseHandle(IntPtr handle);",
+  "private static void ThrowLastError(string operation){throw new Win32Exception(Marshal.GetLastWin32Error(),operation);}",
+  "private static IntPtr DuplicateStandardHandle(int standardHandle){",
+  "IntPtr source=GetStdHandle(standardHandle);",
+  "IntPtr duplicate=IntPtr.Zero;",
+  "IntPtr process=GetCurrentProcess();",
+  'if(source==IntPtr.Zero||source==new IntPtr(-1)||!DuplicateHandle(process,source,process,out duplicate,0,true,DuplicateSameAccess)){ThrowLastError("Could not duplicate a script standard handle.");}',
+  "return duplicate;",
+  "}",
+  "private static int Run(string applicationName,string commandLine){",
+  "IntPtr job=IntPtr.Zero;",
+  "IntPtr attributeList=IntPtr.Zero;",
+  "IntPtr jobList=IntPtr.Zero;",
+  "IntPtr standardInput=IntPtr.Zero;",
+  "IntPtr standardOutput=IntPtr.Zero;",
+  "IntPtr standardError=IntPtr.Zero;",
+  "ProcessInformation processInformation=new ProcessInformation();",
+  "bool processCreated=false;",
+  "try{",
+  "job=CreateJobObject(IntPtr.Zero,null);",
+  'if(job==IntPtr.Zero){ThrowLastError("Could not create the script job object.");}',
+  "JobObjectExtendedLimitInformation limits=new JobObjectExtendedLimitInformation();",
+  "limits.BasicLimitInformation.LimitFlags=JobObjectLimitKillOnJobClose;",
+  'if(!SetInformationJobObject(job,JobObjectExtendedLimitInformationClass,ref limits,(uint)Marshal.SizeOf(typeof(JobObjectExtendedLimitInformation)))){ThrowLastError("Could not configure the script job object.");}',
+  "IntPtr attributeListSize=IntPtr.Zero;",
+  "InitializeProcThreadAttributeList(IntPtr.Zero,1,0,ref attributeListSize);",
+  "attributeList=Marshal.AllocHGlobal(attributeListSize);",
+  'if(!InitializeProcThreadAttributeList(attributeList,1,0,ref attributeListSize)){ThrowLastError("Could not initialize the script job attribute list.");}',
+  "jobList=Marshal.AllocHGlobal(IntPtr.Size);",
+  "Marshal.WriteIntPtr(jobList,job);",
+  'if(!UpdateProcThreadAttribute(attributeList,0,new IntPtr(ProcThreadAttributeJobList),jobList,new IntPtr(IntPtr.Size),IntPtr.Zero,IntPtr.Zero)){ThrowLastError("Could not bind the script process to its job object.");}',
+  "standardInput=DuplicateStandardHandle(StdInputHandle);",
+  "standardOutput=DuplicateStandardHandle(StdOutputHandle);",
+  "standardError=DuplicateStandardHandle(StdErrorHandle);",
+  "StartupInfoEx startupInfo=new StartupInfoEx();",
+  "startupInfo.StartupInfo.Size=Marshal.SizeOf(typeof(StartupInfoEx));",
+  "startupInfo.StartupInfo.Flags=StartfUseStdHandles;",
+  "startupInfo.StartupInfo.StandardInput=standardInput;",
+  "startupInfo.StartupInfo.StandardOutput=standardOutput;",
+  "startupInfo.StartupInfo.StandardError=standardError;",
+  "startupInfo.AttributeList=attributeList;",
+  'if(!CreateProcess(applicationName,new StringBuilder(commandLine),IntPtr.Zero,IntPtr.Zero,true,CreateSuspended|ExtendedStartupInfoPresent,IntPtr.Zero,Environment.CurrentDirectory,ref startupInfo,out processInformation)){ThrowLastError("Could not start the script command.");}',
+  "processCreated=true;",
+  'if(ResumeThread(processInformation.Thread)==ResumeThreadFailed){ThrowLastError("Could not resume the script command.");}',
+  'if(WaitForSingleObject(processInformation.Process,Infinite)==Infinite){ThrowLastError("Could not wait for the script command.");}',
+  "uint exitCode;",
+  'if(!GetExitCodeProcess(processInformation.Process,out exitCode)){ThrowLastError("Could not read the script exit code.");}',
+  "return unchecked((int)exitCode);",
+  "}finally{",
+  "if(processCreated&&processInformation.Process!=IntPtr.Zero){TerminateProcess(processInformation.Process,1);}",
+  "if(processInformation.Thread!=IntPtr.Zero){CloseHandle(processInformation.Thread);}",
+  "if(processInformation.Process!=IntPtr.Zero){CloseHandle(processInformation.Process);}",
+  "if(standardInput!=IntPtr.Zero){CloseHandle(standardInput);}",
+  "if(standardOutput!=IntPtr.Zero){CloseHandle(standardOutput);}",
+  "if(standardError!=IntPtr.Zero){CloseHandle(standardError);}",
+  "if(attributeList!=IntPtr.Zero){DeleteProcThreadAttributeList(attributeList);Marshal.FreeHGlobal(attributeList);}",
+  "if(jobList!=IntPtr.Zero){Marshal.FreeHGlobal(jobList);}",
+  "if(job!=IntPtr.Zero){CloseHandle(job);}",
+  "}",
+  "}",
+  "public static int Main(){",
+  "try{",
+  `string shellValue=Environment.GetEnvironmentVariable("${WINDOWS_JOB_SHELL_ENV}");`,
+  `string commandValue=Environment.GetEnvironmentVariable("${WINDOWS_JOB_COMMAND_ENV}");`,
+  `Environment.SetEnvironmentVariable("${WINDOWS_JOB_SHELL_ENV}",null);`,
+  `Environment.SetEnvironmentVariable("${WINDOWS_JOB_COMMAND_ENV}",null);`,
+  'if(String.IsNullOrEmpty(shellValue)||String.IsNullOrEmpty(commandValue)){throw new InvalidOperationException("Missing script job configuration.");}',
+  "string shell=Encoding.UTF8.GetString(Convert.FromBase64String(shellValue));",
+  "string commandLine=Encoding.UTF8.GetString(Convert.FromBase64String(commandValue));",
+  "return Run(shell,commandLine);",
+  "}catch(Exception error){Console.Error.WriteLine(error.Message);return 1;}",
+  "}",
+  "}",
+].join("");
 const WINDOWS_PROCESS_TERMINATOR_SOURCE = [
   "using System;",
   "using System.Runtime.InteropServices;",
@@ -55,6 +256,142 @@ const WINDOWS_PROCESS_TERMINATOR_SOURCE = [
   "}",
   "}",
 ].join("");
+
+let windowsJobHelperPath: string | undefined;
+
+function removeWindowsJobHelper(directory: string): void {
+  try {
+    rmSync(directory, { force: true, recursive: true });
+  } catch {
+    // The helper may still be exiting during process shutdown.
+  }
+}
+
+function ensureWindowsJobHelper(): string {
+  if (windowsJobHelperPath) {
+    return windowsJobHelperPath;
+  }
+  const directory = mkdtempSync(path.join(tmpdir(), "crabline-script-job-"));
+  const helperPath = path.join(directory, "crabline-script-job.exe");
+  try {
+    execFileSync(
+      "powershell.exe",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `Add-Type -TypeDefinition $env:${WINDOWS_JOB_HELPER_SOURCE_ENV} -Language CSharp -OutputAssembly $env:${WINDOWS_JOB_HELPER_OUTPUT_ENV} -OutputType ConsoleApplication`,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          [WINDOWS_JOB_HELPER_OUTPUT_ENV]: helperPath,
+          [WINDOWS_JOB_HELPER_SOURCE_ENV]: WINDOWS_JOB_HELPER_SOURCE,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 15_000,
+        windowsHide: true,
+      },
+    );
+  } catch (error) {
+    removeWindowsJobHelper(directory);
+    const stderr =
+      typeof (error as { stderr?: unknown }).stderr === "string"
+        ? (error as { stderr: string }).stderr.trim()
+        : "";
+    throw new Error(
+      stderr
+        ? `Windows script job helper compilation failed.\n${stderr}`
+        : "Windows script job helper compilation failed.",
+      { cause: error },
+    );
+  }
+  windowsJobHelperPath = helperPath;
+  process.once("exit", () => removeWindowsJobHelper(directory));
+  return helperPath;
+}
+
+function quoteWindowsArgument(value: string): string {
+  if (!value) {
+    return '""';
+  }
+  if (!/[\s"]/u.test(value)) {
+    return value;
+  }
+  let quoted = '"';
+  let backslashes = 0;
+  for (const character of value) {
+    if (character === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (character === '"') {
+      quoted += `${"\\".repeat(backslashes * 2 + 1)}"`;
+      backslashes = 0;
+      continue;
+    }
+    quoted += "\\".repeat(backslashes) + character;
+    backslashes = 0;
+  }
+  return `${quoted}${"\\".repeat(backslashes * 2)}"`;
+}
+
+function windowsShellCommand(
+  command: string,
+  shell?: string,
+): {
+  commandLine: string;
+  shell: string;
+} {
+  const resolvedShell = shell ?? process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe";
+  const shellCommand = quoteWindowsArgument(resolvedShell);
+  const shellName = path.win32.basename(resolvedShell).toLowerCase();
+  return {
+    commandLine:
+      shellName === "cmd" || shellName === "cmd.exe"
+        ? `${shellCommand} /d /s /c "${command}"`
+        : `${shellCommand} -c ${quoteWindowsArgument(command)}`,
+    shell: resolvedShell,
+  };
+}
+
+function spawnScriptChild(params: {
+  command: string;
+  cwd?: string | undefined;
+  shell?: string | undefined;
+}): { child: SpawnedScriptChild; observedAtMs: number; startedAtMs: number } {
+  const cwd = params.cwd ? path.resolve(params.cwd) : process.cwd();
+  let startedAtMs: number;
+  let child: SpawnedScriptChild;
+  if (process.platform === "win32") {
+    const helperPath = ensureWindowsJobHelper();
+    const shellCommand = windowsShellCommand(params.command, params.shell);
+    startedAtMs = Date.now();
+    child = spawn(helperPath, [], {
+      cwd,
+      env: {
+        ...process.env,
+        [WINDOWS_JOB_COMMAND_ENV]: Buffer.from(shellCommand.commandLine).toString("base64"),
+        [WINDOWS_JOB_SHELL_ENV]: Buffer.from(shellCommand.shell).toString("base64"),
+      },
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  } else {
+    startedAtMs = Date.now();
+    child = spawn(params.command, {
+      cwd,
+      env: process.env,
+      shell: params.shell ?? true,
+      detached: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  }
+  return { child, observedAtMs: Date.now(), startedAtMs };
+}
 
 type ScriptWatchIterator = AsyncIterableIterator<InboundEnvelope> & {
   [Symbol.asyncIterator](): ScriptWatchIterator;
@@ -237,7 +574,7 @@ async function terminateChild(
     const childRunning = isChildRunning(child);
     if (process.platform === "win32") {
       if (child.pid) {
-        await runTerminationCommand("powershell.exe", [
+        const treeTerminated = await runTerminationCommand("powershell.exe", [
           "-NoLogo",
           "-NoProfile",
           "-NonInteractive",
@@ -249,6 +586,13 @@ async function terminateChild(
             childRunning,
           ),
         ]);
+        if (!treeTerminated && isChildRunning(child)) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // Closing the helper handle is the bounded fallback for its Job Object.
+          }
+        }
       }
     } else if (child.pid) {
       try {
@@ -818,18 +1162,15 @@ function runScript<T>(params: {
     params.shell,
   );
   return new Promise((resolve, reject) => {
-    const childStartedAtMs = Date.now();
-    let childObservedAtMs = childStartedAtMs;
     let child: SpawnedScriptChild;
+    let childStartedAtMs: number;
+    let childObservedAtMs: number;
     try {
-      child = spawn(params.command, {
-        cwd: params.cwd ? path.resolve(params.cwd) : process.cwd(),
-        env: process.env,
-        shell: params.shell ?? true,
-        detached: process.platform !== "win32",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      childObservedAtMs = Date.now();
+      ({
+        child,
+        observedAtMs: childObservedAtMs,
+        startedAtMs: childStartedAtMs,
+      } = spawnScriptChild(params));
     } catch (error) {
       reject(
         new CrablineError(
@@ -1019,18 +1360,15 @@ function watchScript(params: {
       serializedPayload,
       params.shell,
     );
-    const childStartedAtMs = Date.now();
-    let childObservedAtMs = childStartedAtMs;
     let child: SpawnedScriptChild;
+    let childStartedAtMs: number;
+    let childObservedAtMs: number;
     try {
-      child = spawn(params.command, {
-        cwd: params.cwd ? path.resolve(params.cwd) : process.cwd(),
-        env: process.env,
-        shell: params.shell ?? true,
-        detached: process.platform !== "win32",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      childObservedAtMs = Date.now();
+      ({
+        child,
+        observedAtMs: childObservedAtMs,
+        startedAtMs: childStartedAtMs,
+      } = spawnScriptChild(params));
     } catch (error) {
       throw new CrablineError(
         formatScriptError(

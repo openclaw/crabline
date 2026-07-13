@@ -7,9 +7,11 @@ import { ScriptProviderAdapter } from "../src/providers/builtin/script.js";
 import type { ProviderContext } from "../src/providers/types.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
+const execFileSyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
+  execFileSync: execFileSyncMock,
   spawn: spawnMock,
 }));
 
@@ -81,6 +83,7 @@ function createContext(): ProviderContext {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  execFileSyncMock.mockClear();
   spawnMock.mockReset();
   Object.defineProperty(process, "platform", {
     configurable: true,
@@ -97,6 +100,39 @@ afterEach(() => {
 });
 
 describe("script provider Windows cleanup", () => {
+  it("starts scripts inside an atomic kill-on-close Job Object", async () => {
+    const scriptChild = createFakeChild(1111);
+    spawnMock.mockReturnValueOnce(scriptChild);
+    const context = createContext();
+    const provider = new ScriptProviderAdapter(context);
+
+    const failurePromise = provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    scriptChild.emit("close", 7, null);
+    await failurePromise;
+
+    expect(execFileSyncMock).toHaveBeenCalledOnce();
+    const compileOptions = execFileSyncMock.mock.calls[0]?.[2] as
+      | { env?: NodeJS.ProcessEnv }
+      | undefined;
+    const helperSource = compileOptions?.env?.CRABLINE_INTERNAL_SCRIPT_JOB_HELPER_SOURCE;
+    expect(helperSource).toContain("JobObjectLimitKillOnJobClose");
+    expect(helperSource).toContain("ProcThreadAttributeJobList");
+    expect(helperSource).toContain("CreateSuspended|ExtendedStartupInfoPresent");
+    expect(spawnMock.mock.calls[0]?.[0]).toMatch(/crabline-script-job\.exe$/u);
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual([]);
+    expect(spawnMock.mock.calls[0]?.[2]).toMatchObject({
+      shell: false,
+      windowsHide: true,
+    });
+  });
+
   it.each([":", "="])(
     "redacts diagnostics for Windows slash options using %s",
     async (separator) => {
@@ -332,7 +368,7 @@ describe("script provider Windows cleanup", () => {
     expect(spawnMock.mock.calls[1]?.[0]).toBe("powershell.exe");
   });
 
-  it("does not infer descendants after the direct shell has already exited", async () => {
+  it("relies on the closed Job Object after the direct shell has already exited", async () => {
     const scriptChild = createFakeChild(6789);
     Object.defineProperty(scriptChild, "exitCode", {
       configurable: true,
