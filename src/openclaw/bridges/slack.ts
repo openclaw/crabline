@@ -111,8 +111,12 @@ function collectSlackFallbackText(value: unknown, output: string[]): void {
 
 function slackOutboundText(body: Record<string, unknown>): string | undefined {
   if (typeof body.text === "string") {
-    // Explicit whitespace is invalid; structured fallback is only for text-less sends.
-    return body.text.trim() ? body.text : undefined;
+    if (body.text.trim()) {
+      return body.text;
+    }
+    if (body.text.length > 0) {
+      return undefined;
+    }
   }
   const fallback: string[] = [];
   collectSlackFallbackText(structuredSlackValues(body.blocks), fallback);

@@ -619,19 +619,46 @@ export async function startWhatsAppServer(
     /^http/u,
     "ws",
   )}/ws/chat?access_token=${encodeURIComponent(state.accessToken)}`;
-  const baileysWebSocketServer = attachWhatsAppBaileysWebSocketServer({
+  const baileysWebSocketOptions = {
     accessToken: state.accessToken,
-    appendEvent: (event) => appendEvent(state, event),
+    appendEvent: (event: ServerRequestEvent) => appendEvent(state, event),
     httpServer: httpServer.server,
     maxPendingInboundMessages,
     path: "/ws/chat",
     selfJid: state.selfJid,
-  });
+  };
+  let baileysWebSocketServer;
+  try {
+    baileysWebSocketServer = attachWhatsAppBaileysWebSocketServer(baileysWebSocketOptions);
+  } catch (error) {
+    try {
+      await httpServer.close();
+    } catch (closeError) {
+      const aggregateError = new AggregateError(
+        [error, closeError],
+        "WhatsApp WebSocket startup failed and HTTP rollback also failed.",
+      );
+      aggregateError.cause = error;
+      throw aggregateError;
+    }
+    throw error;
+  }
   state.prepareInboundMessage = (message) => baileysWebSocketServer.prepareInboundMessage(message);
   return {
     async close() {
-      await baileysWebSocketServer.close();
-      await httpServer.close();
+      const results = await Promise.allSettled([
+        baileysWebSocketServer.close(),
+        httpServer.close(),
+      ]);
+      const errors = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (errors.length === 1) {
+        throw errors[0];
+      }
+      if (errors.length > 1) {
+        throw new AggregateError(errors, "WhatsApp server shutdown failed.");
+      }
     },
     manifest: {
       accessToken: state.accessToken,

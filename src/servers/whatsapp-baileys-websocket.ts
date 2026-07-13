@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
+import { ProtocolAddress, SessionCipher, SessionRecord, type SignalStorage } from "libsignal";
 import {
   aesDecryptGCM,
   aesEncryptGCM,
@@ -109,6 +110,8 @@ export type MockSignalBundle = {
 
 export class WhatsAppSignalBundleStore {
   readonly #bundles = new Map<string, MockSignalBundle>();
+  readonly #lidByPhoneNumber = new Map<string, string>();
+  readonly #sessions = new Map<string, Map<string, SessionRecord>>();
 
   constructor(private readonly maxBundles = MAX_WHATSAPP_SIGNAL_BUNDLES) {
     if (!Number.isSafeInteger(maxBundles) || maxBundles < 1) {
@@ -120,27 +123,97 @@ export class WhatsAppSignalBundleStore {
     return this.#bundles.size;
   }
 
+  associateLid(phoneNumberJid: string, lidJid: string): void {
+    const phoneNumber = canonicalizeWhatsAppUserCorrelationJid(phoneNumberJid);
+    const lid = canonicalizeWhatsAppUserCorrelationJid(lidJid);
+    if (!phoneNumber?.endsWith("@s.whatsapp.net") || !lid?.endsWith("@lid")) {
+      throw new Error("Invalid WhatsApp PN/LID signal mapping.");
+    }
+    this.#lidByPhoneNumber.set(signalBundleIdentityKey(phoneNumber), signalBundleIdentityKey(lid));
+  }
+
   resolveMany(jids: string[]): MockSignalBundle[] {
-    const uniqueNewJids = new Set<string>();
-    const canonicalJids: string[] = [];
+    const uniqueNewIdentities = new Set<string>();
+    const identityKeys: string[] = [];
     for (const jid of jids) {
       const canonical = canonicalizeWhatsAppUserCorrelationJid(jid);
       if (!canonical) {
         throw new Error(`Invalid WhatsApp signal bundle JID: ${jid}.`);
       }
-      canonicalJids.push(canonical);
-      if (!this.#bundles.has(canonical)) {
-        uniqueNewJids.add(canonical);
+      const identityKey = signalBundleIdentityKey(canonical);
+      identityKeys.push(identityKey);
+      if (!this.#bundles.has(identityKey)) {
+        uniqueNewIdentities.add(identityKey);
       }
     }
-    if (this.#bundles.size + uniqueNewJids.size > this.maxBundles) {
+    if (this.#bundles.size + uniqueNewIdentities.size > this.maxBundles) {
       throw new Error(`WhatsApp signal bundle limit exceeded (${this.maxBundles}).`);
     }
-    return canonicalJids.map((jid) => this.#resolve(jid));
+    return identityKeys.map((identityKey) => this.#resolve(identityKey));
   }
 
-  #resolve(jid: string): MockSignalBundle {
-    const existing = this.#bundles.get(jid);
+  async decryptDirectMessage(params: {
+    ciphertext: Uint8Array;
+    recipientJid: string;
+    remoteJid: string;
+    type: "msg" | "pkmsg";
+  }): Promise<Buffer | undefined> {
+    const recipientJid = canonicalizeWhatsAppUserCorrelationJid(params.recipientJid);
+    const recipientIdentityKey = recipientJid ? signalBundleIdentityKey(recipientJid) : undefined;
+    const mappedLidIdentityKey = recipientIdentityKey
+      ? this.#lidByPhoneNumber.get(recipientIdentityKey)
+      : undefined;
+    const identityKey =
+      mappedLidIdentityKey && this.#bundles.has(mappedLidIdentityKey)
+        ? mappedLidIdentityKey
+        : recipientIdentityKey;
+    const bundle = identityKey ? this.#bundles.get(identityKey) : undefined;
+    if (!identityKey || !bundle) {
+      return undefined;
+    }
+    const remoteAddress = signalProtocolAddress(params.remoteJid);
+    if (!remoteAddress) {
+      return undefined;
+    }
+    const sessions = this.#sessions.get(identityKey) ?? new Map<string, SessionRecord>();
+    this.#sessions.set(identityKey, sessions);
+    const stagedSessions = new Map<string, SessionRecord>();
+    const storage: SignalStorage = {
+      async loadSession(id) {
+        const session = stagedSessions.get(id) ?? sessions.get(id);
+        return session ? cloneSignalSession(session) : undefined;
+      },
+      async storeSession(id, session) {
+        stagedSessions.set(id, cloneSignalSession(session));
+      },
+      isTrustedIdentity: () => true,
+      async loadPreKey(id) {
+        if (String(id) !== String(bundle.preKeyId)) {
+          return undefined;
+        }
+        return signalKeyPair(bundle.preKey);
+      },
+      removePreKey: () => undefined,
+      loadSignedPreKey: () => signalKeyPair(bundle.signedPreKey.keyPair),
+      getOurRegistrationId: () => bundle.registrationId,
+      getOurIdentity: () => signalKeyPair(bundle.identityKey),
+    };
+    const cipher = new SessionCipher(
+      storage,
+      new ProtocolAddress(remoteAddress.name, remoteAddress.deviceId),
+    );
+    const plaintext =
+      params.type === "pkmsg"
+        ? await cipher.decryptPreKeyWhisperMessage(params.ciphertext)
+        : await cipher.decryptWhisperMessage(params.ciphertext);
+    for (const [id, session] of stagedSessions) {
+      sessions.set(id, session);
+    }
+    return plaintext;
+  }
+
+  #resolve(bundleKey: string): MockSignalBundle {
+    const existing = this.#bundles.get(bundleKey);
     if (existing) {
       return existing;
     }
@@ -152,7 +225,7 @@ export class WhatsAppSignalBundleStore {
       registrationId: 1,
       signedPreKey: signedKeyPair(identityKey, 1),
     };
-    this.#bundles.set(jid, bundle);
+    this.#bundles.set(bundleKey, bundle);
     return bundle;
   }
 }
@@ -535,6 +608,11 @@ class WhatsAppBaileysWebSocketSession {
     }
     if (node.tag === "message") {
       const peer = requireAttr(node, "to");
+      const normalizedMessage = await normalizeAcceptedBaileysMessage({
+        node,
+        remoteJid: this.params.selfJid,
+        signalBundles: this.params.signalBundles,
+      });
       await this.#sendNode({
         attrs: {
           class: "message",
@@ -545,6 +623,17 @@ class WhatsAppBaileysWebSocketSession {
         },
         tag: "ack",
       });
+      if (normalizedMessage) {
+        await this.params.appendEvent({
+          accepted: true,
+          at: new Date().toISOString(),
+          body: normalizedMessage,
+          method: "WEBSOCKET",
+          path: this.params.path,
+          query: {},
+          type: "api",
+        } as ServerRequestEvent & { accepted: true });
+      }
     }
   }
 
@@ -724,6 +813,10 @@ class WhatsAppBaileysWebSocketSession {
   }
 
   #createUSyncUser(jid: string): BinaryNode {
+    const lid = lidForJid(jid);
+    if (canonicalizeWhatsAppUserCorrelationJid(jid)?.endsWith("@s.whatsapp.net")) {
+      this.params.signalBundles.associateLid(jid, lid);
+    }
     return {
       attrs: { jid },
       content: [
@@ -738,7 +831,7 @@ class WhatsAppBaileysWebSocketSession {
           ],
           tag: "devices",
         },
-        { attrs: { val: lidForJid(jid) }, tag: "lid" },
+        { attrs: { val: lid }, tag: "lid" },
       ],
       tag: "user",
     };
@@ -1006,6 +1099,218 @@ function removeNoiseIntroHeader(chunk: NodeBuffer): NodeBuffer {
 
 function children(node: BinaryNode): BinaryNode[] {
   return Array.isArray(node.content) ? node.content : [];
+}
+
+async function normalizeAcceptedBaileysMessage(params: {
+  node: BinaryNode;
+  remoteJid: string;
+  signalBundles: WhatsAppSignalBundleStore;
+}): Promise<WhatsAppBaileysInboundMessage | undefined> {
+  const peer = canonicalizeWhatsAppUserCorrelationJid(params.node.attrs.to ?? "");
+  const messageId = params.node.attrs.id;
+  if (!peer || !messageId) {
+    return undefined;
+  }
+  const candidates = encryptedMessageCandidates(params.node);
+  const remoteCorrelationJid = canonicalizeWhatsAppUserCorrelationJid(params.remoteJid);
+  candidates.sort((left, right) => {
+    const leftIsSelf =
+      canonicalizeWhatsAppUserCorrelationJid(left.recipientJid) === remoteCorrelationJid;
+    const rightIsSelf =
+      canonicalizeWhatsAppUserCorrelationJid(right.recipientJid) === remoteCorrelationJid;
+    return Number(leftIsSelf) - Number(rightIsSelf);
+  });
+  for (const candidate of candidates) {
+    try {
+      const decrypted = await params.signalBundles.decryptDirectMessage({
+        ciphertext: candidate.ciphertext,
+        recipientJid: candidate.recipientJid,
+        remoteJid: params.remoteJid,
+        type: candidate.type,
+      });
+      const text = decrypted ? readWhatsAppConversation(unpadRandomMax16(decrypted)) : undefined;
+      if (text) {
+        return {
+          key: {
+            fromMe: true,
+            id: messageId,
+            remoteJid: peer,
+          },
+          message: { conversation: text },
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        };
+      }
+    } catch {
+      // Other participant envelopes may not belong to this mock server identity.
+    }
+  }
+  return undefined;
+}
+
+function encryptedMessageCandidates(node: BinaryNode): Array<{
+  ciphertext: Uint8Array;
+  recipientJid: string;
+  type: "msg" | "pkmsg";
+}> {
+  const result: Array<{
+    ciphertext: Uint8Array;
+    recipientJid: string;
+    type: "msg" | "pkmsg";
+  }> = [];
+  const visit = (current: BinaryNode, recipientJid?: string) => {
+    const nextRecipient = current.tag === "to" ? current.attrs.jid : recipientJid;
+    if (
+      current.tag === "enc" &&
+      nextRecipient &&
+      (current.attrs.type === "msg" || current.attrs.type === "pkmsg") &&
+      current.content instanceof Uint8Array
+    ) {
+      result.push({
+        ciphertext: current.content,
+        recipientJid: nextRecipient,
+        type: current.attrs.type,
+      });
+    }
+    for (const child of children(current)) {
+      visit(child, nextRecipient);
+    }
+  };
+  visit(node);
+  return result;
+}
+
+function signalKeyPair(pair: KeyPair): { privKey: Buffer; pubKey: Buffer } {
+  return {
+    privKey: Buffer.from(pair.private),
+    pubKey:
+      pair.public.length === 33
+        ? Buffer.from(pair.public)
+        : Buffer.concat([KEY_BUNDLE_TYPE, pair.public]),
+  };
+}
+
+function cloneSignalSession(session: SessionRecord): SessionRecord {
+  return SessionRecord.deserialize(session.serialize());
+}
+
+export function signalBundleIdentityKey(jid: string): string {
+  return jid.replace(/:\d+(?=@)/u, "");
+}
+
+function signalProtocolAddress(jid: string): { deviceId: number; name: string } | undefined {
+  const match = /^(\d{7,15})(?::(\d+))?@(s\.whatsapp\.net|lid)$/iu.exec(jid);
+  if (!match) {
+    return undefined;
+  }
+  const deviceId = Number(match[2] ?? "0");
+  if (!Number.isSafeInteger(deviceId) || deviceId < 0) {
+    return undefined;
+  }
+  return {
+    deviceId,
+    name: match[3]!.toLowerCase() === "lid" ? `${match[1]}_1` : match[1]!,
+  };
+}
+
+function unpadRandomMax16(value: Uint8Array): Buffer {
+  const buffer = Buffer.from(value);
+  const padding = buffer.at(-1);
+  if (!padding || padding > 16 || padding > buffer.length) {
+    throw new Error("Invalid WhatsApp message padding.");
+  }
+  for (let index = buffer.length - padding; index < buffer.length; index += 1) {
+    if (buffer[index] !== padding) {
+      throw new Error("Invalid WhatsApp message padding.");
+    }
+  }
+  return buffer.subarray(0, buffer.length - padding);
+}
+
+function readWhatsAppConversation(message: Uint8Array): string | undefined {
+  const fields = readProtobufLengthDelimitedFields(message);
+  const conversation = readUtf8(fields.get(1)?.[0]);
+  if (conversation?.trim()) {
+    return conversation;
+  }
+  const extendedText = fields.get(6)?.[0];
+  const extendedConversation = extendedText
+    ? readUtf8(readProtobufLengthDelimitedFields(extendedText).get(1)?.[0])
+    : undefined;
+  if (extendedConversation?.trim()) {
+    return extendedConversation;
+  }
+  const deviceSentMessage = fields.get(31)?.[0];
+  const nestedMessage = deviceSentMessage
+    ? readProtobufLengthDelimitedFields(deviceSentMessage).get(2)?.[0]
+    : undefined;
+  return nestedMessage ? readWhatsAppConversation(nestedMessage) : undefined;
+}
+
+function readProtobufLengthDelimitedFields(value: Uint8Array): Map<number, Uint8Array[]> {
+  const fields = new Map<number, Uint8Array[]>();
+  let offset = 0;
+  while (offset < value.length) {
+    const tag = readProtobufVarint(value, offset);
+    offset = tag.offset;
+    const fieldNumber = tag.value >>> 3;
+    const wireType = tag.value & 7;
+    if (fieldNumber < 1) {
+      throw new Error("Invalid WhatsApp protobuf field.");
+    }
+    if (wireType === 2) {
+      const length = readProtobufVarint(value, offset);
+      offset = length.offset;
+      const end = offset + length.value;
+      if (end > value.length) {
+        throw new Error("Invalid WhatsApp protobuf length.");
+      }
+      const entries = fields.get(fieldNumber) ?? [];
+      entries.push(value.subarray(offset, end));
+      fields.set(fieldNumber, entries);
+      offset = end;
+      continue;
+    }
+    if (wireType === 0) {
+      offset = readProtobufVarint(value, offset).offset;
+      continue;
+    }
+    if (wireType === 1) {
+      offset += 8;
+      continue;
+    }
+    if (wireType === 5) {
+      offset += 4;
+      continue;
+    }
+    throw new Error(`Unsupported WhatsApp protobuf wire type: ${wireType}.`);
+  }
+  return fields;
+}
+
+function readProtobufVarint(value: Uint8Array, start: number): { offset: number; value: number } {
+  let result = 0;
+  let shift = 0;
+  let offset = start;
+  while (offset < value.length && shift <= 28) {
+    const byte = value[offset++]!;
+    result += (byte & 0x7f) * 2 ** shift;
+    if ((byte & 0x80) === 0) {
+      if (!Number.isSafeInteger(result)) {
+        break;
+      }
+      return { offset, value: result };
+    }
+    shift += 7;
+  }
+  throw new Error("Invalid WhatsApp protobuf varint.");
+}
+
+function readUtf8(value: Uint8Array | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const text = Buffer.from(value).toString("utf8");
+  return Buffer.from(text, "utf8").equals(Buffer.from(value)) ? text : undefined;
 }
 
 function createInboundMessageNode(message: WhatsAppBaileysInboundMessage): BinaryNode {

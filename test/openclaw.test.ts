@@ -369,6 +369,47 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
+  it.each([null, {}, { id: "999999999999999" }])(
+    "requires WhatsApp to return the configured phone resource: %j",
+    async (payload) => {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify(payload), {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        }),
+      );
+      try {
+        await expect(probeOpenClawCrablineProvider(whatsappManifest)).rejects.toThrow(
+          "Crabline WhatsApp probe returned an unexpected phone number.",
+        );
+      } finally {
+        fetchMock.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    null,
+    {},
+    { id: "bbbbbbbbbbbbbbbbbbbbbbbbbb", update_at: 0, username: "openclaw" },
+    { id: mattermostManifest.botUserId, update_at: 0, username: " \n\t" },
+    { id: mattermostManifest.botUserId, update_at: -1, username: "openclaw" },
+  ])("requires Mattermost users/me to identify the configured bot: %j", async (payload) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(payload), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+    try {
+      await expect(probeOpenClawCrablineProvider(mattermostManifest)).rejects.toThrow(
+        "Crabline Mattermost users/me probe returned an unexpected user.",
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it("rejects Zalo application errors returned with HTTP 200", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ description: "Unauthorized", error_code: 401, ok: false }), {
@@ -385,24 +426,26 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
-  it.each([{ ok: true }, { ok: true, result: null }, { ok: true, result: {} }])(
-    "rejects malformed Zalo success payloads: %j",
-    async (payload) => {
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-        new Response(JSON.stringify(payload), {
-          headers: { "content-type": "application/json" },
-          status: 200,
-        }),
+  it.each([
+    { ok: true },
+    { ok: true, result: null },
+    { ok: true, result: {} },
+    { ok: true, result: { id: "different-bot" } },
+  ])("rejects malformed Zalo success payloads: %j", async (payload) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(payload), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    );
+    try {
+      await expect(probeOpenClawCrablineProvider(zaloManifest)).rejects.toThrow(
+        "Crabline Zalo getMe probe failed: invalid response.",
       );
-      try {
-        await expect(probeOpenClawCrablineProvider(zaloManifest)).rejects.toThrow(
-          "Crabline Zalo getMe probe failed: invalid response.",
-        );
-      } finally {
-        fetchMock.mockRestore();
-      }
-    },
-  );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
 
   it.each([
     { label: "Mattermost users.me", manifest: mattermostManifest },
@@ -1032,7 +1075,7 @@ describe("OpenClaw local provider bridge", () => {
         event: {
           type: "api",
           method: "POST",
-          path: "/bot<redacted>/sendMessage",
+          path: "/bot<redacted>/SeNdMeSsAgE",
           body: {
             chat_id: "100001",
             text: "  hello\n",
@@ -1251,15 +1294,12 @@ describe("OpenClaw local provider bridge", () => {
       replyChannel: "whatsapp",
       replyTo: "15551234567@s.whatsapp.net",
     });
-    expect(
+    expect(() =>
       createOpenClawCrablineAgentDelivery({
         manifest: whatsappManifest,
         target: "group:15551234567-1234567890@g.us",
       }),
-    ).toMatchObject({
-      to: "15551234567-1234567890@g.us",
-      replyTo: "15551234567-1234567890@g.us",
-    });
+    ).toThrow("WhatsApp Crabline WebSocket outbound supports direct targets only.");
     expect(() =>
       createOpenClawCrablineAgentDelivery({
         manifest: whatsappManifest,
@@ -1386,6 +1426,54 @@ describe("OpenClaw local provider bridge", () => {
       senderId: "openclaw",
       senderName: "OpenClaw QA",
       text: "hello from openclaw",
+      to: "dm:alice",
+    });
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: whatsappManifest,
+        targetByProviderTarget: new Map([
+          ["120363001234567890@g.us", "group:120363001234567890@g.us"],
+        ]),
+        event: {
+          accepted: true,
+          type: "api",
+          method: "WEBSOCKET",
+          path: "/ws/chat",
+          body: {
+            key: {
+              fromMe: true,
+              id: "3EB0AABBCCDDEEFF0022",
+              remoteJid: "120363001234567890@g.us",
+            },
+            message: { conversation: "unsupported group send" },
+          },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: whatsappManifest,
+        targetByProviderTarget: new Map([["15551234567@s.whatsapp.net", "dm:alice"]]),
+        event: {
+          accepted: true,
+          type: "api",
+          method: "WEBSOCKET",
+          path: "/ws/chat",
+          body: {
+            key: {
+              fromMe: true,
+              id: "3EB0AABBCCDDEEFF0011",
+              remoteJid: "15551234567:0@s.whatsapp.net",
+            },
+            message: { conversation: "hello through Baileys" },
+          },
+        },
+      }),
+    ).toEqual({
+      accountId: "default",
+      senderId: "openclaw",
+      senderName: "OpenClaw QA",
+      text: "hello through Baileys",
       to: "dm:alice",
     });
     expect(
@@ -1545,6 +1633,7 @@ describe("OpenClaw local provider bridge", () => {
           body: {
             blocks: [{ text: { text: "block fallback", type: "mrkdwn" }, type: "section" }],
             channel: "C1234567890",
+            text: "",
           },
         },
       }),
@@ -1560,6 +1649,7 @@ describe("OpenClaw local provider bridge", () => {
           body: {
             attachments: JSON.stringify([{ fallback: "attachment fallback" }]),
             channel: "C1234567890",
+            text: "",
           },
         },
       }),
@@ -1971,6 +2061,36 @@ describe("OpenClaw local provider bridge", () => {
         targetByProviderTarget: new Map(),
       }),
     ).toBeNull();
+    const whatsappWebSocketEvent = {
+      accepted: true,
+      body: {
+        key: { remoteJid: "15551234567@s.whatsapp.net" },
+        message: { conversation: "reply" },
+      },
+      method: "WEBSOCKET",
+      path: "/ws/chat",
+      type: "api",
+    };
+    expect(
+      translateOpenClawCrablineOutbound({
+        event: whatsappWebSocketEvent,
+        manifest: whatsappManifest,
+        targetByProviderTarget: new Map(),
+      }),
+    ).not.toBeNull();
+    expect(
+      translateOpenClawCrablineOutbound({
+        event: {
+          ...whatsappWebSocketEvent,
+          body: {
+            key: { remoteJid: "120363001234567890@g.us" },
+            message: { conversation: "unsupported group reply" },
+          },
+        },
+        manifest: whatsappManifest,
+        targetByProviderTarget: new Map(),
+      }),
+    ).toBeNull();
   });
 
   it("maps Mattermost QA targets, inbound messages, and recorder events", () => {
@@ -2122,6 +2242,7 @@ describe("OpenClaw local provider bridge", () => {
 
   it("maps Matrix native rooms, inbound messages, and recorder events", () => {
     const roomId = "!qa:matrix.test";
+    const domainlessRoomId = `!${Buffer.alloc(32, 0xab).toString("base64url")}`;
     expect(
       createOpenClawCrablineAgentDelivery({
         manifest: matrixManifest,
@@ -2133,8 +2254,23 @@ describe("OpenClaw local provider bridge", () => {
       replyTo: `room:${roomId}`,
       to: `room:${roomId}`,
     });
+    expect(
+      createOpenClawCrablineAgentDelivery({
+        manifest: matrixManifest,
+        target: `channel:${domainlessRoomId}`,
+      }),
+    ).toMatchObject({
+      replyTo: `room:${domainlessRoomId}`,
+      to: `room:${domainlessRoomId}`,
+    });
     expect(() =>
       createOpenClawCrablineAgentDelivery({ manifest: matrixManifest, target: "channel:general" }),
+    ).toThrow("Matrix targets must be native room IDs.");
+    expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest: matrixManifest,
+        target: "channel:!qa:bad/server",
+      }),
     ).toThrow("Matrix targets must be native room IDs.");
     expect(() =>
       createOpenClawCrablineAgentDelivery({
@@ -2255,24 +2391,17 @@ describe("OpenClaw local provider bridge", () => {
       threadId: "$root:matrix.test",
     });
 
-    const slashThreadInbound = createOpenClawCrablineInbound({
-      manifest: matrixManifest,
-      input: {
-        conversation: { id: `${roomId}/archive`, kind: "group" },
-        senderId: "@alice:matrix.test",
-        text: "threaded Matrix message",
-        threadId: "$root/child:matrix.test",
-      },
-    });
-    expect(slashThreadInbound.qaTarget).toBe(
-      `thread:/v1/${roomId}%2Farchive/$root%2Fchild:matrix.test`,
-    );
-    expect(parseQaTarget(slashThreadInbound.qaTarget)).toEqual({
-      id: `${roomId}/archive`,
-      kind: "group",
-      native: false,
-      threadId: "$root/child:matrix.test",
-    });
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest: matrixManifest,
+        input: {
+          conversation: { id: `${roomId}/archive`, kind: "group" },
+          senderId: "@alice:matrix.test",
+          text: "threaded Matrix message",
+          threadId: "$root/child:matrix.test",
+        },
+      }),
+    ).toThrow("Matrix targets must be native room IDs.");
     expect(parseQaTarget("thread:room/foo%2Fbar")).toEqual({
       id: "room",
       kind: "group",

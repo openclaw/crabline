@@ -1,10 +1,11 @@
 import type { CrablineServerManifest } from "../servers/index.js";
+import { canonicalizeWhatsAppUserCorrelationJid } from "../servers/whatsapp-jid.js";
 import { isRecord, readNonBlankString } from "./shared.js";
 
 const MATRIX_SEND_PATH_RE =
   /^\/_matrix\/client\/(?:v3|r0)\/rooms\/[^/]+\/send\/m\.room\.message\/[^/]+$/u;
 const TELEGRAM_SEND_PATH_RE =
-  /^\/bot<redacted>\/(?:sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/u;
+  /^\/bot<redacted>\/(?:sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/iu;
 const ZALO_SEND_PATH_RE = /^\/bot<redacted>\/(?:sendMessage|sendPhoto)$/u;
 
 export function isAcceptedOpenClawCrablineOutbound(params: {
@@ -33,7 +34,17 @@ export function isAcceptedOpenClawCrablineOutbound(params: {
       return (method === "GET" || method === "POST") && TELEGRAM_SEND_PATH_RE.test(requestPath);
     case "whatsapp": {
       const messagesPath = new URL(params.manifest.endpoints.messagesUrl).pathname;
-      return method === "POST" && requestPath === messagesPath;
+      const body = isRecord(params.event.body) ? params.event.body : undefined;
+      const key = isRecord(body?.key) ? body.key : undefined;
+      const directWebSocketTarget = canonicalizeWhatsAppUserCorrelationJid(
+        readNonBlankString(key?.remoteJid) ?? "",
+      );
+      return (
+        (method === "POST" && requestPath === messagesPath) ||
+        (method === "WEBSOCKET" &&
+          requestPath === "/ws/chat" &&
+          directWebSocketTarget !== undefined)
+      );
     }
     case "zalo":
       return (method === "GET" || method === "POST") && ZALO_SEND_PATH_RE.test(requestPath);

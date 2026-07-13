@@ -372,7 +372,11 @@ runtime needs to connect through the local provider. Cloud API-compatible
 clients can send text messages through
 `POST /v25.0/<phone-number-id>/messages` with a bearer token. The local server completes
 the Baileys Noise handshake, serves bootstrap/device/prekey queries, and records
-encrypted outbound WebSocket stanzas. The WebSocket endpoint rejects clients
+encrypted outbound WebSocket stanzas. Direct `msg` and `pkmsg` text sends are
+also recorded as normalized accepted-send evidence for the OpenClaw bridge.
+Group outbound uses sender-key `skmsg` encryption and is outside this supported
+subset, so OpenClaw Crabline outbound targets are direct users only. Group
+inbound injection remains supported. The WebSocket endpoint rejects clients
 that do not present the access token embedded in the manifest URL. The admin
 token is generated randomly unless `--admin-token <token>` is provided.
 
