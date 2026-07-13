@@ -78,10 +78,12 @@ export function resolveHttpCacheExpiry(response: Response, now: number): number 
   if (maxAge) {
     return now + Math.max(0, Number(maxAge[1]) - ageSeconds) * 1_000;
   }
-  const expires = Date.parse(response.headers.get("expires") ?? "");
-  return Number.isFinite(expires) && expires > now
-    ? expires
-    : now + Math.max(0, 60 * 60 - ageSeconds) * 1_000;
+  const expiresHeader = response.headers.get("expires");
+  if (expiresHeader === null) {
+    return now + Math.max(0, 60 * 60 - ageSeconds) * 1_000;
+  }
+  const expires = Date.parse(expiresHeader);
+  return Number.isFinite(expires) && expires > now ? expires : now;
 }
 
 export function createCachedJwtKeyResolver<T>(params: {
@@ -163,13 +165,25 @@ export function createCachedJwtKeyResolver<T>(params: {
 
   return async (header: JwtHeader): Promise<T> => {
     const currentTime = now();
+    const freshCache = cached && cached.expiresAt > currentTime ? cached : undefined;
+    if (!freshCache && cached) {
+      const refreshed = await fetchKeys();
+      const refreshedKey = refreshed.values.find(
+        (candidate) => params.keyId(candidate) === header.kid,
+      );
+      if (refreshedKey) {
+        return refreshedKey;
+      }
+      refreshCooldownUntil = now() + refreshCooldownMs;
+      return rejectUnknownKey(header.kid, refreshCooldownUntil);
+    }
+
     const negativeExpiry = negativeKeyIds.get(header.kid);
     if (negativeExpiry && negativeExpiry > currentTime) {
       throw new Error(params.unknownKeyMessage);
     }
     negativeKeyIds.delete(header.kid);
 
-    const freshCache = cached && cached.expiresAt > currentTime ? cached : undefined;
     const keySet = freshCache ?? (await fetchKeys());
     const key = keySet.values.find((candidate) => params.keyId(candidate) === header.kid);
     if (key) {

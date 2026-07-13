@@ -99,6 +99,21 @@ describe("signed JWT remote key cache", () => {
     ).toBe(now);
   });
 
+  it("distinguishes absent Expires from invalid or stale values", () => {
+    const now = 1_700_000_000_000;
+
+    expect(resolveHttpCacheExpiry(new Response(), now)).toBe(now + 3_600_000);
+    expect(
+      resolveHttpCacheExpiry(new Response(null, { headers: { expires: "not-a-date" } }), now),
+    ).toBe(now);
+    expect(
+      resolveHttpCacheExpiry(
+        new Response(null, { headers: { expires: new Date(now - 1_000).toUTCString() } }),
+        now,
+      ),
+    ).toBe(now);
+  });
+
   it("single-flights unknown-key refreshes and applies a global cooldown", async () => {
     let now = 1_700_000_000_000;
     let fetches = 0;
@@ -217,6 +232,59 @@ describe("signed JWT remote key cache", () => {
     now += 2_000;
     await expect(resolveKey({ alg: "RS256", kid: "known" })).resolves.toBe("known");
     await expect(resolveKey({ alg: "RS256", kid: "rotated" })).resolves.toBe("rotated");
+    expect(fetches).toBe(3);
+  });
+
+  it("refreshes an expired positive key set before consulting negative entries", async () => {
+    let now = 1_700_000_000_000;
+    let fetches = 0;
+    const resolveKey = createCachedJwtKeyResolver<string>({
+      async fetchKeys() {
+        fetches += 1;
+        return {
+          expiresAt: now + 1_000,
+          values: fetches < 3 ? ["known"] : ["known", "rotated"],
+        };
+      },
+      keyId: (value) => value,
+      now: () => now,
+      refreshCooldownMs: 10_000,
+      unknownKeyMessage: "unknown key",
+    });
+
+    await expect(resolveKey({ alg: "RS256", kid: "known" })).resolves.toBe("known");
+    await expect(resolveKey({ alg: "RS256", kid: "rotated" })).rejects.toThrow("unknown key");
+    expect(fetches).toBe(2);
+
+    now += 1_001;
+    await expect(resolveKey({ alg: "RS256", kid: "rotated" })).resolves.toBe("rotated");
+    expect(fetches).toBe(3);
+  });
+
+  it("throttles negatives after an expired refresh returns an uncacheable key set", async () => {
+    let now = 1_700_000_000_000;
+    let fetches = 0;
+    const resolveKey = createCachedJwtKeyResolver<string>({
+      async fetchKeys() {
+        fetches += 1;
+        return {
+          expiresAt: fetches < 3 ? now + 1_000 : now,
+          values: ["known"],
+        };
+      },
+      keyId: (value) => value,
+      now: () => now,
+      refreshCooldownMs: 10_000,
+      unknownKeyMessage: "unknown key",
+    });
+
+    await expect(resolveKey({ alg: "RS256", kid: "known" })).resolves.toBe("known");
+    await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toThrow("unknown key");
+    expect(fetches).toBe(2);
+
+    now += 1_001;
+    await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toThrow("unknown key");
+    await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toThrow("unknown key");
     expect(fetches).toBe(3);
   });
 });

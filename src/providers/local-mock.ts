@@ -227,6 +227,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
   readonly #activeSends = new Set<Promise<SendResult>>();
+  readonly #activeWebhookHandlers = new Set<Promise<Response>>();
   readonly #cleanupController = new AbortController();
   readonly #waitCursors = new Map<string, WaitCursorState>();
   #cleanupBegun = false;
@@ -431,7 +432,12 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     this.#beginCleanup();
     this.#cleanupPromise ??= (async () => {
       const sends = [...this.#activeSends];
-      const [serverResult] = await Promise.allSettled([this.#closeWebhookServer(), ...sends]);
+      const webhookHandlers = [...this.#activeWebhookHandlers];
+      const [serverResult] = await Promise.allSettled([
+        this.#closeWebhookServer(),
+        ...sends,
+        ...webhookHandlers,
+      ]);
       if (serverResult?.status === "rejected") {
         throw serverResult.reason;
       }
@@ -439,10 +445,20 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     await this.#cleanupPromise;
   }
 
-  async #handleWebhook(request: Request): Promise<Response> {
+  #handleWebhook(request: Request): Promise<Response> {
     if (this.#cleanupBegun) {
-      return new Response("provider is shutting down", { status: 503 });
+      return Promise.resolve(new Response("provider is shutting down", { status: 503 }));
     }
+    const handling = this.#handleAdmittedWebhook(request);
+    this.#activeWebhookHandlers.add(handling);
+    void handling.then(
+      () => this.#activeWebhookHandlers.delete(handling),
+      () => this.#activeWebhookHandlers.delete(handling),
+    );
+    return handling;
+  }
+
+  async #handleAdmittedWebhook(request: Request): Promise<Response> {
     const rawBody = await request.text();
     const authenticationFailure = await this.#options.authenticateWebhookRequest?.(
       request,
@@ -513,10 +529,6 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
           new Response("payload requires message.threadId and message.text", { status: 400 }),
         );
       }
-      if (this.#cleanupBegun) {
-        return respond(new Response("provider is shutting down", { status: 503 }));
-      }
-
       await appendRecordedInbound(this.#recorderPath, {
         author: authorFromPayload(payload),
         id,
