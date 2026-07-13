@@ -597,6 +597,19 @@ describe("telegram local provider server", () => {
         })
       ).status,
     ).toBe(200);
+    expect(
+      (
+        await fetch(`${apiRoot}/sendMessage`, {
+          body: JSON.stringify({
+            chat_id: 42,
+            parse_mode: "MarkdownV2",
+            text: String.raw`\_`.repeat(4096),
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+      ).status,
+    ).toBe(200);
   });
 
   it("rejects control characters in webhook secrets", async () => {

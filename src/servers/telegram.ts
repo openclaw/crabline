@@ -710,7 +710,7 @@ function explicitTelegramMessageChatId(body: Record<string, unknown>): number | 
 function readTelegramTextField(
   value: unknown,
   field: "caption" | "text",
-  options: { required: boolean },
+  options: { parseMode?: unknown; required: boolean },
 ): Response | string | undefined {
   if (value === undefined) {
     return options.required ? telegramError(`Bad Request: ${field} is required`) : undefined;
@@ -722,10 +722,24 @@ function readTelegramTextField(
     return telegramError(`Bad Request: ${field} must not be empty`);
   }
   const maxLength = field === "text" ? TELEGRAM_MAX_TEXT_LENGTH : TELEGRAM_MAX_CAPTION_LENGTH;
-  if (value.length > maxLength) {
+  if (telegramTextLength(value, options.parseMode) > maxLength) {
     return telegramError(`Bad Request: ${field} is too long`);
   }
   return value;
+}
+
+function telegramTextLength(value: string, parseMode: unknown): number {
+  if (parseMode !== "MarkdownV2") {
+    return value.length;
+  }
+  let length = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "\\" && index + 1 < value.length) {
+      index += 1;
+    }
+    length += 1;
+  }
+  return length;
 }
 
 function hasValidExplicitTelegramIdentities(body: Record<string, unknown>): boolean {
@@ -1339,7 +1353,10 @@ async function handleTelegramApi(params: {
       });
     }
     case "editmessagetext": {
-      const text = readTelegramTextField(params.body.text, "text", { required: true });
+      const text = readTelegramTextField(params.body.text, "text", {
+        parseMode: params.body.parse_mode,
+        required: true,
+      });
       if (text instanceof Response) {
         return text;
       }
@@ -1349,7 +1366,10 @@ async function handleTelegramApi(params: {
         : telegramError("Bad Request: chat_id, message_id, and text are required");
     }
     case "sendmessage": {
-      const text = readTelegramTextField(params.body.text, "text", { required: true });
+      const text = readTelegramTextField(params.body.text, "text", {
+        parseMode: params.body.parse_mode,
+        required: true,
+      });
       if (text instanceof Response) {
         return text;
       }
@@ -1376,7 +1396,10 @@ async function handleTelegramApi(params: {
         | "document"
         | "photo"
         | "video";
-      const caption = readTelegramTextField(params.body.caption, "caption", { required: false });
+      const caption = readTelegramTextField(params.body.caption, "caption", {
+        parseMode: params.body.parse_mode,
+        required: false,
+      });
       if (caption instanceof Response) {
         return caption;
       }

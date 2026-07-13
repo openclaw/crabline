@@ -374,6 +374,17 @@ describe("Feishu webhook normalizer", () => {
         event: {
           message: {
             chat_id: "oc_abc123",
+            message_id: "om_message123",
+            message_type: "text",
+          },
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      handleFeishuWebhookPayload({
+        event: {
+          message: {
+            chat_id: "oc_abc123",
             content: JSON.stringify({ text: "" }),
             message_id: "om_message123",
             message_type: "text",
@@ -391,8 +402,8 @@ describe("Feishu webhook normalizer", () => {
             message_type: "text",
           },
         },
-      })?.status,
-    ).toBe(200);
+      }),
+    ).toBeUndefined();
     expect(() =>
       normalizeFeishuWebhookPayload({
         event: {

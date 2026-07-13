@@ -68,11 +68,14 @@ export function handleFeishuWebhookPayload(payload: unknown): Response | undefin
       return new Response(null, { status: 200 });
     }
     const messageType = optionalString(message, "message_type");
+    if (messageType !== "text") {
+      return new Response(null, { status: 200 });
+    }
     const text = parseFeishuText(optionalString(message, "content"));
-    if (text === null) {
+    if (typeof text !== "string") {
       return undefined;
     }
-    if (messageType !== "text" || !text) {
+    if (!text) {
       return new Response(null, { status: 200 });
     }
   }
