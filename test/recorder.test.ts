@@ -15,6 +15,10 @@ import {
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  createOwnerOnlyWindowsDirectory,
+  type WindowsAclRunner,
+} from "../src/platform/windows-acl.js";
+import {
   appendRecordedInbound,
   appendRecordedInboundBatch,
   cloneRecordedInboundCursor,
@@ -107,7 +111,9 @@ describe("recorder", () => {
     await expect(
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         platform: "win32",
-        secureWindowsDirectory: async (directoryPath) => {
+        createWindowsDirectory: async (directoryPath) => {
+          await expect(stat(directoryPath)).rejects.toMatchObject({ code: "ENOENT" });
+          await mkdir(directoryPath);
           secured.push(directoryPath);
         },
       }),
@@ -116,7 +122,7 @@ describe("recorder", () => {
     expect(secured).toEqual([lockRoot]);
   });
 
-  it("rejects Windows recorder lock roots replaced during ACL hardening", async () => {
+  it("rejects non-directory Windows recorder lock roots returned by the atomic creator", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const lockRoot = path.join(directory, "locks");
@@ -124,12 +130,30 @@ describe("recorder", () => {
     await expect(
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         platform: "win32",
-        secureWindowsDirectory: async (directoryPath) => {
-          await rename(directoryPath, `${directoryPath}.replaced`);
-          await mkdir(directoryPath);
+        createWindowsDirectory: async (directoryPath) => {
+          await writeFile(directoryPath, "not a directory");
         },
       }),
-    ).rejects.toThrow("Provider recorder lock directory changed while securing it.");
+    ).rejects.toThrow("Provider recorder lock directory is not a private directory.");
+  });
+
+  it("creates Windows recorder lock roots with their final ACL atomically", async () => {
+    const calls: Parameters<WindowsAclRunner>[] = [];
+    const run: WindowsAclRunner = async (...args) => {
+      calls.push(args);
+      return "";
+    };
+    const directoryPath = String.raw`C:\Temp\crabline-recorder-locks`;
+
+    await createOwnerOnlyWindowsDirectory(directoryPath, run, String.raw`C:\Windows`);
+
+    expect(calls).toHaveLength(1);
+    const [, args, options] = calls[0]!;
+    const script = args.at(-1);
+    expect(script).toContain("[System.Security.AccessControl.DirectorySecurity]::new()");
+    expect(script).toContain("[System.IO.Directory]::CreateDirectory($directoryPath, $acl)");
+    expect(script).not.toContain("Set-Acl");
+    expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
   });
 
   it("round-trips empty message text", async () => {

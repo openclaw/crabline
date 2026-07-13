@@ -4,7 +4,10 @@ import { mkdir, rm, utimes } from "node:fs/promises";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import { afterEach, describe, expect, it } from "vitest";
-import { createProcessOwnedLockFileSystem } from "../src/platform/process-owned-lock.js";
+import {
+  createProcessOwnedLockFileSystem,
+  isDeadLinuxProcessState,
+} from "../src/platform/process-owned-lock.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const directories: string[] = [];
@@ -79,6 +82,14 @@ function acquire(target: string): Promise<() => Promise<void>> {
 }
 
 describe("process-owned lock filesystem", () => {
+  it("distinguishes dead Linux process states from stopped owners", () => {
+    expect(isDeadLinuxProcessState("123 (worker) Z 1 2 3")).toBe(true);
+    expect(isDeadLinuxProcessState("123 (worker) X 1 2 3")).toBe(true);
+    expect(isDeadLinuxProcessState("123 (worker) x 1 2 3")).toBe(true);
+    expect(isDeadLinuxProcessState("123 (worker) T 1 2 3")).toBe(false);
+    expect(isDeadLinuxProcessState("malformed")).toBe(false);
+  });
+
   it.skipIf(process.platform === "win32")(
     "does not reclaim a live owner paused beyond the stale threshold",
     async () => {

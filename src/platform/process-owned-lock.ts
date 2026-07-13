@@ -38,6 +38,37 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+export function isDeadLinuxProcessState(value: string): boolean {
+  const commandEnd = value.lastIndexOf(") ");
+  if (commandEnd < 0) {
+    return false;
+  }
+  const state = value
+    .slice(commandEnd + 2)
+    .trim()
+    .split(/\s+/u)[0];
+  return state === "Z" || state === "X" || state === "x";
+}
+
+function isDefunctProcess(pid: number): boolean {
+  if (process.platform === "linux") {
+    try {
+      return isDeadLinuxProcessState(readFileSync(`/proc/${pid}/stat`, "utf8"));
+    } catch {
+      return false;
+    }
+  }
+  if (process.platform === "darwin") {
+    const result = spawnSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      timeout: 1000,
+    });
+    return result.status === 0 && /^Z/u.test(result.stdout.trim());
+  }
+  return false;
+}
+
 function processIdentityFromLinuxStat(value: string, bootId: string): string | null {
   const normalizedBootId = bootId.trim();
   if (!/^[0-9a-f-]{16,64}$/iu.test(normalizedBootId)) {
@@ -208,6 +239,9 @@ export function createProcessOwnedLockFileSystem(): typeof fs {
       return "unknown";
     }
     if (!isProcessAlive(candidate.pid)) {
+      return "dead";
+    }
+    if (isDefunctProcess(candidate.pid)) {
       return "dead";
     }
     if (candidate.pid === process.pid) {
