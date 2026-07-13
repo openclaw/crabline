@@ -6,6 +6,7 @@ import {
   adminAuthError,
   closeServer,
   drainRequestBody,
+  formatUrlHost,
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
@@ -845,7 +846,9 @@ export async function startSignalServer(
     }
   }, SIGNAL_CLI_SSE_KEEPALIVE_MS);
   keepalive.unref();
-  const baseUrl = `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`;
+  const advertisedHost =
+    normalizedHost === "0.0.0.0" ? "127.0.0.1" : normalizedHost === "::" ? "::1" : host;
+  const baseUrl = `http://${formatUrlHost(advertisedHost)}:${address.port}`;
   return {
     async close() {
       clearInterval(keepalive);
