@@ -1,9 +1,11 @@
 import {
   appendFile,
+  chmod,
   open,
   readFile,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
   type FileHandle,
@@ -69,6 +71,28 @@ describe("recorder", () => {
     expect(events[0]?.recordedAt).toBeTypeOf("string");
     expect(events[0]?.text).toBe("hello");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "creates owner-only recorder files without changing existing permissions",
+    async () => {
+      const filePath = await createRecorderPath();
+      const event = {
+        author: "assistant" as const,
+        id: "private-recorder",
+        provider: "slack",
+        sentAt: new Date().toISOString(),
+        text: "private",
+        threadId: "slack:C123",
+      };
+
+      await appendRecordedInbound(filePath, event);
+      expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+
+      await chmod(filePath, 0o640);
+      await appendRecordedInbound(filePath, { ...event, id: "preserve-mode" });
+      expect((await stat(filePath)).mode & 0o777).toBe(0o640);
+    },
+  );
 
   it("round-trips empty message text", async () => {
     const filePath = await createRecorderPath();
@@ -262,6 +286,32 @@ describe("recorder", () => {
     await expect(readRecordedInbound(filePath)).resolves.toEqual([
       expect.objectContaining({ id: "unterminated-retry" }),
     ]);
+  });
+
+  it("rejects a complete invalid recorder tail instead of sealing it", async () => {
+    const filePath = await createRecorderPath();
+    const invalidTail = JSON.stringify({
+      author: "assistant",
+      id: "invalid-tail",
+      provider: "slack",
+      recordedAt: new Date().toISOString(),
+      sentAt: new Date().toISOString(),
+      text: 42,
+      threadId: "slack:C123",
+    });
+    await writeFile(filePath, invalidTail, "utf8");
+
+    await expect(
+      appendRecordedInbound(filePath, {
+        author: "assistant",
+        id: "after-invalid-tail",
+        provider: "slack",
+        sentAt: new Date().toISOString(),
+        text: "must not append",
+        threadId: "slack:C123",
+      }),
+    ).rejects.toThrow(/envelope text must be a string/u);
+    expect(await readFile(filePath, "utf8")).toBe(invalidTail);
   });
 
   it("rejects a batch record larger than the incremental reader limit", async () => {
@@ -688,6 +738,26 @@ describe("recorder", () => {
     await expect(appendRecordedInboundBatch(filePath, [event])).resolves.toEqual([
       expect.objectContaining({ id: event.id }),
     ]);
+  });
+
+  it("rebuilds batch identities when a replacement preserves the consumed prefix", async () => {
+    const filePath = await createRecorderPath();
+    const replacementPath = `${filePath}.replacement`;
+    const event = {
+      author: "user" as const,
+      id: "same-prefix-replacement",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "deduplicate after inode replacement",
+      threadId: "15551234567",
+    };
+    await appendRecordedInboundBatch(filePath, [event]);
+    const contents = await readFile(filePath, "utf8");
+    await writeFile(replacementPath, contents, "utf8");
+    await rename(replacementPath, filePath);
+
+    await expect(appendRecordedInboundBatch(filePath, [event])).resolves.toEqual([]);
+    expect(await readFile(filePath, "utf8")).toBe(contents);
   });
 
   it("retries duplicate suppression when the recorder rotates during indexing", async () => {
