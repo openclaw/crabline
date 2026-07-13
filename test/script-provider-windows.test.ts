@@ -178,6 +178,17 @@ describe("script provider Windows cleanup", () => {
     expect(terminationScript).toContain("$RootObservedBy");
     expect(terminationScript).toContain("$SnapshotAt=[datetime]::UtcNow");
     expect(terminationScript).toContain("CreationDate).ToUniversalTime()");
+    const rootNotBeforeMs = Number(
+      /\$RootNotBefore=\[DateTimeOffset\]::FromUnixTimeMilliseconds\((\d+)\)/u.exec(
+        terminationScript,
+      )?.[1],
+    );
+    const rootObservedByMs = Number(
+      /\$RootObservedBy=\[DateTimeOffset\]::FromUnixTimeMilliseconds\((\d+)\)/u.exec(
+        terminationScript,
+      )?.[1],
+    );
+    expect(rootObservedByMs).toBe(rootNotBeforeMs + 1);
     expect(scriptChild.kill).toHaveBeenCalledWith("SIGKILL");
     expect(scriptChild.stdin.destroyed).toBe(true);
     expect(scriptChild.stdout.destroyed).toBe(true);

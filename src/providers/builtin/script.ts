@@ -121,7 +121,7 @@ function windowsProcessTreeTermination(
   rootExpectedAlive: boolean,
 ): string {
   const rootNotBeforeMs = Math.max(0, Math.floor(childStartedAtMs));
-  const rootObservedByMs = Math.max(rootNotBeforeMs, Math.ceil(childObservedAtMs));
+  const rootObservedByMs = Math.max(rootNotBeforeMs, Math.ceil(childObservedAtMs) + 1);
   return [
     "$ErrorActionPreference='Stop'",
     `$RootProcessId=${pid}`,
