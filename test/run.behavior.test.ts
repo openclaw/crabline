@@ -1054,6 +1054,12 @@ describe("run behavior", () => {
 
   it("stops the suite while aborted provider work remains unsettled", async () => {
     let releaseSend: (() => void) | undefined;
+    const send = vi.fn(
+      async () =>
+        await new Promise<{ accepted: boolean; messageId: string; threadId: string }>((resolve) => {
+          releaseSend = () => resolve({ accepted: true, messageId: "late", threadId: "thread" });
+        }),
+    );
     const unsettledProvider: ProviderAdapter = {
       id: "mock",
       platform: "loopback",
@@ -1063,10 +1069,7 @@ describe("run behavior", () => {
         return { id: target.id, metadata: target.metadata };
       },
       probe: async () => ({ details: [], healthy: true }),
-      send: async () =>
-        await new Promise((resolve) => {
-          releaseSend = () => resolve({ accepted: true, messageId: "late", threadId: "thread" });
-        }),
+      send,
       waitForInbound: async () => null,
       cleanup: async () => undefined,
     };
@@ -1078,7 +1081,7 @@ describe("run behavior", () => {
     const suiteManifest: ManifestDefinition = {
       ...withAllCapabilities(manifest),
       fixtures: [
-        { ...manifest.fixtures[0]!, id: "first", mode: "send", timeoutMs: 10 },
+        { ...manifest.fixtures[0]!, id: "first", mode: "send", retries: 1, timeoutMs: 10 },
         { ...manifest.fixtures[0]!, id: "second", mode: "send", timeoutMs: 10 },
       ],
     };
@@ -1096,9 +1099,11 @@ describe("run behavior", () => {
       });
 
       expect(suite.results).toHaveLength(1);
+      expect(suite.results[0]?.ok).toBe(false);
       expect(suite.results[0]?.diagnostics).toContain(
         "Provider send did not settle within 250ms after abort.",
       );
+      expect(send).toHaveBeenCalledTimes(1);
       expect(secondSend).not.toHaveBeenCalled();
     } finally {
       releaseSend?.();
