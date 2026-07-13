@@ -71,6 +71,31 @@ function pushSlackText(value: unknown, output: string[]): void {
   }
 }
 
+function slackInlineText(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map(slackInlineText).join("");
+  }
+  if (!isRecord(value)) {
+    return "";
+  }
+  if (typeof value.text === "string") {
+    return value.text;
+  }
+  return slackInlineText(value.elements);
+}
+
+function collectSlackTextValue(value: unknown, output: string[]): void {
+  if (typeof value === "string") {
+    pushSlackText(value, output);
+    return;
+  }
+  if (isRecord(value) && typeof value.text === "string") {
+    pushSlackText(value.text, output);
+    return;
+  }
+  collectSlackBlockText(value, output);
+}
+
 function collectSlackBlockText(value: unknown, output: string[]): void {
   if (Array.isArray(value)) {
     for (const entry of value) {
@@ -81,23 +106,27 @@ function collectSlackBlockText(value: unknown, output: string[]): void {
   if (!isRecord(value)) {
     return;
   }
-  for (const key of ["alt_text", "title", "details", "output"] as const) {
-    pushSlackText(value[key], output);
-  }
-  if (isRecord(value.text)) {
-    pushSlackText(value.text.text, output);
-  } else {
-    pushSlackText(value.text, output);
+  if (
+    value.type === "rich_text_section" ||
+    value.type === "rich_text_preformatted" ||
+    value.type === "rich_text_quote"
+  ) {
+    pushSlackText(slackInlineText(value.elements), output);
+    return;
   }
   for (const key of [
-    "blocks",
-    "elements",
-    "fields",
-    "rows",
+    "alt_text",
+    "title",
+    "body",
+    "subtitle",
+    "subtext",
     "details",
     "output",
-    "tasks",
   ] as const) {
+    collectSlackTextValue(value[key], output);
+  }
+  collectSlackTextValue(value.text, output);
+  for (const key of ["blocks", "elements", "fields", "rows", "tasks"] as const) {
     collectSlackBlockText(value[key], output);
   }
 }
@@ -134,8 +163,7 @@ function slackMessageText(message: Record<string, unknown>): string | undefined 
   const fallback: string[] = [];
   collectSlackBlockText(message.blocks, fallback);
   collectSlackAttachmentText(message.attachments, fallback);
-  const unique = [...new Set(fallback)];
-  return unique.length > 0 ? unique.join("\n") : undefined;
+  return fallback.length > 0 ? fallback.join("\n") : undefined;
 }
 
 function hasMalformedSlackMessageContent(message: Record<string, unknown>): boolean {
