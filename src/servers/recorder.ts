@@ -317,9 +317,36 @@ function recorderIdentityLockPath(root: string, identity: RecorderFileIdentity):
   return path.join(root, `recorder-${identity.dev}-${identity.ino}`);
 }
 
-async function recorderIdentityLockTarget(identity: RecorderFileIdentity): Promise<string> {
+function recorderLockRootUnavailable(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return (
+    code === "EACCES" ||
+    code === "EDQUOT" ||
+    code === "ENOSPC" ||
+    code === "EPERM" ||
+    code === "EROFS"
+  );
+}
+
+function adjacentRecorderLockRoot(filePath: string, currentUserId: number | undefined): string {
+  return path.join(
+    path.dirname(filePath),
+    currentUserId === undefined
+      ? ".crabline-server-recorder-locks"
+      : `.crabline-server-recorder-locks-${currentUserId}`,
+  );
+}
+
+async function recorderIdentityLockTargets(
+  filePath: string,
+  identity: RecorderFileIdentity,
+): Promise<{
+  fallbackRoot?: string;
+  preferred: string;
+  userId: number | undefined;
+}> {
   const currentUserId = process.platform === "win32" ? undefined : process.geteuid?.();
-  let sharedRoot: string;
+  let sharedRoot: string | undefined;
   try {
     const account = userInfo();
     sharedRoot =
@@ -327,12 +354,37 @@ async function recorderIdentityLockTarget(identity: RecorderFileIdentity): Promi
         ? path.join(account.homedir, "AppData", "Local", "Crabline", "locks", "server-recorder")
         : path.join(account.homedir, ".cache", "crabline", "locks", "server-recorder");
   } catch {
+    // Arbitrary container UIDs may not have an OS account entry.
+  }
+  if (sharedRoot) {
+    try {
+      return {
+        ...(identity.nlink === 1n
+          ? { fallbackRoot: adjacentRecorderLockRoot(filePath, currentUserId) }
+          : {}),
+        preferred: recorderIdentityLockPath(
+          await secureRecorderLockRoot(sharedRoot, currentUserId),
+          identity,
+        ),
+        userId: currentUserId,
+      };
+    } catch (error) {
+      if (!recorderLockRootUnavailable(error)) {
+        throw error;
+      }
+    }
+  }
+  if (identity.nlink > 1n) {
     throw new Error("Server recorder hardlinks require a writable shared per-user lock directory.");
   }
-  return recorderIdentityLockPath(
-    await secureRecorderLockRoot(sharedRoot, currentUserId),
-    identity,
+  const adjacentRoot = await secureRecorderLockRoot(
+    adjacentRecorderLockRoot(filePath, currentUserId),
+    currentUserId,
   );
+  return {
+    preferred: recorderIdentityLockPath(adjacentRoot, identity),
+    userId: currentUserId,
+  };
 }
 
 async function acquireRecorderLock(filePath: string): Promise<() => Promise<void>> {
@@ -361,9 +413,19 @@ async function acquireRecorderLock(filePath: string): Promise<() => Promise<void
 }
 
 async function acquireRecorderIdentityLock(
+  filePath: string,
   identity: RecorderFileIdentity,
 ): Promise<() => Promise<void>> {
-  return await acquireRecorderLock(await recorderIdentityLockTarget(identity));
+  const targets = await recorderIdentityLockTargets(filePath, identity);
+  try {
+    return await acquireRecorderLock(targets.preferred);
+  } catch (error) {
+    if (!targets.fallbackRoot || !recorderLockRootUnavailable(error)) {
+      throw error;
+    }
+    const fallbackRoot = await secureRecorderLockRoot(targets.fallbackRoot, targets.userId);
+    return await acquireRecorderLock(recorderIdentityLockPath(fallbackRoot, identity));
+  }
 }
 
 async function withRecorderLock(
@@ -462,16 +524,17 @@ async function appendRecorderAttempt(params: {
       result = "retry";
     } else {
       const lockedIdentity = requireRecorderFileIdentity(stats);
-      if (lockedIdentity.nlink > 1n) {
-        releaseIdentityLock = await acquireRecorderIdentityLock(lockedIdentity);
-        stats = await file.stat();
-        identity = requireRecorderIdentity(stats);
-        if (
-          identity !== `${lockedIdentity.dev}:${lockedIdentity.ino}` ||
-          !(await recorderPathHasIdentity(params.publicationPath, identity))
-        ) {
-          result = "retry";
-        }
+      releaseIdentityLock = await acquireRecorderIdentityLock(
+        params.publicationPath,
+        lockedIdentity,
+      );
+      stats = await file.stat();
+      identity = requireRecorderIdentity(stats);
+      if (
+        identity !== `${lockedIdentity.dev}:${lockedIdentity.ino}` ||
+        !(await recorderPathHasIdentity(params.publicationPath, identity))
+      ) {
+        result = "retry";
       }
       if (result !== "retry") {
         const needsPathDurability =

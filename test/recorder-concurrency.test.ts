@@ -248,7 +248,7 @@ describe("recorder append serialization", () => {
     ]);
     expect(fsMocks.serverSync).toHaveBeenCalledTimes(2);
     expect(fsMocks.serverDirectorySync).toHaveBeenCalledOnce();
-    expect(fsMocks.lock).toHaveBeenCalledTimes(2);
+    expect(fsMocks.lock).toHaveBeenCalledTimes(4);
     expect(fsMocks.serverOpen.mock.calls.map(([, flags]) => flags)).toEqual(["ax+", "ax+", "a+"]);
   });
 

@@ -23,7 +23,17 @@ const lockMocks = vi.hoisted(() => {
 
 const fsMocks = vi.hoisted(() => {
   const directory = {
+    chmod: vi.fn<(mode: number) => Promise<void>>(),
     close: vi.fn<() => Promise<void>>(),
+    stat: vi.fn<
+      () => Promise<{
+        dev: bigint;
+        ino: bigint;
+        isDirectory(): boolean;
+        mode: bigint;
+        uid: bigint;
+      }>
+    >(),
     sync: vi.fn<() => Promise<void>>(),
   };
   const file = {
@@ -46,6 +56,16 @@ const fsMocks = vi.hoisted(() => {
     chmod: vi.fn<(filePath: string, mode: number) => Promise<void>>(),
     directory,
     file,
+    lstat: vi.fn<
+      () => Promise<{
+        dev: bigint;
+        ino: bigint;
+        isDirectory(): boolean;
+        isSymbolicLink(): boolean;
+        mode: bigint;
+        uid: bigint;
+      }>
+    >(),
     mkdir:
       vi.fn<
         (
@@ -54,7 +74,11 @@ const fsMocks = vi.hoisted(() => {
         ) => Promise<string | undefined>
       >(),
     open: vi.fn<
-      (filePath: string, flags: string, mode?: number) => Promise<typeof directory | typeof file>
+      (
+        filePath: string,
+        flags: number | string,
+        mode?: number,
+      ) => Promise<typeof directory | typeof file>
     >(),
     stat: vi.fn<(filePath: string) => Promise<{ dev?: number; ino?: number; size: number }>>(),
   };
@@ -73,6 +97,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...actual,
     chmod: fsMocks.chmod,
+    lstat: fsMocks.lstat,
     mkdir: fsMocks.mkdir,
     open: fsMocks.open,
     stat: fsMocks.stat,
@@ -159,8 +184,18 @@ beforeEach(() => {
   lockMocks.lock.mockResolvedValue(lockMocks.release);
   fsMocks.chmod.mockReset();
   fsMocks.chmod.mockResolvedValue();
+  fsMocks.directory.chmod.mockReset();
+  fsMocks.directory.chmod.mockResolvedValue();
   fsMocks.directory.close.mockReset();
   fsMocks.directory.close.mockResolvedValue();
+  fsMocks.directory.stat.mockReset();
+  fsMocks.directory.stat.mockResolvedValue({
+    dev: 10n,
+    ino: 20n,
+    isDirectory: () => true,
+    mode: 0o700n,
+    uid: BigInt(process.geteuid?.() ?? 0),
+  });
   fsMocks.directory.sync.mockReset();
   fsMocks.directory.sync.mockResolvedValue();
   fsMocks.file.appendFile.mockReset();
@@ -177,6 +212,15 @@ beforeEach(() => {
   fsMocks.file.sync.mockResolvedValue();
   fsMocks.file.truncate.mockReset();
   fsMocks.file.truncate.mockResolvedValue();
+  fsMocks.lstat.mockReset();
+  fsMocks.lstat.mockResolvedValue({
+    dev: 10n,
+    ino: 20n,
+    isDirectory: () => true,
+    isSymbolicLink: () => false,
+    mode: 0o700n,
+    uid: BigInt(process.geteuid?.() ?? 0),
+  });
   fsMocks.mkdir.mockReset();
   fsMocks.mkdir.mockResolvedValue(undefined);
   fsMocks.open.mockReset();
@@ -184,7 +228,7 @@ beforeEach(() => {
     if (flags === "ax+") {
       throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
     }
-    return flags === "r" ? fsMocks.directory : fsMocks.file;
+    return typeof flags === "number" || flags === "r" ? fsMocks.directory : fsMocks.file;
   });
   fsMocks.stat.mockReset();
   fsMocks.stat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
@@ -205,7 +249,7 @@ describe("server recorder", () => {
     const observer = vi.fn<(event: ServerRequestEvent) => void>();
     fsMocks.mkdir.mockResolvedValueOnce(canonicalFirstParent);
     fsMocks.open.mockImplementation(async (_filePath, flags) =>
-      flags === "r" ? fsMocks.directory : fsMocks.file,
+      typeof flags === "number" || flags === "r" ? fsMocks.directory : fsMocks.file,
     );
     await recordServerEvent({
       event: serverEvent("/private"),
@@ -218,7 +262,7 @@ describe("server recorder", () => {
       recursive: true,
     });
     expect(fsMocks.chmod).toHaveBeenCalledWith(canonicalFinalParent, 0o700);
-    expect(fsMocks.open.mock.calls).toEqual([
+    expect(fsMocks.open.mock.calls.filter(([, flags]) => typeof flags === "string")).toEqual([
       [canonicalRecorderPath, "ax+", 0o600],
       [canonicalFinalParent, "r"],
       [canonicalFirstParent, "r"],
@@ -242,12 +286,12 @@ describe("server recorder", () => {
       stale: 30_000,
       update: 10_000,
     });
-    expect(lockMocks.release).toHaveBeenCalledOnce();
+    expect(lockMocks.release).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.chmod.mock.invocationCallOrder[0]).toBeLessThan(
       fsMocks.file.appendFile.mock.invocationCallOrder[0]!,
     );
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
-    expect(fsMocks.directory.close).toHaveBeenCalledTimes(3);
+    expect(fsMocks.directory.close).toHaveBeenCalledTimes(4);
   });
 
   it("resyncs recorder ancestry after an interrupted first-append attempt", async () => {
@@ -264,6 +308,9 @@ describe("server recorder", () => {
     fsMocks.stat.mockResolvedValue({ dev: 42, ino: 84, size: 0 });
     fsMocks.directory.sync.mockRejectedValueOnce(ancestrySyncFailure).mockResolvedValue(undefined);
     fsMocks.open.mockImplementation(async (openedPath, flags) => {
+      if (typeof flags === "number") {
+        return fsMocks.directory;
+      }
       if (flags === "r") {
         if (openedPath === canonicalRoot) {
           throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
@@ -322,6 +369,9 @@ describe("server recorder", () => {
     fsMocks.file.stat.mockResolvedValue({ dev: 61, ino: 62, size: 0 });
     fsMocks.stat.mockResolvedValue({ dev: 61, ino: 62, size: 0 });
     fsMocks.open.mockImplementation(async (openedPath, flags) => {
+      if (typeof flags === "number") {
+        return fsMocks.directory;
+      }
       if (flags === "ax+") {
         throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
       }
@@ -381,6 +431,9 @@ describe("server recorder", () => {
     fsMocks.file.stat.mockResolvedValue({ dev: 71, ino: 72, size: 0 });
     fsMocks.stat.mockResolvedValue({ dev: 71, ino: 72, size: 0 });
     fsMocks.open.mockImplementation(async (openedPath, flags) => {
+      if (typeof flags === "number") {
+        return fsMocks.directory;
+      }
       if (flags === "ax+") {
         if (recorderExists) {
           throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
@@ -440,9 +493,9 @@ describe("server recorder", () => {
       recorderPath: path.join("/tmp", "crabline-server-recorder-contention.jsonl"),
     });
 
-    expect(lockMocks.lock).toHaveBeenCalledTimes(2);
+    expect(lockMocks.lock).toHaveBeenCalledTimes(3);
     expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
-    expect(lockMocks.release).toHaveBeenCalledOnce();
+    expect(lockMocks.release).toHaveBeenCalledTimes(2);
   });
 
   it("repairs managed directories without chmodding existing recorder files or parents", async () => {
@@ -474,6 +527,9 @@ describe("server recorder", () => {
       )
       .mockResolvedValueOnce(undefined);
     const recorderPath = path.join("/tmp", "crabline-server-recorder-admission.jsonl");
+    const recorderDirectory = await realpath(path.dirname(recorderPath));
+    const recorderMkdirCalls = () =>
+      fsMocks.mkdir.mock.calls.filter(([directory]) => directory === recorderDirectory);
 
     const first = recordServerEvent({
       event: serverEvent("/first"),
@@ -486,20 +542,23 @@ describe("server recorder", () => {
       recorderPath,
     });
 
-    await vi.waitFor(() => expect(fsMocks.mkdir).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(recorderMkdirCalls()).toHaveLength(1));
     expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
 
     releaseFirstMkdir?.();
     await Promise.all([first, second]);
 
-    expect(fsMocks.mkdir).toHaveBeenCalledTimes(2);
+    expect(recorderMkdirCalls()).toHaveLength(2);
     expect(fsMocks.file.appendFile.mock.calls.map(([line]) => JSON.parse(line).path)).toEqual([
       "/first",
       "/second",
     ]);
-    expect(fsMocks.mkdir.mock.invocationCallOrder[1]).toBeGreaterThan(
-      fsMocks.file.appendFile.mock.invocationCallOrder[0]!,
-    );
+    expect(recorderMkdirCalls()[1]).toBeDefined();
+    expect(
+      fsMocks.mkdir.mock.invocationCallOrder[
+        fsMocks.mkdir.mock.calls.indexOf(recorderMkdirCalls()[1]!)
+      ],
+    ).toBeGreaterThan(fsMocks.file.appendFile.mock.invocationCallOrder[0]!);
   });
 
   it("snapshots events before waiting for recorder admission", async () => {
@@ -641,8 +700,10 @@ describe("server recorder", () => {
     fsMocks.file.stat
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
     fsMocks.stat
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
@@ -666,8 +727,10 @@ describe("server recorder", () => {
     fsMocks.file.stat
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
     fsMocks.stat
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
@@ -829,7 +892,9 @@ describe("server recorder", () => {
     const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
     const torn = '{"type":"api","path":"/torn"';
     const contents = Buffer.from(completed + torn);
-    fsMocks.file.stat.mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
+    fsMocks.file.stat
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
     fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
       const source = contents.subarray(position, position + Math.min(length, 3));
       source.copy(buffer, offset);
@@ -879,7 +944,9 @@ describe("server recorder", () => {
       query: { payload: "x".repeat(4 * 1024 * 1024) },
     });
     const contents = Buffer.from(completed + legacyEvent);
-    fsMocks.file.stat.mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
+    fsMocks.file.stat
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
     fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
       const source = contents.subarray(position, position + length);
       source.copy(buffer, offset);
@@ -908,7 +975,9 @@ describe("server recorder", () => {
     const validationBudget = 64 * 1024 * 1024;
     const tailStart = completedBuffer.length;
     const fileSize = tailStart + validationBudget;
-    fsMocks.file.stat.mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize });
+    fsMocks.file.stat
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize });
     fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
       const bytesRead = Math.max(0, Math.min(length, fileSize - position));
       if (bytesRead === 0) {
@@ -958,7 +1027,9 @@ describe("server recorder", () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-oversized-tail.jsonl");
     const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
     const contents = Buffer.from(`${completed}{"payload":"${"x".repeat(4 * 1024 * 1024)}"`);
-    fsMocks.file.stat.mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
+    fsMocks.file.stat
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
     fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
       const source = contents.subarray(position, position + length);
       source.copy(buffer, offset);
@@ -984,7 +1055,9 @@ describe("server recorder", () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-unvalidated-tail.jsonl");
     const fileSize = 8 * 1024 * 1024 * 1024;
     const validationBudget = 64 * 1024 * 1024;
-    fsMocks.file.stat.mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize });
+    fsMocks.file.stat
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize });
     fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
       if (length === 1 && position === fileSize - 1) {
         buffer[offset] = 0x7d;
@@ -1105,7 +1178,6 @@ describe("server recorder", () => {
       const processes: RecorderProcess[] = [];
       try {
         await actualFs.writeFile(recorderPath, initialContents, { mode: 0o600 });
-        await actualFs.link(recorderPath, aliasPath);
         const identity = await actualFs.stat(recorderPath, { bigint: true });
         const lockRoot = path.join(
           os.userInfo().homedir,
@@ -1125,17 +1197,27 @@ describe("server recorder", () => {
           },
         );
         const first = startRecorderProcess(recorderPath, "/process-a");
-        const second = startRecorderProcess(aliasPath, "/process-b");
-        processes.push(first, second);
+        processes.push(first);
 
         await vi.waitFor(
           () => {
             expect(first.stdout()).toContain("ready\n");
-            expect(second.stdout()).toContain("ready\n");
           },
           { timeout: 5_000 },
         );
         first.child.stdin.end("go\n");
+        await vi.waitFor(async () => {
+          await expect(actualFs.stat(`${recorderPath}.lock`)).resolves.toBeDefined();
+        });
+        await actualFs.link(recorderPath, aliasPath);
+        const second = startRecorderProcess(aliasPath, "/process-b");
+        processes.push(second);
+        await vi.waitFor(
+          () => {
+            expect(second.stdout()).toContain("ready\n");
+          },
+          { timeout: 5_000 },
+        );
         second.child.stdin.end("go\n");
         await new Promise((resolve) => setTimeout(resolve, 100));
 
