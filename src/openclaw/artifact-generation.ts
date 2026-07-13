@@ -99,20 +99,25 @@ function artifactRemovalTombstoneBaseName(name: string): string | null {
     : null;
 }
 
-function withRecorderSnapshotPath(
+function withPublishedRecorderPath(
   providerReadiness: Record<string, unknown>,
-  recorderPath: string,
+  recorderPath: string | undefined,
 ): Record<string, unknown> {
   const result = providerReadiness.result;
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     throw new Error("OpenClaw Crabline provider readiness result is malformed.");
   }
+  const publishedResult: Record<string, unknown> = {
+    ...(result as Record<string, unknown>),
+  };
+  if (recorderPath === undefined) {
+    delete publishedResult.recorderPath;
+  } else {
+    publishedResult.recorderPath = recorderPath;
+  }
   return {
     ...providerReadiness,
-    result: {
-      ...result,
-      recorderPath,
-    },
+    result: publishedResult,
   };
 }
 
@@ -494,9 +499,10 @@ export async function publishOpenClawCrablineArtifactGeneration(
       : Object.fromEntries(
           Object.entries(params.manifest).filter(([key]) => key !== "recorderPath"),
         );
-    const providerReadinessBase = recorderSnapshotPath
-      ? withRecorderSnapshotPath(params.providerReadiness, recorderSnapshotPath)
-      : params.providerReadiness;
+    const providerReadinessBase = withPublishedRecorderPath(
+      params.providerReadiness,
+      recorderSnapshotPath,
+    );
     const providerReadiness = {
       ...providerReadinessBase,
       manifestPath: pointer.manifestPath,
