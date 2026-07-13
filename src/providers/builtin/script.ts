@@ -14,7 +14,8 @@ import type {
 
 const MAX_SCRIPT_OUTPUT_BYTES = 1024 * 1024;
 const SCRIPT_WAIT_EXIT_GRACE_MS = 250;
-const WINDOWS_TERMINATION_TIMEOUT_MS = 5_000;
+const CHILD_CLOSE_TIMEOUT_MS = 1_000;
+const WINDOWS_TERMINATION_COMMAND_TIMEOUT_MS = 2_500;
 
 type ScriptWatchIterator = AsyncIterableIterator<InboundEnvelope> & {
   [Symbol.asyncIterator](): ScriptWatchIterator;
@@ -32,12 +33,19 @@ type ScriptPayload = {
 };
 
 type ScriptDiagnosticsSnapshot = {
+  commandValues: string[];
   configuredCommands: string[];
+  diagnosticsSafe: boolean;
+  exactCommandValues: string[];
   sensitiveEnvironmentValues: string[];
   sensitivePayloadValues: string[];
 };
 
 type SpawnedScriptChild = ChildProcessByStdio<Writable, Readable, Readable>;
+type ScriptChildExit = {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+};
 
 const ScriptMessageSchema = z.object({
   author: z.enum(["assistant", "system", "user"]),
@@ -71,47 +79,138 @@ const ScriptInboundResultSchema = z
     { message: "result must contain either a message or timeout: true" },
   );
 
-async function terminateChild(child: ChildProcess): Promise<void> {
-  if (process.platform === "win32" && child.pid) {
-    await new Promise<void>((resolve) => {
-      let taskkill: ChildProcess;
-      try {
-        taskkill = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
-          stdio: "ignore",
-          windowsHide: true,
-        });
-      } catch {
-        resolve();
+function runTerminationCommand(command: string, args: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    let cleanup: ChildProcess;
+    try {
+      cleanup = spawn(command, args, {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } catch {
+      resolve(false);
+      return;
+    }
+    let settled = false;
+    const finish = (succeeded: boolean) => {
+      if (settled) {
         return;
       }
-      let settled = false;
-      const finish = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        resolve();
-      };
-      const timeout = setTimeout(() => {
-        taskkill.kill("SIGKILL");
-        finish();
-      }, WINDOWS_TERMINATION_TIMEOUT_MS);
-      timeout.unref();
-      taskkill.once("close", finish);
-      taskkill.once("error", finish);
-    });
-  } else if (child.pid) {
+      settled = true;
+      clearTimeout(timeout);
+      resolve(succeeded);
+    };
+    const timeout = setTimeout(() => {
+      try {
+        cleanup.kill("SIGKILL");
+      } catch {
+        // The cleanup process may have exited at the timeout boundary.
+      }
+      finish(false);
+    }, WINDOWS_TERMINATION_COMMAND_TIMEOUT_MS);
+    timeout.unref();
+    cleanup.once("close", (code) => finish(code === 0));
+    cleanup.once("error", () => finish(false));
+  });
+}
+
+function windowsProcessTreeTermination(pid: number): string {
+  return [
+    "$ErrorActionPreference='Stop'",
+    `$RootProcessId=${pid}`,
+    "$AllProcesses=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate)",
+    "$Snapshot=[System.Collections.Generic.List[object]]::new()",
+    "$Pending=[System.Collections.Generic.Queue[int]]::new()",
+    "$RootProcess=$AllProcesses | Where-Object { [int]$_.ProcessId -eq $RootProcessId } | Select-Object -First 1",
+    "if($null -ne $RootProcess){$Snapshot.Add($RootProcess)}",
+    "$Pending.Enqueue($RootProcessId)",
+    "while($Pending.Count -gt 0){",
+    "$ParentProcessId=$Pending.Dequeue()",
+    "foreach($Process in @($AllProcesses | Where-Object { [int]$_.ParentProcessId -eq $ParentProcessId })){",
+    "$Snapshot.Add($Process)",
+    "$Pending.Enqueue([int]$Process.ProcessId)",
+    "}",
+    "}",
+    '$Taskkill=Start-Process taskkill.exe -ArgumentList @("/PID","$RootProcessId","/T","/F") -WindowStyle Hidden -PassThru',
+    "if($Taskkill.WaitForExit(1000)){$TaskkillExitCode=$Taskkill.ExitCode}else{$Taskkill.Kill();$TaskkillExitCode=-1}",
+    "if($TaskkillExitCode -ne 0){",
+    "$Entries=@($Snapshot)",
+    "[array]::Reverse($Entries)",
+    "foreach($Entry in $Entries){",
+    '$Current=Get-CimInstance Win32_Process -Filter "ProcessId=$($Entry.ProcessId)" -ErrorAction SilentlyContinue',
+    "if($null -ne $Current -and $Current.CreationDate -eq $Entry.CreationDate){",
+    "Stop-Process -Id ([int]$Entry.ProcessId) -Force -ErrorAction SilentlyContinue",
+    "}",
+    "}",
+    "}",
+  ].join(";");
+}
+
+function destroyChildPipes(child: ChildProcess): void {
+  for (const stream of [child.stdin, child.stdout, child.stderr]) {
     try {
-      process.kill(-child.pid, "SIGKILL");
+      stream?.destroy();
     } catch {
-      // The process group may have exited with the shell.
+      // Pipe teardown is best effort after process-tree termination.
     }
   }
+}
 
-  if (child.exitCode === null && child.signalCode === null) {
-    child.kill("SIGKILL");
+async function terminateChild(child: ChildProcess): Promise<void> {
+  try {
+    const childRunning =
+      child.exitCode === null &&
+      child.signalCode === null &&
+      (() => {
+        try {
+          return child.kill(0);
+        } catch {
+          return false;
+        }
+      })();
+    if (process.platform === "win32") {
+      if (child.pid && childRunning) {
+        await runTerminationCommand("powershell.exe", [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          windowsProcessTreeTermination(child.pid),
+        ]);
+      }
+    } else if (child.pid) {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // The process group may have exited with the shell.
+      }
+    }
+
+    if (childRunning) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The process may have exited while its descendants retained the pipes.
+      }
+    }
+  } finally {
+    destroyChildPipes(child);
   }
+}
+
+async function waitForChildClose(
+  childClosed: Promise<ScriptChildExit>,
+): Promise<ScriptChildExit | undefined> {
+  let timeout: NodeJS.Timeout | undefined;
+  const exit = await Promise.race([
+    childClosed,
+    new Promise<undefined>((resolve) => {
+      timeout = setTimeout(() => resolve(undefined), CHILD_CLOSE_TIMEOUT_MS);
+      timeout.unref();
+    }),
+  ]);
+  clearTimeout(timeout);
+  return exit;
 }
 
 function formatValidationError(error: z.ZodError): string {
@@ -121,7 +220,7 @@ function formatValidationError(error: z.ZodError): string {
 }
 
 const sensitiveEnvironmentNameFragmentPattern =
-  /(?:AUTH|BEARER|CREDENTIAL|KEY|PASS|PRIVATE|SECRET|TOKEN)/iu;
+  /(?:AUTH|BEARER|CREDENTIAL|JWT|KEY|PASS|PRIVATE|SECRET|TOKEN)/iu;
 const nonSensitiveWorkingDirectoryNames = new Set(["PWD", "OLDPWD"]);
 
 function isSensitiveEnvironmentName(name: string): boolean {
@@ -176,6 +275,129 @@ function commandContainsSensitiveValue(command: string): boolean {
   );
 }
 
+function addRedactionRepresentations(values: Set<string>, value: string): void {
+  if (!value) {
+    return;
+  }
+  values.add(value);
+  const serialized = JSON.stringify(value);
+  values.add(serialized);
+  values.add(serialized.slice(1, -1));
+}
+
+function addExactOrSubstringCommandValue(
+  exactValues: Set<string>,
+  substringValues: Set<string>,
+  value: string,
+): void {
+  addRedactionRepresentations(value.length >= 8 ? substringValues : exactValues, value);
+}
+
+function tokenizeLiteralCommand(command: string): string[] | undefined {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!;
+    if (quote) {
+      if (character === quote) {
+        quote = undefined;
+        continue;
+      }
+      if (quote === '"' && /[$`%!]/u.test(character)) {
+        return undefined;
+      }
+      if (character === "\\" && quote === '"') {
+        return undefined;
+      }
+      current += character;
+      continue;
+    }
+    if (character === '"' || (character === "'" && process.platform !== "win32")) {
+      quote = character;
+      continue;
+    }
+    if (character === "\n" || character === "\r") {
+      return undefined;
+    }
+    if (/\s/u.test(character)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    if (
+      /[;&|<>(){}$`%!*?[\]~]/u.test(character) ||
+      (process.platform === "win32" && character === "^")
+    ) {
+      return undefined;
+    }
+    if (character === "\\") {
+      return undefined;
+    }
+    current += character;
+  }
+  if (quote) {
+    return undefined;
+  }
+  if (current) {
+    tokens.push(current);
+  }
+  return tokens;
+}
+
+function snapshotCommandValues(
+  command: string,
+): { exactValues: string[]; substringValues: string[] } | undefined {
+  const tokens = tokenizeLiteralCommand(command);
+  if (!tokens) {
+    return undefined;
+  }
+  const exactValues = new Set<string>();
+  const substringValues = new Set<string>();
+  let executableSeen = false;
+  for (const token of tokens) {
+    if (!executableSeen) {
+      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)\+?=(.*)$/u.exec(token);
+      if (assignment) {
+        addExactOrSubstringCommandValue(exactValues, substringValues, assignment[2] ?? "");
+        continue;
+      }
+      executableSeen = true;
+      continue;
+    }
+    if (/^--?[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(token)) {
+      if (token.length < 3) {
+        return undefined;
+      }
+      addRedactionRepresentations(exactValues, token);
+      continue;
+    }
+    const option = /^--?[A-Za-z0-9][A-Za-z0-9_-]*=(.*)$/u.exec(token);
+    if (option) {
+      const value = option[1] ?? "";
+      if (value.length < 3) {
+        return undefined;
+      }
+      addExactOrSubstringCommandValue(exactValues, substringValues, value);
+      continue;
+    }
+    if (token.length < 3) {
+      return undefined;
+    }
+    if (token.startsWith("-")) {
+      addExactOrSubstringCommandValue(exactValues, substringValues, token);
+    } else {
+      addRedactionRepresentations(substringValues, token);
+    }
+  }
+  return {
+    exactValues: [...exactValues].sort((left, right) => right.length - left.length),
+    substringValues: [...substringValues].sort((left, right) => right.length - left.length),
+  };
+}
+
 function snapshotSensitiveEnvironmentValues(): string[] {
   const representations = new Set<string>();
   const values = Object.entries(process.env)
@@ -186,9 +408,7 @@ function snapshotSensitiveEnvironmentValues(): string[] {
     .map(([, value]) => value!)
     .sort((left, right) => right.length - left.length);
   for (const value of values) {
-    representations.add(value);
-    representations.add(JSON.stringify(value));
-    representations.add(JSON.stringify(value).slice(1, -1));
+    addRedactionRepresentations(representations, value);
   }
   return [...representations].sort((left, right) => right.length - left.length);
 }
@@ -264,6 +484,42 @@ function redactSensitivePayloadValues(detail: string, sensitivePayloadValues: st
   return redacted;
 }
 
+function redactCommandValues(detail: string, commandValues: string[]): string {
+  let redacted = detail;
+  for (const value of commandValues) {
+    redacted = redacted.split(value).join("[redacted command value]");
+  }
+  return redacted;
+}
+
+function isExactCommandValueBoundary(character: string | undefined): boolean {
+  return character === undefined || /[\s"'`=,:;.()[\]{}<>!?]/u.test(character);
+}
+
+function redactExactCommandValues(detail: string, commandValues: string[]): string {
+  let redacted = detail;
+  for (const value of commandValues) {
+    let cursor = 0;
+    while (cursor < redacted.length) {
+      const index = redacted.indexOf(value, cursor);
+      if (index < 0) {
+        break;
+      }
+      const end = index + value.length;
+      if (
+        isExactCommandValueBoundary(redacted[index - 1]) &&
+        isExactCommandValueBoundary(redacted[end])
+      ) {
+        redacted = redacted.slice(0, index) + "[redacted command value]" + redacted.slice(end);
+        cursor = index + "[redacted command value]".length;
+      } else {
+        cursor = end;
+      }
+    }
+  }
+  return redacted;
+}
+
 function formatScriptError(
   summary: string,
   detail: string,
@@ -273,7 +529,7 @@ function formatScriptError(
   if (!detail.trim()) {
     return summary;
   }
-  if (commandContainsSensitiveValue(command)) {
+  if (!diagnostics.diagnosticsSafe || commandContainsSensitiveValue(command)) {
     return `${summary}\n[script diagnostics redacted]`;
   }
   let redacted = redactSensitivePayloadValues(
@@ -284,6 +540,8 @@ function formatScriptError(
   for (const configuredCommand of diagnostics.configuredCommands) {
     redacted = redacted.split(configuredCommand).join("[configured script command]");
   }
+  redacted = redactCommandValues(redacted, diagnostics.commandValues);
+  redacted = redactExactCommandValues(redacted, diagnostics.exactCommandValues);
   redacted = redacted.trim();
   return redacted ? `${summary}\n${redacted}` : summary;
 }
@@ -291,6 +549,7 @@ function formatScriptError(
 function createScriptDiagnosticsSnapshot(
   command: string,
   serializedPayload: string,
+  shell?: string | undefined,
 ): ScriptDiagnosticsSnapshot {
   const payload = JSON.parse(serializedPayload) as unknown;
   const configuredCommands = new Set([command]);
@@ -304,8 +563,30 @@ function createScriptDiagnosticsSnapshot(
       configuredCommands.add(configuredCommand);
     }
   }
+  const commandValues = new Set<string>();
+  const exactCommandValues = new Set<string>();
+  let diagnosticsSafe = shell === undefined;
+  for (const configuredCommand of configuredCommands) {
+    if (commandContainsSensitiveValue(configuredCommand)) {
+      diagnosticsSafe = false;
+    }
+    const values = snapshotCommandValues(configuredCommand);
+    if (!values) {
+      diagnosticsSafe = false;
+      continue;
+    }
+    for (const value of values.substringValues) {
+      commandValues.add(value);
+    }
+    for (const value of values.exactValues) {
+      exactCommandValues.add(value);
+    }
+  }
   return {
+    commandValues: [...commandValues].sort((left, right) => right.length - left.length),
     configuredCommands: [...configuredCommands].sort((left, right) => right.length - left.length),
+    diagnosticsSafe,
+    exactCommandValues: [...exactCommandValues].sort((left, right) => right.length - left.length),
     sensitiveEnvironmentValues: snapshotSensitiveEnvironmentValues(),
     sensitivePayloadValues: snapshotSensitivePayloadValues(payload),
   };
@@ -357,7 +638,11 @@ function runScript<T>(params: {
     return Promise.reject(params.signal.reason ?? new Error("Script command aborted."));
   }
   const serializedPayload = JSON.stringify(params.payload);
-  const diagnostics = createScriptDiagnosticsSnapshot(params.command, serializedPayload);
+  const diagnostics = createScriptDiagnosticsSnapshot(
+    params.command,
+    serializedPayload,
+    params.shell,
+  );
   return new Promise((resolve, reject) => {
     let child: SpawnedScriptChild;
     try {
@@ -552,7 +837,11 @@ function watchScript(params: {
       },
     };
     const serializedPayload = JSON.stringify(payload);
-    const diagnostics = createScriptDiagnosticsSnapshot(params.command, serializedPayload);
+    const diagnostics = createScriptDiagnosticsSnapshot(
+      params.command,
+      serializedPayload,
+      params.shell,
+    );
     let child: SpawnedScriptChild;
     try {
       child = spawn(params.command, {
@@ -578,13 +867,18 @@ function watchScript(params: {
     let stderr = "";
     let childError: unknown;
     let outputLimitError: CrablineError | undefined;
+    let termination: Promise<void> | undefined;
     const stopChild = () => {
-      void terminateChild(child);
+      termination ??= terminateChild(child);
+      return termination;
     };
-    params.cancelSignal.addEventListener("abort", stopChild, { once: true });
-    params.context.signal?.addEventListener("abort", stopChild, { once: true });
+    const requestStopChild = () => {
+      void stopChild();
+    };
+    params.cancelSignal.addEventListener("abort", requestStopChild, { once: true });
+    params.context.signal?.addEventListener("abort", requestStopChild, { once: true });
     if (params.cancelSignal.aborted || params.context.signal?.aborted) {
-      stopChild();
+      requestStopChild();
     }
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -601,21 +895,19 @@ function watchScript(params: {
           `Script watch command exceeded ${MAX_SCRIPT_OUTPUT_BYTES} bytes of stderr.`,
           { kind: "connectivity" },
         );
-        void terminateChild(child);
+        requestStopChild();
       }
     });
     child.once("error", (error) => {
       childError = error;
     });
     let childCloseObserved = false;
-    const childClosed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-      (resolve) => {
-        child.once("close", (code, signal) => {
-          childCloseObserved = true;
-          resolve({ code, signal });
-        });
-      },
-    );
+    const childClosed = new Promise<ScriptChildExit>((resolve) => {
+      child.once("close", (code, signal) => {
+        childCloseObserved = true;
+        resolve({ code, signal });
+      });
+    });
     child.stdin.end(serializedPayload);
 
     try {
@@ -671,7 +963,13 @@ function watchScript(params: {
         };
       }
 
-      const exit = await childClosed;
+      const exit = await waitForChildClose(childClosed);
+      if (!exit) {
+        await stopChild();
+        throw new CrablineError("Script watch command did not close after its output ended.", {
+          kind: "connectivity",
+        });
+      }
       if (outputLimitError) {
         throw outputLimitError;
       }
@@ -717,13 +1015,13 @@ function watchScript(params: {
       }
       throw error;
     } finally {
-      params.cancelSignal.removeEventListener("abort", stopChild);
-      params.context.signal?.removeEventListener("abort", stopChild);
+      params.cancelSignal.removeEventListener("abort", requestStopChild);
+      params.context.signal?.removeEventListener("abort", requestStopChild);
       child.stdin.destroy();
       if (!childCloseObserved) {
-        await terminateChild(child);
+        await stopChild();
       }
-      await childClosed;
+      await waitForChildClose(childClosed);
     }
   })();
 }
