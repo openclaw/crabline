@@ -16,6 +16,7 @@
 - Reject malformed, unencodable, or non-canonical loopback v2 addresses instead of aliasing thread identities.
 - Encode generic local-mock target components without channel or thread identity collisions while preserving canonical target idempotence.
 - Keep fixture-local iMessage target IDs separate from provider-native thread aliases.
+- Keep lazy provider watches registered for cleanup after nonterminal iterator throws.
 - Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
 - Suppress serve readiness output when shutdown begins during ready-file publication.
 - Treat Unicode format characters as continuations when recognizing standalone acknowledgement tokens.
