@@ -27,9 +27,11 @@ import {
 import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
 import {
   MAX_WHATSAPP_WEBSOCKET_FRAGMENTS,
+  persistAcceptedBaileysMessage,
   signalBundleIdentityKey,
   WhatsAppSignalBundleStore,
 } from "../src/servers/whatsapp-baileys-websocket.js";
+import type { BinaryNode } from "../src/servers/whatsapp-wire/binary-node.js";
 import { Curve, KEY_BUNDLE_TYPE, type KeyPair } from "../src/servers/whatsapp-wire/crypto.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
@@ -127,6 +129,38 @@ function createSignalTestStorage(identityKey: KeyPair, registrationId: number): 
 
 function signalCiphertext(body: string): Buffer {
   return Buffer.isBuffer(body) ? Buffer.from(body) : Buffer.from(body, "binary");
+}
+
+function signalMessageNode(params: {
+  ciphertext: Buffer;
+  id: string;
+  recipientJid: string;
+  type: number;
+}): BinaryNode {
+  return {
+    attrs: {
+      id: params.id,
+      to: "15557654321@s.whatsapp.net",
+    },
+    content: [
+      {
+        attrs: { jid: params.recipientJid },
+        content: [
+          {
+            attrs: { type: params.type === 3 ? "pkmsg" : "msg" },
+            content: params.ciphertext,
+            tag: "enc",
+          },
+        ],
+        tag: "to",
+      },
+    ],
+    tag: "message",
+  };
+}
+
+function padSignalMessage(message: Buffer): Buffer {
+  return Buffer.concat([message, Buffer.from([1])]);
 }
 
 function createBaileysTestSocket(server: StartedWhatsAppServer) {
@@ -860,6 +894,196 @@ describe("whatsapp local provider server", () => {
     });
     expect(bundle.preKey).not.toBe(originalPreKey);
     expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
+  });
+
+  it("commits and acknowledges decryptable unsupported payloads before later text", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const senderJid = "15550000001@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1);
+    const bundle = receiver.resolveMany([recipientJid])[0]!;
+    const senderIdentity = Curve.generateKeyPair();
+    const senderStorage = createSignalTestStorage(senderIdentity, 2);
+    const senderAddress = new ProtocolAddress("15551234567", 0);
+    await new SessionBuilder(senderStorage, senderAddress).initOutgoing({
+      identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+      preKey: {
+        keyId: bundle.preKeyId,
+        publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+      },
+      registrationId: bundle.registrationId,
+      signedPreKey: {
+        keyId: bundle.signedPreKey.keyId,
+        publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+        signature: bundle.signedPreKey.signature,
+      },
+    });
+    const sender = new SessionCipher(senderStorage, senderAddress);
+    const unsupported = await sender.encrypt(padSignalMessage(Buffer.from([0x12, 0x01, 0x00])));
+    const events: Array<{ accepted?: boolean; body?: unknown }> = [];
+
+    await expect(
+      persistAcceptedBaileysMessage({
+        appendEvent: async (event) => {
+          events.push(event);
+        },
+        node: signalMessageNode({
+          ciphertext: signalCiphertext(unsupported.body),
+          id: "unsupported",
+          recipientJid,
+          type: unsupported.type,
+        }),
+        path: "/ws/chat",
+        remoteJid: senderJid,
+        signalBundles: receiver,
+      }),
+    ).resolves.toBe(true);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        accepted: true,
+        body: expect.objectContaining({ tag: "message" }),
+      }),
+    );
+
+    const text = Buffer.from("text after unsupported", "utf8");
+    const supported = await sender.encrypt(
+      padSignalMessage(Buffer.from([0x0a, text.byteLength, ...text])),
+    );
+    await expect(
+      persistAcceptedBaileysMessage({
+        appendEvent: async (event) => {
+          events.push(event);
+        },
+        node: signalMessageNode({
+          ciphertext: signalCiphertext(supported.body),
+          id: "supported",
+          recipientJid,
+          type: supported.type,
+        }),
+        path: "/ws/chat",
+        remoteJid: senderJid,
+        signalBundles: receiver,
+      }),
+    ).resolves.toBe(true);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        accepted: true,
+        body: expect.objectContaining({
+          message: { conversation: "text after unsupported" },
+        }),
+      }),
+    );
+  });
+
+  it("serializes first-contact Signal transactions by recipient bundle", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1);
+    const bundle = receiver.resolveMany([recipientJid])[0]!;
+    const createSender = async (senderJid: string, registrationId: number) => {
+      const identity = Curve.generateKeyPair();
+      const storage = createSignalTestStorage(identity, registrationId);
+      const address = new ProtocolAddress("15551234567", 0);
+      await new SessionBuilder(storage, address).initOutgoing({
+        identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+        preKey: {
+          keyId: bundle.preKeyId,
+          publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+        },
+        registrationId: bundle.registrationId,
+        signedPreKey: {
+          keyId: bundle.signedPreKey.keyId,
+          publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+          signature: bundle.signedPreKey.signature,
+        },
+      });
+      const encrypted = await new SessionCipher(storage, address).encrypt(
+        Buffer.from(`first contact from ${senderJid}`),
+      );
+      return { ciphertext: signalCiphertext(encrypted.body), senderJid };
+    };
+    const firstSender = await createSender("15550000001@s.whatsapp.net", 2);
+    const secondSender = await createSender("15550000002@s.whatsapp.net", 3);
+    let releaseFirst: () => void = () => undefined;
+    let markFirstStarted: () => void = () => undefined;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    let secondStarted = false;
+    const first = receiver.transactDirectMessage({
+      accept: async () => {
+        markFirstStarted();
+        await firstBlocked;
+        return true;
+      },
+      ciphertext: firstSender.ciphertext,
+      recipientJid,
+      remoteJid: firstSender.senderJid,
+      type: "pkmsg",
+    });
+    await firstStarted;
+    const second = receiver.transactDirectMessage({
+      accept: async () => {
+        secondStarted = true;
+        return true;
+      },
+      ciphertext: secondSender.ciphertext,
+      recipientJid,
+      remoteJid: secondSender.senderJid,
+      type: "pkmsg",
+    });
+    await Promise.resolve();
+
+    expect(secondStarted).toBe(false);
+    releaseFirst();
+    await expect(first).resolves.toEqual({ status: "accepted", value: true });
+    await expect(second).resolves.toMatchObject({ status: "decrypt-failed" });
+  });
+
+  it("generates replacement prekeys before accepted evidence persists", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const senderJid = "15550000001@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1);
+    const bundle = receiver.resolveMany([recipientJid])[0]!;
+    const senderIdentity = Curve.generateKeyPair();
+    const senderStorage = createSignalTestStorage(senderIdentity, 2);
+    const senderAddress = new ProtocolAddress("15551234567", 0);
+    await new SessionBuilder(senderStorage, senderAddress).initOutgoing({
+      identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+      preKey: {
+        keyId: bundle.preKeyId,
+        publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+      },
+      registrationId: bundle.registrationId,
+      signedPreKey: {
+        keyId: bundle.signedPreKey.keyId,
+        publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+        signature: bundle.signedPreKey.signature,
+      },
+    });
+    const encrypted = await new SessionCipher(senderStorage, senderAddress).encrypt(
+      Buffer.from("prekey generation ordering"),
+    );
+    const generateKeyPair = vi.spyOn(Curve, "generateKeyPair").mockImplementationOnce(() => {
+      throw new Error("simulated replacement prekey failure");
+    });
+    let persisted = false;
+
+    await expect(
+      receiver.transactDirectMessage({
+        accept: async () => {
+          persisted = true;
+          return true;
+        },
+        ciphertext: signalCiphertext(encrypted.body),
+        recipientJid,
+        remoteJid: senderJid,
+        type: "pkmsg",
+      }),
+    ).rejects.toThrow("simulated replacement prekey failure");
+    expect(persisted).toBe(false);
+    generateKeyPair.mockRestore();
   });
 
   it("drains unauthorized request bodies before reusing the connection", async () => {

@@ -220,7 +220,7 @@ export class WhatsAppSignalBundleStore {
       return { status: "unavailable" };
     }
     const address = new ProtocolAddress(remoteAddress.name, remoteAddress.deviceId);
-    return await this.#runTransaction(address.toString(), async () => {
+    return await this.#runTransaction(identityKey, async () => {
       const sessions = this.#sessions.get(identityKey) ?? new Map<string, SessionRecord>();
       const stagedPreKeyRemovals = new Set<number>();
       const stagedSessions = new Map<string, SessionRecord>();
@@ -256,16 +256,16 @@ export class WhatsAppSignalBundleStore {
       } catch (error) {
         return { error, status: "decrypt-failed" };
       }
-      const accepted = await params.accept(plaintext);
-      if (accepted === undefined) {
-        return { status: "rejected" };
-      }
       const replacementPreKey = stagedPreKeyRemovals.has(bundle.preKeyId)
         ? {
             id: bundle.preKeyId === 0xff_ff_ff ? 1 : bundle.preKeyId + 1,
             keyPair: Curve.generateKeyPair(),
           }
         : undefined;
+      const accepted = await params.accept(plaintext);
+      if (accepted === undefined) {
+        return { status: "rejected" };
+      }
       for (const [id, session] of stagedSessions) {
         sessions.set(id, session);
       }
@@ -1198,7 +1198,7 @@ function children(node: BinaryNode): BinaryNode[] {
   return Array.isArray(node.content) ? node.content : [];
 }
 
-async function persistAcceptedBaileysMessage(params: {
+export async function persistAcceptedBaileysMessage(params: {
   appendEvent(event: ServerRequestEvent): Promise<void>;
   node: BinaryNode;
   path: string;
@@ -1226,30 +1226,29 @@ async function persistAcceptedBaileysMessage(params: {
         try {
           text = readWhatsAppConversation(unpadRandomMax16(decrypted));
         } catch {
-          return undefined;
+          text = undefined;
         }
-        if (!text) {
-          return undefined;
-        }
-        const message: WhatsAppBaileysInboundMessage = {
-          key: {
-            fromMe: true,
-            id: messageId,
-            remoteJid: peer,
-          },
-          message: { conversation: text },
-          messageTimestamp: Math.floor(Date.now() / 1000),
-        };
+        const message: WhatsAppBaileysInboundMessage | undefined = text
+          ? {
+              key: {
+                fromMe: true,
+                id: messageId,
+                remoteJid: peer,
+              },
+              message: { conversation: text },
+              messageTimestamp: Math.floor(Date.now() / 1000),
+            }
+          : undefined;
         await params.appendEvent({
           accepted: true,
           at: new Date().toISOString(),
-          body: message,
+          body: message ?? sanitizeNodeForJson(params.node),
           method: "WEBSOCKET",
           path: params.path,
           query: {},
           type: "api",
         } as ServerRequestEvent & { accepted: true });
-        return message;
+        return true;
       },
       ciphertext: candidate.ciphertext,
       recipientJid: candidate.recipientJid,
