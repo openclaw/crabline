@@ -82,10 +82,6 @@ export class WebhookDnsLookupPool {
             if (index >= 0) {
               this.#pending.splice(index, 1);
             }
-          } else {
-            // The OS lookup may ignore cancellation; release only this caller's slot.
-            // slotHeld keeps a late completion from releasing a successor's capacity.
-            this.#releaseSlot(pending);
           }
           signal?.removeEventListener("abort", pending.onAbort);
           reject(abortSignalError(signal));
