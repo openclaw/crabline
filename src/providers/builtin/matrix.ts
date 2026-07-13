@@ -20,21 +20,23 @@ import {
 } from "./native-local-mock.js";
 import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
-const DEFAULT_MATRIX_ACCESS = "local-mock-matrix-token";
-
 export function resolveMatrixAdapterConfig(
   config: ProviderConfig,
   userName: string,
   env: NodeJS.ProcessEnv = process.env,
 ) {
   const fallbackUserId = env.MATRIX_USER_ID?.trim() || `@${userName}:matrix.local`;
+  const configuredAuth = config.matrix?.auth
+    ? {
+        ...config.matrix.auth,
+        userID: config.matrix.auth.userID?.trim() || fallbackUserId,
+      }
+    : undefined;
   return {
-    auth: {
-      ...(config.matrix?.auth ?? {
-        accessToken: env.MATRIX_ACCESS_TOKEN ?? DEFAULT_MATRIX_ACCESS,
-        type: "accessToken" as const,
-      }),
-      userID: config.matrix?.auth?.userID?.trim() || fallbackUserId,
+    auth: configuredAuth ?? {
+      accessToken: env.MATRIX_ACCESS_TOKEN ?? "local-mock-matrix-token",
+      type: "accessToken" as const,
+      userID: fallbackUserId,
     },
     baseURL: config.matrix?.baseURL ?? env.MATRIX_BASE_URL ?? "http://matrix.local",
     commandPrefix: config.matrix?.commandPrefix,
