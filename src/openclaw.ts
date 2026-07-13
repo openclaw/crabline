@@ -107,6 +107,7 @@ function hasStringRecordValues(value: unknown): value is Record<string, string> 
 function isOpenClawCrablineRecorderEvent(value: unknown): boolean {
   return (
     isRecord(value) &&
+    value.accepted === true &&
     typeof value.at === "string" &&
     Number.isFinite(Date.parse(value.at)) &&
     typeof value.method === "string" &&

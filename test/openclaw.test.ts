@@ -3111,6 +3111,8 @@ describe("OpenClaw local provider bridge", () => {
     ["malformed", "not-json\n"],
     ["non-record JSON", "null\n42\n[]\n"],
     ["unrelated object", "{}\n"],
+    ["rejected event", recorderProbeLine({ accepted: false })],
+    ["non-boolean acceptance", recorderProbeLine({ accepted: "true" })],
     ["valid event followed by malformed JSON", `${recorderProbeLine()}not-json\n`],
   ])("fails closed on %s readiness recorder evidence", async (_label, recorderContents) => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-invalid-"));

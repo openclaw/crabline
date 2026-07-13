@@ -157,7 +157,7 @@ function graphAuthError(): Response {
   });
 }
 
-async function appendEvent(state: WhatsAppServerState, event: ServerRequestEvent) {
+async function appendEvent(state: WhatsAppServerState, event: WhatsAppRecorderEvent) {
   await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
@@ -512,6 +512,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
   if (url.pathname === phoneNumberPath && params.request.method === "GET") {
     const body = queryRecord(url);
     await appendEvent(params.state, {
+      accepted: true,
       at: new Date().toISOString(),
       body,
       method: params.request.method,

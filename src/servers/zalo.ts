@@ -810,17 +810,20 @@ async function handleZaloMethod(
     return sendResponse;
   }
 
-  if (method !== "setWebhook") {
-    await appendEvent(state, event);
-  }
-
   if (method === "getMe") {
-    return zaloOk({
+    const getMeResponse = zaloOk({
       account_name: state.botName,
       account_type: "BASIC",
       can_join_groups: true,
       id: state.botId,
     });
+    event.accepted = getMeResponse.ok;
+    await appendEvent(state, event);
+    return getMeResponse;
+  }
+
+  if (method !== "setWebhook") {
+    await appendEvent(state, event);
   }
   if (method === "getUpdates") {
     if (state.webhook?.url || state.webhookTransitionPending) {

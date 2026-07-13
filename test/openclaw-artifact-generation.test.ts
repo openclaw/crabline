@@ -185,6 +185,9 @@ describe("OpenClaw artifact generation publication", () => {
       ]) {
         expect((await fs.stat(path.join(outputDir, artifactPath))).mode & 0o777).toBe(0o600);
       }
+      await expect(
+        fs.readFile(path.join(outputDir, result.manifestPath), "utf8"),
+      ).resolves.not.toContain("recorderPath");
       expect(
         (
           await fs.stat(

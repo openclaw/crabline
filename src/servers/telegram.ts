@@ -1911,13 +1911,15 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
     }
     return response;
   }
-  await appendEvent(params.state, event);
-  return await handleTelegramApi({
+  const response = await handleTelegramApi({
     body,
     method: botPath.method,
     request: params.request,
     state: params.state,
   });
+  event.accepted = response.ok;
+  await appendEvent(params.state, event);
+  return response;
 }
 
 async function serveRequest(params: {

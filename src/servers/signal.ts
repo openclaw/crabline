@@ -113,7 +113,7 @@ export type StartSignalServerParams = {
 
 async function appendEvent(
   state: SignalServerState,
-  event: ServerRequestEvent,
+  event: SignalRecorderEvent,
   committed = false,
 ): Promise<void> {
   const params = { event, onEvent: state.onEvent, recorderPath: state.recorderPath };
@@ -839,6 +839,7 @@ async function handleRequest(params: {
     }
   } else if (url.pathname === "/api/v1/check" && params.request.method === "GET") {
     await appendEvent(params.state, {
+      accepted: true,
       at: new Date().toISOString(),
       method: "GET",
       path: url.pathname,

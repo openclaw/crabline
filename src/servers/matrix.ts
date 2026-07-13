@@ -1015,6 +1015,7 @@ export async function startMatrixServer(
         state,
         url,
       });
+      event.accepted ??= response.ok;
       await appendEvent(state, event, response.ok && ["DELETE", "POST", "PUT"].includes(method));
       return response;
     },
