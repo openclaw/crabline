@@ -366,6 +366,9 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
     if (process.platform === "win32" && character === "\\" && command[index + 1] === '"') {
       return undefined;
     }
+    if (process.platform === "win32" && character === '"' && command[index + 1] === '"') {
+      return undefined;
+    }
     if (quote) {
       if (character === quote) {
         quote = undefined;
@@ -665,6 +668,17 @@ function formatScriptError(
   return redacted ? `${summary}\n${redacted}` : summary;
 }
 
+function usesSupportedDiagnosticShell(shell?: string | undefined): boolean {
+  if (shell !== undefined) {
+    return false;
+  }
+  if (process.platform !== "win32") {
+    return true;
+  }
+  const comspec = process.env.ComSpec ?? process.env.COMSPEC;
+  return comspec === undefined || /(?:^|[\\/])cmd(?:\.exe)?$/iu.test(comspec);
+}
+
 function createScriptDiagnosticsSnapshot(
   command: string,
   serializedPayload: string,
@@ -684,7 +698,7 @@ function createScriptDiagnosticsSnapshot(
   }
   const commandValues = new Set<string>();
   const exactCommandValues = new Set<string>();
-  let diagnosticsSafe = shell === undefined;
+  let diagnosticsSafe = usesSupportedDiagnosticShell(shell);
   for (const configuredCommand of configuredCommands) {
     if (commandContainsSensitiveValue(configuredCommand)) {
       diagnosticsSafe = false;
