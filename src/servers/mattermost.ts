@@ -660,12 +660,17 @@ async function handleApi(params: {
     if (post.user_id !== state.botUserId) {
       return mattermostError("You do not have permission to delete this post", 403);
     }
-    state.posts.delete(post.id);
-    broadcast(
-      state,
-      postEvent("post_deleted", post, state.botUsername, state.channels.get(post.channel_id)!),
-      false,
+    const event = postEvent(
+      "post_deleted",
+      post,
+      state.botUsername,
+      state.channels.get(post.channel_id)!,
     );
+    if (webSocketEventBytes(event) > state.maxWebSocketBufferedBytes) {
+      return webSocketEventTooLargeResponse();
+    }
+    state.posts.delete(post.id);
+    broadcast(state, event, false);
     return jsonResponse({ status: "OK" });
   }
   return mattermostError("Not found", 404);
