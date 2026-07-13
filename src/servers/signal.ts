@@ -56,6 +56,7 @@ type SignalSseChunk = {
 const SIGNAL_CLI_SSE_KEEPALIVE_MS = 15_000;
 const DEFAULT_MAX_SIGNAL_SSE_CLIENTS = 32;
 const MAX_SIGNAL_SSE_BUFFER_BYTES = 2 * 1024 * 1024;
+const SIGNAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 type SignalSseWriteResult = "accepted" | "queued" | "rejected";
 type SignalRpcResult = {
   accepted: boolean;
@@ -380,7 +381,14 @@ async function handleAdminInbound(params: {
 }): Promise<Response> {
   const text = typeof params.body.text === "string" ? params.body.text : undefined;
   const sourceNumber = readTrimmedString(params.body.sourceNumber ?? params.body.senderId);
-  const sourceUuid = readTrimmedString(params.body.sourceUuid);
+  const sourceUuidValue = readTrimmedString(params.body.sourceUuid);
+  const sourceUuid =
+    sourceUuidValue && SIGNAL_UUID_RE.test(sourceUuidValue)
+      ? sourceUuidValue.toLowerCase()
+      : undefined;
+  if (params.body.sourceUuid !== undefined && sourceUuid === undefined) {
+    return jsonResponse({ error: "sourceUuid must be a UUID", ok: false }, 400);
+  }
   if (!text || text.trim().length === 0 || (!sourceNumber && !sourceUuid)) {
     return jsonResponse(
       { error: "text and at least one source identity are required", ok: false },
@@ -395,7 +403,7 @@ async function handleAdminInbound(params: {
   ) {
     return jsonResponse({ error: "timestamp must be a non-negative safe integer", ok: false }, 400);
   }
-  const timestamp = suppliedTimestamp ?? params.state.nextTimestamp++;
+  const timestamp = suppliedTimestamp ?? params.state.nextTimestamp;
   const groupId = readTrimmedString(params.body.groupId);
   const payload = {
     envelope: {
@@ -419,6 +427,7 @@ async function handleAdminInbound(params: {
       503,
     );
   }
+  params.state.nextTimestamp = Math.max(params.state.nextTimestamp, timestamp + 1);
   return jsonResponse({ event: payload, ok: true });
 }
 
@@ -587,6 +596,14 @@ function validSignalRpcParams(method: string, value: unknown): boolean {
   return method === "sendTyping" && hasTypingRecipients(value);
 }
 
+function hasSignalJsonContentType(request: IncomingMessage): boolean {
+  const contentType = request.headers["content-type"];
+  const values = Array.isArray(contentType) ? contentType : [contentType];
+  return values.some(
+    (value) => value?.split(";", 1)[0]?.trim().toLowerCase() === "application/json",
+  );
+}
+
 async function handleRequest(params: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -674,25 +691,30 @@ async function handleRequest(params: {
     });
     fetchResponse = new Response(null, { status: 200 });
   } else if (url.pathname === "/api/v1/rpc" && params.request.method === "POST") {
-    const body = await parseUnknownRequestBody(params.request);
-    if (!isJsonObject(body)) {
-      await writeResponse(params.response, rpcError(-32600, "Invalid Request"));
-      return;
+    if (!hasSignalJsonContentType(params.request)) {
+      drainRequestBody(params.request);
+      fetchResponse = new Response(null, { status: 415 });
+    } else {
+      const body = await parseUnknownRequestBody(params.request);
+      if (!isJsonObject(body)) {
+        await writeResponse(params.response, rpcError(-32600, "Invalid Request"));
+        return;
+      }
+      const rpc = await handleRpc({ body, state: params.state });
+      if (rpc.record) {
+        const event: SignalRecorderEvent = {
+          accepted: rpc.accepted,
+          at: new Date().toISOString(),
+          body,
+          method: "POST",
+          path: url.pathname,
+          query: queryRecord(url),
+          type: "api",
+        };
+        await appendEvent(params.state, event, rpc.accepted || rpc.response.status === 204);
+      }
+      fetchResponse = rpc.response;
     }
-    const rpc = await handleRpc({ body, state: params.state });
-    if (rpc.record) {
-      const event: SignalRecorderEvent = {
-        accepted: rpc.accepted,
-        at: new Date().toISOString(),
-        body,
-        method: "POST",
-        path: url.pathname,
-        query: queryRecord(url),
-        type: "api",
-      };
-      await appendEvent(params.state, event, rpc.accepted || rpc.response.status === 204);
-    }
-    fetchResponse = rpc.response;
   } else {
     fetchResponse = new Response("not found", { status: 404 });
   }

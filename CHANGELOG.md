@@ -28,6 +28,7 @@
 - Prevent pre-aborted WhatsApp listeners and preserve monotonic recorder progress across concurrent waits.
 - Recover stale Baileys acknowledgements into bounded recent deduplication without duplicate delivery.
 - Reject mismatched direct WhatsApp bridge identities while accepting matching device JIDs and distinct group senders.
+- Advertise usable loopback endpoints for wildcard-bound servers, own buffered HTTP response framing, and enforce Signal JSON-RPC media types, UUIDs, and monotonic timestamps.
 
 ## 0.1.11 - 2026-07-13
 
