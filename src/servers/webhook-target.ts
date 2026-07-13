@@ -1,5 +1,10 @@
 import { lookup } from "node:dns/promises";
-import { request as requestHttp, type ClientRequest, type IncomingMessage } from "node:http";
+import {
+  request as requestHttp,
+  type ClientRequest,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+} from "node:http";
 import { request as requestHttps } from "node:https";
 import { BlockList, isIP } from "node:net";
 import { isLoopbackHost } from "./http.js";
@@ -14,6 +19,11 @@ export type WebhookTargetError = "https-required" | "private-address" | "unresol
 export type ValidatedWebhookTarget =
   | { addresses: WebhookAddress[] | undefined }
   | { error: WebhookTargetError };
+
+export type WebhookResponse = {
+  headers: IncomingHttpHeaders;
+  status: number;
+};
 
 export const MAX_CONCURRENT_WEBHOOK_DNS_LOOKUPS = 8;
 
@@ -312,13 +322,14 @@ function isBlockedWebhookAddress(address: string): boolean {
 async function resolveWebhookAddresses(
   hostname: string,
   signal?: AbortSignal,
+  dnsLookupPool: Pick<WebhookDnsLookupPool, "resolve"> = webhookDnsLookupPool,
 ): Promise<WebhookAddress[]> {
   const normalized = normalizeHostname(hostname);
   const family = isIP(normalized);
   if (family === 4 || family === 6) {
     return [{ address: normalized, family }];
   }
-  return (await webhookDnsLookupPool.resolve(normalized, signal)).flatMap((entry) =>
+  return (await dnsLookupPool.resolve(normalized, signal)).flatMap((entry) =>
     entry.family === 4 || entry.family === 6
       ? [{ address: entry.address, family: entry.family }]
       : [],
@@ -327,6 +338,7 @@ async function resolveWebhookAddresses(
 
 export async function validateWebhookTarget(params: {
   allowLoopbackHttp: boolean;
+  dnsLookupPool?: Pick<WebhookDnsLookupPool, "resolve"> | undefined;
   restrictPrivateAddresses: boolean;
   signal?: AbortSignal | undefined;
   url: URL;
@@ -338,16 +350,17 @@ export async function validateWebhookTarget(params: {
   if (params.url.protocol !== "https:" && !allowThisLoopbackHttp) {
     return { error: "https-required" };
   }
-  if (allowThisLoopbackHttp) {
-    return { addresses: undefined };
-  }
   if (!params.restrictPrivateAddresses) {
     return { addresses: undefined };
   }
 
   let addresses: WebhookAddress[];
   try {
-    addresses = await resolveWebhookAddresses(params.url.hostname, params.signal);
+    addresses = await resolveWebhookAddresses(
+      params.url.hostname,
+      params.signal,
+      params.dnsLookupPool,
+    );
   } catch (error) {
     if (params.signal?.aborted) {
       throw error;
@@ -357,13 +370,18 @@ export async function validateWebhookTarget(params: {
   if (addresses.length === 0) {
     return { error: "unresolvable" };
   }
+  if (allowThisLoopbackHttp) {
+    return addresses.every((entry) => isLoopbackHost(entry.address))
+      ? { addresses }
+      : { error: "private-address" };
+  }
   if (addresses.some((entry) => isBlockedWebhookAddress(entry.address))) {
     return { error: "private-address" };
   }
   return { addresses };
 }
 
-export async function postWebhookRequest(params: {
+type PostWebhookRequestParams = {
   activeRequests?: Set<ClientRequest> | undefined;
   address?: WebhookAddress | undefined;
   body: string;
@@ -371,8 +389,13 @@ export async function postWebhookRequest(params: {
   signal?: AbortSignal | undefined;
   timeoutMs: number;
   url: URL;
-}): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
+};
+
+async function sendWebhookRequest(
+  params: PostWebhookRequestParams,
+  resolveOnHeaders: boolean,
+): Promise<WebhookResponse> {
+  return await new Promise<WebhookResponse>((resolve, reject) => {
     const address = params.address;
     let settled = false;
     let response: IncomingMessage | undefined;
@@ -408,9 +431,20 @@ export async function postWebhookRequest(params: {
       },
       (incoming) => {
         response = incoming;
+        const result = {
+          headers: incoming.headers,
+          status: incoming.statusCode ?? 0,
+        };
+        if (resolveOnHeaders) {
+          finish(() => {
+            incoming.destroy();
+            resolve(result);
+          });
+          return;
+        }
         incoming.resume();
         incoming.once("error", (error) => finish(() => reject(error)));
-        incoming.once("end", () => finish(() => resolve(incoming.statusCode ?? 0)));
+        incoming.once("end", () => finish(() => resolve(result)));
       },
     );
     params.activeRequests?.add(request);
@@ -426,4 +460,14 @@ export async function postWebhookRequest(params: {
     request.once("error", (error) => finish(() => reject(error)));
     request.end(params.body);
   });
+}
+
+export async function postWebhookRequestWithResponse(
+  params: PostWebhookRequestParams,
+): Promise<WebhookResponse> {
+  return await sendWebhookRequest(params, true);
+}
+
+export async function postWebhookRequest(params: PostWebhookRequestParams): Promise<number> {
+  return (await sendWebhookRequest(params, false)).status;
 }
