@@ -65,6 +65,8 @@ type MatrixServerState = {
   directRoomsSequence: number | undefined;
   filterBytes: number;
   filters: Map<string, { body: Record<string, unknown>; bytes: number }>;
+  maxCommittedRooms: number;
+  maxCommittedUsers: number;
   nextEvent: number;
   nextFilter: number;
   nextSequence: number;
@@ -87,6 +89,8 @@ const MAX_MATRIX_TIMELINE_EVENTS = 1_000;
 const MAX_MATRIX_TRANSACTION_RESPONSES = 1_000;
 const MATRIX_TRANSACTION_RETENTION_MS = 10 * 60_000;
 const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
+const DEFAULT_MAX_MATRIX_COMMITTED_ROOMS = 1_000;
+const DEFAULT_MAX_MATRIX_COMMITTED_USERS = 1_000;
 
 class InvalidMatrixPathEncodingError extends Error {
   constructor() {
@@ -127,6 +131,8 @@ export type StartMatrixServerParams = {
   botUserId?: string | undefined;
   deviceId?: string | undefined;
   host?: string | undefined;
+  maxCommittedRooms?: number | undefined;
+  maxCommittedUsers?: number | undefined;
   onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
@@ -166,6 +172,16 @@ function matrixResourceLimitError(error: string): Response {
     },
     503,
   );
+}
+
+function resolvePositiveLimit(value: number | undefined, name: string, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive safe integer.`);
+  }
+  return value;
 }
 
 function decodeMatrixPathSegment(value: string): string {
@@ -523,8 +539,25 @@ async function handleAdminInbound(params: {
     return jsonResponse({ error: "Invalid Matrix identifier", ok: false }, 400);
   }
   const direct = params.body.direct === true;
+  const existingRoom = params.state.rooms.get(roomId);
+  if (!existingRoom && params.state.rooms.size >= params.state.maxCommittedRooms) {
+    return jsonResponse({ error: "Committed Matrix rooms limit reached", ok: false }, 503);
+  }
+  if (
+    !params.state.profiles.has(sender) &&
+    params.state.profiles.size >= params.state.maxCommittedUsers
+  ) {
+    return jsonResponse({ error: "Committed Matrix users limit reached", ok: false }, 503);
+  }
+  const roomHasSender = existingRoom
+    ? existingRoom.users.has(sender)
+    : sender === params.state.botUserId;
+  const roomUserCount = existingRoom?.users.size ?? 1;
+  if (!roomHasSender && roomUserCount >= params.state.maxCommittedUsers) {
+    return jsonResponse({ error: "Committed Matrix users limit reached", ok: false }, 503);
+  }
   const room =
-    params.state.rooms.get(roomId) ??
+    existingRoom ??
     createRoom({
       botUserId: params.state.botUserId,
       createdSequence: params.state.nextSequence++,
@@ -865,6 +898,16 @@ export async function startMatrixServer(
     directRoomsSequence: undefined,
     filterBytes: 0,
     filters: new Map(),
+    maxCommittedRooms: resolvePositiveLimit(
+      params.maxCommittedRooms,
+      "maxCommittedRooms",
+      DEFAULT_MAX_MATRIX_COMMITTED_ROOMS,
+    ),
+    maxCommittedUsers: resolvePositiveLimit(
+      params.maxCommittedUsers,
+      "maxCommittedUsers",
+      DEFAULT_MAX_MATRIX_COMMITTED_USERS,
+    ),
     nextEvent: 1,
     nextFilter: 1,
     nextSequence: 1,

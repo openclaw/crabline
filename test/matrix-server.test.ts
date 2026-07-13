@@ -306,6 +306,89 @@ describe("Matrix local provider server", () => {
     expect(overCount.status).toBe(503);
   });
 
+  it("bounds committed room and user state before mutation", async () => {
+    const server = await startMatrixServer({
+      accessToken: "test-token",
+      adminToken: "admin",
+      maxCommittedRooms: 2,
+      maxCommittedUsers: 2,
+      roomId: "!default:matrix.test",
+    });
+    servers.push(server);
+    const sendInbound = (body: Record<string, unknown>) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify(body),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: "admin",
+        },
+        method: "POST",
+      });
+
+    expect(
+      (
+        await sendInbound({
+          roomId: "!dynamic:matrix.test",
+          senderId: "@alice:matrix.test",
+          text: "fills committed state",
+        })
+      ).status,
+    ).toBe(200);
+
+    const roomLimit = await sendInbound({
+      roomId: "!overflow:matrix.test",
+      senderId: "@alice:matrix.test",
+      text: "new room",
+    });
+    expect(roomLimit.status).toBe(503);
+    await expect(roomLimit.json()).resolves.toEqual({
+      error: "Committed Matrix rooms limit reached",
+      ok: false,
+    });
+
+    const userLimit = await sendInbound({
+      roomId: "!dynamic:matrix.test",
+      senderId: "@bob:matrix.test",
+      text: "new user",
+    });
+    expect(userLimit.status).toBe(503);
+    await expect(userLimit.json()).resolves.toEqual({
+      error: "Committed Matrix users limit reached",
+      ok: false,
+    });
+
+    const rooms = await fetch(`${server.manifest.endpoints.clientApiRoot}/joined_rooms`, {
+      headers: auth("test-token"),
+    });
+    await expect(rooms.json()).resolves.toEqual({
+      joined_rooms: ["!default:matrix.test", "!dynamic:matrix.test"],
+    });
+    const bobProfile = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/profile/${encodeURIComponent("@bob:matrix.test")}`,
+      { headers: auth("test-token") },
+    );
+    expect(bobProfile.status).toBe(404);
+    const members = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!dynamic:matrix.test")}/joined_members`,
+      { headers: auth("test-token") },
+    );
+    await expect(members.json()).resolves.toEqual({
+      joined: {
+        "@alice:matrix.test": {},
+        [server.manifest.botUserId]: { display_name: "OpenClaw QA" },
+      },
+    });
+  });
+
+  it("validates committed Matrix state limits", async () => {
+    await expect(startMatrixServer({ maxCommittedRooms: 0 })).rejects.toThrow(
+      "maxCommittedRooms must be a positive safe integer.",
+    );
+    await expect(startMatrixServer({ maxCommittedUsers: 0 })).rejects.toThrow(
+      "maxCommittedUsers must be a positive safe integer.",
+    );
+  });
+
   it("rejects malformed native identifiers before mutating room state", async () => {
     const server = await startMatrixServer();
     servers.push(server);
