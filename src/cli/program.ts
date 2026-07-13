@@ -703,16 +703,20 @@ export function createProgram(
                   identity: await publish(commandOptions.readyFile, readyContents),
                 };
               }
-              outputWritten = await print(
-                options.json
-                  ? payload
-                  : renderServeText(server.manifest, commandOptions.showSecrets === true),
-              );
-              if (!outputWritten) {
+              if (shutdown.requested()) {
+                outputWritten = false;
                 finishPublication();
-              }
-              if (!outputWritten) {
-                await close();
+                await shutdown.wait();
+              } else {
+                outputWritten = await print(
+                  options.json
+                    ? payload
+                    : renderServeText(server.manifest, commandOptions.showSecrets === true),
+                );
+                if (!outputWritten) {
+                  finishPublication();
+                  await close();
+                }
               }
             } finally {
               finishPublication();
