@@ -21,6 +21,7 @@ type Workflow = {
 
 type CompositeAction = {
   runs?: {
+    image?: string;
     steps?: WorkflowStep[];
     using?: string;
   };
@@ -43,12 +44,12 @@ describe("CI workflow hardening", () => {
     );
   });
 
-  it("pins every external workflow action to immutable revisions", async () => {
+  it("pins every external workflow action and image to immutable revisions", async () => {
     const actionRefs = await collectExternalActionRefs(process.cwd());
 
     expect(actionRefs).not.toEqual([]);
     for (const actionRef of actionRefs) {
-      expect(actionRef).toMatch(/^[^@]+@[0-9a-f]{40}$/u);
+      expect(isImmutableActionRef(actionRef)).toBe(true);
     }
   });
 
@@ -58,6 +59,7 @@ describe("CI workflow hardening", () => {
       await Promise.all([
         fs.mkdir(path.join(root, ".github", "workflows"), { recursive: true }),
         fs.mkdir(path.join(root, ".github", "actions", "example"), { recursive: true }),
+        fs.mkdir(path.join(root, ".github", "actions", "container"), { recursive: true }),
       ]);
       await Promise.all([
         fs.writeFile(
@@ -70,14 +72,39 @@ describe("CI workflow hardening", () => {
         ),
         fs.writeFile(
           path.join(root, ".github", "actions", "example", "action.yml"),
-          ["runs:", "  using: composite", "  steps:", "    - uses: owner/action@v1"].join("\n"),
+          [
+            "runs:",
+            "  using: composite",
+            "  steps:",
+            "    - uses: owner/action@v1",
+            "    - uses: docker://alpine:3.20",
+            `    - uses: docker://ghcr.io/owner/action@sha256:${"0".repeat(64)}`,
+          ].join("\n"),
+        ),
+        fs.writeFile(
+          path.join(root, ".github", "actions", "container", "action.yml"),
+          ["runs:", "  using: docker", "  image: docker://busybox:1.37"].join("\n"),
         ),
       ]);
 
-      await expect(collectExternalActionRefs(root)).resolves.toEqual([
-        "owner/repository/.github/workflows/check.yml@main",
-        "owner/action@v1",
-      ]);
+      const actionRefs = await collectExternalActionRefs(root);
+      expect(actionRefs.toSorted()).toEqual(
+        [
+          "owner/repository/.github/workflows/check.yml@main",
+          "owner/action@v1",
+          "docker://alpine:3.20",
+          `docker://ghcr.io/owner/action@sha256:${"0".repeat(64)}`,
+          "docker://busybox:1.37",
+        ].toSorted(),
+      );
+      expect(actionRefs.filter((actionRef) => !isImmutableActionRef(actionRef)).toSorted()).toEqual(
+        [
+          "owner/repository/.github/workflows/check.yml@main",
+          "owner/action@v1",
+          "docker://alpine:3.20",
+          "docker://busybox:1.37",
+        ].toSorted(),
+      );
     } finally {
       await fs.rm(root, { force: true, recursive: true });
     }
@@ -138,17 +165,24 @@ async function collectExternalActionRefs(root: string): Promise<string[]> {
     await Promise.all(
       actionFiles.map(async (filePath) => {
         const action = parse(await fs.readFile(filePath, "utf8")) as CompositeAction;
-        if (action.runs?.using !== "composite") {
-          return [];
+        if (action.runs?.using === "composite") {
+          return action.runs.steps?.flatMap((step) => (step.uses ? [step.uses] : [])) ?? [];
         }
-        return action.runs.steps?.flatMap((step) => (step.uses ? [step.uses] : [])) ?? [];
+        return action.runs?.using === "docker" && action.runs.image?.startsWith("docker://")
+          ? [action.runs.image]
+          : [];
       }),
     )
   ).flat();
 
-  return [...workflowRefs, ...compositeRefs].filter(
-    (uses) => !uses.startsWith("./") && !uses.startsWith("docker://"),
-  );
+  return [...workflowRefs, ...compositeRefs].filter((uses) => !uses.startsWith("./"));
+}
+
+function isImmutableActionRef(actionRef: string): boolean {
+  if (actionRef.startsWith("docker://")) {
+    return /^docker:\/\/[^@\s]+@sha256:[0-9a-f]{64}$/u.test(actionRef);
+  }
+  return /^[^@\s]+@[0-9a-f]{40}$/u.test(actionRef);
 }
 
 async function listYamlFiles(directory: string): Promise<string[]> {
