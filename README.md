@@ -152,18 +152,25 @@ replace `crabline` with `pnpm dev`.
 
 `serve` never accepts credential values in command-line arguments. Set
 `CRABLINE_ACCESS_TOKEN`, `CRABLINE_ADMIN_TOKEN`, `CRABLINE_BOT_TOKEN`, or
-`CRABLINE_SIGNING_SECRET`, or pass a bounded JSON object through stdin or an
-inherited file descriptor:
+`CRABLINE_SIGNING_SECRET`, or pass a bounded JSON object through a file
+descriptor. Package runners should use stdin:
 
 ```bash
-crabline --json serve slack --credentials-fd 0 < .crabline/serve-credentials.json
+pnpm dev --json serve slack --credentials-fd 0 < .crabline/serve-credentials.json
+```
+
+The installed CLI can also use an inherited descriptor when its launcher
+preserves descriptors above 2:
+
+```bash
 crabline --json serve slack --credentials-fd 3 3< .crabline/serve-credentials.json
 ```
 
 The JSON fields are `accessToken`, `adminToken`, `botToken`, and
-`signingSecret`. File-descriptor values override environment fallbacks. Keep
-credential files owner-readable or pipe the JSON directly from a secret
-manager.
+`signingSecret`. File-descriptor values override environment fallbacks. Do not
+pass descriptors above 2 through package runners such as `pnpm`; use fd 0
+instead. Keep credential files owner-readable or pipe the JSON directly from a
+secret manager.
 
 Library callers can pass `onEvent` to `startCrablineServer`, an individual
 provider server, or `startOpenClawCrablineAdapter`. Crabline awaits the callback

@@ -203,17 +203,25 @@ replace `crabline` with `pnpm dev`; `pnpm exec crabline` is not available.
 shell history are not secret-safe. Use the `CRABLINE_ADMIN_TOKEN`,
 `CRABLINE_ACCESS_TOKEN`, `CRABLINE_BOT_TOKEN`, and
 `CRABLINE_SIGNING_SECRET` environment fallbacks, or pass a JSON object through
-stdin or an inherited file descriptor:
+a file descriptor. Package runners should use stdin:
 
 ```bash
-crabline --json serve slack --credentials-fd 0 < .crabline/serve-credentials.json
+pnpm dev --json serve slack --credentials-fd 0 < .crabline/serve-credentials.json
+```
+
+The installed CLI can also use an inherited descriptor when its launcher
+preserves descriptors above 2:
+
+```bash
 crabline --json serve slack --credentials-fd 3 3< .crabline/serve-credentials.json
 ```
 
 The accepted JSON fields are `adminToken`, `accessToken`, `botToken`, and
 `signingSecret`. The input is bounded to 64 KiB, must contain only string
-values, and overrides environment fallbacks field by field. Keep credential
-files owner-readable or pipe the JSON directly from a secret manager.
+values, and overrides environment fallbacks field by field. Do not pass
+descriptors above 2 through package runners such as `pnpm`; use fd 0 instead.
+Keep credential files owner-readable or pipe the JSON directly from a secret
+manager.
 
 ### Mattermost
 
