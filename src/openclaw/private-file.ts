@@ -493,7 +493,13 @@ $trustedSids = @(
   "S-1-5-18",
   "S-1-5-32-544"
 )
-$deleteChildMask = [uint32][int32][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles
+$ancestorReplacementRights = (
+  [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+  [System.Security.AccessControl.FileSystemRights]::Delete -bor
+  [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+  [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+)
+$ancestorReplacementMask = [uint32][int32]$ancestorReplacementRights
 $genericAll = [uint32]0x10000000
 $inheritOnly = [System.Security.AccessControl.PropagationFlags]::InheritOnly
 
@@ -514,7 +520,7 @@ foreach ($rule in $rules) {
     $appliesToDirectory -and
     $rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
     $trustedSids -notcontains $rule.IdentityReference.Value -and
-    ($ruleAccessMask -band ($deleteChildMask -bor $genericAll)) -ne 0
+    ($ruleAccessMask -band ($ancestorReplacementMask -bor $genericAll)) -ne 0
   ) {
     throw "Directory grants child-deletion rights to an untrusted principal."
   }
@@ -1138,6 +1144,16 @@ async function captureSafePrivateMutationBoundary(
     platform,
     stickyTargetOwnedByCurrentUser,
   );
+  return await capturePrivateMutationPathAncestry(resolvedBoundaryPath, platform, boundary);
+}
+
+async function capturePrivateMutationPathAncestry(
+  directoryPath: string,
+  platform: NodeJS.Platform,
+  boundary?: SecuredPrivateDirectory,
+): Promise<SecuredPrivateDirectory> {
+  const resolvedBoundaryPath = path.resolve(directoryPath);
+  const capturedBoundary = boundary ?? (await captureDirectoryIdentity(resolvedBoundaryPath));
   const ancestors: SecuredPrivateDirectory[] = [];
   let childPath = await fs.realpath(resolvedBoundaryPath);
   for (;;) {
@@ -1169,7 +1185,7 @@ async function captureSafePrivateMutationBoundary(
       for (const ancestor of [...ancestors].reverse()) {
         await ancestor.assertIdentityAt();
       }
-      await boundary.assertIdentityAt(currentPath);
+      await capturedBoundary.assertIdentityAt(currentPath);
     },
     directoryPath: resolvedBoundaryPath,
   };
@@ -2761,6 +2777,9 @@ export async function publishPrivateFileAtomically(
         platform,
         true,
       );
+  const migrationBoundary = parentExists
+    ? await capturePrivateMutationPathAncestry(parentDirectory, platform)
+    : undefined;
   const firstCreatedDirectory =
     platform === "win32"
       ? parentExists
@@ -2777,7 +2796,9 @@ export async function publishPrivateFileAtomically(
       platform,
     });
   }
+  await migrationBoundary?.assertIdentityAt();
   const parent = await secureOwnerOnlyMutationParent(parentDirectory);
+  await migrationBoundary?.assertIdentityAt();
   const claim = await acquirePrivateMutationClaimChain(parent, {
     ...(options.claimRuntime ? { runtime: options.claimRuntime } : {}),
     ...(options.createWindowsFile ? { createWindowsFile: options.createWindowsFile } : {}),
