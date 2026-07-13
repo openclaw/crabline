@@ -372,6 +372,27 @@ describe("script provider", () => {
     ).resolves.toMatchObject({ text: '["seen-1","seen-2"]' });
   });
 
+  it("passes the accepted outbound thread ID to wait commands", async () => {
+    const context = await createContext();
+    const waitScript = path.join(path.dirname(context.manifestPath), "wait-thread.mjs");
+    await writeText(
+      waitScript,
+      'let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{const input=JSON.parse(raw);process.stdout.write(JSON.stringify({message:{author:"assistant",id:"inbound-thread",sentAt:new Date().toISOString(),text:input.wait.threadId,threadId:input.wait.threadId}}));});',
+    );
+    context.config.script!.commands.waitForInbound = `node ${waitScript}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        nonce: "nonce",
+        since: new Date().toISOString(),
+        threadId: "accepted-thread",
+        timeoutMs: 1000,
+      }),
+    ).resolves.toMatchObject({ text: "accepted-thread", threadId: "accepted-thread" });
+  });
+
   it("rejects inbound messages returned during the wait exit grace", async () => {
     const context = await createContext();
     const waitScript = path.join(path.dirname(context.manifestPath), "wait-late-message.mjs");

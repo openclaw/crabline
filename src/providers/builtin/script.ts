@@ -817,6 +817,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
           nonce: context.nonce,
           since: context.since,
           target: this.normalizeTarget(context.fixture.target),
+          threadId: context.threadId,
           timeoutMs: context.timeoutMs,
         },
       },

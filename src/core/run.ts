@@ -28,6 +28,8 @@ const INBOUND_ABORT_GRACE_MS = 250;
 const MAX_EXCLUDED_INBOUND_IDS = 1_024;
 const MAX_SCRIPT_STDIN_BYTES = 1024 * 1024;
 
+class UnsettledProviderOperationError extends CrablineError {}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -70,7 +72,7 @@ async function withFixtureDeadline<T>(
       () => true,
     );
     if ((await raceInboundDeadline(settled, INBOUND_ABORT_GRACE_MS)) === INBOUND_DEADLINE_REACHED) {
-      throw new CrablineError(
+      throw new UnsettledProviderOperationError(
         `Provider ${operationName} did not settle within ${INBOUND_ABORT_GRACE_MS}ms after abort.`,
         {
           cause: timeoutError,
@@ -305,6 +307,9 @@ export async function runFixtureCommand(params: {
           providerId: fixture.provider,
         });
       } catch (error) {
+        if (error instanceof UnsettledProviderOperationError) {
+          abortDrainFailed = true;
+        }
         return (result = toFailure(fixture.id, fixture.provider, mode, error, "connectivity"));
       }
     } else {
@@ -366,6 +371,10 @@ export async function runFixtureCommand(params: {
             );
           } catch (error) {
             lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "outbound", nonce);
+            if (error instanceof UnsettledProviderOperationError) {
+              abortDrainFailed = true;
+              break;
+            }
             continue;
           }
           if (!accepted.accepted) {
@@ -420,6 +429,7 @@ export async function runFixtureCommand(params: {
                     nonce,
                     since,
                     target: fixture.target,
+                    threadId: accepted.threadId,
                     timeoutMs,
                   },
                 });
@@ -429,7 +439,7 @@ export async function runFixtureCommand(params: {
               if (candidate === INBOUND_DEADLINE_REACHED) {
                 if (!(await abortAndDrainInboundWait(wait, controller))) {
                   abortDrainFailed = true;
-                  throw new CrablineError(
+                  throw new UnsettledProviderOperationError(
                     `Provider inbound wait did not settle within ${INBOUND_ABORT_GRACE_MS}ms after abort.`,
                     { kind: "inbound" },
                   );
@@ -481,7 +491,9 @@ export async function runFixtureCommand(params: {
               ok: false,
               providerId: fixture.provider,
             };
-            await sleep(50);
+            if (attempts < maxAttempts) {
+              await sleep(50);
+            }
             continue;
           }
 
@@ -523,7 +535,7 @@ export async function runFixtureCommand(params: {
         ) {
           cleanupErrors.push(
             new Error(
-              `Provider cleanup did not settle within ${INBOUND_ABORT_GRACE_MS}ms after an aborted inbound wait.`,
+              `Provider cleanup did not settle within ${INBOUND_ABORT_GRACE_MS}ms after an aborted operation.`,
             ),
           );
         }

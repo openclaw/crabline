@@ -112,6 +112,21 @@ describe("manifest schema", () => {
     ).not.toThrow();
   });
 
+  it("rejects loopback delays beyond the Node timer ceiling", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          local: {
+            adapter: "loopback",
+            loopback: { delayMs: 2_147_483_648 },
+          },
+        },
+      }),
+    ).toThrow(/2147483647/u);
+  });
+
   it("rejects fixture ids that cannot be embedded in nonces", () => {
     for (const id of ["foo_bar", "foo.bar", "foo bar"]) {
       expect(() =>

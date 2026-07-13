@@ -9,7 +9,7 @@ import {
   runCli,
   waitForShutdown,
 } from "../src/cli/program.js";
-import type { StartedCrablineServer } from "../src/servers/index.js";
+import type { StartCrablineServerParams, StartedCrablineServer } from "../src/servers/index.js";
 import { captureWrites, createTempDir, disposeTempDir, writeText } from "./test-helpers.js";
 
 const lockState = vi.hoisted(() => ({
@@ -41,6 +41,7 @@ const stripAnsi = (value: string): string => value.replace(ansiPattern, "");
 
 afterEach(async () => {
   process.exitCode = 0;
+  vi.unstubAllEnvs();
   lockState.options.length = 0;
   lockState.releaseError = undefined;
   await Promise.all(directories.splice(0).map(disposeTempDir));
@@ -376,6 +377,75 @@ describe("cli", () => {
 
     expect(probe?.usage()).toBe("[options] <fixtureId>");
     expect(probe?.description()).toBe("Probe provider readiness using a fixture");
+  });
+
+  it("rejects non-decimal serve ports before startup", async () => {
+    const startServer = vi.fn();
+    const program = createProgram(() => undefined, { startServer });
+
+    for (const port of ["1e3", "0x10", " 80"]) {
+      await expect(
+        program.parseAsync(["node", "crabline", "serve", "slack", "--port", port, "--once"]),
+      ).rejects.toThrow(`Invalid local server port: ${port}`);
+    }
+    expect(startServer).not.toHaveBeenCalled();
+  });
+
+  it("loads serve secrets from env while keeping flags authoritative", async () => {
+    vi.stubEnv("CRABLINE_ACCESS_TOKEN", "example");
+    vi.stubEnv("CRABLINE_ADMIN_TOKEN", "fake");
+    vi.stubEnv("CRABLINE_BOT_TOKEN", "sample");
+    vi.stubEnv("CRABLINE_SIGNING_SECRET", "test-token-placeholder");
+    const startServer = vi.fn(
+      async (_params: StartCrablineServerParams): Promise<StartedCrablineServer> => ({
+        async close() {},
+        manifest: {
+          adminToken: "fake",
+          baseUrl: "http://127.0.0.1:12345",
+          botToken: "placeholder",
+          endpoints: {
+            adminInboundUrl: "http://127.0.0.1:12345/crabline/slack/inbound",
+            apiRoot: "http://127.0.0.1:12345/api/",
+            eventsUrl: "http://127.0.0.1:12345/slack/events",
+          },
+          env: {
+            SLACK_API_URL: "http://127.0.0.1:12345/api/",
+            SLACK_BOT_TOKEN: "placeholder",
+            SLACK_SIGNING_SECRET: "test-token-placeholder",
+          },
+          provider: "slack" as const,
+          recorderPath: "/tmp/slack.jsonl",
+          signingSecret: "test-token-placeholder",
+          version: 1 as const,
+        },
+      }),
+    );
+    const program = createProgram(() => undefined, { startServer });
+    const captured = captureWrites();
+
+    try {
+      await program.parseAsync([
+        "node",
+        "crabline",
+        "--json",
+        "serve",
+        "slack",
+        "--bot-token",
+        "placeholder",
+        "--once",
+      ]);
+    } finally {
+      captured.restore();
+    }
+
+    expect(startServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        adminToken: "fake",
+        botToken: "placeholder",
+        channel: "slack",
+        signingSecret: "test-token-placeholder",
+      }),
+    );
   });
 
   it("isolates exit codes across repeated invocations", async () => {

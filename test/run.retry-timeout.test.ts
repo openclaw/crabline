@@ -212,6 +212,56 @@ describe("runFixtureCommand retries", () => {
     expect(cleanupCalls).toBe(1);
   });
 
+  it("does not retry an outbound send that ignores cancellation", async () => {
+    let cleanupCalls = 0;
+    let releaseSend: (() => void) | undefined;
+    let sendCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send", "roundtrip", "agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        sendCalls += 1;
+        return await new Promise((resolve) => {
+          releaseSend = () =>
+            resolve({ accepted: true, messageId: "sent-late", threadId: "thread-1" });
+        });
+      },
+      async waitForInbound() {
+        throw new Error("wait must not run");
+      },
+      async cleanup() {
+        cleanupCalls += 1;
+        releaseSend?.();
+      },
+    };
+    const registry: Registry = {
+      catalog: OPENCLAW_SUPPORT_CATALOG,
+      resolve() {
+        return provider;
+      },
+    };
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry,
+    });
+
+    expect(result).toMatchObject({ failureKind: "timeout", ok: false });
+    expect(result.diagnostics).toContain("Provider send did not settle within 250ms after abort.");
+    expect(sendCalls).toBe(1);
+    expect(cleanupCalls).toBe(1);
+  });
+
   it("bounds cleanup after an inbound wait ignores cancellation", async () => {
     let releaseWait: (() => void) | undefined;
     const provider: ProviderAdapter = {
@@ -254,7 +304,7 @@ describe("runFixtureCommand retries", () => {
 
       expect(result).toMatchObject({ failureKind: "inbound", ok: false });
       expect(result.diagnostics).toContain(
-        "cleanup failed: Provider cleanup did not settle within 250ms after an aborted inbound wait.",
+        "cleanup failed: Provider cleanup did not settle within 250ms after an aborted operation.",
       );
     } finally {
       releaseWait?.();

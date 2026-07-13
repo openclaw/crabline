@@ -130,7 +130,7 @@ const ScriptCommandsSchema = z.strictObject({
 });
 
 const LoopbackConfigSchema = z.strictObject({
-  delayMs: z.number().int().min(0).default(25),
+  delayMs: z.number().int().min(0).max(MAX_TIMER_MS).default(25),
 });
 
 const ScriptConfigSchema = z.strictObject({
