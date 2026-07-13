@@ -12,6 +12,7 @@ import {
   securePrivateDirectory,
   verifyOwnerOnlyWindowsDirectoryAcl,
   verifyOwnerOnlyWindowsFileAcl,
+  verifySafeWindowsDirectoryEntryParent,
   verifySafeWindowsDirectoryMutationBoundary,
   type WindowsAclRunner,
 } from "../src/openclaw/private-file.js";
@@ -107,6 +108,32 @@ describe("OpenClaw private file publication", () => {
         await expect(fs.stat(path.dirname(filePath))).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
         await fs.chmod(directory, 0o700);
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a private mutation boundary beneath a replaceable ancestor",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const sharedParent = path.join(directory, "shared");
+        const privateParent = path.join(sharedParent, "private");
+        const publicationParent = path.join(privateParent, "generation");
+        await fs.mkdir(publicationParent, { recursive: true, mode: 0o700 });
+        await fs.chmod(sharedParent, 0o777);
+        await fs.chmod(privateParent, 0o700);
+        await fs.chmod(publicationParent, 0o700);
+
+        await expect(
+          publishPrivateFileAtomically(path.join(publicationParent, "manifest.json"), "private\n"),
+        ).rejects.toThrow("Private mutation boundary is writable by another POSIX principal.");
+
+        await expect(fs.stat(path.join(publicationParent, "manifest.json"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      } finally {
         await disposeTempDir(directory);
       }
     },
@@ -2187,6 +2214,40 @@ describe("OpenClaw private file publication", () => {
       "$ruleAccessMask -band ($mutationAccessMask -bor $genericMutationRights)",
     );
   });
+
+  it("checks Windows delete-child rights when verifying mutation boundary ancestry", async () => {
+    const calls: Parameters<WindowsAclRunner>[] = [];
+    const run: WindowsAclRunner = async (...args) => {
+      calls.push(args);
+      return "";
+    };
+
+    await verifySafeWindowsDirectoryEntryParent(String.raw`C:\Users`, run, String.raw`C:\Windows`);
+
+    const script = calls[0]![1].at(-1);
+    expect(script).toContain("DeleteSubdirectoriesAndFiles");
+    expect(script).toContain("$genericAll = [uint32]0x10000000");
+    expect(script).toContain("$appliesToDirectory");
+    expect(script).not.toContain("Set-Acl");
+  });
+
+  it.skipIf(process.platform !== "win32")(
+    "rejects Windows mutation boundary ancestry with untrusted delete-child rights",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        execFileSync("icacls.exe", [directory, "/inheritance:r", "/grant", "*S-1-1-0:(F)"], {
+          stdio: "ignore",
+        });
+
+        await expect(verifySafeWindowsDirectoryEntryParent(directory)).rejects.toThrow(
+          "Private mutation boundary has a replaceable Windows ancestor.",
+        );
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it.skipIf(process.platform !== "win32")(
     "rejects generic write access granted to Everyone on Windows",
