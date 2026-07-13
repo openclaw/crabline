@@ -2,6 +2,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCachedJwtKeyResolver,
+  JwtKeyInfrastructureError,
   resolveHttpCacheExpiry,
   verifySignedJwt,
 } from "../src/providers/signed-jwt.js";
@@ -474,6 +475,108 @@ describe("signed JWT remote key cache", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("replaces a permanently pending generation after cooldown and fences its late result", async () => {
+    vi.useFakeTimers();
+    try {
+      type TestKey = { generation: number; kid: string };
+      let now = 1_700_000_000_000;
+      let fetches = 0;
+      const loads: Array<{
+        resolve(keySet: { expiresAt: number; values: TestKey[] }): void;
+      }> = [];
+      const resolveKey = createCachedJwtKeyResolver<TestKey>({
+        fetchKeys: async () => {
+          fetches += 1;
+          return await new Promise((resolve) => {
+            loads.push({ resolve });
+          });
+        },
+        keyId: (value) => value.kid,
+        now: () => now,
+        refreshCooldownMs: 100,
+        timeoutMs: 10,
+        unknownKeyMessage: "unknown key",
+      });
+
+      const first = resolveKey({ alg: "RS256", kid: "known" }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await first).toBeInstanceOf(JwtKeyInfrastructureError);
+      expect(fetches).toBe(1);
+
+      now += 101;
+      const replacement = resolveKey({ alg: "RS256", kid: "known" });
+      await vi.runAllTicks();
+      expect(fetches).toBe(2);
+      loads[1]!.resolve({
+        expiresAt: now + 60_000,
+        values: [{ generation: 2, kid: "known" }],
+      });
+      await expect(replacement).resolves.toMatchObject({ generation: 2 });
+
+      loads[0]!.resolve({
+        expiresAt: now + 120_000,
+        values: [{ generation: 1, kid: "known" }],
+      });
+      await vi.runAllTicks();
+      await expect(resolveKey({ alg: "RS256", kid: "known" })).resolves.toMatchObject({
+        generation: 2,
+      });
+      expect(fetches).toBe(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a key set when any remote key id is invalid before caching valid peers", async () => {
+    let now = 1_700_000_000_000;
+    let fetches = 0;
+    const resolveKey = createCachedJwtKeyResolver<{ kid?: string }>({
+      async fetchKeys() {
+        fetches += 1;
+        return {
+          expiresAt: now + 60_000,
+          values: fetches === 1 ? [{ kid: "known" }, {}] : [{ kid: "known" }],
+        };
+      },
+      keyId: (value) => value.kid,
+      now: () => now,
+      refreshCooldownMs: 100,
+      unknownKeyMessage: "unknown key",
+    });
+
+    await expect(resolveKey({ alg: "RS256", kid: "known" })).rejects.toThrow(
+      JwtKeyInfrastructureError,
+    );
+    await expect(resolveKey({ alg: "RS256", kid: "known" })).rejects.toThrow(/key id is invalid/u);
+    expect(fetches).toBe(1);
+
+    now += 101;
+    await expect(resolveKey({ alg: "RS256", kid: "known" })).resolves.toMatchObject({
+      kid: "known",
+    });
+    expect(fetches).toBe(2);
+  });
+
+  it("rejects oversized remote key sets before positive caching", async () => {
+    const resolveKey = createCachedJwtKeyResolver<string>({
+      async fetchKeys() {
+        return {
+          expiresAt: 1_700_000_060_000,
+          values: Array.from({ length: 129 }, (_, index) => `key-${index}`),
+        };
+      },
+      keyId: (value) => value,
+      now: () => 1_700_000_000_000,
+      unknownKeyMessage: "unknown key",
+    });
+
+    await expect(resolveKey({ alg: "RS256", kid: "key-0" })).rejects.toThrow(/128-key limit/u);
   });
 
   it("backs off failed key fetches", async () => {

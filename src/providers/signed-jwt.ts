@@ -12,10 +12,18 @@ export type RemoteJwtKeySet<T> = {
   values: readonly T[];
 };
 
+export class JwtKeyInfrastructureError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "JwtKeyInfrastructureError";
+  }
+}
+
 const DEFAULT_KEY_FETCH_TIMEOUT_MS = 5_000;
 const DEFAULT_UNKNOWN_KEY_COOLDOWN_MS = 30_000;
 const MAX_HTTP_CACHE_AGE_SECONDS = 24 * 60 * 60;
 const MAX_NEGATIVE_KEY_IDS = 128;
+const MAX_REMOTE_KEY_SET_SIZE = 128;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 function decodeBase64UrlPart(value: string, label: string): Buffer {
@@ -148,6 +156,40 @@ export function resolveHttpCacheExpiry(response: Response, now: number): number 
     : now;
 }
 
+function validateRemoteJwtKeySet<T>(
+  keySet: RemoteJwtKeySet<T>,
+  keyId: (value: T) => string | undefined,
+): { keyIds: readonly string[]; keySet: RemoteJwtKeySet<T> } {
+  if (!Number.isFinite(keySet.expiresAt)) {
+    throw new JwtKeyInfrastructureError("JWT signing key set expiry is invalid.");
+  }
+  if (!Array.isArray(keySet.values)) {
+    throw new JwtKeyInfrastructureError("JWT signing key set values must be an array.");
+  }
+  if (keySet.values.length > MAX_REMOTE_KEY_SET_SIZE) {
+    throw new JwtKeyInfrastructureError(
+      `JWT signing key set exceeds the ${MAX_REMOTE_KEY_SET_SIZE}-key limit.`,
+    );
+  }
+  const keyIds = new Set<string>();
+  for (const value of keySet.values) {
+    let candidateKeyId: string | undefined;
+    try {
+      candidateKeyId = keyId(value);
+    } catch (error) {
+      throw new JwtKeyInfrastructureError("JWT signing key id is invalid.", { cause: error });
+    }
+    if (typeof candidateKeyId !== "string" || candidateKeyId.length === 0) {
+      throw new JwtKeyInfrastructureError("JWT signing key id is invalid.");
+    }
+    if (keyIds.has(candidateKeyId)) {
+      throw new JwtKeyInfrastructureError("JWT signing key ids must be unique.");
+    }
+    keyIds.add(candidateKeyId);
+  }
+  return { keyIds: [...keyIds], keySet };
+}
+
 export function createCachedJwtKeyResolver<T>(params: {
   fetchKeys(signal: AbortSignal): Promise<RemoteJwtKeySet<T>>;
   keyId(value: T): string | undefined;
@@ -163,9 +205,12 @@ export function createCachedJwtKeyResolver<T>(params: {
   let fetchInFlight:
     | {
         controller: AbortController;
+        generation: number;
         promise: Promise<RemoteJwtKeySet<T>>;
+        retryAt: number | undefined;
       }
     | undefined;
+  let fetchGeneration = 0;
   let refreshInFlight: Promise<RemoteJwtKeySet<T>> | undefined;
   let refreshCooldownUntil = 0;
   let fetchFailureCooldownUntil = 0;
@@ -190,39 +235,52 @@ export function createCachedJwtKeyResolver<T>(params: {
 
   const fetchKeys = async (): Promise<RemoteJwtKeySet<T>> => {
     let inFlight = fetchInFlight;
+    const currentTime = now();
+    if (inFlight?.retryAt !== undefined && inFlight.retryAt <= currentTime) {
+      if (fetchInFlight?.generation === inFlight.generation) {
+        fetchInFlight = undefined;
+      }
+      inFlight = undefined;
+    }
     if (!inFlight) {
-      if (fetchFailureCooldownUntil > now()) {
+      if (fetchFailureCooldownUntil > currentTime) {
         throw fetchFailureError;
       }
       const controller = new AbortController();
+      const generation = ++fetchGeneration;
       let keyFetch!: Promise<RemoteJwtKeySet<T>>;
       keyFetch = Promise.resolve()
         .then(() => params.fetchKeys(controller.signal))
+        .then((keySet) => validateRemoteJwtKeySet(keySet, params.keyId))
         .then(
-          (keySet) => {
+          ({ keyIds, keySet }) => {
+            if (fetchInFlight?.generation !== generation) {
+              throw new JwtKeyInfrastructureError(
+                "JWT signing key fetch completed after its generation expired.",
+              );
+            }
             cached = keySet.expiresAt > now() ? keySet : undefined;
             fetchFailureCooldownUntil = 0;
             fetchFailureError = undefined;
-            for (const value of keySet.values) {
-              const keyId = params.keyId(value);
-              if (keyId) {
-                negativeKeyIds.delete(keyId);
-              }
+            for (const keyId of keyIds) {
+              negativeKeyIds.delete(keyId);
             }
             return keySet;
           },
           (error: unknown) => {
-            fetchFailureCooldownUntil = now() + refreshCooldownMs;
-            fetchFailureError = error;
+            if (fetchInFlight?.generation === generation) {
+              fetchFailureCooldownUntil = now() + refreshCooldownMs;
+              fetchFailureError = error;
+            }
             throw error;
           },
         )
         .finally(() => {
-          if (fetchInFlight?.promise === keyFetch) {
+          if (fetchInFlight?.generation === generation) {
             fetchInFlight = undefined;
           }
         });
-      inFlight = { controller, promise: keyFetch };
+      inFlight = { controller, generation, promise: keyFetch, retryAt: undefined };
       fetchInFlight = inFlight;
       void keyFetch.catch(() => {});
     }
@@ -231,7 +289,13 @@ export function createCachedJwtKeyResolver<T>(params: {
     const timedOut = new Promise<never>((_, reject) => {
       timeout = setTimeout(() => {
         inFlight.controller.abort();
-        reject(new Error("JWT signing key fetch timed out."));
+        const timeoutError = new JwtKeyInfrastructureError("JWT signing key fetch timed out.");
+        inFlight.retryAt ??= now() + refreshCooldownMs;
+        if (fetchInFlight?.generation === inFlight.generation) {
+          fetchFailureCooldownUntil = inFlight.retryAt;
+          fetchFailureError = timeoutError;
+        }
+        reject(timeoutError);
       }, timeoutMs);
     });
     try {

@@ -7,7 +7,7 @@
 - Suppress serve readiness output when shutdown begins during ready-file publication.
 - Treat Unicode format characters as continuations when recognizing standalone acknowledgement tokens.
 - Stream webhook responses with backpressure and cancel unfinished bodies when clients disconnect.
-- Keep timed-out signed-JWT key loads single-flighted until their underlying loaders settle.
+- Keep timed-out signed-JWT key loads single-flighted during a bounded cooldown, fence late generations, and reject malformed or oversized remote key sets.
 - Preserve committed provider recorder errors during final identity confirmation and strictly parse quoted JWT cache lifetimes.
 - Lint repository tooling in the type-aware verification gate.
 - Preserve WhatsApp acknowledgement races without stale pending state or false deduplication.
