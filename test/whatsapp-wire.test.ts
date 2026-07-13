@@ -1,5 +1,5 @@
 import { deflateSync } from "node:zlib";
-import { Curve as BaileysCurve } from "baileys";
+import { Curve as BaileysCurve, proto } from "baileys";
 import { describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import {
@@ -21,7 +21,11 @@ import {
   NOISE_WA_HEADER,
   signedKeyPair,
 } from "../src/servers/whatsapp-wire/crypto.js";
-import { decodeHandshakeMessage } from "../src/servers/whatsapp-wire/handshake.js";
+import {
+  decodeHandshakeMessage,
+  encodeHandshakeMessage,
+  type HandshakeMessage,
+} from "../src/servers/whatsapp-wire/handshake.js";
 import { xmppPreKey, xmppSignedPreKey } from "../src/servers/whatsapp-wire/signal.js";
 import {
   createSerializedMessageHandler,
@@ -399,6 +403,77 @@ describe("WhatsApp WebSocket message processing", () => {
 });
 
 describe("WhatsApp handshake protobufs", () => {
+  const variants: Array<{
+    baileys: proto.IHandshakeMessage;
+    message: HandshakeMessage;
+    name: string;
+  }> = [
+    {
+      baileys: {
+        clientHello: {
+          ephemeral: Buffer.from([1]),
+          extendedCiphertext: Buffer.from([5]),
+          payload: Buffer.alloc(0),
+          static: Buffer.from([2]),
+          useExtended: false,
+        },
+      },
+      message: {
+        clientHello: {
+          ephemeral: Buffer.from([1]),
+          extendedCiphertext: Buffer.from([5]),
+          payload: Buffer.alloc(0),
+          staticKey: Buffer.from([2]),
+          useExtended: false,
+        },
+      },
+      name: "client hello",
+    },
+    {
+      baileys: {
+        serverHello: {
+          ephemeral: Buffer.from([1]),
+          extendedStatic: Buffer.from([4]),
+          payload: Buffer.from([3]),
+          static: Buffer.from([2]),
+        },
+      },
+      message: {
+        serverHello: {
+          ephemeral: Buffer.from([1]),
+          extendedStatic: Buffer.from([4]),
+          payload: Buffer.from([3]),
+          staticKey: Buffer.from([2]),
+        },
+      },
+      name: "server hello",
+    },
+    {
+      baileys: {
+        clientFinish: {
+          extendedCiphertext: Buffer.from([3]),
+          payload: Buffer.from([2]),
+          static: Buffer.from([1]),
+        },
+      },
+      message: {
+        clientFinish: {
+          extendedCiphertext: Buffer.from([3]),
+          payload: Buffer.from([2]),
+          staticKey: Buffer.from([1]),
+        },
+      },
+      name: "client finish",
+    },
+  ];
+
+  it.each(variants)("round trips the complete $name variant", ({ baileys, message }) => {
+    const encoded = encodeHandshakeMessage(message);
+
+    expect(encoded).toEqual(Buffer.from(proto.HandshakeMessage.encode(baileys).finish()));
+    expect(decodeHandshakeMessage(encoded)).toEqual(message);
+  });
+
   it("skips unknown ten-byte uint64 varints", () => {
     const message = decodeHandshakeMessage(
       Buffer.from([
@@ -416,6 +491,8 @@ describe("WhatsApp handshake protobufs", () => {
       Buffer.from([0x11, 0, 0, 0, 0, 0, 0, 0, 0]),
       Buffer.from([0x15, 0, 0, 0, 0]),
       Buffer.from([0x12, 0x02, 0x08, 0x00]),
+      Buffer.from([0x12, 0x02, 0x22, 0x00]),
+      Buffer.from([0x1a, 0x02, 0x08, 0x00]),
       Buffer.from([0x22, 0x02, 0x10, 0x00]),
     ]) {
       expect(() => decodeHandshakeMessage(message)).toThrow("Invalid WhatsApp handshake wire type");

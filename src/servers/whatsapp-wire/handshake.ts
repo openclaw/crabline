@@ -4,16 +4,22 @@ type BytesField = Buffer | undefined;
 
 export type HandshakeMessage = {
   clientFinish?: {
+    extendedCiphertext?: Buffer;
     payload?: Buffer;
     staticKey?: Buffer;
   };
   clientHello?: {
     ephemeral?: Buffer;
+    extendedCiphertext?: Buffer;
+    payload?: Buffer;
+    staticKey?: Buffer;
+    useExtended?: boolean;
   };
   serverHello?: {
-    ephemeral: Uint8Array;
-    payload: Uint8Array;
-    staticKey: Uint8Array;
+    ephemeral?: Uint8Array;
+    extendedStatic?: Uint8Array;
+    payload?: Uint8Array;
+    staticKey?: Uint8Array;
   };
 };
 
@@ -26,6 +32,9 @@ export function decodeHandshakeMessage(data: Uint8Array): HandshakeMessage {
     if (field === 2) {
       requireBytesWireType(tag, field);
       message.clientHello = decodeClientHello(reader.bytes());
+    } else if (field === 3) {
+      requireBytesWireType(tag, field);
+      message.serverHello = decodeServerHello(reader.bytes());
     } else if (field === 4) {
       requireBytesWireType(tag, field);
       message.clientFinish = decodeClientFinish(reader.bytes());
@@ -38,8 +47,14 @@ export function decodeHandshakeMessage(data: Uint8Array): HandshakeMessage {
 
 export function encodeHandshakeMessage(message: HandshakeMessage): Buffer {
   const writer = new ProtoWriter();
+  if (message.clientHello) {
+    writer.bytesField(2, encodeClientHello(message.clientHello));
+  }
   if (message.serverHello) {
     writer.bytesField(3, encodeServerHello(message.serverHello));
+  }
+  if (message.clientFinish) {
+    writer.bytesField(4, encodeClientFinish(message.clientFinish));
   }
   return writer.finish();
 }
@@ -47,20 +62,77 @@ export function encodeHandshakeMessage(message: HandshakeMessage): Buffer {
 function decodeClientHello(data: Uint8Array): NonNullable<HandshakeMessage["clientHello"]> {
   const reader = new ProtoReader(data);
   let ephemeral: BytesField;
+  let extendedCiphertext: BytesField;
+  let payload: BytesField;
+  let staticKey: BytesField;
+  let useExtended: boolean | undefined;
   while (!reader.done()) {
     const tag = reader.tag();
-    if (tag >>> 3 === 1) {
-      requireBytesWireType(tag, 1);
+    const field = tag >>> 3;
+    if (field === 1) {
+      requireBytesWireType(tag, field);
       ephemeral = reader.bytes();
+    } else if (field === 2) {
+      requireBytesWireType(tag, field);
+      staticKey = reader.bytes();
+    } else if (field === 3) {
+      requireBytesWireType(tag, field);
+      payload = reader.bytes();
+    } else if (field === 4) {
+      requireVarintWireType(tag, field);
+      useExtended = reader.uint32() !== 0;
+    } else if (field === 5) {
+      requireBytesWireType(tag, field);
+      extendedCiphertext = reader.bytes();
     } else {
       reader.skip(tag & 7);
     }
   }
-  return ephemeral === undefined ? {} : { ephemeral };
+  return {
+    ...(ephemeral === undefined ? {} : { ephemeral }),
+    ...(extendedCiphertext === undefined ? {} : { extendedCiphertext }),
+    ...(payload === undefined ? {} : { payload }),
+    ...(staticKey === undefined ? {} : { staticKey }),
+    ...(useExtended === undefined ? {} : { useExtended }),
+  };
+}
+
+function decodeServerHello(data: Uint8Array): NonNullable<HandshakeMessage["serverHello"]> {
+  const reader = new ProtoReader(data);
+  let ephemeral: BytesField;
+  let extendedStatic: BytesField;
+  let payload: BytesField;
+  let staticKey: BytesField;
+  while (!reader.done()) {
+    const tag = reader.tag();
+    const field = tag >>> 3;
+    if (field === 1) {
+      requireBytesWireType(tag, field);
+      ephemeral = reader.bytes();
+    } else if (field === 2) {
+      requireBytesWireType(tag, field);
+      staticKey = reader.bytes();
+    } else if (field === 3) {
+      requireBytesWireType(tag, field);
+      payload = reader.bytes();
+    } else if (field === 4) {
+      requireBytesWireType(tag, field);
+      extendedStatic = reader.bytes();
+    } else {
+      reader.skip(tag & 7);
+    }
+  }
+  return {
+    ...(ephemeral === undefined ? {} : { ephemeral }),
+    ...(extendedStatic === undefined ? {} : { extendedStatic }),
+    ...(payload === undefined ? {} : { payload }),
+    ...(staticKey === undefined ? {} : { staticKey }),
+  };
 }
 
 function decodeClientFinish(data: Uint8Array): NonNullable<HandshakeMessage["clientFinish"]> {
   const reader = new ProtoReader(data);
+  let extendedCiphertext: BytesField;
   let payload: BytesField;
   let staticKey: BytesField;
   while (!reader.done()) {
@@ -72,14 +144,52 @@ function decodeClientFinish(data: Uint8Array): NonNullable<HandshakeMessage["cli
     } else if (field === 2) {
       requireBytesWireType(tag, field);
       payload = reader.bytes();
+    } else if (field === 3) {
+      requireBytesWireType(tag, field);
+      extendedCiphertext = reader.bytes();
     } else {
       reader.skip(tag & 7);
     }
   }
   return {
+    ...(extendedCiphertext === undefined ? {} : { extendedCiphertext }),
     ...(payload === undefined ? {} : { payload }),
     ...(staticKey === undefined ? {} : { staticKey }),
   };
+}
+
+function encodeClientHello(clientHello: NonNullable<HandshakeMessage["clientHello"]>): Buffer {
+  const writer = new ProtoWriter();
+  if (clientHello.ephemeral !== undefined) {
+    writer.bytesField(1, clientHello.ephemeral);
+  }
+  if (clientHello.staticKey !== undefined) {
+    writer.bytesField(2, clientHello.staticKey);
+  }
+  if (clientHello.payload !== undefined) {
+    writer.bytesField(3, clientHello.payload);
+  }
+  if (clientHello.useExtended !== undefined) {
+    writer.boolField(4, clientHello.useExtended);
+  }
+  if (clientHello.extendedCiphertext !== undefined) {
+    writer.bytesField(5, clientHello.extendedCiphertext);
+  }
+  return writer.finish();
+}
+
+function encodeClientFinish(clientFinish: NonNullable<HandshakeMessage["clientFinish"]>): Buffer {
+  const writer = new ProtoWriter();
+  if (clientFinish.staticKey !== undefined) {
+    writer.bytesField(1, clientFinish.staticKey);
+  }
+  if (clientFinish.payload !== undefined) {
+    writer.bytesField(2, clientFinish.payload);
+  }
+  if (clientFinish.extendedCiphertext !== undefined) {
+    writer.bytesField(3, clientFinish.extendedCiphertext);
+  }
+  return writer.finish();
 }
 
 function requireBytesWireType(tag: number, field: number): void {
@@ -91,11 +201,27 @@ function requireBytesWireType(tag: number, field: number): void {
   }
 }
 
+function requireVarintWireType(tag: number, field: number): void {
+  const wireType = tag & 7;
+  if (wireType !== 0) {
+    throw new Error(`Invalid WhatsApp handshake wire type ${wireType} for varint field ${field}.`);
+  }
+}
+
 function encodeServerHello(serverHello: NonNullable<HandshakeMessage["serverHello"]>): Buffer {
   const writer = new ProtoWriter();
-  writer.bytesField(1, serverHello.ephemeral);
-  writer.bytesField(2, serverHello.staticKey);
-  writer.bytesField(3, serverHello.payload);
+  if (serverHello.ephemeral !== undefined) {
+    writer.bytesField(1, serverHello.ephemeral);
+  }
+  if (serverHello.staticKey !== undefined) {
+    writer.bytesField(2, serverHello.staticKey);
+  }
+  if (serverHello.payload !== undefined) {
+    writer.bytesField(3, serverHello.payload);
+  }
+  if (serverHello.extendedStatic !== undefined) {
+    writer.bytesField(4, serverHello.extendedStatic);
+  }
   return writer.finish();
 }
 
@@ -197,6 +323,11 @@ class ProtoReader {
 
 class ProtoWriter {
   readonly #parts: Buffer[] = [];
+
+  boolField(field: number, value: boolean): void {
+    this.uint32(field << 3);
+    this.uint32(value ? 1 : 0);
+  }
 
   bytesField(field: number, value: Uint8Array): void {
     this.uint32((field << 3) | 2);
