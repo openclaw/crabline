@@ -27,11 +27,43 @@ const INBOUND_DEADLINE_REACHED = Symbol("inbound deadline reached");
 const INBOUND_ABORT_GRACE_MS = 250;
 const MAX_EXCLUDED_INBOUND_IDS = 1_024;
 const MAX_SCRIPT_STDIN_BYTES = 1024 * 1024;
+const suiteBlockingResults = new WeakSet<CommandRunResult>();
 
-class UnsettledProviderOperationError extends CrablineError {}
+type ObservedProviderOperation<T> = {
+  isSettled(): boolean;
+  promise: Promise<T>;
+  settled: Promise<void>;
+};
+
+class UnsettledProviderOperationError extends CrablineError {
+  constructor(
+    message: string,
+    options: { cause?: unknown; kind: FailureKind },
+    readonly operation: ObservedProviderOperation<unknown>,
+  ) {
+    super(message, options);
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function observeProviderOperation<T>(promise: Promise<T>): ObservedProviderOperation<T> {
+  let operationSettled = false;
+  const settled = promise.then(
+    () => {
+      operationSettled = true;
+    },
+    () => {
+      operationSettled = true;
+    },
+  );
+  return {
+    isSettled: () => operationSettled,
+    promise,
+    settled,
+  };
 }
 
 async function raceInboundDeadline<T>(
@@ -57,8 +89,10 @@ async function withFixtureDeadline<T>(
   operationName: string,
 ): Promise<T> {
   const controller = new AbortController();
-  const pending = Promise.resolve().then(async () => await operation(controller.signal));
-  const result = await raceInboundDeadline(pending, timeoutMs);
+  const pending = observeProviderOperation(
+    Promise.resolve().then(async () => await operation(controller.signal)),
+  );
+  const result = await raceInboundDeadline(pending.promise, timeoutMs);
   if (result === INBOUND_DEADLINE_REACHED) {
     const timeoutError = new CrablineError(
       `Provider ${operationName} timed out after ${timeoutMs}ms.`,
@@ -67,17 +101,17 @@ async function withFixtureDeadline<T>(
       },
     );
     controller.abort(timeoutError);
-    const settled = pending.then(
-      () => true,
-      () => true,
-    );
-    if ((await raceInboundDeadline(settled, INBOUND_ABORT_GRACE_MS)) === INBOUND_DEADLINE_REACHED) {
+    if (
+      (await raceInboundDeadline(pending.settled, INBOUND_ABORT_GRACE_MS)) ===
+      INBOUND_DEADLINE_REACHED
+    ) {
       throw new UnsettledProviderOperationError(
         `Provider ${operationName} did not settle within ${INBOUND_ABORT_GRACE_MS}ms after abort.`,
         {
           cause: timeoutError,
           kind: "timeout",
         },
+        pending,
       );
     }
     throw timeoutError;
@@ -216,15 +250,14 @@ function scriptPayloadBase(context: {
 }
 
 async function abortAndDrainInboundWait(
-  operation: Promise<unknown>,
+  operation: ObservedProviderOperation<unknown>,
   controller: AbortController,
 ): Promise<boolean> {
   controller.abort(new Error("Inbound wait deadline reached."));
-  const settled = operation.then(
-    () => true,
-    () => true,
+  return (
+    (await raceInboundDeadline(operation.settled, INBOUND_ABORT_GRACE_MS)) !==
+    INBOUND_DEADLINE_REACHED
   );
-  return (await raceInboundDeadline(settled, INBOUND_ABORT_GRACE_MS)) !== INBOUND_DEADLINE_REACHED;
 }
 
 export async function runFixtureCommand(params: {
@@ -245,6 +278,7 @@ export async function runFixtureCommand(params: {
   const provider = params.registry.resolve(fixture.provider, fixture.id);
   const diagnostics: string[] = [];
   let abortDrainFailed = false;
+  const unsettledProviderOperations: ObservedProviderOperation<unknown>[] = [];
 
   const contextBase = {
     config: params.manifest.providers[fixture.provider]!,
@@ -309,6 +343,7 @@ export async function runFixtureCommand(params: {
       } catch (error) {
         if (error instanceof UnsettledProviderOperationError) {
           abortDrainFailed = true;
+          unsettledProviderOperations.push(error.operation);
         }
         return (result = toFailure(fixture.id, fixture.provider, mode, error, "connectivity"));
       }
@@ -373,6 +408,7 @@ export async function runFixtureCommand(params: {
             lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "outbound", nonce);
             if (error instanceof UnsettledProviderOperationError) {
               abortDrainFailed = true;
+              unsettledProviderOperations.push(error.operation);
               break;
             }
             continue;
@@ -434,14 +470,16 @@ export async function runFixtureCommand(params: {
                   },
                 });
               }
-              const wait = provider.waitForInbound(waitContext);
-              const candidate = await raceInboundDeadline(wait, timeoutMs);
+              const wait = observeProviderOperation(provider.waitForInbound(waitContext));
+              const candidate = await raceInboundDeadline(wait.promise, timeoutMs);
               if (candidate === INBOUND_DEADLINE_REACHED) {
                 if (!(await abortAndDrainInboundWait(wait, controller))) {
                   abortDrainFailed = true;
+                  unsettledProviderOperations.push(wait);
                   throw new UnsettledProviderOperationError(
                     `Provider inbound wait did not settle within ${INBOUND_ABORT_GRACE_MS}ms after abort.`,
                     { kind: "inbound" },
+                    wait,
                   );
                 }
                 break;
@@ -574,6 +612,10 @@ export async function runFixtureCommand(params: {
         };
       }
     }
+    await Promise.resolve();
+    if (result && unsettledProviderOperations.some((operation) => !operation.isSettled())) {
+      suiteBlockingResults.add(result);
+    }
   }
 
   // The finally block can synthesize a result when provider cleanup fails.
@@ -589,14 +631,26 @@ export async function runSuite(params: {
 }): Promise<SuiteRunResult> {
   const results: CommandRunResult[] = [];
   for (const fixtureId of params.fixtureIds) {
-    results.push(
-      await runFixtureCommand({
+    let result: CommandRunResult;
+    try {
+      result = await runFixtureCommand({
         fixtureId,
         manifest: params.manifest,
         manifestPath: params.manifestPath,
         registry: params.registry,
-      }),
-    );
+      });
+    } catch (error) {
+      const fixture = params.manifest.fixtures.find((entry) => entry.id === fixtureId);
+      const provider = fixture ? params.manifest.providers[fixture.provider] : undefined;
+      if (!fixture || (provider?.status !== "disabled" && provider?.status !== "planned")) {
+        throw error;
+      }
+      result = toFailure(fixture.id, fixture.provider, fixture.mode, error, "config");
+    }
+    results.push(result);
+    if (suiteBlockingResults.has(result)) {
+      break;
+    }
   }
 
   return {

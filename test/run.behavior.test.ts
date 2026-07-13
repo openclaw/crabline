@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CrablineError } from "../src/core/errors.js";
 import { EXIT_CODES } from "../src/core/exit-codes.js";
 import { computeExitCode, runFixtureCommand, runSuite } from "../src/core/run.js";
@@ -1020,5 +1020,88 @@ describe("run behavior", () => {
 
     expect(computeExitCode(suite)).toBe(0);
     expect(suite.totalPassed).toBe(1);
+  });
+
+  it("records disabled and planned provider failures and continues the suite", async () => {
+    const statusManifest: ManifestDefinition = {
+      ...manifest,
+      fixtures: [
+        { ...manifest.fixtures[0]!, id: "disabled", provider: "disabled" },
+        { ...manifest.fixtures[0]!, id: "planned", provider: "planned" },
+      ],
+      providers: {
+        disabled: { ...manifest.providers.mock!, status: "disabled" },
+        planned: { ...manifest.providers.mock!, status: "planned" },
+      },
+    };
+    const suite = await runSuite({
+      fixtureIds: ["disabled", "planned"],
+      manifest: statusManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: {
+        catalog: OPENCLAW_SUPPORT_CATALOG,
+        resolve(providerId) {
+          const status = statusManifest.providers[providerId]?.status;
+          throw new CrablineError(`Provider "${providerId}" is ${status}.`, { kind: "config" });
+        },
+      },
+    });
+
+    expect(suite.results).toHaveLength(2);
+    expect(suite.results.map((result) => result.failureKind)).toEqual(["config", "config"]);
+    expect(suite.results.map((result) => result.providerId)).toEqual(["disabled", "planned"]);
+  });
+
+  it("stops the suite while aborted provider work remains unsettled", async () => {
+    let releaseSend: (() => void) | undefined;
+    const unsettledProvider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["send"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () =>
+        await new Promise((resolve) => {
+          releaseSend = () => resolve({ accepted: true, messageId: "late", threadId: "thread" });
+        }),
+      waitForInbound: async () => null,
+      cleanup: async () => undefined,
+    };
+    const secondProvider = {
+      ...unsettledProvider,
+      send: async () => ({ accepted: true, messageId: "second", threadId: "thread" }),
+    };
+    const secondSend = vi.spyOn(secondProvider, "send");
+    const suiteManifest: ManifestDefinition = {
+      ...withAllCapabilities(manifest),
+      fixtures: [
+        { ...manifest.fixtures[0]!, id: "first", mode: "send", timeoutMs: 10 },
+        { ...manifest.fixtures[0]!, id: "second", mode: "send", timeoutMs: 10 },
+      ],
+    };
+    try {
+      const suite = await runSuite({
+        fixtureIds: ["first", "second"],
+        manifest: suiteManifest,
+        manifestPath: "/tmp/crabline.yaml",
+        registry: {
+          catalog: OPENCLAW_SUPPORT_CATALOG,
+          resolve(_providerId, fixtureId) {
+            return fixtureId === "first" ? unsettledProvider : secondProvider;
+          },
+        },
+      });
+
+      expect(suite.results).toHaveLength(1);
+      expect(suite.results[0]?.diagnostics).toContain(
+        "Provider send did not settle within 250ms after abort.",
+      );
+      expect(secondSend).not.toHaveBeenCalled();
+    } finally {
+      releaseSend?.();
+    }
   });
 });
