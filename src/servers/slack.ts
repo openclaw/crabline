@@ -660,7 +660,7 @@ async function postSlackEventRequest(params: {
   const addresses: Array<WebhookAddress | undefined> =
     target.addresses && target.addresses.length > 0 ? target.addresses : [undefined];
   let lastError: unknown;
-  for (const [index, address] of addresses.entries()) {
+  for (const address of addresses) {
     const remainingMs = params.timeoutAt - Date.now();
     if (remainingMs <= 0) {
       throw new DOMException("Slack Events API delivery timed out", "TimeoutError");
@@ -671,7 +671,7 @@ async function postSlackEventRequest(params: {
         body: params.body,
         headerEntries: params.headerEntries,
         signal: params.signal,
-        timeoutMs: Math.max(1, Math.floor(remainingMs / (addresses.length - index))),
+        timeoutMs: Math.max(1, Math.floor(remainingMs)),
         url: params.url,
       });
     } catch (error) {
