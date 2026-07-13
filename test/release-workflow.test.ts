@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,10 @@ import { parse } from "yaml";
 const execFileAsync = promisify(execFile);
 const CHANGELOG_HEADING_ERROR =
   'CHANGELOG.md must contain exactly one "## 1.2.3 - YYYY-MM-DD" heading.';
+const PUBLISH_TARBALL_CONTENTS = "package";
+const PUBLISH_PACKAGE_INTEGRITY = `sha512-${createHash("sha512")
+  .update(PUBLISH_TARBALL_CONTENTS)
+  .digest("base64")}`;
 
 type WorkflowStep = {
   id?: string;
@@ -136,6 +141,7 @@ describe("release workflow", () => {
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@latest" version');
     expect(publishStep).toContain('"Refusing to publish " +');
     expect(publishStep).toContain('" because npm latest is newer at " +');
+    expect(publishStep).toContain("Downloaded npm tarball does not match expected integrity");
     expect(publishStep).toContain('npm publish "$PACKAGE_TARBALL" --access public --provenance');
     expect(publishStep).toContain("for delay in 2 4 8 16; do");
     expect(releaseStep).toContain('gh release view "$RELEASE_TAG"');
@@ -143,29 +149,35 @@ describe("release workflow", () => {
     expect(releaseStep).toContain("--verify-tag");
   });
 
-  it("revalidates the verified commit before irreversible release jobs", async () => {
+  it("revalidates the verified commit immediately before each release mutation", async () => {
     const workflow = await readWorkflow();
+    const publishSteps = jobSteps(workflow, "publish");
+    const releaseSteps = jobSteps(workflow, "github-release");
+    const publishStep = publishSteps.find(
+      (step) => step.name === "Publish package with npm provenance",
+    )?.run;
+    const releaseStep = releaseSteps.find((step) => step.name === "Create GitHub release")?.run;
 
-    for (const jobName of ["publish", "github-release"]) {
-      const steps = jobSteps(workflow, jobName);
-      const revalidateStep = steps.find(
-        (step) => step.name === "Revalidate release tag commit",
-      )?.run;
-      expect(revalidateStep).toContain('"$GITHUB_EVENT_SHA" != "$VERIFIED_COMMIT"');
-      expect(revalidateStep).toContain("git ls-remote --exit-code");
-      expect(revalidateStep).toContain('"$remote_commit" != "$VERIFIED_COMMIT"');
-      await expect(runTagRevalidationStep(revalidateStep, {})).resolves.toBeUndefined();
-      await expect(
-        runTagRevalidationStep(revalidateStep, {
-          MOCK_REMOTE_COMMIT: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        }),
-      ).rejects.toThrow("resolves to bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-      await expect(
-        runTagRevalidationStep(revalidateStep, {
-          GITHUB_EVENT_SHA: "cccccccccccccccccccccccccccccccccccccccc",
-        }),
-      ).rejects.toThrow("does not match verified commit");
+    expect(publishSteps.some((step) => step.name === "Revalidate release tag commit")).toBe(false);
+    expect(releaseSteps.some((step) => step.name === "Revalidate release tag commit")).toBe(false);
+    for (const script of [publishStep, releaseStep]) {
+      expect(script).toContain('"$GITHUB_EVENT_SHA" != "$VERIFIED_COMMIT"');
+      expect(script).toContain("git ls-remote --exit-code");
+      expect(script).toContain('"$remote_commit" != "$VERIFIED_COMMIT"');
     }
+    expect(publishStep).toMatch(/revalidate_release_tag\n\s*if npm publish "\$PACKAGE_TARBALL"/u);
+    expect(releaseStep).toMatch(/revalidate_release_tag\n\s*gh release create "\$RELEASE_TAG"/u);
+
+    await expect(
+      runPublishStep(publishStep ?? "", {
+        MOCK_TAG_RACE_AFTER_LOOKUP: "1",
+      }),
+    ).rejects.toThrow("resolves to bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    await expect(
+      runGithubReleaseStep(releaseStep ?? "", "missing", {
+        MOCK_TAG_RACE_AFTER_LOOKUP: "1",
+      }),
+    ).rejects.toThrow("resolves to bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
   });
 
   it("accepts only published stable GitHub releases as existing", async () => {
@@ -188,8 +200,9 @@ describe("release workflow", () => {
     }
 
     const missingCalls = await runGithubReleaseStep(releaseStep, "missing");
-    expect(missingCalls).toHaveLength(2);
-    expect(missingCalls[1]).toContain("release create v1.2.3");
+    expect(missingCalls).toHaveLength(3);
+    expect(missingCalls[1]).toContain("git ls-remote --exit-code");
+    expect(missingCalls[2]).toContain("release create v1.2.3");
 
     await expect(runGithubReleaseStep(releaseStep, "api-error")).rejects.toThrow(
       "Unable to inspect GitHub release v1.2.3",
@@ -329,7 +342,7 @@ describe("release workflow", () => {
         MOCK_VIEW_RESULT: "mismatch",
       }),
     ).rejects.toThrow(
-      "::error::Published @openclaw/crabline@1.2.3 has integrity sha512-different, expected sha512-expected.",
+      `::error::Published @openclaw/crabline@1.2.3 has integrity sha512-different, expected ${PUBLISH_PACKAGE_INTEGRITY}.`,
     );
     await expect(
       runPublishStep(publishStep, {
@@ -345,6 +358,19 @@ describe("release workflow", () => {
     ).rejects.toThrow(
       "::error::Published @openclaw/crabline@1.2.3 has unsupported provenance predicate https://example.invalid/provenance.",
     );
+    const transientProvenanceCalls = await runPublishStep(publishStep, {
+      MOCK_PROVENANCE_RESULT: "transient-once",
+      MOCK_VIEW_RESULT: "matching",
+    });
+    expect(transientProvenanceCalls).toEqual(matchingCalls);
+    await expect(
+      runPublishStep(publishStep, {
+        MOCK_PROVENANCE_RESULT: "transient",
+        MOCK_VIEW_RESULT: "matching",
+      }),
+    ).rejects.toThrow(
+      "::error::Unable to verify existing @openclaw/crabline@1.2.3 after bounded retries.",
+    );
 
     const publishedCalls = await runPublishStep(publishStep, {
       MOCK_VIEW_RESULT: "after-publish",
@@ -352,6 +378,7 @@ describe("release workflow", () => {
     const expectedPublishCalls = [
       "view @openclaw/crabline@1.2.3 dist.integrity",
       "view @openclaw/crabline@latest version",
+      expect.stringContaining("git ls-remote --exit-code"),
       expect.stringMatching(
         /publish .*\/release\/crabline-1\.2\.3\.tgz --access public --provenance$/u,
       ),
@@ -381,6 +408,23 @@ describe("release workflow", () => {
     );
   });
 
+  it("rejects a downloaded tarball whose bytes do not match the verified SRI", async () => {
+    const workflow = await readWorkflow();
+    const publishStep = jobSteps(workflow, "publish").find(
+      (step) => step.name === "Publish package with npm provenance",
+    )?.run;
+    if (!publishStep) {
+      throw new Error("Release workflow is missing its npm publish step.");
+    }
+
+    const wrongIntegrity = `sha512-${createHash("sha512").update("other bytes").digest("base64")}`;
+    await expect(
+      runPublishStep(publishStep, {
+        PACKAGE_INTEGRITY: wrongIntegrity,
+      }),
+    ).rejects.toThrow("Downloaded npm tarball does not match expected integrity");
+  });
+
   it("fails closed when successful publication violates package postconditions", async () => {
     const workflow = await readWorkflow();
     const publishStep = jobSteps(workflow, "publish").find(
@@ -395,7 +439,7 @@ describe("release workflow", () => {
         MOCK_VIEW_RESULT: "mismatch-after-publish",
       }),
     ).rejects.toThrow(
-      "::error::Published @openclaw/crabline@1.2.3 has integrity sha512-different, expected sha512-expected.",
+      `::error::Published @openclaw/crabline@1.2.3 has integrity sha512-different, expected ${PUBLISH_PACKAGE_INTEGRITY}.`,
     );
     await expect(
       runPublishStep(publishStep, {
@@ -489,18 +533,27 @@ async function runResolveTag(
   }
 }
 
-async function runGithubReleaseStep(script: string, state: string): Promise<string[]> {
+async function runGithubReleaseStep(
+  script: string,
+  state: string,
+  overrides: Record<string, string> = {},
+): Promise<string[]> {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-github-release-"));
   const binDir = path.join(tempDir, "bin");
   const logPath = path.join(tempDir, "gh.log");
+  const racePath = path.join(tempDir, "tag-raced");
   try {
     await fs.mkdir(binDir);
-    await writeExecutable(
-      path.join(binDir, "gh"),
-      `#!/usr/bin/env bash
+    await Promise.all([
+      writeExecutable(
+        path.join(binDir, "gh"),
+        `#!/usr/bin/env bash
 set -euo pipefail
-echo "$*" >> "$MOCK_LOG"
+echo "gh $*" >> "$MOCK_LOG"
 if [[ "$1 $2" == "release view" ]]; then
+  if [[ "\${MOCK_TAG_RACE_AFTER_LOOKUP:-0}" -eq 1 ]]; then
+    touch "$MOCK_TAG_RACE"
+  fi
   case "$MOCK_RELEASE_STATE" in
     stable) printf 'false\\tfalse\\n' ;;
     draft) printf 'true\\tfalse\\n' ;;
@@ -512,57 +565,39 @@ if [[ "$1 $2" == "release view" ]]; then
   esac
 fi
 `,
-    );
-    await execFileWithOutput("bash", ["-c", script], {
-      cwd: tempDir,
-      env: {
-        ...process.env,
-        GITHUB_REPOSITORY: "openclaw/crabline",
-        MOCK_LOG: logPath,
-        MOCK_RELEASE_STATE: state,
-        PATH: `${binDir}:${process.env.PATH}`,
-        RELEASE_TAG: "v1.2.3",
-        RUNNER_TEMP: tempDir,
-      },
-    });
-    return (await fs.readFile(logPath, "utf8")).trim().split("\n");
-  } finally {
-    await fs.rm(tempDir, { force: true, recursive: true });
-  }
-}
-
-async function runTagRevalidationStep(
-  script: string | undefined,
-  overrides: Record<string, string>,
-): Promise<void> {
-  if (!script) {
-    throw new Error("Release workflow is missing its tag revalidation step.");
-  }
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-release-revalidate-"));
-  const binDir = path.join(tempDir, "bin");
-  try {
-    await fs.mkdir(binDir);
-    await writeExecutable(
-      path.join(binDir, "git"),
-      `#!/usr/bin/env bash
+      ),
+      writeExecutable(
+        path.join(binDir, "git"),
+        `#!/usr/bin/env bash
 set -euo pipefail
-printf '%s\\trefs/tags/v1.2.3\\n' "\${MOCK_TAG_OBJECT:-dddddddddddddddddddddddddddddddddddddddd}"
-printf '%s\\trefs/tags/v1.2.3^{}\\n' "\${MOCK_REMOTE_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+echo "git $*" >> "$MOCK_LOG"
+remote_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+if [[ -f "$MOCK_TAG_RACE" ]]; then
+  remote_commit="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+fi
+printf '%s\\trefs/tags/v1.2.3\\n' "dddddddddddddddddddddddddddddddddddddddd"
+printf '%s\\trefs/tags/v1.2.3^{}\\n' "$remote_commit"
 `,
-    );
+      ),
+    ]);
     await execFileWithOutput("bash", ["-c", script], {
       cwd: tempDir,
       env: {
         ...process.env,
+        ...overrides,
         GITHUB_EVENT_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         GITHUB_REPOSITORY: "openclaw/crabline",
         GITHUB_SERVER_URL: "https://github.com",
+        MOCK_LOG: logPath,
+        MOCK_RELEASE_STATE: state,
+        MOCK_TAG_RACE: racePath,
         PATH: `${binDir}:${process.env.PATH}`,
         RELEASE_TAG: "v1.2.3",
+        RUNNER_TEMP: tempDir,
         VERIFIED_COMMIT: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        ...overrides,
       },
     });
+    return (await fs.readFile(logPath, "utf8")).trim().split("\n");
   } finally {
     await fs.rm(tempDir, { force: true, recursive: true });
   }
@@ -629,11 +664,13 @@ async function runPublishStep(
   const binDir = path.join(tempDir, "bin");
   const logPath = path.join(tempDir, "npm.log");
   const publishedPath = path.join(tempDir, "published");
+  const provenanceCountPath = path.join(tempDir, "provenance-count");
+  const racePath = path.join(tempDir, "tag-raced");
   const releaseDir = path.join(tempDir, "release");
 
   try {
     await Promise.all([fs.mkdir(binDir), fs.mkdir(releaseDir)]);
-    await fs.writeFile(path.join(releaseDir, "crabline-1.2.3.tgz"), "package");
+    await fs.writeFile(path.join(releaseDir, "crabline-1.2.3.tgz"), PUBLISH_TARBALL_CONTENTS);
     await Promise.all([
       writeExecutable(
         path.join(binDir, "npm"),
@@ -645,6 +682,9 @@ if [[ "$1" == "publish" ]]; then
   exit "\${MOCK_PUBLISH_STATUS:-0}"
 fi
 if [[ "$2" == "$PACKAGE_NAME@latest" ]]; then
+  if [[ "\${MOCK_TAG_RACE_AFTER_LOOKUP:-0}" -eq 1 ]]; then
+    touch "$MOCK_TAG_RACE"
+  fi
   if [[ "\${MOCK_LATEST_STATUS:-0}" -ne 0 ]]; then
     exit "$MOCK_LATEST_STATUS"
   fi
@@ -666,7 +706,19 @@ fi
 if [[ "$3" == "dist.attestations.provenance.predicateType" ]]; then
   case "\${MOCK_PROVENANCE_RESULT:-matching}" in
     matching) echo "https://slsa.dev/provenance/v1" ;;
+    missing) exit 0 ;;
     unsupported) echo "https://example.invalid/provenance" ;;
+    transient-once)
+      provenance_count=0
+      if [[ -f "$MOCK_PROVENANCE_COUNT" ]]; then
+        provenance_count="$(cat "$MOCK_PROVENANCE_COUNT")"
+      fi
+      echo "$((provenance_count + 1))" > "$MOCK_PROVENANCE_COUNT"
+      if [[ "$provenance_count" -eq 0 ]]; then
+        exit 1
+      fi
+      echo "https://slsa.dev/provenance/v1"
+      ;;
     *) exit 1 ;;
   esac
   exit 0
@@ -678,6 +730,19 @@ case "$view_result" in
 esac
 `,
       ),
+      writeExecutable(
+        path.join(binDir, "git"),
+        `#!/usr/bin/env bash
+set -euo pipefail
+echo "git $*" >> "$MOCK_LOG"
+remote_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+if [[ -f "$MOCK_TAG_RACE" ]]; then
+  remote_commit="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+fi
+printf '%s\\trefs/tags/v1.2.3\\n' "dddddddddddddddddddddddddddddddddddddddd"
+printf '%s\\trefs/tags/v1.2.3^{}\\n' "$remote_commit"
+`,
+      ),
       writeExecutable(path.join(binDir, "sleep"), "#!/usr/bin/env bash\nexit 0\n"),
     ]);
 
@@ -685,14 +750,21 @@ esac
       cwd: tempDir,
       env: {
         ...process.env,
-        ...overrides,
+        GITHUB_EVENT_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        GITHUB_REPOSITORY: "openclaw/crabline",
+        GITHUB_SERVER_URL: "https://github.com",
         MOCK_LOG: logPath,
         MOCK_PUBLISHED: publishedPath,
-        PACKAGE_INTEGRITY: "sha512-expected",
+        MOCK_PROVENANCE_COUNT: provenanceCountPath,
+        MOCK_TAG_RACE: racePath,
+        PACKAGE_INTEGRITY: PUBLISH_PACKAGE_INTEGRITY,
         PACKAGE_NAME: "@openclaw/crabline",
         PATH: `${binDir}:${process.env.PATH}`,
+        RELEASE_TAG: "v1.2.3",
         RELEASE_VERSION: "1.2.3",
         RUNNER_TEMP: tempDir,
+        VERIFIED_COMMIT: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ...overrides,
       },
     });
     return (await fs.readFile(logPath, "utf8")).trim().split("\n");
