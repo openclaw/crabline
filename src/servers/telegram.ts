@@ -28,6 +28,7 @@ import {
 } from "./webhook-target.js";
 import {
   canonicalizeTelegramUsername,
+  TELEGRAM_BOT_USERNAME_PATTERN,
   TELEGRAM_NATIVE_CHAT_ID_MAX,
   telegramUsernameChatId,
 } from "./telegram-identity.js";
@@ -1946,8 +1947,9 @@ export async function startTelegramServer(
   if (!Number.isSafeInteger(botId) || botId < 1) {
     throw new Error("botId must be a positive safe integer.");
   }
-  const botUsername = telegramChatUsername(params.botUsername ?? "crabline_bot")?.slice(1);
-  if (!botUsername) {
+  const botUsernameValue = params.botUsername ?? "crabline_bot";
+  const botUsername = botUsernameValue.trim().replace(/^@/u, "").toLowerCase();
+  if (!TELEGRAM_BOT_USERNAME_PATTERN.test(`@${botUsername}`)) {
     throw new Error("botUsername must be a valid 5-32 character Telegram username.");
   }
   const state: TelegramServerState = {

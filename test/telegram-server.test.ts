@@ -160,7 +160,7 @@ describe("telegram local provider server", () => {
       `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
       {
         body: JSON.stringify({
-          chat_id: "@valid",
+          chat_id: "@abcd",
           text: "minimum username",
         }),
         headers: { "content-type": "application/json" },
@@ -172,7 +172,7 @@ describe("telegram local provider server", () => {
       result: { chat: { id: expect.any(Number), type: "supergroup" } },
     });
 
-    for (const chatId of ["@tiny", "@abc"]) {
+    for (const chatId of ["@abc"]) {
       const shortUsername = await fetch(
         `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
         {
@@ -2380,6 +2380,9 @@ describe("telegram local provider server", () => {
 
     await expect(startTelegramServer({ botId: Number.MAX_SAFE_INTEGER + 1 })).rejects.toThrow(
       "botId must be a positive safe integer.",
+    );
+    await expect(startTelegramServer({ botUsername: "abcd" })).rejects.toThrow(
+      "botUsername must be a valid 5-32 character Telegram username.",
     );
   });
 

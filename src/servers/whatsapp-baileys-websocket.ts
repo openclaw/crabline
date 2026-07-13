@@ -126,6 +126,7 @@ export type WhatsAppSignalBundleStoreOptions = {
 };
 
 type PendingWhatsAppAcknowledgement = {
+  acceptance: Promise<boolean>;
   acceptedAt: number | undefined;
   acknowledged: boolean;
 };
@@ -133,7 +134,6 @@ type PendingWhatsAppAcknowledgement = {
 export class WhatsAppSignalBundleStore {
   readonly #acknowledgedMessageIds = new Map<string, true>();
   readonly #bundles = new Map<string, MockSignalBundle>();
-  readonly #inFlightMessageAcceptances = new Map<string, Promise<boolean>>();
   readonly #lidByPhoneNumber = new Map<string, string>();
   readonly #maxSessionsPerBundle: number;
   readonly #pendingAcknowledgements = new Map<string, PendingWhatsAppAcknowledgement>();
@@ -188,14 +188,10 @@ export class WhatsAppSignalBundleStore {
   }
 
   async acceptMessageOnce(messageKey: string, operation: () => Promise<boolean>): Promise<boolean> {
-    const inFlightAcceptance = this.#inFlightMessageAcceptances.get(messageKey);
-    if (inFlightAcceptance) {
-      return await inFlightAcceptance;
-    }
     this.#recoverExpiredPendingAcknowledgements();
-    if (this.#pendingAcknowledgements.has(messageKey)) {
-      // Unsettled operations remain in #inFlightMessageAcceptances; this state is accepted and awaiting ack.
-      return true;
+    const pendingAcceptance = this.#pendingAcknowledgements.get(messageKey);
+    if (pendingAcceptance) {
+      return await pendingAcceptance.acceptance;
     }
     if (this.#acknowledgedMessageIds.delete(messageKey)) {
       this.#acknowledgedMessageIds.set(messageKey, true);
@@ -206,11 +202,7 @@ export class WhatsAppSignalBundleStore {
         `WhatsApp pending acknowledgement limit exceeded (${this.maxPendingAcknowledgements}).`,
       );
     }
-    const pendingAcknowledgement: PendingWhatsAppAcknowledgement = {
-      acceptedAt: undefined,
-      acknowledged: false,
-    };
-    this.#pendingAcknowledgements.set(messageKey, pendingAcknowledgement);
+    let pendingAcknowledgement: PendingWhatsAppAcknowledgement;
     const acceptance = Promise.resolve().then(async () => {
       try {
         const accepted = await operation();
@@ -230,14 +222,13 @@ export class WhatsAppSignalBundleStore {
         throw error;
       }
     });
-    this.#inFlightMessageAcceptances.set(messageKey, acceptance);
-    try {
-      return await acceptance;
-    } finally {
-      if (this.#inFlightMessageAcceptances.get(messageKey) === acceptance) {
-        this.#inFlightMessageAcceptances.delete(messageKey);
-      }
-    }
+    pendingAcknowledgement = {
+      acceptance,
+      acceptedAt: undefined,
+      acknowledged: false,
+    };
+    this.#pendingAcknowledgements.set(messageKey, pendingAcknowledgement);
+    return await acceptance;
   }
 
   markMessageAcknowledged(peerJid: string, messageId: string): void {
