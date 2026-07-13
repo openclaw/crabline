@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Harden provider adapter authentication, target identity, credential redaction, and webhook lifecycle behavior.
+
 ## 0.1.11 - 2026-07-13
 
 - Contain Telegram response delivery failures when clients disconnect during request handling.

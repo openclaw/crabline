@@ -120,6 +120,16 @@ describe("WhatsApp provider recorder cursors", () => {
 
     await expect(olderWait).resolves.toMatchObject({ id: "fifth" });
     await expect(provider.waitForInbound({ ...waitContext, timeoutMs: 30 })).resolves.toBeNull();
+
+    await appendRecordedInbound(recorderPath, {
+      author: "user",
+      id: "sixth",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "sixth",
+      threadId: "15551234567",
+    });
+    await expect(provider.waitForInbound(waitContext)).resolves.toMatchObject({ id: "sixth" });
   });
 
   it("does not evict cursor state while distinct waits are active", async () => {
@@ -175,5 +185,52 @@ describe("WhatsApp provider recorder cursors", () => {
 
     controllers.slice(1).forEach((controller) => controller.abort());
     await Promise.all(waits.slice(1));
+  });
+
+  it("retains recorder progress after a timeout", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    providers.push(provider);
+    const context = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
+    let authorReads = 0;
+    context.fixture.inboundMatch = {
+      get author() {
+        authorReads += 1;
+        return "assistant" as const;
+      },
+      nonce: "ignore",
+      strategy: "contains",
+    };
+    const recorderPath = path.resolve(config.whatsapp!.recorder.path!);
+    const waitContext = {
+      ...context,
+      nonce: "cursor-timeout",
+      since: new Date(0).toISOString(),
+      threadId: "15551234567",
+      timeoutMs: 30,
+    };
+    await appendRecordedInbound(recorderPath, {
+      author: "user",
+      id: "stale",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "stale",
+      threadId: "15551234567",
+    });
+
+    await expect(provider.waitForInbound(waitContext)).resolves.toBeNull();
+    await appendRecordedInbound(recorderPath, {
+      author: "assistant",
+      id: "fresh",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "fresh",
+      threadId: "15551234567",
+    });
+    await expect(provider.waitForInbound(waitContext)).resolves.toMatchObject({ id: "fresh" });
+    expect(authorReads).toBe(6);
   });
 });
