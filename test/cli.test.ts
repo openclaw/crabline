@@ -10,7 +10,13 @@ import {
   waitForShutdown,
 } from "../src/cli/program.js";
 import type { StartCrablineServerParams, StartedCrablineServer } from "../src/servers/index.js";
-import { captureWrites, createTempDir, disposeTempDir, writeText } from "./test-helpers.js";
+import {
+  captureWrites,
+  createTempDir,
+  createWriteCapture,
+  disposeTempDir,
+  writeText,
+} from "./test-helpers.js";
 
 const lockState = vi.hoisted(() => ({
   options: [] as unknown[],
@@ -82,14 +88,10 @@ const createConfig = async (): Promise<string> => {
 describe("cli", () => {
   it("lists providers and fixtures", async () => {
     const configPath = await createConfig();
-    const captured = captureWrites();
-
-    try {
+    const captured = await captureWrites(async () => {
       expect(await runCli(["node", "crabline", "--config", configPath, "providers"])).toBe(0);
       expect(await runCli(["node", "crabline", "--config", configPath, "fixtures"])).toBe(0);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(captured.stdout.join("")).toContain("configured providers:");
     expect(captured.stdout.join("")).toContain("roundtrip-fixture");
@@ -116,13 +118,9 @@ describe("cli", () => {
         },
       }),
     );
-    const captured = captureWrites();
-
-    try {
+    const captured = await captureWrites(async () => {
       expect(await runCli(["node", "crabline", "--config", configPath, "fixtures"])).toBe(0);
-    } finally {
-      captured.restore();
-    }
+    });
 
     const output = captured.stdout.join("");
     expect(output).toContain(String.raw`provider=local\x1b[2J`);
@@ -133,9 +131,7 @@ describe("cli", () => {
 
   it("runs doctor, probe, send, roundtrip, and suite commands", async () => {
     const configPath = await createConfig();
-    const captured = captureWrites();
-
-    try {
+    const captured = await captureWrites(async () => {
       expect(await runCli(["node", "crabline", "--config", configPath, "doctor"])).toBe(0);
       expect(
         await runCli(["node", "crabline", "--config", configPath, "probe", "roundtrip-fixture"]),
@@ -164,9 +160,7 @@ describe("cli", () => {
           "send-fixture",
         ]),
       ).toBe(0);
-    } finally {
-      captured.restore();
-    }
+    });
 
     const stdout = stripAnsi(captured.stdout.join(""));
     expect(stdout).toContain("doctor ok");
@@ -176,14 +170,11 @@ describe("cli", () => {
 
   it("reports CLI errors to stderr", async () => {
     const configPath = await createConfig();
-    const captured = captureWrites();
-
     let exitCode: number;
-    try {
+
+    const captured = await captureWrites(async () => {
       exitCode = await runCli(["node", "crabline", "--config", configPath, "probe", "missing"]);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(exitCode!).toBe(10);
     expect(captured.stderr.join("")).toContain("Unknown fixture");
@@ -217,10 +208,9 @@ describe("cli", () => {
 
   it("reports JSON failures as one machine-readable document", async () => {
     const configPath = await createConfig();
-    const captured = captureWrites();
-
     let exitCode: number;
-    try {
+
+    const captured = await captureWrites(async () => {
       exitCode = await runCli([
         "node",
         "crabline",
@@ -230,9 +220,7 @@ describe("cli", () => {
         "probe",
         "missing",
       ]);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(exitCode!).toBe(10);
     expect(captured.stdout).toEqual([]);
@@ -250,15 +238,14 @@ describe("cli", () => {
     const exit = vi.spyOn(process, "exit").mockImplementation(() => {
       throw new Error("process.exit must not be called");
     });
-    const captured = captureWrites();
-
-    try {
-      expect(await runCli(["node", "crabline", "not-a-command"])).toBe(1);
-      expect(await runCli(["node", "crabline", "--help"])).toBe(0);
-    } finally {
-      captured.restore();
-      exit.mockRestore();
-    }
+    const captured = await captureWrites(async () => {
+      try {
+        expect(await runCli(["node", "crabline", "not-a-command"])).toBe(1);
+        expect(await runCli(["node", "crabline", "--help"])).toBe(0);
+      } finally {
+        exit.mockRestore();
+      }
+    });
 
     expect(exit).not.toHaveBeenCalled();
     expect(captured.stderr.join("").match(/unknown command 'not-a-command'/gu)).toHaveLength(1);
@@ -266,14 +253,11 @@ describe("cli", () => {
   });
 
   it("serializes Commander failures when JSON output is requested", async () => {
-    const captured = captureWrites();
-
     let exitCode: number;
-    try {
+
+    const captured = await captureWrites(async () => {
       exitCode = await runCli(["node", "crabline", "--json", "not-a-command"]);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(exitCode!).toBe(1);
     expect(captured.stdout).toEqual([]);
@@ -288,14 +272,11 @@ describe("cli", () => {
   });
 
   it("suppresses subcommand parser output in JSON mode", async () => {
-    const captured = captureWrites();
-
     let exitCode: number;
-    try {
+
+    const captured = await captureWrites(async () => {
       exitCode = await runCli(["node", "crabline", "--json", "probe"]);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(exitCode!).toBe(1);
     expect(captured.stdout).toEqual([]);
@@ -310,14 +291,11 @@ describe("cli", () => {
   });
 
   it("reports a useful JSON error when no command is specified", async () => {
-    const captured = captureWrites();
-
     let exitCode: number;
-    try {
+
+    const captured = await captureWrites(async () => {
       exitCode = await runCli(["node", "crabline", "--json"]);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(exitCode!).toBe(1);
     expect(captured.stdout).toEqual([]);
@@ -333,14 +311,11 @@ describe("cli", () => {
 
   it("normalizes missing-command exit codes independently of process state", async () => {
     process.exitCode = 10;
-    const captured = captureWrites();
-
     let exitCode: number;
-    try {
+
+    const captured = await captureWrites(async () => {
       exitCode = await runCli(["node", "crabline", "--json"]);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(exitCode!).toBe(1);
     expect(JSON.parse(captured.stderr.join(""))).toEqual({
@@ -355,16 +330,12 @@ describe("cli", () => {
 
   it("does not treat --json option values or positional arguments as the global flag", async () => {
     const configPath = await createConfig();
-    const captured = captureWrites();
-
-    try {
+    const captured = await captureWrites(async () => {
       expect(await runCli(["node", "crabline", "--config", "--json", "doctor"])).toBe(10);
       expect(
         await runCli(["node", "crabline", "--config", configPath, "probe", "--", "--json"]),
       ).toBe(10);
-    } finally {
-      captured.restore();
-    }
+    });
 
     const stderr = captured.stderr.join("");
     expect(stderr).toMatch(/Unable to load config file ".*\/--json"/u);
@@ -421,9 +392,7 @@ describe("cli", () => {
       }),
     );
     const program = createProgram(() => undefined, { startServer });
-    const captured = captureWrites();
-
-    try {
+    await captureWrites(async () => {
       await program.parseAsync([
         "node",
         "crabline",
@@ -434,9 +403,7 @@ describe("cli", () => {
         "placeholder",
         "--once",
       ]);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(startServer).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -473,19 +440,19 @@ describe("cli", () => {
         "      behavior: sink",
       ].join("\n"),
     );
-    const captured = captureWrites();
     const originalEnv = process.env.CRABLINE_TEST_MISSING_ENV;
     delete process.env.CRABLINE_TEST_MISSING_ENV;
 
-    try {
-      expect(await runCli(["node", "crabline", "--config", configPath, "doctor"])).toBe(10);
-      expect(await runCli(["node", "crabline", "--config", configPath, "fixtures"])).toBe(0);
-    } finally {
-      captured.restore();
-      if (originalEnv !== undefined) {
-        process.env.CRABLINE_TEST_MISSING_ENV = originalEnv;
+    await captureWrites(async () => {
+      try {
+        expect(await runCli(["node", "crabline", "--config", configPath, "doctor"])).toBe(10);
+        expect(await runCli(["node", "crabline", "--config", configPath, "fixtures"])).toBe(0);
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.CRABLINE_TEST_MISSING_ENV = originalEnv;
+        }
       }
-    }
+    });
   });
 
   it("classifies malformed config as a config error", async () => {
@@ -493,14 +460,11 @@ describe("cli", () => {
     directories.push(directory);
     const configPath = path.join(directory, "crabline.yaml");
     await writeText(configPath, "providers: [\n");
-    const captured = captureWrites();
-
     let exitCode: number;
-    try {
+
+    const captured = await captureWrites(async () => {
       exitCode = await runCli(["node", "crabline", "--config", configPath, "doctor"]);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(exitCode!).toBe(10);
     expect(captured.stderr.join("")).toContain(`Unable to load config file "${configPath}"`);
@@ -510,14 +474,11 @@ describe("cli", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const configPath = path.join(directory, "missing.yaml");
-    const captured = captureWrites();
-
     let exitCode: number;
-    try {
+
+    const captured = await captureWrites(async () => {
       exitCode = await runCli(["node", "crabline", "--config", configPath, "doctor"]);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(exitCode!).toBe(10);
     expect(captured.stderr.join("")).toContain(`Unable to load config file "${configPath}"`);
@@ -733,25 +694,9 @@ describe("cli", () => {
     const firstProgram = createProgram(() => undefined, {
       startServer: async () => server,
     });
-    const captured = captureWrites();
-
-    try {
-      const first = firstProgram.parseAsync([
-        "node",
-        "crabline",
-        "--json",
-        "serve",
-        "telegram",
-        "--once",
-        "--ready-file",
-        readyFile,
-      ]);
-      await closeStarted;
-      const secondStart = vi.fn(async () => server);
-      const secondProgram = createProgram(() => undefined, { startServer: secondStart });
-
-      await expect(
-        secondProgram.parseAsync([
+    await captureWrites(async () => {
+      try {
+        const first = firstProgram.parseAsync([
           "node",
           "crabline",
           "--json",
@@ -760,17 +705,32 @@ describe("cli", () => {
           "--once",
           "--ready-file",
           readyFile,
-        ]),
-      ).rejects.toBeInstanceOf(Error);
-      expect(secondStart).not.toHaveBeenCalled();
-      await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+        ]);
+        await closeStarted;
+        const secondStart = vi.fn(async () => server);
+        const secondProgram = createProgram(() => undefined, { startServer: secondStart });
 
-      releaseClose?.();
-      await first;
-    } finally {
-      releaseClose?.();
-      captured.restore();
-    }
+        await expect(
+          secondProgram.parseAsync([
+            "node",
+            "crabline",
+            "--json",
+            "serve",
+            "telegram",
+            "--once",
+            "--ready-file",
+            readyFile,
+          ]),
+        ).rejects.toBeInstanceOf(Error);
+        expect(secondStart).not.toHaveBeenCalled();
+        await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+        releaseClose?.();
+        await first;
+      } finally {
+        releaseClose?.();
+      }
+    });
 
     await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -1285,7 +1245,6 @@ describe("cli", () => {
         "      id: echo-bot",
       ].join("\n"),
     );
-    const captured = captureWrites();
     const provider = {
       async *watch() {
         yield {
@@ -1305,11 +1264,9 @@ describe("cli", () => {
         }) as never,
     });
 
-    try {
+    const captured = await captureWrites(async () => {
       await program.parseAsync(["node", "crabline", "--config", configPath, "watch", "watched"]);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(captured.stdout.join("")).toContain(String.raw`first\x1b[2J\nsecond`);
     expect(captured.stdout.join("")).not.toContain("\u001b");
@@ -1481,9 +1438,7 @@ describe("cli", () => {
   it("redacts serve credentials from text output unless explicitly requested", async () => {
     const directory = await createTempDir();
     directories.push(directory);
-    const captured = captureWrites();
-
-    try {
+    const captured = await captureWrites(async () => {
       expect(
         await runCli([
           "node",
@@ -1530,9 +1485,7 @@ describe("cli", () => {
           path.join(directory, "visible.jsonl"),
         ]),
       ).toBe(0);
-    } finally {
-      captured.restore();
-    }
+    });
 
     const stdout = captured.stdout.join("");
     expect(stdout).not.toContain("adminToken: fake");
@@ -1551,9 +1504,7 @@ describe("cli", () => {
     const readyFile = path.join(directory, ".crabline", "telegram-server.json");
     await fs.mkdir(path.dirname(readyFile), { recursive: true });
     await fs.writeFile(readyFile, "stale\n", { mode: 0o644 });
-    const captured = captureWrites();
-
-    try {
+    const captured = await captureWrites(async () => {
       expect(
         await runCli([
           "node",
@@ -1570,9 +1521,7 @@ describe("cli", () => {
           path.join(directory, "telegram.jsonl"),
         ]),
       ).toBe(0);
-    } finally {
-      captured.restore();
-    }
+    });
 
     const manifest = JSON.parse(captured.stdout.join("")) as {
       adminToken?: string;
@@ -1595,9 +1544,7 @@ describe("cli", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, ".crabline", "zalo-server.json");
-    const captured = captureWrites();
-
-    try {
+    const captured = await captureWrites(async () => {
       expect(
         await runCli([
           "node",
@@ -1616,9 +1563,7 @@ describe("cli", () => {
           path.join(directory, "zalo.jsonl"),
         ]),
       ).toBe(0);
-    } finally {
-      captured.restore();
-    }
+    });
 
     const manifest = JSON.parse(captured.stdout.join("")) as {
       adminToken?: string;
@@ -1645,9 +1590,7 @@ describe("cli", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, ".crabline", "slack-server.json");
-    const captured = captureWrites();
-
-    try {
+    const captured = await captureWrites(async () => {
       expect(
         await runCli([
           "node",
@@ -1668,9 +1611,7 @@ describe("cli", () => {
           path.join(directory, "slack.jsonl"),
         ]),
       ).toBe(0);
-    } finally {
-      captured.restore();
-    }
+    });
 
     const manifest = JSON.parse(captured.stdout.join("")) as {
       adminToken?: string;
@@ -1695,9 +1636,7 @@ describe("cli", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, ".crabline", "whatsapp-server.json");
-    const captured = captureWrites();
-
-    try {
+    const captured = await captureWrites(async () => {
       expect(
         await runCli([
           "node",
@@ -1716,9 +1655,7 @@ describe("cli", () => {
           path.join(directory, "whatsapp.jsonl"),
         ]),
       ).toBe(0);
-    } finally {
-      captured.restore();
-    }
+    });
 
     const manifest = JSON.parse(captured.stdout.join("")) as {
       accessToken?: string;
@@ -1784,10 +1721,12 @@ describe("cli", () => {
     delete process.env.SLACK_BOT_TOKEN;
     delete process.env.SLACK_SIGNING_SECRET;
 
-    const captured = captureWrites();
+    const captured = createWriteCapture();
     let exitCode: number;
     try {
-      exitCode = await runCli(["node", "crabline", "--config", configPath, "doctor"]);
+      exitCode = await captured.run(() =>
+        runCli(["node", "crabline", "--config", configPath, "doctor"]),
+      );
     } finally {
       captured.restore();
       if (originalBotToken !== undefined) {
@@ -1833,10 +1772,12 @@ describe("cli", () => {
     delete process.env.DISCORD_PUBLIC_KEY;
     delete process.env.DISCORD_APPLICATION_ID;
 
-    const captured = captureWrites();
+    const captured = createWriteCapture();
     let exitCode: number;
     try {
-      exitCode = await runCli(["node", "crabline", "--config", configPath, "doctor"]);
+      exitCode = await captured.run(() =>
+        runCli(["node", "crabline", "--config", configPath, "doctor"]),
+      );
     } finally {
       captured.restore();
       if (originalBotToken !== undefined) {
@@ -1898,18 +1839,19 @@ describe("cli", () => {
     delete process.env.WHATSAPP_PHONE_NUMBER_ID;
     delete process.env.WHATSAPP_VERIFY_TOKEN;
 
-    const captured = captureWrites();
     let exitCode: number;
-    try {
-      exitCode = await runCli(["node", "crabline", "--config", configPath, "doctor"]);
-    } finally {
-      captured.restore();
-      for (const [name, value] of Object.entries(originals)) {
-        if (value !== undefined) {
-          process.env[name] = value;
+
+    const captured = await captureWrites(async () => {
+      try {
+        exitCode = await runCli(["node", "crabline", "--config", configPath, "doctor"]);
+      } finally {
+        for (const [name, value] of Object.entries(originals)) {
+          if (value !== undefined) {
+            process.env[name] = value;
+          }
         }
       }
-    }
+    });
 
     expect(exitCode!).toBe(0);
     expect(captured.stdout.join("")).toContain("doctor ok");
@@ -1941,13 +1883,9 @@ describe("cli", () => {
         "fixtures: []",
       ].join("\n"),
     );
-    const captured = captureWrites();
-
-    try {
+    const captured = await captureWrites(async () => {
       expect(await runCli(["node", "crabline", "--config", configPath, "doctor"])).toBe(0);
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(captured.stdout.join("")).toContain("doctor ok");
   });

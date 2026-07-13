@@ -60,17 +60,14 @@ describe("test helpers", () => {
   });
 
   it("preserves write overload callbacks while capturing output", async () => {
-    const captured = captureWrites();
     const stdoutCallback = vi.fn();
     const stderrCallback = vi.fn();
 
-    try {
+    const captured = await captureWrites(async () => {
       process.stdout.write("text", "utf8", stdoutCallback);
       process.stderr.write(Buffer.from("bytes"), stderrCallback);
       await Promise.resolve();
-    } finally {
-      captured.restore();
-    }
+    });
 
     expect(captured.stdout).toEqual(["text"]);
     expect(captured.stderr).toEqual(["bytes"]);
@@ -78,24 +75,67 @@ describe("test helpers", () => {
     expect(stderrCallback).toHaveBeenCalledWith(null);
   });
 
-  it("restores nested output captures in either order", () => {
+  it("restores the outer capture after a nested capture settles", async () => {
     const stdoutWrite = process.stdout.write;
     const stderrWrite = process.stderr.write;
 
-    for (const order of ["outer-first", "inner-first"] as const) {
-      const outer = captureWrites();
-      const inner = captureWrites();
+    const outer = await captureWrites(async () => {
+      process.stdout.write("outer-before");
+      const inner = await captureWrites(async () => {
+        process.stdout.write("inner");
+      });
+      process.stdout.write("outer-after");
+      return inner;
+    });
 
-      if (order === "outer-first") {
-        outer.restore();
-        inner.restore();
-      } else {
-        inner.restore();
-        outer.restore();
-      }
+    expect(outer.stdout).toEqual(["outer-before", "outer-after"]);
+    expect(outer.result.stdout).toEqual(["inner"]);
+    expect(process.stdout.write).toBe(stdoutWrite);
+    expect(process.stderr.write).toBe(stderrWrite);
+  });
 
-      expect(process.stdout.write).toBe(stdoutWrite);
-      expect(process.stderr.write).toBe(stderrWrite);
+  it("isolates overlapping asynchronous output captures", async () => {
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+
+    const runCapture = (label: string, gate: Promise<void>) =>
+      captureWrites(async () => {
+        await gate;
+        process.stdout.write(`${label}-stdout`);
+        process.stderr.write(`${label}-stderr`);
+      });
+
+    try {
+      const firstPromise = runCapture("first", firstGate);
+      const secondPromise = runCapture("second", secondGate);
+      process.stdout.write("parent-stdout");
+      process.stderr.write("parent-stderr");
+      releaseFirst();
+      const first = await firstPromise;
+      process.stdout.write("parent-after-first");
+      releaseSecond();
+      const second = await secondPromise;
+
+      expect(first.stdout).toEqual(["first-stdout"]);
+      expect(first.stderr).toEqual(["first-stderr"]);
+      expect(second.stdout).toEqual(["second-stdout"]);
+      expect(second.stderr).toEqual(["second-stderr"]);
+      expect(stdoutWrite.mock.calls.map(([chunk]) => chunk)).toEqual([
+        "parent-stdout",
+        "parent-after-first",
+      ]);
+      expect(stderrWrite.mock.calls.map(([chunk]) => chunk)).toEqual(["parent-stderr"]);
+    } finally {
+      stdoutWrite.mockRestore();
+      stderrWrite.mockRestore();
     }
   });
 
