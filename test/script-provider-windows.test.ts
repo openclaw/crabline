@@ -100,6 +100,48 @@ afterEach(() => {
 });
 
 describe("script provider Windows cleanup", () => {
+  it.each(["compile", "probe"] as const)(
+    "falls back to direct shell execution when Job Object helper %s is blocked",
+    async (blockedStage) => {
+      vi.resetModules();
+      execFileSyncMock.mockReset();
+      if (blockedStage === "compile") {
+        execFileSyncMock.mockImplementationOnce(() => {
+          throw new Error("blocked");
+        });
+      } else {
+        execFileSyncMock
+          .mockImplementationOnce(() => undefined)
+          .mockImplementationOnce(() => {
+            throw new Error("blocked");
+          });
+      }
+      const scriptChild = createFakeChild(1110);
+      spawnMock.mockReturnValueOnce(scriptChild);
+      const { ScriptProviderAdapter: IsolatedScriptProviderAdapter } =
+        await import("../src/providers/builtin/script.js");
+      const context = createContext();
+      const provider = new IsolatedScriptProviderAdapter(context);
+
+      const failurePromise = provider
+        .send({
+          ...context,
+          mode: "send",
+          nonce: "nonce",
+          text: "payload",
+        })
+        .catch((error: unknown) => error);
+      scriptChild.emit("close", 7, null);
+      await failurePromise;
+
+      expect(spawnMock.mock.calls[0]?.[0]).toBe("node send.mjs");
+      expect(spawnMock.mock.calls[0]?.[1]).toMatchObject({
+        shell: true,
+        windowsHide: true,
+      });
+    },
+  );
+
   it("starts scripts inside an atomic kill-on-close Job Object", async () => {
     const scriptChild = createFakeChild(1111);
     spawnMock.mockReturnValueOnce(scriptChild);
@@ -117,7 +159,7 @@ describe("script provider Windows cleanup", () => {
     scriptChild.emit("close", 7, null);
     await failurePromise;
 
-    expect(execFileSyncMock).toHaveBeenCalledOnce();
+    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
     const compileOptions = execFileSyncMock.mock.calls[0]?.[2] as
       | { env?: NodeJS.ProcessEnv }
       | undefined;
@@ -125,6 +167,7 @@ describe("script provider Windows cleanup", () => {
     expect(helperSource).toContain("JobObjectLimitKillOnJobClose");
     expect(helperSource).toContain("ProcThreadAttributeJobList");
     expect(helperSource).toContain("CreateSuspended|ExtendedStartupInfoPresent");
+    expect(execFileSyncMock.mock.calls[1]?.[1]).toEqual(["--probe"]);
     expect(spawnMock.mock.calls[0]?.[0]).toMatch(/crabline-script-job\.exe$/u);
     expect(spawnMock.mock.calls[0]?.[1]).toEqual([]);
     expect(spawnMock.mock.calls[0]?.[2]).toMatchObject({
