@@ -625,6 +625,12 @@ describe("OpenClaw local provider bridge", () => {
       }),
     ).toThrow("Zalo does not support thread targets.");
     expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest: zaloManifest,
+        target: "group:group 1",
+      }),
+    ).toThrow(/without whitespace/u);
+    expect(() =>
       createOpenClawCrablineInbound({
         input: {
           conversation: { id: "group-1", kind: "group" },
@@ -635,6 +641,16 @@ describe("OpenClaw local provider bridge", () => {
         manifest: zaloManifest,
       }),
     ).toThrow("Zalo does not support thread targets.");
+    expect(() =>
+      createOpenClawCrablineInbound({
+        input: {
+          conversation: { id: "group-1", kind: "group" },
+          senderId: "user 1",
+          text: "hello",
+        },
+        manifest: zaloManifest,
+      }),
+    ).toThrow(/without whitespace/u);
 
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
@@ -1753,6 +1769,12 @@ describe("OpenClaw local provider bridge", () => {
     expect(() =>
       createOpenClawCrablineAgentDelivery({
         manifest: slackManifest,
+        target: "thread:U1234567890/1700000000.000100",
+      }),
+    ).toThrow("Slack thread targets require a native parent conversation id.");
+    expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest: slackManifest,
         target: "dm:C1234567890",
       }),
     ).toThrow("Slack target kind does not match the native conversation id.");
@@ -1880,13 +1902,38 @@ describe("OpenClaw local provider bridge", () => {
           method: "POST",
           path: "/api/chat.postMessage",
           body: {
-            blocks: [{ text: { text: "must not replace whitespace", type: "plain_text" } }],
+            blocks: [
+              {
+                elements: [
+                  {
+                    elements: [
+                      { type: "user", user_id: "U1234567890" },
+                      { text: " in ", type: "text" },
+                      { channel_id: "C1234567890", type: "channel" },
+                      { name: "wave", type: "emoji" },
+                    ],
+                    type: "rich_text_section",
+                  },
+                  {
+                    elements: [{ text: "repeat", type: "text" }],
+                    type: "rich_text_section",
+                  },
+                  {
+                    elements: [{ text: "repeat", type: "text" }],
+                    type: "rich_text_section",
+                  },
+                ],
+                type: "rich_text",
+              },
+            ],
             channel: "C1234567890",
             text: " \n\t",
           },
         },
       }),
-    ).toBeNull();
+    ).toMatchObject({
+      text: "<@U1234567890> in <#C1234567890>:wave:\nrepeat\nrepeat",
+    });
   });
 
   it("maps Signal QA targets, inbound messages, and recorder events", () => {
