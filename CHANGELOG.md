@@ -11,6 +11,7 @@
 - Honor injected WhatsApp runtime credentials during delayed webhook startup.
 - Generate Signal bundle public keys with the provider-required type prefix while preserving raw WhatsApp wire encoding.
 - Reject nonce fixture IDs outside the extractor alphabet and share one validation boundary.
+- Keep smoke-lock staging claim-local, confine commit paths, and add backward-compatible sub-second Darwin process identities.
 - Reject provider and fixture timer durations above Node's supported ceiling.
 - Round-trip every supported WhatsApp handshake protobuf variant without dropping fields.
 - Reject unsupported Zalo thread targets during normalization, matching OpenClaw bridge execution.

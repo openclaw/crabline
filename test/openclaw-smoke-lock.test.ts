@@ -49,6 +49,17 @@ describe("OpenClaw smoke lock cleanup", () => {
     expect(processIdentityFromDarwin("", "{ sec = 1, usec = 2 }")).toBeNull();
   });
 
+  it("preserves sub-second Darwin launch identity from native process details", () => {
+    expect(
+      processIdentityFromDarwin(
+        ["Process:         node [4242]", "Launch Time:     2026-07-13 12:27:31.230 +0000"].join(
+          "\n",
+        ),
+        "{ sec = 1783864000, usec = 123456 } Sun Jul 12 15:46:40 2026",
+      ),
+    ).toBe("darwin:1783864000.123456:us:1783945651230000");
+  });
+
   it("preserves sub-second process start identity from the runtime time origin", () => {
     expect(processStartedAtMsFromTimeOrigin(1_783_864_000_123.875)).toBe(1_783_864_000_123);
     expect(() => processStartedAtMsFromTimeOrigin(Number.NaN)).toThrow(
@@ -70,6 +81,31 @@ describe("OpenClaw smoke lock cleanup", () => {
       UNRELATED: "preserved",
     });
   });
+
+  it.runIf(process.platform === "darwin")(
+    "records a sub-second native Darwin process identity",
+    async () => {
+      const outputDir = await createTempDir();
+      try {
+        const lock = await acquireOpenClawCrablineSmokeRunLock(
+          { channel: "telegram", outputDir },
+          { startHeartbeat: disableHeartbeat },
+        );
+        const owner = JSON.parse(
+          await fs.readFile(
+            path.join(await findOwnedLockDirectory(outputDir), "owner.json"),
+            "utf8",
+          ),
+        );
+
+        expect(owner.processIdentity).toMatch(/^darwin:\d+\.\d+:[A-Z][a-z]{2} [A-Z][a-z]{2} /u);
+        expect(owner.processIdentityV2).toMatch(/^darwin:\d+\.\d+:us:\d+$/u);
+        await lock.release();
+      } finally {
+        await disposeTempDir(outputDir);
+      }
+    },
+  );
 
   it("rejects oversized PIDs and non-liveness process errors", () => {
     const kill = vi.spyOn(process, "kill");
@@ -125,6 +161,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const outsideDir = await createTempDir();
     const stageFile = vi.fn(async () => undefined);
     try {
+      await fs.mkdir(path.join(outputDir, "nested"));
       const lock = await acquireOpenClawCrablineSmokeRunLock(
         { channel: "telegram", outputDir },
         { startHeartbeat: disableHeartbeat },
@@ -148,6 +185,16 @@ describe("OpenClaw smoke lock cleanup", () => {
         }),
       ).rejects.toThrow("commit destination escapes its output directory");
       expect(stageFile).not.toHaveBeenCalled();
+      await lock.commitFileAtomically({
+        contents: "private\n",
+        destinationPath: path.join(outputDir, "nested", "current.json"),
+        stageFile: async (filePath, contents) => {
+          await fs.writeFile(filePath, contents);
+        },
+      });
+      await expect(
+        fs.readFile(path.join(outputDir, "nested", "current.json"), "utf8"),
+      ).resolves.toBe("private\n");
       await lock.release();
     } finally {
       await disposeTempDir(outsideDir);
@@ -174,8 +221,120 @@ describe("OpenClaw smoke lock cleanup", () => {
           stageDirectory,
           stageFile,
         }),
-      ).rejects.toThrow("commit stage directory is invalid");
+      ).rejects.toThrow("commit stage directory escapes its output directory");
       expect(stageFile).not.toHaveBeenCalled();
+      await lock.release();
+    } finally {
+      await disposeTempDir(outsideDir);
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("rejects symlinked ancestors that resolve commit paths outside the output", async () => {
+    const outputDir = await createTempDir();
+    const outsideDir = await createTempDir();
+    const outsideStage = path.join(outsideDir, "stage");
+    const linkedAncestor = path.join(outputDir, "linked");
+    const stageFile = vi.fn(async () => undefined);
+    try {
+      await fs.mkdir(outsideStage);
+      await fs.symlink(outsideDir, linkedAncestor, "dir");
+      const lock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        { startHeartbeat: disableHeartbeat },
+      );
+
+      await expect(
+        lock.commitFileAtomically({
+          contents: "private\n",
+          destinationPath: path.join(outputDir, "current.json"),
+          stageDirectory: path.join(linkedAncestor, "stage"),
+          stageFile,
+        }),
+      ).rejects.toThrow("commit stage directory escapes its output directory");
+      await expect(
+        lock.commitFileAtomically({
+          contents: "private\n",
+          destinationPath: path.join(linkedAncestor, "current.json"),
+          stageFile,
+        }),
+      ).rejects.toThrow("commit destination escapes its output directory");
+      expect(stageFile).not.toHaveBeenCalled();
+      await lock.release();
+    } finally {
+      await disposeTempDir(outsideDir);
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("rejects a destination parent replaced after confinement validation", async () => {
+    const outputDir = await createTempDir();
+    const outsideDir = await createTempDir();
+    const destinationDirectory = path.join(outputDir, "nested");
+    const displacedDirectory = path.join(outputDir, "displaced-nested");
+    try {
+      await fs.mkdir(destinationDirectory);
+      const lock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          beforeCommitRename: async () => {
+            await fs.rename(destinationDirectory, displacedDirectory);
+            await fs.symlink(outsideDir, destinationDirectory, "dir");
+          },
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+
+      await expect(
+        lock.commitFileAtomically({
+          contents: "private\n",
+          destinationPath: path.join(destinationDirectory, "current.json"),
+          stageFile: async (filePath, contents) => {
+            await fs.writeFile(filePath, contents);
+          },
+        }),
+      ).rejects.toThrow("commit destination directory identity changed");
+      await expect(fs.access(path.join(outsideDir, "current.json"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await lock.release();
+    } finally {
+      await disposeTempDir(outsideDir);
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("rejects a destination ancestor moved outside after confinement validation", async () => {
+    const outputDir = await createTempDir();
+    const outsideDir = await createTempDir();
+    const ancestorDirectory = path.join(outputDir, "ancestor");
+    const destinationDirectory = path.join(ancestorDirectory, "nested");
+    const displacedAncestor = path.join(outsideDir, "ancestor");
+    try {
+      await fs.mkdir(destinationDirectory, { recursive: true });
+      const lock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          beforeCommitRename: async () => {
+            await fs.rename(ancestorDirectory, displacedAncestor);
+            await fs.symlink(displacedAncestor, ancestorDirectory, "dir");
+          },
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+
+      await expect(
+        lock.commitFileAtomically({
+          contents: "private\n",
+          destinationPath: path.join(destinationDirectory, "current.json"),
+          stageFile: async (filePath, contents) => {
+            await fs.writeFile(filePath, contents);
+          },
+        }),
+      ).rejects.toThrow("commit destination escapes its output directory");
+      await expect(
+        fs.access(path.join(displacedAncestor, "nested", "current.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
       await lock.release();
     } finally {
       await disposeTempDir(outsideDir);
@@ -200,14 +359,16 @@ describe("OpenClaw smoke lock cleanup", () => {
         },
       );
       const ownedDirectory = await findOwnedLockDirectory(outputDir);
-      const owner = JSON.parse(await fs.readFile(path.join(ownedDirectory, "owner.json"), "utf8"));
-      const fileName = `.commit-file.${owner.token}.sentinel.tmp`;
+      const { token } = JSON.parse(
+        await fs.readFile(path.join(ownedDirectory, "owner.json"), "utf8"),
+      );
+      const fileName = `.commit-file.${token}.sentinel.tmp`;
       const escapedPath = path.join(outsideDir, fileName);
       await fs.writeFile(escapedPath, "unrelated\n");
       const directoryStats = await fs.lstat(outsideDir, { bigint: true });
       const fileStats = await fs.lstat(escapedPath, { bigint: true });
       await fs.writeFile(
-        path.join(ownedDirectory, `commit-stage.${owner.token}.json`),
+        path.join(ownedDirectory, `commit-stage.${token}.json`),
         `${JSON.stringify({
           directoryIdentity: {
             device: directoryStats.dev.toString(),
@@ -219,7 +380,7 @@ describe("OpenClaw smoke lock cleanup", () => {
             inode: fileStats.ino.toString(),
           },
           fileName,
-          token: owner.token,
+          token,
           version: 1,
         })}\n`,
       );
@@ -265,16 +426,18 @@ describe("OpenClaw smoke lock cleanup", () => {
         },
       );
       const ownedDirectory = await findOwnedLockDirectory(outputDir);
-      const owner = JSON.parse(await fs.readFile(path.join(ownedDirectory, "owner.json"), "utf8"));
+      const { token } = JSON.parse(
+        await fs.readFile(path.join(ownedDirectory, "owner.json"), "utf8"),
+      );
       const originalDirectoryStats = await fs.lstat(stageDirectory, { bigint: true });
       await fs.rename(stageDirectory, displacedDirectory);
       await fs.mkdir(stageDirectory);
-      const fileName = `.commit-file.${owner.token}.replacement.tmp`;
+      const fileName = `.commit-file.${token}.replacement.tmp`;
       const replacementPath = path.join(stageDirectory, fileName);
       await fs.writeFile(replacementPath, "replacement\n");
       const replacementStats = await fs.lstat(replacementPath, { bigint: true });
       await fs.writeFile(
-        path.join(ownedDirectory, `commit-stage.${owner.token}.json`),
+        path.join(ownedDirectory, `commit-stage.${token}.json`),
         `${JSON.stringify({
           directoryIdentity: {
             device: originalDirectoryStats.dev.toString(),
@@ -286,7 +449,7 @@ describe("OpenClaw smoke lock cleanup", () => {
             inode: replacementStats.ino.toString(),
           },
           fileName,
-          token: owner.token,
+          token,
           version: 1,
         })}\n`,
       );
@@ -307,6 +470,40 @@ describe("OpenClaw smoke lock cleanup", () => {
       await expect(fs.readFile(replacementPath, "utf8")).resolves.toBe("replacement\n");
       await successorLock.release();
       await expiredLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("preserves a missing-stage error when the stage directory is replaced before commit", async () => {
+    const outputDir = await createTempDir();
+    const stageDirectory = path.join(outputDir, "stage");
+    const displacedDirectory = path.join(outputDir, "displaced-stage");
+    try {
+      await fs.mkdir(stageDirectory);
+      const lock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          beforeCommitFileRename: async () => {
+            await fs.rename(stageDirectory, displacedDirectory);
+            await fs.mkdir(stageDirectory);
+          },
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+
+      await expect(
+        lock.commitFileAtomically({
+          contents: "private\n",
+          destinationPath: path.join(outputDir, "current.json"),
+          stageDirectory,
+          stageFile: async (filePath, contents) => {
+            await fs.writeFile(filePath, contents);
+          },
+        }),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.readdir(stageDirectory)).resolves.toEqual([]);
+      await lock.release();
     } finally {
       await disposeTempDir(outputDir);
     }
@@ -348,13 +545,13 @@ describe("OpenClaw smoke lock cleanup", () => {
         destinationPath,
         stageFile: async (filePath, contents) => {
           events.push("stage");
-          expect(events).toEqual(["secure", "secure", "stage"]);
+          expect(events).toEqual(["secure", "secure", "secure", "stage"]);
           await fs.writeFile(filePath, contents);
         },
       });
 
-      expect(secureWindowsDirectory).toHaveBeenCalledTimes(2);
-      expect(events).toEqual(["secure", "secure", "stage"]);
+      expect(secureWindowsDirectory).toHaveBeenCalledTimes(3);
+      expect(events).toEqual(["secure", "secure", "secure", "stage"]);
       await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe("private\n");
       await lock.release();
     } finally {
@@ -756,6 +953,172 @@ describe("OpenClaw smoke lock cleanup", () => {
           processStartedAtMs: 200,
         }),
       ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("matches a recent legacy Darwin owner using its stable coarse identity", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    const coarseIdentity = "darwin:1783864000.123456:Sun Jul 12 16:04:00 2026";
+    try {
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      const ownerPath = path.join(lockDirectory, "owner.json");
+      await fs.writeFile(
+        ownerPath,
+        `${JSON.stringify({
+          channel: "telegram",
+          createdAtMs: 1_000,
+          pid: 4_242,
+          processIdentity: coarseIdentity,
+          processStartedAtMs: 100,
+          token: "prior",
+        })}\n`,
+        { mode: 0o600 },
+      );
+      await fs.utimes(ownerPath, new Date(1_000), new Date(1_000));
+
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(params, {
+          getProcessIdentity: () => coarseIdentity,
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => 1_500,
+          pid: 5_252,
+          processStartedAtMs: 200,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("bounds trust in a stale remote owner with a coarse Darwin identity", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    const coarseIdentity = "darwin:1783864000.123456:Sun Jul 12 16:04:00 2026";
+    try {
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      const ownerPath = path.join(lockDirectory, "owner.json");
+      await fs.writeFile(
+        ownerPath,
+        `${JSON.stringify({
+          channel: "telegram",
+          createdAtMs: 1_000,
+          pid: 4_242,
+          processIdentity: coarseIdentity,
+          processStartedAtMs: 100,
+          token: "prior",
+        })}\n`,
+        { mode: 0o600 },
+      );
+      await fs.utimes(ownerPath, new Date(1_000), new Date(1_000));
+
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        getProcessIdentity: () => coarseIdentity,
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 2_001,
+        pid: 5_252,
+        processStartedAtMs: 200,
+        startHeartbeat: disableHeartbeat,
+      });
+
+      await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
+      await replacementLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("keeps a stale remote owner when its precise Darwin identity is verified", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    const coarseIdentity = "darwin:1783864000.123456:Sun Jul 12 16:04:00 2026";
+    const preciseIdentity = "darwin:1783864000.123456:us:1783872240500000";
+    try {
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      const ownerPath = path.join(lockDirectory, "owner.json");
+      await fs.writeFile(
+        ownerPath,
+        `${JSON.stringify({
+          channel: "telegram",
+          createdAtMs: 1_000,
+          pid: 4_242,
+          processIdentity: coarseIdentity,
+          processIdentityV2: preciseIdentity,
+          processStartedAtMs: 100,
+          token: "prior",
+        })}\n`,
+        { mode: 0o600 },
+      );
+      await fs.utimes(ownerPath, new Date(1_000), new Date(1_000));
+
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(params, {
+          getProcessIdentity: () => coarseIdentity,
+          getProcessIdentityV2: () => preciseIdentity,
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => 10_000,
+          pid: 5_252,
+          processStartedAtMs: 200,
+        }),
+      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("reclaims a same-second Darwin PID reuse when precise identities differ", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    try {
+      await fs.mkdir(lockDirectory, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(lockDirectory, "owner.json"),
+        `${JSON.stringify({
+          channel: "telegram",
+          createdAtMs: 1_000,
+          pid: 4_242,
+          processIdentity: "darwin:1783864000.123456:Sun Jul 12 16:04:00 2026",
+          processIdentityV2: "darwin:1783864000.123456:us:1783872240100000",
+          processStartedAtMs: 100,
+          token: "prior",
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        getProcessIdentity: () => "darwin:1783864000.123456:Sun Jul 12 16:04:00 2026",
+        getProcessIdentityV2: () => "darwin:1783864000.123456:us:1783872240900000",
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 1_100,
+        pid: 5_252,
+        processStartedAtMs: 200,
+        startHeartbeat: disableHeartbeat,
+      });
+
+      await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
+      await replacementLock.release();
     } finally {
       await disposeTempDir(outputDir);
     }

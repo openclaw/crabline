@@ -17,6 +17,7 @@ type LegacySmokeLockOwner = {
 type ProcessIdentifiedSmokeLockOwner = LegacySmokeLockOwner & {
   createdAtMs: number;
   processIdentity?: string;
+  processIdentityV2?: string;
   processStartedAtMs: number;
 };
 
@@ -39,6 +40,7 @@ export type OpenClawCrablineSmokeRunLock = {
   commitFileAtomically(params: {
     contents: string;
     destinationPath: string;
+    // The directory is an identity fence; temporary contents remain lock-claim-local.
     stageDirectory?: string;
     stageFile(filePath: string, contents: string): Promise<void>;
   }): Promise<void>;
@@ -75,24 +77,14 @@ type DirectoryIdentity = {
   inode: bigint;
 };
 type FileIdentity = DirectoryIdentity;
-type SerializedIdentity = {
-  device: string;
-  inode: string;
-};
-type CommitStageRecord = {
-  directoryIdentity: SerializedIdentity;
-  directoryPath: string;
-  fileIdentity: SerializedIdentity;
-  fileName: string;
-  token: string;
-  version: 1;
-};
 
 type SmokeLockRuntime = {
   currentProcessIdentity: string | null;
+  currentProcessIdentityV2: string | null;
   currentPid: number;
   currentProcessStartedAtMs: number;
   getProcessIdentity: GetProcessIdentity;
+  getProcessIdentityV2: GetProcessIdentity;
   isProcessAlive: IsProcessAlive;
   leaseMs: number;
   now: () => number;
@@ -100,7 +92,6 @@ type SmokeLockRuntime = {
 };
 
 const LOCK_OWNER_FILE = "owner.json";
-const LOCK_COMMIT_STAGE_FILE_PREFIX = "commit-stage";
 const LOCK_LEASE_FILE_PREFIX = "lease.";
 const LEGACY_RECOVERY_SUFFIX = ".recovering";
 const COMMIT_CLAIM_SUFFIX = ".commit";
@@ -121,116 +112,6 @@ export function processStartedAtMsFromTimeOrigin(timeOrigin: number): number {
     throw new Error("Process time origin is invalid.");
   }
   return Math.trunc(timeOrigin);
-}
-
-function parseSerializedIdentity(value: unknown): SerializedIdentity | null {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("device" in value) ||
-    !("inode" in value) ||
-    typeof value.device !== "string" ||
-    typeof value.inode !== "string" ||
-    !/^\d+$/u.test(value.device) ||
-    !/^[1-9]\d*$/u.test(value.inode)
-  ) {
-    return null;
-  }
-  return {
-    device: value.device,
-    inode: value.inode,
-  };
-}
-
-function parseCommitStageRecord(contents: string, token: string): CommitStageRecord | null {
-  let value: {
-    directoryIdentity?: unknown;
-    directoryPath?: unknown;
-    fileIdentity?: unknown;
-    fileName?: unknown;
-    path?: unknown;
-    token?: unknown;
-    version?: unknown;
-  };
-  try {
-    value = JSON.parse(contents) as typeof value;
-  } catch (error) {
-    throw new Error("OpenClaw Crabline smoke lock commit stage metadata is malformed.", {
-      cause: error,
-    });
-  }
-  if (value.version === undefined && value.token === token && typeof value.path === "string") {
-    return null;
-  }
-  const expectedPrefix = `.commit-file.${token}.`;
-  const directoryIdentity = parseSerializedIdentity(value.directoryIdentity);
-  const fileIdentity = parseSerializedIdentity(value.fileIdentity);
-  if (
-    value.version !== 1 ||
-    value.token !== token ||
-    typeof value.directoryPath !== "string" ||
-    !path.isAbsolute(value.directoryPath) ||
-    path.resolve(value.directoryPath) !== value.directoryPath ||
-    typeof value.fileName !== "string" ||
-    path.basename(value.fileName) !== value.fileName ||
-    !value.fileName.startsWith(expectedPrefix) ||
-    !value.fileName.endsWith(".tmp") ||
-    directoryIdentity === null ||
-    fileIdentity === null
-  ) {
-    throw new Error("OpenClaw Crabline smoke lock commit stage metadata is malformed.");
-  }
-  return {
-    directoryIdentity,
-    directoryPath: value.directoryPath,
-    fileIdentity,
-    fileName: value.fileName,
-    token,
-    version: 1,
-  };
-}
-
-async function readCommitStageRecord(
-  lockDirectory: string,
-  token: string,
-): Promise<CommitStageRecord | null> {
-  try {
-    return parseCommitStageRecord(
-      await fs.readFile(path.join(lockDirectory, commitStageFileName(token)), "utf8"),
-      token,
-    );
-  } catch (error) {
-    if (isMissingPathError(error)) {
-      return null;
-    }
-    throw error;
-  }
-}
-
-function commitStageFileName(token: string): string {
-  return `${LOCK_COMMIT_STAGE_FILE_PREFIX}.${token}.json`;
-}
-
-async function writeCommitStagePath(
-  lockDirectory: string,
-  record: CommitStageRecord,
-  token: string,
-): Promise<void> {
-  const temporaryPath = path.join(
-    lockDirectory,
-    `.${commitStageFileName(token)}.${randomUUID()}.tmp`,
-  );
-  try {
-    await fs.writeFile(temporaryPath, `${JSON.stringify(record)}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
-    await fs.chmod(temporaryPath, 0o600);
-    await fs.rename(temporaryPath, path.join(lockDirectory, commitStageFileName(token)));
-  } finally {
-    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
-  }
 }
 
 const removeLockDirectory: RemoveLockDirectory = async (lockDirectory) => {
@@ -387,7 +268,11 @@ function parseLockOwner(contents: string): SmokeLockOwner {
     (owner.processIdentity !== undefined &&
       (typeof owner.processIdentity !== "string" ||
         owner.processIdentity.length === 0 ||
-        owner.processIdentity.length > 256))
+        owner.processIdentity.length > 256)) ||
+    (owner.processIdentityV2 !== undefined &&
+      (typeof owner.processIdentityV2 !== "string" ||
+        owner.processIdentityV2.length === 0 ||
+        owner.processIdentityV2.length > 256))
   ) {
     throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.");
   }
@@ -397,6 +282,7 @@ function parseLockOwner(contents: string): SmokeLockOwner {
       createdAtMs: owner.createdAtMs,
       pid: owner.pid,
       ...(owner.processIdentity ? { processIdentity: owner.processIdentity } : {}),
+      ...(owner.processIdentityV2 ? { processIdentityV2: owner.processIdentityV2 } : {}),
       processStartedAtMs: owner.processStartedAtMs,
       token: owner.token,
     };
@@ -410,6 +296,7 @@ function parseLockOwner(contents: string): SmokeLockOwner {
     leaseVersion: owner.leaseVersion,
     pid: owner.pid,
     ...(owner.processIdentity ? { processIdentity: owner.processIdentity } : {}),
+    ...(owner.processIdentityV2 ? { processIdentityV2: owner.processIdentityV2 } : {}),
     processStartedAtMs: owner.processStartedAtMs,
     token: owner.token,
   };
@@ -511,6 +398,32 @@ export function processIdentityFromDarwin(
   bootTime: string,
 ): string | null {
   const bootMatch = /\bsec = (\d+), usec = (\d+)\b/u.exec(bootTime);
+  const launchMatch =
+    /^Launch Time:\s*(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3,6}) ([+-])(\d{2})(\d{2})$/mu.exec(
+      processStartedAt,
+    );
+  if (bootMatch && launchMatch) {
+    const [, year, month, day, hour, minute, second, fraction, sign, offsetHour, offsetMinute] =
+      launchMatch as RegExpExecArray &
+        [string, string, string, string, string, string, string, string, string, string, string];
+    const offsetMs =
+      (Number(offsetHour) * 60 + Number(offsetMinute)) * 60_000 * (sign === "+" ? 1 : -1);
+    const fractionMicros = Number(fraction.padEnd(6, "0"));
+    const utcMilliseconds =
+      Date.UTC(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hour),
+        Number(minute),
+        Number(second),
+        Math.floor(fractionMicros / 1_000),
+      ) - offsetMs;
+    if (Number.isSafeInteger(utcMilliseconds) && utcMilliseconds > 0) {
+      const startedAtMicros = BigInt(utcMilliseconds) * 1_000n + BigInt(fractionMicros % 1_000);
+      return `darwin:${bootMatch[1]}.${bootMatch[2]}:us:${startedAtMicros}`;
+    }
+  }
   const normalizedStartedAt = processStartedAt.trim().replace(/\s+/gu, " ");
   if (!bootMatch || normalizedStartedAt.length === 0 || normalizedStartedAt.length > 64) {
     return null;
@@ -539,11 +452,15 @@ const getProcessIdentity: GetProcessIdentity = (pid) => {
     const options = {
       encoding: "utf8" as const,
       env: darwinProcessIdentityEnvironment(process.env),
+      maxBuffer: 512 * 1024,
       timeout: 1_000,
     };
-    const startedAt = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], options);
-    const bootTime = spawnSync("sysctl", ["-n", "kern.boottime"], options);
-    return startedAt.status === 0 && bootTime.status === 0
+    const bootTime = spawnSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], options);
+    if (bootTime.status !== 0) {
+      return null;
+    }
+    const startedAt = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], options);
+    return startedAt.status === 0
       ? processIdentityFromDarwin(startedAt.stdout, bootTime.stdout)
       : null;
   }
@@ -570,6 +487,25 @@ const getProcessIdentity: GetProcessIdentity = (pid) => {
   return /^\d+$/u.test(ticks) ? `windows:${ticks}` : null;
 };
 
+const getProcessIdentityV2: GetProcessIdentity = (pid) => {
+  if (process.platform !== "darwin") {
+    return null;
+  }
+  const options = {
+    encoding: "utf8" as const,
+    env: darwinProcessIdentityEnvironment(process.env),
+    maxBuffer: 512 * 1024,
+    timeout: 3_000,
+  };
+  const bootTime = spawnSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], options);
+  const processDetails = spawnSync("/usr/bin/vmmap", ["-summary", String(pid)], options);
+  if (bootTime.status !== 0 || processDetails.status !== 0) {
+    return null;
+  }
+  const identity = processIdentityFromDarwin(processDetails.stdout, bootTime.stdout);
+  return identity?.includes(":us:") ? identity : null;
+};
+
 function hasExactProcessIdentity(owner: SmokeLockOwner): owner is (
   | ProcessIdentifiedSmokeLockOwner
   | RenewableSmokeLockOwner
@@ -579,22 +515,55 @@ function hasExactProcessIdentity(owner: SmokeLockOwner): owner is (
   return hasProcessIdentity(owner) && typeof owner.processIdentity === "string";
 }
 
-function hasProcessIdentityMismatch(owner: SmokeLockOwner, runtime: SmokeLockRuntime): boolean {
+function hasCoarseDarwinProcessIdentity(owner: SmokeLockOwner): owner is (
+  | ProcessIdentifiedSmokeLockOwner
+  | RenewableSmokeLockOwner
+) & {
+  processIdentity: string;
+} {
+  if (!hasExactProcessIdentity(owner)) {
+    return false;
+  }
+  return /^darwin:\d+\.\d+:(?!us:).+$/u.test(owner.processIdentity);
+}
+
+type ProcessIdentityMatch = "legacy" | "mismatch" | "unknown" | "v2";
+
+function compareProcessIdentity(
+  owner: SmokeLockOwner,
+  runtime: SmokeLockRuntime,
+): ProcessIdentityMatch {
   if (
     hasProcessIdentity(owner) &&
     owner.pid === runtime.currentPid &&
     owner.processStartedAtMs !== runtime.currentProcessStartedAtMs
   ) {
-    return true;
+    return "mismatch";
   }
   if (!hasExactProcessIdentity(owner)) {
-    return false;
+    return "unknown";
+  }
+  if (hasProcessIdentity(owner) && typeof owner.processIdentityV2 === "string") {
+    const actualProcessIdentityV2 =
+      owner.pid === runtime.currentPid
+        ? runtime.currentProcessIdentityV2
+        : runtime.getProcessIdentityV2(owner.pid);
+    if (actualProcessIdentityV2 !== null) {
+      return owner.processIdentityV2 === actualProcessIdentityV2 ? "v2" : "mismatch";
+    }
   }
   const actualProcessIdentity =
     owner.pid === runtime.currentPid
       ? runtime.currentProcessIdentity
       : runtime.getProcessIdentity(owner.pid);
-  return actualProcessIdentity !== null && owner.processIdentity !== actualProcessIdentity;
+  if (actualProcessIdentity === null) {
+    return "unknown";
+  }
+  return owner.processIdentity === actualProcessIdentity ? "legacy" : "mismatch";
+}
+
+function hasProcessIdentityMismatch(owner: SmokeLockOwner, runtime: SmokeLockRuntime): boolean {
+  return compareProcessIdentity(owner, runtime) === "mismatch";
 }
 
 function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): boolean {
@@ -602,10 +571,19 @@ function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): 
   if (!runtime.isProcessAlive(owner.pid)) {
     return false;
   }
-  if (hasProcessIdentityMismatch(owner, runtime)) {
+  const identityMatch = compareProcessIdentity(owner, runtime);
+  if (identityMatch === "mismatch") {
     return false;
   }
   if (!isRenewableOwner(owner)) {
+    if (
+      owner.pid !== runtime.currentPid &&
+      hasCoarseDarwinProcessIdentity(owner) &&
+      identityMatch !== "v2"
+    ) {
+      const ageMs = runtime.now() - Math.max(owner.createdAtMs, record.renewedAtMs);
+      return ageMs >= -runtime.leaseMs && ageMs <= runtime.leaseMs;
+    }
     return true;
   }
   const ageMs = runtime.now() - Math.max(owner.createdAtMs, record.renewedAtMs);
@@ -657,24 +635,6 @@ function activeRunError(params: {
   );
 }
 
-function serializeIdentity(identity: DirectoryIdentity): SerializedIdentity {
-  return {
-    device: identity.device.toString(),
-    inode: identity.inode.toString(),
-  };
-}
-
-function hasSerializedIdentity(
-  actual: DirectoryIdentity | null,
-  expected: SerializedIdentity,
-): actual is DirectoryIdentity {
-  return (
-    actual !== null &&
-    actual.device === BigInt(expected.device) &&
-    actual.inode === BigInt(expected.inode)
-  );
-}
-
 function isPathConfinedTo(rootPath: string, candidatePath: string): boolean {
   const relative = path.relative(rootPath, candidatePath);
   return (
@@ -683,63 +643,29 @@ function isPathConfinedTo(rootPath: string, candidatePath: string): boolean {
   );
 }
 
-function resolveConfinedPath(rootPath: string, candidatePath: string, description: string): string {
+async function resolveConfinedPath(
+  rootPath: string,
+  candidatePath: string,
+  description: string,
+  candidateKind: "directory" | "file",
+): Promise<string> {
   const resolvedPath = path.resolve(candidatePath);
-  if (resolvedPath !== candidatePath || !isPathConfinedTo(rootPath, resolvedPath)) {
+  if (resolvedPath !== candidatePath) {
     throw new Error(`OpenClaw Crabline smoke lock ${description} escapes its output directory.`);
   }
-  return resolvedPath;
-}
-
-async function resolveValidatedCommitStagePath(
-  outputDir: string,
-  record: CommitStageRecord,
-): Promise<{ fileIdentity: FileIdentity; filePath: string } | null> {
-  let directoryPath: string;
+  const parentPath = candidateKind === "directory" ? resolvedPath : path.dirname(resolvedPath);
+  let realParentPath: string;
   try {
-    directoryPath = resolveConfinedPath(outputDir, record.directoryPath, "commit stage directory");
+    realParentPath = await fs.realpath(parentPath);
   } catch {
-    return null;
+    throw new Error(`OpenClaw Crabline smoke lock ${description} is invalid.`);
   }
-  if (
-    !hasSerializedIdentity(await readDirectoryIdentity(directoryPath), record.directoryIdentity)
-  ) {
-    return null;
+  if (!isPathConfinedTo(rootPath, realParentPath)) {
+    throw new Error(`OpenClaw Crabline smoke lock ${description} escapes its output directory.`);
   }
-  const filePath = path.join(directoryPath, record.fileName);
-  if (
-    !isPathConfinedTo(directoryPath, filePath) ||
-    !hasSerializedIdentity(await readFileIdentity(filePath), record.fileIdentity)
-  ) {
-    return null;
-  }
-  return {
-    fileIdentity: {
-      device: BigInt(record.fileIdentity.device),
-      inode: BigInt(record.fileIdentity.inode),
-    },
-    filePath,
-  };
-}
-
-async function removeValidatedCommitStageFile(params: {
-  outputDir: string;
-  record: CommitStageRecord;
-  token: string;
-}): Promise<void> {
-  const validated = await resolveValidatedCommitStagePath(params.outputDir, params.record);
-  if (!validated) {
-    return;
-  }
-  const revokedStagePath = path.join(
-    path.dirname(validated.filePath),
-    `.revoked-commit-file.${params.token}.${randomUUID()}.tmp`,
-  );
-  await fs.rename(validated.filePath, revokedStagePath);
-  if (!hasSameDirectoryIdentity(validated.fileIdentity, await readFileIdentity(revokedStagePath))) {
-    throw new Error("OpenClaw Crabline smoke lock commit stage identity changed during cleanup.");
-  }
-  await fs.rm(revokedStagePath, { force: true });
+  return candidateKind === "directory"
+    ? realParentPath
+    : path.join(realParentPath, path.basename(resolvedPath));
 }
 
 async function removeOwnedLock(params: {
@@ -805,21 +731,6 @@ async function removeOwnedLock(params: {
     return false;
   }
 
-  const stageRecord = await readCommitStageRecord(releaseClaim, params.token);
-  if (stageRecord) {
-    try {
-      await removeValidatedCommitStageFile({
-        outputDir: path.dirname(params.lockDirectory),
-        record: stageRecord,
-        token: params.token,
-      });
-    } catch (error) {
-      if (!isMissingPathError(error)) {
-        throw error;
-      }
-    }
-  }
-
   await (params.removeDirectory ?? removeLockDirectory)(releaseClaim);
   return true;
 }
@@ -865,6 +776,7 @@ async function retireCompatibilityMarker(
     createdAtMs: 1,
     pid: MAX_PROCESS_ID,
     ...(owner.processIdentity ? { processIdentity: "retired" } : {}),
+    ...(owner.processIdentityV2 ? { processIdentityV2: "retired" } : {}),
     processStartedAtMs: 1,
   };
   const originalBytes = Buffer.byteLength(`${JSON.stringify(owner)}\n`, "utf8");
@@ -1221,11 +1133,13 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     afterLockOwnerClaimInstall?: AfterLockDirectoryWrite;
     afterLockOwnerWrite?: AfterLockDirectoryWrite;
     getProcessIdentity?: GetProcessIdentity;
+    getProcessIdentityV2?: GetProcessIdentity;
     isProcessAlive?: IsProcessAlive;
     leaseMs?: number;
     now?: () => number;
     pid?: number;
     processIdentity?: string | null;
+    processIdentityV2?: string | null;
     processStartedAtMs?: number;
     platform?: NodeJS.Platform;
     secureWindowsDirectory?: SecureWindowsDirectory;
@@ -1242,19 +1156,39 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     startHeartbeat?: StartHeartbeat;
   } = {},
 ): Promise<OpenClawCrablineSmokeRunLock> {
-  const outputDir = path.resolve(params.outputDir);
+  const requestedOutputDir = path.resolve(params.outputDir);
+  await fs.mkdir(requestedOutputDir, { recursive: true });
+  const outputDir = await fs.realpath(requestedOutputDir);
+  const privateDirectoryOptions = {
+    ...(dependencies.platform ? { platform: dependencies.platform } : {}),
+    ...(dependencies.secureWindowsDirectory
+      ? { secureWindowsDirectory: dependencies.secureWindowsDirectory }
+      : {}),
+  };
+  const securedOutputDirectory = await securePrivateDirectory(outputDir, privateDirectoryOptions);
+  await securedOutputDirectory.assertIdentityAt(outputDir);
+  const outputDirectoryIdentity = await readDirectoryIdentity(outputDir);
+  if (outputDirectoryIdentity === null) {
+    throw new Error("OpenClaw Crabline smoke lock output directory is invalid.");
+  }
   const lockDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
   const token = randomUUID();
   const currentPid = dependencies.pid ?? process.pid;
   const getRuntimeProcessIdentity = dependencies.getProcessIdentity ?? getProcessIdentity;
+  const getRuntimeProcessIdentityV2 = dependencies.getProcessIdentityV2 ?? getProcessIdentityV2;
   const runtime: SmokeLockRuntime = {
     currentPid,
     currentProcessIdentity:
       dependencies.processIdentity === undefined
         ? getRuntimeProcessIdentity(currentPid)
         : dependencies.processIdentity,
+    currentProcessIdentityV2:
+      dependencies.processIdentityV2 === undefined
+        ? getRuntimeProcessIdentityV2(currentPid)
+        : dependencies.processIdentityV2,
     currentProcessStartedAtMs: dependencies.processStartedAtMs ?? CURRENT_PROCESS_STARTED_AT_MS,
     getProcessIdentity: getRuntimeProcessIdentity,
+    getProcessIdentityV2: getRuntimeProcessIdentityV2,
     isProcessAlive: dependencies.isProcessAlive ?? isProcessAlive,
     leaseMs: dependencies.leaseMs ?? LOCK_LEASE_MS,
     now: dependencies.now ?? Date.now,
@@ -1266,6 +1200,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     (runtime.currentProcessIdentity !== null &&
       (runtime.currentProcessIdentity.length === 0 ||
         runtime.currentProcessIdentity.length > 256)) ||
+    (runtime.currentProcessIdentityV2 !== null &&
+      (runtime.currentProcessIdentityV2.length === 0 ||
+        runtime.currentProcessIdentityV2.length > 256)) ||
     !isPositiveSafeInteger(runtime.currentProcessStartedAtMs) ||
     !isPositiveSafeInteger(runtime.leaseMs) ||
     !isPositiveSafeInteger(createdAtMs)
@@ -1278,6 +1215,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     leaseVersion: 1,
     pid: runtime.currentPid,
     ...(runtime.currentProcessIdentity ? { processIdentity: runtime.currentProcessIdentity } : {}),
+    ...(runtime.currentProcessIdentityV2
+      ? { processIdentityV2: runtime.currentProcessIdentityV2 }
+      : {}),
     processStartedAtMs: runtime.currentProcessStartedAtMs,
     token,
   };
@@ -1286,7 +1226,6 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     createdAtMs: 1,
   };
 
-  await fs.mkdir(outputDir, { recursive: true });
   for (;;) {
     const lockClaims = await listLockClaims(lockDirectory);
     if (lockClaims.length > 0 || (await pathExists(`${lockDirectory}${LEGACY_RECOVERY_SUFFIX}`))) {
@@ -1294,7 +1233,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         beforeRecoveryDeleteClaim:
           dependencies.beforeRecoveryDeleteClaim ?? (async () => undefined),
         lockDirectory,
-        outputDir,
+        outputDir: requestedOutputDir,
         requestedChannel: params.channel,
         runtime,
       });
@@ -1367,7 +1306,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           dependencies.beforeRecoveryDeleteClaim ?? (async () => undefined),
         cause: error,
         lockDirectory,
-        outputDir,
+        outputDir: requestedOutputDir,
         requestedChannel: params.channel,
         runtime,
         beforeRecoveryClaim: dependencies.beforeRecoveryClaim ?? (async () => undefined),
@@ -1452,7 +1391,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         beforeRecoveryDeleteClaim:
           dependencies.beforeRecoveryDeleteClaim ?? (async () => undefined),
         lockDirectory,
-        outputDir,
+        outputDir: requestedOutputDir,
         requestedChannel: params.channel,
         runtime,
       });
@@ -1563,13 +1502,34 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         await renew();
         heartbeat.assertHealthy();
 
-        const resolvedDestinationPath = resolveConfinedPath(
+        const resolvedDestinationPath = await resolveConfinedPath(
           outputDir,
           destinationPath,
           "commit destination",
+          "file",
         );
+        const destinationDirectory = path.dirname(resolvedDestinationPath);
+        const securedDestinationDirectory =
+          destinationDirectory === outputDir
+            ? securedOutputDirectory
+            : await securePrivateDirectory(destinationDirectory, privateDirectoryOptions);
+        await securedDestinationDirectory.assertIdentityAt(destinationDirectory);
+        const destinationDirectoryIdentity = await readDirectoryIdentity(destinationDirectory);
+        if (destinationDirectoryIdentity === null) {
+          throw new Error("OpenClaw Crabline smoke lock commit destination is invalid.");
+        }
+        if (destinationDirectoryIdentity.device !== outputDirectoryIdentity.device) {
+          throw new Error(
+            "OpenClaw Crabline smoke lock commit destination is on another filesystem.",
+          );
+        }
         const resolvedStageDirectory = stageDirectory
-          ? resolveConfinedPath(outputDir, stageDirectory, "commit stage directory")
+          ? await resolveConfinedPath(
+              outputDir,
+              stageDirectory,
+              "commit stage directory",
+              "directory",
+            )
           : ownerDirectory;
         let stageDirectoryIdentity: DirectoryIdentity | null = null;
         if (stageDirectory) {
@@ -1584,138 +1544,152 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         if (stageDirectory && stageDirectoryIdentity === null) {
           throw new Error("OpenClaw Crabline smoke lock commit stage directory is invalid.");
         }
+        if (
+          stageDirectoryIdentity !== null &&
+          stageDirectoryIdentity.device !== outputDirectoryIdentity.device
+        ) {
+          throw new Error(
+            "OpenClaw Crabline smoke lock commit stage directory is on another filesystem.",
+          );
+        }
         const stagedFileName = `.commit-file.${token}.${randomUUID()}.tmp`;
-        const stagedFilePath = path.join(resolvedStageDirectory, stagedFileName);
-        let stagedFileIdentity: FileIdentity | null = null;
-        let committed = false;
-        try {
-          await stageFile(stagedFilePath, contents);
-          if (stageDirectory) {
-            if (
-              !hasSameDirectoryIdentity(
-                stageDirectoryIdentity,
-                await readDirectoryIdentity(resolvedStageDirectory),
-              )
-            ) {
-              throw new Error(
-                "OpenClaw Crabline smoke lock commit stage directory identity changed.",
-              );
-            }
-            stagedFileIdentity = await readFileIdentity(stagedFilePath);
-            if (stagedFileIdentity === null) {
-              throw new Error("OpenClaw Crabline smoke lock commit stage file is invalid.");
-            }
-            await writeCommitStagePath(
-              ownerDirectory,
-              {
-                directoryIdentity: serializeIdentity(stageDirectoryIdentity!),
-                directoryPath: resolvedStageDirectory,
-                fileIdentity: serializeIdentity(stagedFileIdentity),
-                fileName: stagedFileName,
-                token,
-                version: 1,
-              },
-              token,
-            );
-          }
-          heartbeat.assertHealthy();
-          await renew();
-          heartbeat.assertHealthy();
-
-          await dependencies.beforeCommitClaim?.();
-          await assertCompatibilityMarkerOwned({
-            lockDirectory,
-            securedDirectory,
-            token,
-          });
-          const commitClaim = `${lockDirectory}${COMMIT_CLAIM_SUFFIX}.${token}.${randomUUID()}`;
-          const observedIdentity = await readDirectoryIdentity(ownerDirectory);
-          const observed = await readLockRecord(ownerDirectory);
+        const stagedFilePath = path.join(ownerDirectory, stagedFileName);
+        await stageFile(stagedFilePath, contents);
+        if (stageDirectory) {
           if (
-            observedIdentity === null ||
-            observed.kind === "missing" ||
-            observed.record.owner.token !== token
-          ) {
-            throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
-          }
-
-          try {
-            await fs.rename(ownerDirectory, commitClaim);
-          } catch (error) {
-            if (isMissingPathError(error)) {
-              throw new Error("OpenClaw Crabline smoke lock ownership was lost.", {
-                cause: error,
-              });
-            }
-            throw error;
-          }
-          ownedDirectory = commitClaim;
-          commitFenceConsumed = true;
-
-          const claimed = await readLockRecord(commitClaim);
-          const claimedIdentity = await readDirectoryIdentity(commitClaim);
-          if (
-            claimed.kind === "missing" ||
-            claimed.record.owner.token !== token ||
-            !hasSameDirectoryIdentity(observedIdentity, claimedIdentity)
-          ) {
-            if (!(await pathExists(ownerDirectory))) {
-              try {
-                await fs.rename(commitClaim, ownerDirectory);
-                ownedDirectory = ownerDirectory;
-              } catch (error) {
-                if (!isMissingPathError(error)) {
-                  throw error;
-                }
-              }
-            }
-            throw new Error("OpenClaw Crabline smoke lock commit fence was lost.");
-          }
-
-          await dependencies.beforeCommitFileRename?.();
-          heartbeat.assertHealthy();
-          await renew();
-          heartbeat.assertHealthy();
-          await heartbeat.settle();
-          heartbeat.assertHealthy();
-          await dependencies.beforeCommitRename?.();
-          await assertCompatibilityMarkerOwned({
-            lockDirectory,
-            securedDirectory,
-            token,
-          });
-          if (
-            stageDirectory &&
-            (!hasSameDirectoryIdentity(
+            !hasSameDirectoryIdentity(
               stageDirectoryIdentity,
               await readDirectoryIdentity(resolvedStageDirectory),
-            ) ||
-              !hasSameDirectoryIdentity(stagedFileIdentity, await readFileIdentity(stagedFilePath)))
+            )
           ) {
-            throw new Error("OpenClaw Crabline smoke lock commit stage identity changed.");
-          }
-          await fs.rename(
-            stageDirectory ? stagedFilePath : path.join(commitClaim, stagedFileName),
-            resolvedDestinationPath,
-          );
-          committed = true;
-        } finally {
-          if (!committed && stageDirectory && stageDirectoryIdentity && stagedFileIdentity) {
-            const cleanupRecord: CommitStageRecord = {
-              directoryIdentity: serializeIdentity(stageDirectoryIdentity),
-              directoryPath: resolvedStageDirectory,
-              fileIdentity: serializeIdentity(stagedFileIdentity),
-              fileName: stagedFileName,
-              token,
-              version: 1,
-            };
-            await removeValidatedCommitStageFile({
-              outputDir,
-              record: cleanupRecord,
-              token,
-            }).catch(() => undefined);
+            throw new Error(
+              "OpenClaw Crabline smoke lock commit stage directory identity changed.",
+            );
           }
         }
+        const stagedFileIdentity = await readFileIdentity(stagedFilePath);
+        if (stagedFileIdentity === null) {
+          throw new Error("OpenClaw Crabline smoke lock commit stage file is invalid.");
+        }
+        heartbeat.assertHealthy();
+        await renew();
+        heartbeat.assertHealthy();
+
+        await dependencies.beforeCommitClaim?.();
+        await assertCompatibilityMarkerOwned({
+          lockDirectory,
+          securedDirectory,
+          token,
+        });
+        const commitClaim = `${lockDirectory}${COMMIT_CLAIM_SUFFIX}.${token}.${randomUUID()}`;
+        const observedIdentity = await readDirectoryIdentity(ownerDirectory);
+        const observed = await readLockRecord(ownerDirectory);
+        if (
+          observedIdentity === null ||
+          observed.kind === "missing" ||
+          observed.record.owner.token !== token
+        ) {
+          throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
+        }
+
+        try {
+          await fs.rename(ownerDirectory, commitClaim);
+        } catch (error) {
+          if (isMissingPathError(error)) {
+            throw new Error("OpenClaw Crabline smoke lock ownership was lost.", {
+              cause: error,
+            });
+          }
+          throw error;
+        }
+        ownedDirectory = commitClaim;
+        commitFenceConsumed = true;
+
+        const claimed = await readLockRecord(commitClaim);
+        const claimedIdentity = await readDirectoryIdentity(commitClaim);
+        if (
+          claimed.kind === "missing" ||
+          claimed.record.owner.token !== token ||
+          !hasSameDirectoryIdentity(observedIdentity, claimedIdentity)
+        ) {
+          if (!(await pathExists(ownerDirectory))) {
+            try {
+              await fs.rename(commitClaim, ownerDirectory);
+              ownedDirectory = ownerDirectory;
+            } catch (error) {
+              if (!isMissingPathError(error)) {
+                throw error;
+              }
+            }
+          }
+          throw new Error("OpenClaw Crabline smoke lock commit fence was lost.");
+        }
+
+        await dependencies.beforeCommitFileRename?.();
+        heartbeat.assertHealthy();
+        await renew();
+        heartbeat.assertHealthy();
+        await heartbeat.settle();
+        heartbeat.assertHealthy();
+        await dependencies.beforeCommitRename?.();
+        await assertCompatibilityMarkerOwned({
+          lockDirectory,
+          securedDirectory,
+          token,
+        });
+        const claimedStagedFilePath = path.join(commitClaim, stagedFileName);
+        if (stageDirectory) {
+          const currentDirectoryIdentity = await readDirectoryIdentity(resolvedStageDirectory);
+          const currentFileIdentity = await readFileIdentity(claimedStagedFilePath);
+          if (
+            !hasSameDirectoryIdentity(stageDirectoryIdentity, currentDirectoryIdentity) ||
+            !hasSameDirectoryIdentity(stagedFileIdentity, currentFileIdentity)
+          ) {
+            const error = new Error("OpenClaw Crabline smoke lock commit stage identity changed.");
+            Object.assign(error, { code: "ENOENT", path: claimedStagedFilePath });
+            throw error;
+          }
+        } else if (
+          !hasSameDirectoryIdentity(
+            stagedFileIdentity,
+            await readFileIdentity(claimedStagedFilePath),
+          )
+        ) {
+          throw new Error("OpenClaw Crabline smoke lock commit stage identity changed.");
+        }
+        if (
+          !hasSameDirectoryIdentity(outputDirectoryIdentity, await readDirectoryIdentity(outputDir))
+        ) {
+          throw new Error("OpenClaw Crabline smoke lock output directory identity changed.");
+        }
+        await securedOutputDirectory.assertIdentityAt(outputDir);
+        let currentDestinationDirectoryIdentity: DirectoryIdentity | null = null;
+        try {
+          currentDestinationDirectoryIdentity = await readDirectoryIdentity(destinationDirectory);
+        } catch {
+          // A replaced directory or symlink is an identity mismatch.
+        }
+        if (
+          !hasSameDirectoryIdentity(
+            destinationDirectoryIdentity,
+            currentDestinationDirectoryIdentity,
+          )
+        ) {
+          throw new Error(
+            "OpenClaw Crabline smoke lock commit destination directory identity changed.",
+          );
+        }
+        await securedDestinationDirectory.assertIdentityAt(destinationDirectory);
+        const revalidatedDestinationPath = await resolveConfinedPath(
+          outputDir,
+          resolvedDestinationPath,
+          "commit destination",
+          "file",
+        );
+        if (revalidatedDestinationPath !== resolvedDestinationPath) {
+          throw new Error("OpenClaw Crabline smoke lock commit destination path identity changed.");
+        }
+        await fs.rename(claimedStagedFilePath, revalidatedDestinationPath);
       },
       async release() {
         if (released) {
