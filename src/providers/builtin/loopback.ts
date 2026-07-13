@@ -67,12 +67,14 @@ function malformedThreadAddress(cause?: unknown): CrablineError {
 
 function decodeThreadAddressComponent(value: string): string {
   let decoded: string;
+  let canonical: string;
   try {
     decoded = decodeURIComponent(value);
+    canonical = encodeURIComponent(decoded);
   } catch (error) {
     throw malformedThreadAddress(error);
   }
-  if (!decoded || encodeURIComponent(decoded) !== value) {
+  if (!decoded || canonical !== value) {
     throw malformedThreadAddress();
   }
   return decoded;
