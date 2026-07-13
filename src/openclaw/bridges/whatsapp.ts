@@ -180,8 +180,8 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         const isCloudTextSend =
           event.method === "POST" &&
           event.path === messagesPath &&
-          (messagingProduct === undefined || messagingProduct === "whatsapp") &&
-          (messageType === undefined || messageType === "text") &&
+          (!("messaging_product" in event.body) || messagingProduct === "whatsapp") &&
+          (!("type" in event.body) || messageType === "text") &&
           !("status" in event.body) &&
           !("message_id" in event.body);
         if (!isBaileysSend && !isCloudTextSend) {
