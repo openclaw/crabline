@@ -31,13 +31,22 @@ export function decodeHandshakeMessage(data: Uint8Array): HandshakeMessage {
     const field = tag >>> 3;
     if (field === 2) {
       requireBytesWireType(tag, field);
-      message.clientHello = decodeClientHello(reader.bytes());
+      message.clientHello = {
+        ...message.clientHello,
+        ...decodeClientHello(reader.bytes()),
+      };
     } else if (field === 3) {
       requireBytesWireType(tag, field);
-      message.serverHello = decodeServerHello(reader.bytes());
+      message.serverHello = {
+        ...message.serverHello,
+        ...decodeServerHello(reader.bytes()),
+      };
     } else if (field === 4) {
       requireBytesWireType(tag, field);
-      message.clientFinish = decodeClientFinish(reader.bytes());
+      message.clientFinish = {
+        ...message.clientFinish,
+        ...decodeClientFinish(reader.bytes()),
+      };
     } else {
       reader.skip(tag & 7);
     }

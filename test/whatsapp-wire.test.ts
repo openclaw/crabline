@@ -474,6 +474,86 @@ describe("WhatsApp handshake protobufs", () => {
     expect(decodeHandshakeMessage(encoded)).toEqual(message);
   });
 
+  it.each([
+    {
+      expected: {
+        clientHello: {
+          ephemeral: Buffer.from([1]),
+          staticKey: Buffer.from([2]),
+        },
+      },
+      occurrences: [
+        { clientHello: { ephemeral: Buffer.from([1]) } },
+        { clientHello: { static: Buffer.from([2]) } },
+      ],
+      variant: "client hello",
+    },
+    {
+      expected: {
+        serverHello: {
+          extendedStatic: Buffer.from([4]),
+          payload: Buffer.from([3]),
+        },
+      },
+      occurrences: [
+        { serverHello: { payload: Buffer.from([3]) } },
+        { serverHello: { extendedStatic: Buffer.from([4]) } },
+      ],
+      variant: "server hello",
+    },
+    {
+      expected: {
+        clientFinish: {
+          extendedCiphertext: Buffer.from([3]),
+          staticKey: Buffer.from([1]),
+        },
+      },
+      occurrences: [
+        { clientFinish: { static: Buffer.from([1]) } },
+        { clientFinish: { extendedCiphertext: Buffer.from([3]) } },
+      ],
+      variant: "client finish",
+    },
+  ] satisfies Array<{
+    expected: HandshakeMessage;
+    occurrences: proto.IHandshakeMessage[];
+    variant: string;
+  }>)("merges repeated $variant occurrences", ({ expected, occurrences }) => {
+    const encoded = Buffer.concat(
+      occurrences.map((occurrence) =>
+        Buffer.from(proto.HandshakeMessage.encode(occurrence).finish()),
+      ),
+    );
+
+    expect(decodeHandshakeMessage(encoded)).toEqual(expected);
+  });
+
+  it("merges optional fields and ignores unknown-only repeated occurrences", () => {
+    const first = Buffer.from(
+      proto.HandshakeMessage.encode({
+        clientHello: {
+          ephemeral: Buffer.from([1]),
+          useExtended: true,
+        },
+      }).finish(),
+    );
+    const second = Buffer.from(
+      proto.HandshakeMessage.encode({
+        clientHello: {
+          useExtended: false,
+        },
+      }).finish(),
+    );
+    const unknownOnlyClientHello = Buffer.from([0x12, 0x02, 0x30, 0x01]);
+
+    expect(decodeHandshakeMessage(Buffer.concat([first, second, unknownOnlyClientHello]))).toEqual({
+      clientHello: {
+        ephemeral: Buffer.from([1]),
+        useExtended: false,
+      },
+    });
+  });
+
   it("skips unknown ten-byte uint64 varints", () => {
     const message = decodeHandshakeMessage(
       Buffer.from([
