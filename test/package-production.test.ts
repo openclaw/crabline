@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const DEV_ONLY_RUNTIME_PACKAGES = ["baileys"] as const;
 const PUBLIC_RUNTIME_EXPORTS = [
   "BUILTIN_ADAPTERS",
@@ -229,7 +230,7 @@ describe("production package", () => {
         JSON.stringify({ name: "crabline-production-consumer", private: true, type: "module" }),
       );
       await execFileAsync(
-        "npm",
+        npmCommand,
         [
           "install",
           "--ignore-scripts",
@@ -375,12 +376,12 @@ describe("production package", () => {
         fs.mkdir(path.join(tempDir, "dist"), { recursive: true }),
       ]);
 
-      await execFileAsync("npm", ["run", "prebuild"], { cwd: tempDir });
+      await execFileAsync(npmCommand, ["run", "prebuild"], { cwd: tempDir });
       await expect(fs.stat(path.join(tempDir, "dist"))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await fs.stat(path.join(tempDir, "coverage"))).toBeDefined();
 
       await fs.mkdir(path.join(tempDir, "dist"), { recursive: true });
-      await execFileAsync("npm", ["run", "clean"], { cwd: tempDir });
+      await execFileAsync(npmCommand, ["run", "clean"], { cwd: tempDir });
       await expect(fs.stat(path.join(tempDir, "dist"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(fs.stat(path.join(tempDir, "coverage"))).rejects.toMatchObject({
         code: "ENOENT",
@@ -432,7 +433,7 @@ type NpmPackMetadata = {
 };
 
 async function npmPackDryRun(root: string): Promise<NpmPackMetadata> {
-  const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json"], {
+  const { stdout } = await execFileAsync(npmCommand, ["pack", "--dry-run", "--json"], {
     cwd: root,
     maxBuffer: 10 * 1024 * 1024,
   });
@@ -441,7 +442,7 @@ async function npmPackDryRun(root: string): Promise<NpmPackMetadata> {
 
 async function npmPack(root: string, destination: string): Promise<NpmPackMetadata> {
   const { stdout } = await execFileAsync(
-    "npm",
+    npmCommand,
     ["pack", "--json", "--pack-destination", destination],
     {
       cwd: root,

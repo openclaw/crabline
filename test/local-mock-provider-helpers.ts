@@ -36,6 +36,7 @@ type ContractOptions = {
   };
   webhookPayload: unknown;
   webhookThreadId: string;
+  userWebhookPayload: (nonce: string) => unknown;
   platform: ProviderPlatform;
 };
 
@@ -43,10 +44,23 @@ const directories: string[] = [];
 const providers: ProviderAdapter[] = [];
 
 afterEach(async () => {
-  await settleCleanup([
-    ...providers.splice(0).map(async (provider) => provider.cleanup?.()),
-    ...directories.splice(0).map(disposeTempDir),
-  ]);
+  const failures: unknown[] = [];
+  try {
+    await settleCleanup(providers.splice(0).map(async (provider) => provider.cleanup?.()));
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await settleCleanup(directories.splice(0).map(disposeTempDir));
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Provider and recorder cleanup failed.");
+  }
 });
 
 export async function createLocalMockConfig(
@@ -257,14 +271,7 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
       const endpoint = endpointFromDetails((await provider.probe(context)).details);
       const since = new Date(Date.now() - 1000).toISOString();
 
-      const webhookBody = JSON.stringify({
-        message: {
-          author: "user",
-          id: `${options.platform}-user-inbound`,
-          text: `user ${nonce}`,
-          threadId: options.expectedChannelId,
-        },
-      });
+      const webhookBody = JSON.stringify(options.userWebhookPayload(nonce));
       const response = await fetch(endpoint, {
         body: webhookBody,
         headers: webhookHeaders(options.platform, config, webhookBody),
@@ -282,7 +289,6 @@ export function runLocalMockProviderContract(options: ContractOptions): void {
         }),
       ).resolves.toMatchObject({
         author: "user",
-        id: `${options.platform}-user-inbound`,
         text: `user ${nonce}`,
       });
     });

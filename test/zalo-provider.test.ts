@@ -137,4 +137,8 @@ runLocalMockProviderContract({
     sender: { id: "user-1" },
   },
   webhookThreadId: "user-1",
+  userWebhookPayload: (nonce) => ({
+    message: { msg_id: "zalo-user-inbound", text: `user ${nonce}` },
+    sender: { id: "user-1" },
+  }),
 });

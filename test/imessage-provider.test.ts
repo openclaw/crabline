@@ -192,4 +192,11 @@ runLocalMockProviderContract({
     text: "reply nonce-2",
   },
   webhookThreadId: "iMessage;-;chat-guid-1",
+  userWebhookPayload: (nonce) => ({
+    chatIdentifier: "+15551234567",
+    chatGuid: "iMessage;-;chat-guid-1",
+    guid: "imsg-user-inbound",
+    isFromMe: false,
+    text: `user ${nonce}`,
+  }),
 });

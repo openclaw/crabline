@@ -106,4 +106,10 @@ runLocalMockProviderContract({
     text: "reply nonce-2",
   },
   webhookThreadId: "aaaaaaaaaaaaaaaaaaaaaaaaaa:thread:bbbbbbbbbbbbbbbbbbbbbbbbbb",
+  userWebhookPayload: (nonce) => ({
+    channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    post_id: "dddddddddddddddddddddddddd",
+    root_id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+    text: `user ${nonce}`,
+  }),
 });

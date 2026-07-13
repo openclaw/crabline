@@ -72,8 +72,8 @@ providers:
 ```
 
 Provider credential fields such as `botToken`, `accessToken`, `baseURL`, or
-`serverUrl` are optional mock metadata. They are not required for local mock
-execution.
+`serverUrl` are optional mock metadata for loopback execution. Externally
+reachable Discord webhooks require `publicKey` or `DISCORD_PUBLIC_KEY`.
 
 Optional webhook credentials enforce each provider's native authentication
 header before JSON parsing or recorder writes:
@@ -155,7 +155,7 @@ Each command receives one JSON document on stdin. Every payload contains the
 parsed `fixture` plus `provider.config`, `provider.id`, and
 `provider.manifestPath`. `send` adds `outbound` with `mode`, `nonce`, normalized
 `target`, and `text`; `waitForInbound` adds `wait` with `excludeIds`, `nonce`,
-`since`, normalized `target`, and `timeoutMs`. A stateless wait bridge must
+`since`, `threadId`, normalized `target`, and `timeoutMs`. A stateless wait bridge must
 exclude messages whose IDs are listed in `excludeIds` while retaining later
 messages with the same timestamp. Crabline retains at most 1024 unmatched IDs
 per wait. `watch` adds `watch` with optional `since` and normalized `target`.
@@ -340,6 +340,11 @@ The admin ingress accepts JSON like:
 OpenClaw consumes that message through Telegram `getUpdates`; outbound adapter
 sends are recorded through Telegram `sendMessage` and the media send endpoints
 `sendPhoto`, `sendDocument`, `sendVideo`, `sendAudio`, and `sendAnimation`.
+Compatible clients may switch to webhook delivery with `setWebhook`, including
+an optional `secret_token` that Crabline returns as
+`X-Telegram-Bot-Api-Secret-Token`. `deleteWebhook` restores polling. While a
+webhook is configured, `getUpdates` returns Telegram's native conflict error
+instead of consuming updates.
 
 WhatsApp:
 

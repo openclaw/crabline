@@ -340,4 +340,13 @@ runLocalMockProviderContract({
     },
   },
   webhookThreadId: "spaces/AAAABbbbCCC/threads/BBBBccccDDD",
+  userWebhookPayload: (nonce) => ({
+    message: {
+      name: "spaces/AAAABbbbCCC/messages/user-inbound",
+      sender: { type: "HUMAN" },
+      space: { name: "spaces/AAAABbbbCCC" },
+      text: `user ${nonce}`,
+      thread: { name: "spaces/AAAABbbbCCC/threads/BBBBccccDDD" },
+    },
+  }),
 });

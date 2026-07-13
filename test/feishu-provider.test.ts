@@ -568,4 +568,14 @@ runLocalMockProviderContract({
     },
   },
   webhookThreadId: "oc_abc123",
+  userWebhookPayload: (nonce) => ({
+    event: {
+      message: {
+        chat_id: "oc_abc123",
+        content: JSON.stringify({ text: `user ${nonce}` }),
+        message_id: "om_user123",
+        message_type: "text",
+      },
+    },
+  }),
 });
