@@ -39,6 +39,7 @@ const RECORDER_LOCK_RETRY_MS = 100;
 const RECORDER_LOCK_STALE_MS = 30_000;
 const RECORDER_LOCK_UPDATE_MS = 10_000;
 const RECORDER_LOCK_WAIT_MARGIN_MS = 5_000;
+const RECORDER_PATH_ATTEMPTS = 3;
 const RECORDER_ROTATION_ATTEMPTS = 3;
 const TAIL_SCAN_CHUNK_BYTES = 64 * 1024;
 
@@ -317,10 +318,11 @@ async function closeRecorderAttempt(params: {
 
 async function appendRecorderAttempt(params: {
   createdDirectory: string | undefined;
-  filePath: string;
+  logicalPath: string;
   line: string;
+  publicationPath: string;
 }): Promise<"committed" | "retry"> {
-  const opened = await openRecorderFile(params.filePath);
+  const opened = await openRecorderFile(params.publicationPath);
   const { file } = opened;
   let committed = false;
   let operationFailed = false;
@@ -330,11 +332,11 @@ async function appendRecorderAttempt(params: {
     await file.chmod(0o600);
     let stats = await file.stat();
     let identity = requireRecorderIdentity(stats);
-    if (!(await recorderPathHasIdentity(params.filePath, identity))) {
+    if (!(await recorderPathHasIdentity(params.publicationPath, identity))) {
       result = "retry";
     } else {
       const needsPathDurability =
-        opened.created || durableRecorderIdentities.get(path.resolve(params.filePath)) !== identity;
+        opened.created || durableRecorderIdentities.get(params.publicationPath) !== identity;
       if (stats.size > 0) {
         const finalByte = await readBufferAt(file, 1, stats.size - 1);
         if (finalByte[0] !== 0x0a) {
@@ -360,33 +362,38 @@ async function appendRecorderAttempt(params: {
       }
       stats = await file.stat();
       identity = requireRecorderIdentity(stats);
-      if (!(await recorderPathHasIdentity(params.filePath, identity))) {
+      if (!(await recorderPathHasIdentity(params.publicationPath, identity))) {
         result = "retry";
       } else {
         try {
           await file.appendFile(params.line, { encoding: "utf8" });
           await file.sync();
-          if (!(await recorderPathHasIdentity(params.filePath, identity))) {
+          if (
+            !(await recorderPathHasIdentity(params.publicationPath, identity)) ||
+            (await resolveRecorderPath(params.logicalPath)) !== params.publicationPath
+          ) {
             throw new ServerRecorderCommittedError(
-              params.filePath,
+              params.logicalPath,
               new ServerRecorderRotationError("Server recorder rotated during append."),
             );
           } else {
             if (needsPathDurability) {
               const firstCreatedPath =
-                params.createdDirectory ??
-                (opened.created ? path.resolve(params.filePath) : undefined);
-              await syncRecorderPathAncestry(params.filePath, firstCreatedPath);
+                params.createdDirectory ?? (opened.created ? params.publicationPath : undefined);
+              await syncRecorderPathAncestry(params.publicationPath, firstCreatedPath);
             }
-            if (!(await recorderPathHasIdentity(params.filePath, identity))) {
+            if (
+              !(await recorderPathHasIdentity(params.publicationPath, identity)) ||
+              (await resolveRecorderPath(params.logicalPath)) !== params.publicationPath
+            ) {
               throw new ServerRecorderCommittedError(
-                params.filePath,
+                params.logicalPath,
                 new ServerRecorderRotationError(
                   "Server recorder rotated while syncing path ancestry.",
                 ),
               );
             } else {
-              rememberDurableRecorderIdentity(path.resolve(params.filePath), identity);
+              rememberDurableRecorderIdentity(params.publicationPath, identity);
               committed = true;
               result = "committed";
             }
@@ -395,7 +402,7 @@ async function appendRecorderAttempt(params: {
           if (error instanceof ServerRecorderCommittedError) {
             throw error;
           }
-          throw new ServerRecorderCommittedError(params.filePath, error, [], true);
+          throw new ServerRecorderCommittedError(params.logicalPath, error, [], true);
         }
       }
     }
@@ -406,7 +413,7 @@ async function appendRecorderAttempt(params: {
   await closeRecorderAttempt({
     committed,
     file,
-    filePath: params.filePath,
+    filePath: params.logicalPath,
     operationError,
     operationFailed,
   });
@@ -434,28 +441,32 @@ async function resolveRecorderPath(filePath: string): Promise<string> {
   return path.join(await resolveRecorderPath(path.dirname(filePath)), path.basename(filePath));
 }
 
-async function appendResolvedJsonLine(logicalPath: string, line: string): Promise<void> {
+async function appendResolvedJsonLine(logicalPath: string, line: string): Promise<boolean> {
   const key = await resolveRecorderPath(logicalPath);
   const previous = pendingAppends.get(key) ?? Promise.resolve();
   const current = previous
     .catch(() => {})
     .then(async () => {
-      const directory = path.dirname(logicalPath);
+      const directory = path.dirname(key);
       const createdDirectory = await mkdir(directory, { mode: 0o700, recursive: true });
       if (createdDirectory !== undefined || isManagedRecorderDirectory(directory)) {
         await chmod(directory, 0o700);
       }
       // Keep the cross-process lock through append verification.
-      await withRecorderLock(key, async () => {
+      return await withRecorderLock(key, async () => {
+        if ((await resolveRecorderPath(logicalPath)) !== key) {
+          return false;
+        }
         for (let attempt = 0; attempt < RECORDER_ROTATION_ATTEMPTS; attempt++) {
           if (
             (await appendRecorderAttempt({
               createdDirectory,
-              filePath: logicalPath,
+              logicalPath,
               line,
+              publicationPath: key,
             })) === "committed"
           ) {
-            return;
+            return true;
           }
         }
         throw new ServerRecorderRotationError(
@@ -463,12 +474,16 @@ async function appendResolvedJsonLine(logicalPath: string, line: string): Promis
         );
       });
     });
-  pendingAppends.set(key, current);
+  const tail = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  pendingAppends.set(key, tail);
 
   try {
-    await current;
+    return await current;
   } finally {
-    if (pendingAppends.get(key) === current) {
+    if (pendingAppends.get(key) === tail) {
       pendingAppends.delete(key);
     }
   }
@@ -477,7 +492,18 @@ async function appendResolvedJsonLine(logicalPath: string, line: string): Promis
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
   const logicalPath = path.resolve(filePath);
   const previous = pendingAdmissions.get(logicalPath) ?? Promise.resolve();
-  const current = previous.catch(() => {}).then(() => appendResolvedJsonLine(logicalPath, line));
+  const current = previous
+    .catch(() => {})
+    .then(async () => {
+      for (let attempt = 0; attempt < RECORDER_PATH_ATTEMPTS; attempt++) {
+        if (await appendResolvedJsonLine(logicalPath, line)) {
+          return;
+        }
+      }
+      throw new ServerRecorderRotationError(
+        `Server recorder path retries exhausted for "${logicalPath}".`,
+      );
+    });
   pendingAdmissions.set(logicalPath, current);
 
   try {
