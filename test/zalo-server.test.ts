@@ -301,6 +301,58 @@ describe("Zalo local provider server", () => {
     }
   });
 
+  it("bounds recursive redaction and hides nested camel-case credentials", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "zalo-redaction.jsonl");
+    const server = await startZaloServer({ botToken: "test-token-placeholder", recorderPath });
+    servers.push(server);
+
+    let deepState: Record<string, unknown> = {
+      botToken: "test-token-placeholder",
+      visible: "beyond-redaction-depth",
+    };
+    for (let depth = 0; depth < 64; depth += 1) {
+      deepState = { child: deepState };
+    }
+
+    const response = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body: JSON.stringify({
+          chat_id: "chat-1",
+          diagnostics: {
+            botToken: "test-token-placeholder",
+            nested: [{ databasePassword: "test-token-placeholder" }],
+            oauthClientSecret: "test-token-placeholder",
+          },
+          state: deepState,
+          text: "hello",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(response.status).toBe(200);
+
+    const recorder = await fs.readFile(recorderPath, "utf8");
+    const recorded = JSON.parse(recorder.trim()) as {
+      body?: { diagnostics?: Record<string, unknown> };
+    };
+    const botTokenKey = ["bot", "Token"].join("");
+    const databasePasswordKey = ["database", "Password"].join("");
+    const oauthClientSecretKey = ["oauth", "Client", "Secret"].join("");
+    expect(recorded.body?.diagnostics).toMatchObject({
+      [botTokenKey]: "<redacted>",
+      nested: [{ [databasePasswordKey]: "<redacted>" }],
+      [oauthClientSecretKey]: "<redacted>",
+    });
+    expect(recorder).toContain('"child":"<redacted>"');
+    for (const secret of ["test-token-placeholder", "beyond-redaction-depth"]) {
+      expect(recorder).not.toContain(secret);
+    }
+  });
+
   it("bounds inbound admission before parsing request bodies", async () => {
     let observeFirst!: () => void;
     let releaseFirst!: () => void;
