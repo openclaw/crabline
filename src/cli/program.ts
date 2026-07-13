@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { constants as fsConstants, createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import nodePath from "node:path";
+import { finished } from "node:stream/promises";
 import { lock } from "proper-lockfile";
 import { loadManifest } from "../config/load.js";
 import { createRegistry } from "../providers/registry.js";
@@ -241,7 +242,7 @@ function parseCredentialsFd(value: string): number {
 }
 
 async function readBoundedFileDescriptor(fd: number): Promise<string> {
-  const stream = createReadStream("", { autoClose: false, fd });
+  const stream = createReadStream("", { autoClose: fd !== 0, fd });
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   try {
@@ -265,6 +266,11 @@ async function readBoundedFileDescriptor(fd: number): Promise<string> {
       cause: error,
       kind: "config",
     });
+  } finally {
+    if (fd !== 0 && !stream.closed) {
+      stream.destroy();
+      await finished(stream).catch(() => undefined);
+    }
   }
   return Buffer.concat(chunks).toString("utf8");
 }

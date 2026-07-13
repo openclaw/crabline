@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { closeSync, fstatSync, openSync, type Stats } from "node:fs";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -44,6 +45,26 @@ const directories: string[] = [];
 const ansiPattern = new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, "g");
 
 const stripAnsi = (value: string): string => value.replace(ansiPattern, "");
+
+const expectDescriptorReleased = (fd: number, original: Stats): void => {
+  try {
+    const current = fstatSync(fd);
+    expect([current.dev, current.ino]).not.toEqual([original.dev, original.ino]);
+  } catch (error) {
+    expect(error).toMatchObject({ code: "EBADF" });
+  }
+};
+
+const closeIfStillOwned = (fd: number, original: Stats): void => {
+  try {
+    const current = fstatSync(fd);
+    if (current.dev === original.dev && current.ino === original.ino) {
+      closeSync(fd);
+    }
+  } catch {
+    // The descriptor was already closed or reassigned.
+  }
+};
 
 afterEach(async () => {
   process.exitCode = 0;
@@ -421,7 +442,8 @@ describe("cli", () => {
     const credentialsPath = path.join(directory, "credentials.json");
     const fdBot = ["fd", "bot"].join("-");
     await writeText(credentialsPath, JSON.stringify({ botToken: fdBot }));
-    const credentialsHandle = await fs.open(credentialsPath, "r");
+    const credentialsFd = openSync(credentialsPath, "r");
+    const credentialsIdentity = fstatSync(credentialsFd);
     const startServer = vi.fn(
       async (_params: StartCrablineServerParams): Promise<StartedCrablineServer> => ({
         async close() {},
@@ -456,12 +478,13 @@ describe("cli", () => {
           "serve",
           "slack",
           "--credentials-fd",
-          String(credentialsHandle.fd),
+          String(credentialsFd),
           "--once",
         ]);
       });
+      expectDescriptorReleased(credentialsFd, credentialsIdentity);
     } finally {
-      await credentialsHandle.close();
+      closeIfStillOwned(credentialsFd, credentialsIdentity);
     }
 
     expect(startServer).toHaveBeenCalledWith(
@@ -483,7 +506,8 @@ describe("cli", () => {
     const document = JSON.stringify({ botToken });
     expect(Buffer.byteLength(document)).toBe(64 * 1024);
     await writeText(credentialsPath, document);
-    const credentialsHandle = await fs.open(credentialsPath, "r");
+    const credentialsFd = openSync(credentialsPath, "r");
+    const credentialsIdentity = fstatSync(credentialsFd);
     const startServer = vi.fn(
       async (): Promise<StartedCrablineServer> => ({
         async close() {},
@@ -518,12 +542,13 @@ describe("cli", () => {
           "serve",
           "slack",
           "--credentials-fd",
-          String(credentialsHandle.fd),
+          String(credentialsFd),
           "--once",
         ]);
       });
+      expectDescriptorReleased(credentialsFd, credentialsIdentity);
     } finally {
-      await credentialsHandle.close();
+      closeIfStillOwned(credentialsFd, credentialsIdentity);
     }
 
     expect(startServer).toHaveBeenCalledWith(expect.objectContaining({ botToken }));
@@ -541,23 +566,28 @@ describe("cli", () => {
     ).entries()) {
       const credentialsPath = path.join(directory, `${index}.json`);
       await writeText(credentialsPath, document);
-      const credentialsHandle = await fs.open(credentialsPath, "r");
-      const captured = await captureWrites(async () => {
-        expect(
-          await runCli([
-            "node",
-            "crabline",
-            "serve",
-            "slack",
-            "--once",
-            "--credentials-fd",
-            String(credentialsHandle.fd),
-          ]),
-        ).toBe(10);
-      }).finally(async () => await credentialsHandle.close());
-
-      expect(captured.stderr.join("")).toContain(message);
-      expect(captured.stderr.join("")).not.toContain(document);
+      const credentialsFd = openSync(credentialsPath, "r");
+      const credentialsIdentity = fstatSync(credentialsFd);
+      try {
+        const captured = await captureWrites(async () => {
+          expect(
+            await runCli([
+              "node",
+              "crabline",
+              "serve",
+              "slack",
+              "--once",
+              "--credentials-fd",
+              String(credentialsFd),
+            ]),
+          ).toBe(10);
+        });
+        expectDescriptorReleased(credentialsFd, credentialsIdentity);
+        expect(captured.stderr.join("")).toContain(message);
+        expect(captured.stderr.join("")).not.toContain(document);
+      } finally {
+        closeIfStillOwned(credentialsFd, credentialsIdentity);
+      }
     }
   });
 
@@ -567,23 +597,28 @@ describe("cli", () => {
     const credentialsPath = path.join(directory, "credentials.json");
     const sentinel = "credential-stream-secret";
     await writeText(credentialsPath, `{"adminToken":"${sentinel}"`);
-    const credentialsHandle = await fs.open(credentialsPath, "r");
-    const captured = await captureWrites(async () => {
-      expect(
-        await runCli([
-          "node",
-          "crabline",
-          "serve",
-          "slack",
-          "--once",
-          "--credentials-fd",
-          String(credentialsHandle.fd),
-        ]),
-      ).toBe(10);
-    }).finally(async () => await credentialsHandle.close());
-
-    expect(captured.stderr.join("")).toContain("Serve credentials input must be valid JSON.");
-    expect(captured.stderr.join("")).not.toContain(sentinel);
+    const credentialsFd = openSync(credentialsPath, "r");
+    const credentialsIdentity = fstatSync(credentialsFd);
+    try {
+      const captured = await captureWrites(async () => {
+        expect(
+          await runCli([
+            "node",
+            "crabline",
+            "serve",
+            "slack",
+            "--once",
+            "--credentials-fd",
+            String(credentialsFd),
+          ]),
+        ).toBe(10);
+      });
+      expectDescriptorReleased(credentialsFd, credentialsIdentity);
+      expect(captured.stderr.join("")).toContain("Serve credentials input must be valid JSON.");
+      expect(captured.stderr.join("")).not.toContain(sentinel);
+    } finally {
+      closeIfStillOwned(credentialsFd, credentialsIdentity);
+    }
   });
 
   it("bounds credential streams before parsing them", async () => {
@@ -591,22 +626,27 @@ describe("cli", () => {
     directories.push(directory);
     const credentialsPath = path.join(directory, "credentials.json");
     await writeText(credentialsPath, JSON.stringify({ adminToken: "x".repeat(64 * 1024) }));
-    const credentialsHandle = await fs.open(credentialsPath, "r");
-    const captured = await captureWrites(async () => {
-      expect(
-        await runCli([
-          "node",
-          "crabline",
-          "serve",
-          "slack",
-          "--once",
-          "--credentials-fd",
-          String(credentialsHandle.fd),
-        ]),
-      ).toBe(10);
-    }).finally(async () => await credentialsHandle.close());
-
-    expect(captured.stderr.join("")).toContain("Serve credentials JSON exceeds 65536 bytes.");
+    const credentialsFd = openSync(credentialsPath, "r");
+    const credentialsIdentity = fstatSync(credentialsFd);
+    try {
+      const captured = await captureWrites(async () => {
+        expect(
+          await runCli([
+            "node",
+            "crabline",
+            "serve",
+            "slack",
+            "--once",
+            "--credentials-fd",
+            String(credentialsFd),
+          ]),
+        ).toBe(10);
+      });
+      expectDescriptorReleased(credentialsFd, credentialsIdentity);
+      expect(captured.stderr.join("")).toContain("Serve credentials JSON exceeds 65536 bytes.");
+    } finally {
+      closeIfStillOwned(credentialsFd, credentialsIdentity);
+    }
   });
 
   it("isolates exit codes across repeated invocations", async () => {
