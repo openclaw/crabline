@@ -10,14 +10,27 @@ import {
   type SignalDataSet,
   type SignalDataTypeMap,
 } from "baileys";
+import {
+  ProtocolAddress,
+  SessionBuilder,
+  SessionCipher,
+  SessionRecord,
+  type SignalStorage,
+} from "libsignal";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WebSocket } from "ws";
-import { startWhatsAppServer, type StartedWhatsAppServer } from "../src/index.js";
+import { WebSocket, WebSocketServer } from "ws";
+import {
+  createOpenClawCrablineOutboundFromRecorderEvent,
+  startWhatsAppServer,
+  type StartedWhatsAppServer,
+} from "../src/index.js";
 import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
 import {
   MAX_WHATSAPP_WEBSOCKET_FRAGMENTS,
+  signalBundleIdentityKey,
   WhatsAppSignalBundleStore,
 } from "../src/servers/whatsapp-baileys-websocket.js";
+import { Curve, KEY_BUNDLE_TYPE, type KeyPair } from "../src/servers/whatsapp-wire/crypto.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedWhatsAppServer[] = [];
@@ -87,6 +100,33 @@ function createMemorySignalStore(): MemorySignalStore {
       }
     },
   };
+}
+
+function signalTestKeyPair(pair: KeyPair): { privKey: Buffer; pubKey: Buffer } {
+  return {
+    privKey: Buffer.from(pair.private),
+    pubKey: Buffer.concat([KEY_BUNDLE_TYPE, pair.public]),
+  };
+}
+
+function createSignalTestStorage(identityKey: KeyPair, registrationId: number): SignalStorage {
+  const sessions = new Map<string, SessionRecord>();
+  return {
+    getOurIdentity: () => signalTestKeyPair(identityKey),
+    getOurRegistrationId: () => registrationId,
+    isTrustedIdentity: () => true,
+    loadPreKey: async () => undefined,
+    loadSession: async (id) => sessions.get(id),
+    loadSignedPreKey: () => signalTestKeyPair(identityKey),
+    removePreKey: () => undefined,
+    storeSession: async (id, session) => {
+      sessions.set(id, session);
+    },
+  };
+}
+
+function signalCiphertext(body: string): Buffer {
+  return Buffer.isBuffer(body) ? Buffer.from(body) : Buffer.from(body, "binary");
 }
 
 function createBaileysTestSocket(server: StartedWhatsAppServer) {
@@ -205,6 +245,45 @@ describe("whatsapp local provider server", () => {
     const server = await startWhatsAppServer({ port });
     servers.push(server);
     expect(new URL(server.manifest.baseUrl).port).toBe(String(port));
+  });
+
+  it("releases the HTTP listener when WebSocket attachment fails", async () => {
+    const port = await resolveFreePort();
+    const originalOn = WebSocketServer.prototype.on;
+    let rejectedConnectionHandler = false;
+    const onSpy = vi
+      .spyOn(WebSocketServer.prototype, "on")
+      .mockImplementation(function (this: WebSocketServer, event, listener) {
+        if (!rejectedConnectionHandler && event === "connection") {
+          rejectedConnectionHandler = true;
+          throw new Error("injected WebSocket attachment failure");
+        }
+        return Reflect.apply(originalOn, this, [event, listener]);
+      });
+
+    await expect(startWhatsAppServer({ port })).rejects.toThrow(
+      "injected WebSocket attachment failure",
+    );
+    onSpy.mockRestore();
+
+    const replacement = await startWhatsAppServer({ port });
+    servers.push(replacement);
+    expect(new URL(replacement.manifest.baseUrl).port).toBe(String(port));
+  });
+
+  it("releases the HTTP listener when WebSocket shutdown fails", async () => {
+    const port = await resolveFreePort();
+    const server = await startWhatsAppServer({ port });
+    const closeSpy = vi
+      .spyOn(WebSocketServer.prototype, "close")
+      .mockImplementation((callback) => callback?.(new Error("injected WebSocket close failure")));
+
+    await expect(server.close()).rejects.toThrow("injected WebSocket close failure");
+    closeSpy.mockRestore();
+
+    const replacement = await startWhatsAppServer({ port });
+    servers.push(replacement);
+    expect(new URL(replacement.manifest.baseUrl).port).toBe(String(port));
   });
 
   it("serves Cloud API sends and injected inbound webhook payloads", async () => {
@@ -530,12 +609,76 @@ describe("whatsapp local provider server", () => {
     expect(directBody.message.key).not.toHaveProperty("participant");
   });
 
-  it("correlates bare and device user JIDs to one signal identity", () => {
-    const store = new WhatsAppSignalBundleStore(1);
-    const bare = store.resolveMany(["15551234567@s.whatsapp.net"])[0];
-    expect(store.resolveMany(["15551234567:2@s.whatsapp.net"])[0]).toBe(bare);
-    expect(store.resolveMany(["15551234567:0@c.us"])[0]).toBe(bare);
-    expect(store.size).toBe(1);
+  it("separates PN and LID signal bundle/session keys while normalizing devices", () => {
+    const phoneNumberKey = signalBundleIdentityKey("15551234567:2@s.whatsapp.net");
+    const lidKey = signalBundleIdentityKey("15551234567:3@lid");
+    expect(phoneNumberKey).toBe("15551234567@s.whatsapp.net");
+    expect(lidKey).toBe("15551234567@lid");
+    expect(phoneNumberKey).not.toBe(lidKey);
+
+    const store = new WhatsAppSignalBundleStore(2);
+    const [phoneNumber, lid] = store.resolveMany(["15551234567@s.whatsapp.net", "15551234567@lid"]);
+    expect(phoneNumber).not.toBe(lid);
+    expect(store.resolveMany(["15551234567:2@s.whatsapp.net"])[0]).toBe(phoneNumber);
+    expect(store.resolveMany(["15551234567:0@c.us"])[0]).toBe(phoneNumber);
+    expect(store.resolveMany(["15551234567:3@lid"])[0]).toBe(lid);
+    expect(store.size).toBe(2);
+  });
+
+  it("does not commit failed Signal candidate ratchet mutations", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const senderJid = "15550000001@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1);
+    const bundle = receiver.resolveMany([recipientJid])[0]!;
+    const senderIdentity = Curve.generateKeyPair();
+    const senderStorage = createSignalTestStorage(senderIdentity, 2);
+    const senderAddress = new ProtocolAddress("15551234567", 0);
+    await new SessionBuilder(senderStorage, senderAddress).initOutgoing({
+      identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+      preKey: {
+        keyId: bundle.preKeyId,
+        publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+      },
+      registrationId: bundle.registrationId,
+      signedPreKey: {
+        keyId: bundle.signedPreKey.keyId,
+        publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+        signature: bundle.signedPreKey.signature,
+      },
+    });
+    const sender = new SessionCipher(senderStorage, senderAddress);
+    const first = await sender.encrypt(Buffer.from("first direct message"));
+    expect(first.type).toBe(3);
+    await expect(
+      receiver.decryptDirectMessage({
+        ciphertext: signalCiphertext(first.body),
+        recipientJid,
+        remoteJid: senderJid,
+        type: "pkmsg",
+      }),
+    ).resolves.toEqual(Buffer.from("first direct message"));
+
+    const second = await sender.encrypt(Buffer.from("second direct message"));
+    expect(second.type).toBe(3);
+    const validCiphertext = signalCiphertext(second.body);
+    const invalidCiphertext = Buffer.from(validCiphertext);
+    invalidCiphertext[invalidCiphertext.length - 1] = invalidCiphertext.at(-1)! ^ 0xff;
+    await expect(
+      receiver.decryptDirectMessage({
+        ciphertext: invalidCiphertext,
+        recipientJid,
+        remoteJid: senderJid,
+        type: "pkmsg",
+      }),
+    ).rejects.toThrow(/.+/u);
+    await expect(
+      receiver.decryptDirectMessage({
+        ciphertext: validCiphertext,
+        recipientJid,
+        remoteJid: senderJid,
+        type: "pkmsg",
+      }),
+    ).resolves.toEqual(Buffer.from("second direct message"));
   });
 
   it("authenticates Graph requests before reading or recording their bodies", async () => {
@@ -926,17 +1069,76 @@ describe("whatsapp local provider server", () => {
       });
       await waitForCondition(
         () =>
-          fs.readFile(server.manifest.recorderPath, "utf8").then(
-            (recorder) => recorder.includes('"tag":"message"'),
-            () => false,
-          ),
-        "WhatsApp message recorder event",
+          fs
+            .readFile(server.manifest.recorderPath, "utf8")
+            .then((recorder) =>
+              recorder
+                .trim()
+                .split("\n")
+                .some((line) => {
+                  const event: unknown = JSON.parse(line);
+                  return (
+                    !!event &&
+                    typeof event === "object" &&
+                    "accepted" in event &&
+                    event.accepted === true &&
+                    "body" in event &&
+                    !!event.body &&
+                    typeof event.body === "object" &&
+                    "message" in event.body &&
+                    !!event.body.message &&
+                    typeof event.body.message === "object" &&
+                    "conversation" in event.body.message &&
+                    event.body.message.conversation === "hello through real baileys"
+                  );
+                }),
+            )
+            .catch(() => false),
+        "accepted WhatsApp Baileys recorder event",
       );
       const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
       expect(recorder).toContain('"method":"WEBSOCKET"');
       expect(recorder).toContain('"tag":"message"');
       expect(recorder).toContain('"to":"15551234567@s.whatsapp.net"');
-
+      const recorderEvents = recorder
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as unknown);
+      const acceptedEvent = recorderEvents.find(
+        (event) =>
+          !!event &&
+          typeof event === "object" &&
+          "accepted" in event &&
+          event.accepted === true &&
+          "method" in event &&
+          event.method === "WEBSOCKET",
+      );
+      expect(acceptedEvent).toMatchObject({
+        accepted: true,
+        body: {
+          key: {
+            fromMe: true,
+            remoteJid: "15551234567@s.whatsapp.net",
+          },
+          message: { conversation: "hello through real baileys" },
+        },
+        method: "WEBSOCKET",
+        path: "/ws/chat",
+        type: "api",
+      });
+      expect(
+        createOpenClawCrablineOutboundFromRecorderEvent({
+          event: acceptedEvent,
+          manifest: server.manifest,
+          targetByProviderTarget: new Map([["15551234567@s.whatsapp.net", "dm:alice"]]),
+        }),
+      ).toEqual({
+        accountId: "default",
+        senderId: "openclaw",
+        senderName: "OpenClaw QA",
+        text: "hello through real baileys",
+        to: "dm:alice",
+      });
       await waitForCondition(
         () =>
           messageUpserts

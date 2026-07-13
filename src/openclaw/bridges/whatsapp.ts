@@ -9,6 +9,7 @@ import {
 } from "../shared.js";
 import {
   canonicalizeWhatsAppChatJid,
+  canonicalizeWhatsAppUserCorrelationJid,
   canonicalizeWhatsAppUserJid,
 } from "../../servers/whatsapp-jid.js";
 
@@ -57,7 +58,11 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (!response.ok) {
           throw new Error(`Crabline WhatsApp probe failed with HTTP ${response.status}.`);
         }
-        return await response.json();
+        const payload: unknown = await response.json();
+        if (!isRecord(payload) || readString(payload.id) !== whatsapp.phoneNumberId) {
+          throw new Error("Crabline WhatsApp probe returned an unexpected phone number.");
+        }
+        return payload;
       },
       createBinding() {
         return {
@@ -107,6 +112,9 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         }
         const to = requireWhatsAppJid(parsed.id, "WhatsApp target");
         requireWhatsAppTargetKind(parsed, to);
+        if (to.endsWith("@g.us")) {
+          throw new Error("WhatsApp Crabline WebSocket outbound supports direct targets only.");
+        }
         return {
           channel: "whatsapp",
           to,
@@ -149,16 +157,32 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         ) {
           return null;
         }
-        if (event.path !== messagesPath || !isRecord(event.body)) {
+        if (!isRecord(event.body)) {
           return null;
         }
-        const to = readString(event.body.to);
+        const baileysKey = isRecord(event.body.key) ? event.body.key : undefined;
+        const baileysMessage = isRecord(event.body.message) ? event.body.message : undefined;
+        const isBaileysSend = event.method === "WEBSOCKET" && event.path === "/ws/chat";
+        if (!isBaileysSend && event.path !== messagesPath) {
+          return null;
+        }
+        const to = isBaileysSend ? readString(baileysKey?.remoteJid) : readString(event.body.to);
         const textPayload = event.body.text;
-        const text = isRecord(textPayload) ? readNonBlankString(textPayload.body) : undefined;
+        const text = isBaileysSend
+          ? readNonBlankString(baileysMessage?.conversation)
+          : isRecord(textPayload)
+            ? readNonBlankString(textPayload.body)
+            : undefined;
         if (!to || !text) {
           return null;
         }
-        const providerTarget = /^\d{7,15}$/u.test(to) ? `${to}@s.whatsapp.net` : to;
+        const providerTarget = isBaileysSend
+          ? canonicalizeWhatsAppUserCorrelationJid(to)
+          : (canonicalizeWhatsAppChatJid(to) ??
+            (/^\d{7,15}$/u.test(to) ? `${to}@s.whatsapp.net` : to));
+        if (!providerTarget) {
+          return null;
+        }
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           senderId: "openclaw",

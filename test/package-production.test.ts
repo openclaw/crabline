@@ -156,6 +156,7 @@ describe("production package", () => {
     };
 
     expect(pkg.dependencies?.["@types/node"]).toBeDefined();
+    expect(pkg.dependencies?.libsignal).toBe("6.0.0");
     expect(pkg.devDependencies?.["@types/node"]).toBeUndefined();
     expect(pkg.exports).toEqual({
       ".": {

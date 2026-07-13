@@ -30,7 +30,7 @@ export const ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProv
         }
         const result = await response.json();
         const bot = isRecord(result) && isRecord(result.result) ? result.result : undefined;
-        if (!isRecord(result) || result.ok !== true || !readNonBlankString(bot?.id)) {
+        if (!isRecord(result) || result.ok !== true || readNonBlankString(bot?.id) !== zalo.botId) {
           const detail =
             (isRecord(result) ? readNonBlankString(result.description) : undefined) ??
             (isRecord(result) ? readNonBlankString(result.error) : undefined) ??

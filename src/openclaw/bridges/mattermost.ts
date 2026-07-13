@@ -43,7 +43,18 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
         if (!response.ok) {
           throw new Error(`Crabline Mattermost probe failed with HTTP ${response.status}.`);
         }
-        return await response.json();
+        const payload: unknown = await response.json();
+        if (
+          !isRecord(payload) ||
+          readString(payload.id) !== mattermost.botUserId ||
+          !readNonBlankString(payload.username) ||
+          typeof payload.update_at !== "number" ||
+          !Number.isSafeInteger(payload.update_at) ||
+          payload.update_at < 0
+        ) {
+          throw new Error("Crabline Mattermost users/me probe returned an unexpected user.");
+        }
+        return payload;
       },
       createBinding() {
         return {

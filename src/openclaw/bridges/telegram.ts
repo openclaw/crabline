@@ -14,7 +14,7 @@ const TELEGRAM_SYMBOLIC_DIRECT_ID_MASK = TELEGRAM_SYMBOLIC_DIRECT_ID_BASE - 1n;
 const TELEGRAM_SYMBOLIC_GROUP_ID_BASE = 1_000_000_000_000n;
 const TELEGRAM_SYMBOLIC_GROUP_ID_RANGE = 10_000_000_000n;
 const TELEGRAM_OUTBOUND_METHOD_RE =
-  /\/(sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/u;
+  /\/(sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/iu;
 const TELEGRAM_USERNAME_RE = /^@[A-Za-z][A-Za-z0-9_]{3,31}$/u;
 
 function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
@@ -243,13 +243,13 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (!isRecord(event) || event.type !== "api" || typeof event.path !== "string") {
           return null;
         }
-        const method = TELEGRAM_OUTBOUND_METHOD_RE.exec(event.path)?.[1];
+        const method = TELEGRAM_OUTBOUND_METHOD_RE.exec(event.path)?.[1]?.toLowerCase();
         if (!method || !isRecord(event.body)) {
           return null;
         }
         const chatId = canonicalTelegramRecorderChatId(event.body.chat_id);
         const text =
-          method === "sendMessage"
+          method === "sendmessage"
             ? readNonBlankString(event.body.text)
             : readNonBlankString(event.body.caption);
         if (!chatId || !text) {
