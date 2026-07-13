@@ -314,8 +314,15 @@ function consumeRecordedChunk(
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
-      await serializeAppend(filePath, async (publicationPath, logicalPath) => {
-        await appendCommittedLine(publicationPath, logicalPath, line, true);
+      await serializeAppend(filePath, async (publicationPath, logicalPath, lockCreatedFile) => {
+        await appendCommittedLine(
+          publicationPath,
+          logicalPath,
+          line,
+          true,
+          undefined,
+          lockCreatedFile,
+        );
       });
       return;
     } catch (error) {
@@ -669,6 +676,23 @@ async function acquireRecorderLock(filePath: string): Promise<() => Promise<void
   });
 }
 
+async function ensureRecorderExistsForLock(filePath: string): Promise<boolean> {
+  if (await readRecorderFileIdentity(filePath)) {
+    return false;
+  }
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(filePath, "ax", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return false;
+    }
+    throw error;
+  }
+  await handle.close();
+  return true;
+}
+
 async function releaseRecorderLocks(releases: Array<() => Promise<void>>): Promise<unknown[]> {
   const errors: unknown[] = [];
   for (const release of releases.reverse()) {
@@ -681,13 +705,39 @@ async function releaseRecorderLocks(releases: Array<() => Promise<void>>): Promi
   return errors;
 }
 
-async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+async function withRecorderLock<T>(
+  filePath: string,
+  operation: (lockCreatedFile: boolean) => Promise<T>,
+): Promise<T> {
   const releases: Array<() => Promise<void>> = [];
+  let lockCreatedFile = false;
   try {
     releases.push(await acquireRecorderLock(filePath));
-    const identity = await readRecorderFileIdentity(filePath);
-    if (identity) {
-      releases.push(await acquireRecorderLock(await recorderIdentityLockTarget(identity)));
+    for (let attempt = 0; attempt < RECORDER_ROTATION_ATTEMPTS; attempt += 1) {
+      lockCreatedFile = (await ensureRecorderExistsForLock(filePath)) || lockCreatedFile;
+      const identity = await readRecorderFileIdentity(filePath);
+      if (!identity) {
+        continue;
+      }
+      const releaseIdentityLock = await acquireRecorderLock(
+        await recorderIdentityLockTarget(identity),
+      );
+      const currentIdentity = await readRecorderFileIdentity(filePath);
+      if (sameRecorderFileIdentity(identity, currentIdentity)) {
+        releases.push(releaseIdentityLock);
+        break;
+      }
+      const releaseErrors = await releaseRecorderLocks([releaseIdentityLock]);
+      if (releaseErrors.length > 0) {
+        throw recorderLockReleaseError(
+          filePath,
+          new RecorderRotatedError("Recorder rotated while acquiring its identity lock."),
+          releaseErrors,
+        );
+      }
+      if (attempt + 1 >= RECORDER_ROTATION_ATTEMPTS) {
+        throw new RecorderRotatedError("Recorder kept rotating while acquiring its identity lock.");
+      }
     }
   } catch (error) {
     const releaseErrors = await releaseRecorderLocks(releases);
@@ -701,7 +751,7 @@ async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>
   let operationError: unknown;
   let result: T | undefined;
   try {
-    result = await operation();
+    result = await operation(lockCreatedFile);
   } catch (error) {
     operationFailed = true;
     operationError = error;
@@ -726,7 +776,7 @@ async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>
 
 async function serializeAppend<T>(
   filePath: string,
-  operation: (publicationPath: string, logicalPath: string) => Promise<T>,
+  operation: (publicationPath: string, logicalPath: string, lockCreatedFile: boolean) => Promise<T>,
 ): Promise<T> {
   const logicalPath = path.resolve(filePath);
   const key = await resolveRecorderPublicationPath(logicalPath);
@@ -735,7 +785,10 @@ async function serializeAppend<T>(
   const current = previous
     .catch(() => {})
     .then(async () => {
-      result = await withRecorderLock(key, async () => await operation(key, logicalPath));
+      result = await withRecorderLock(
+        key,
+        async (lockCreatedFile) => await operation(key, logicalPath, lockCreatedFile),
+      );
     });
   pendingAppends.set(key, current);
 
@@ -850,53 +903,56 @@ export async function appendRecordedInboundBatch(
   await mkdir(path.dirname(filePath), { recursive: true });
   for (let attempt = 0; ; attempt++) {
     try {
-      return await serializeAppend(filePath, async (publicationPath, logicalPath) => {
-        const generation = await prepareRecorderPathForAppend(publicationPath, logicalPath, true);
-        const seen = await syncRecordIdentityIndex(publicationPath);
-        const pendingIdentities = new Set<string>();
-        const recorded: RecordedInboundEnvelope[] = [];
-        for (const event of events) {
-          const identity = recordIdentity(event);
-          if (seen.has(identity) || pendingIdentities.has(identity)) {
-            continue;
+      return await serializeAppend(
+        filePath,
+        async (publicationPath, logicalPath, lockCreatedFile) => {
+          const generation = await prepareRecorderPathForAppend(publicationPath, logicalPath, true);
+          const seen = await syncRecordIdentityIndex(publicationPath);
+          const pendingIdentities = new Set<string>();
+          const recorded: RecordedInboundEnvelope[] = [];
+          for (const event of events) {
+            const identity = recordIdentity(event);
+            if (seen.has(identity) || pendingIdentities.has(identity)) {
+              continue;
+            }
+            pendingIdentities.add(identity);
+            recorded.push({
+              ...event,
+              recordedAt: new Date().toISOString(),
+            });
           }
-          pendingIdentities.add(identity);
-          recorded.push({
-            ...event,
-            recordedAt: new Date().toISOString(),
-          });
-        }
-        if (recorded.length > 0) {
-          const batch = {
-            events: recorded,
-            recordType: "crabline.recorder.batch",
-            recorderBatchVersion: RECORDER_BATCH_VERSION,
-          } satisfies RecordedInboundBatchLine;
-          const line = `${JSON.stringify(batch)}\n`;
-          if (Buffer.byteLength(line) > MAX_PENDING_RECORD_BYTES) {
-            throw new Error(
-              `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
+          if (recorded.length > 0) {
+            const batch = {
+              events: recorded,
+              recordType: "crabline.recorder.batch",
+              recorderBatchVersion: RECORDER_BATCH_VERSION,
+            } satisfies RecordedInboundBatchLine;
+            const line = `${JSON.stringify(batch)}\n`;
+            if (Buffer.byteLength(line) > MAX_PENDING_RECORD_BYTES) {
+              throw new Error(
+                `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
+              );
+            }
+            await appendCommittedLine(
+              publicationPath,
+              logicalPath,
+              line,
+              true,
+              generation.identity,
+              generation.created || lockCreatedFile,
             );
+            await syncRecordIdentityIndex(publicationPath);
+          } else if (
+            !sameRecorderFileIdentity(
+              generation.identity,
+              await readRecorderFileIdentity(await resolveRecorderPublicationPath(logicalPath)),
+            )
+          ) {
+            throw new RecorderRotatedError("Recorder rotated before confirming a duplicate batch.");
           }
-          await appendCommittedLine(
-            publicationPath,
-            logicalPath,
-            line,
-            true,
-            generation.identity,
-            generation.created,
-          );
-          await syncRecordIdentityIndex(publicationPath);
-        } else if (
-          !sameRecorderFileIdentity(
-            generation.identity,
-            await readRecorderFileIdentity(await resolveRecorderPublicationPath(logicalPath)),
-          )
-        ) {
-          throw new RecorderRotatedError("Recorder rotated before confirming a duplicate batch.");
-        }
-        return recorded;
-      });
+          return recorded;
+        },
+      );
     } catch (error) {
       if (!(error instanceof RecorderRotatedError) || attempt + 1 >= RECORDER_ROTATION_ATTEMPTS) {
         throw error;
