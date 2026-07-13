@@ -3,6 +3,7 @@ import { lstat, mkdir, open, readFile, readlink, realpath } from "node:fs/promis
 import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
+import { applyOwnerOnlyWindowsDirectoryAcl } from "../platform/windows-acl.js";
 import type { InboundEnvelope } from "./types.js";
 
 export type RecordableInboundEnvelope = InboundEnvelope & {
@@ -30,8 +31,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 const pendingAppends = new Map<string, Promise<void>>();
 const recordIdentityIndexes = new Map<string, RecordIdentityIndex>();
-const durableRecorderIdentities = new Map<string, string>();
-const MAX_DURABLE_RECORDER_IDENTITIES = 128;
 const MAX_RECORD_IDENTITY_INDEXES = 128;
 const MAX_RECENT_RECORD_KEYS = 4096;
 const RECORDER_BATCH_VERSION = 1;
@@ -316,15 +315,8 @@ async function appendJsonLine(filePath: string, line: string): Promise<void> {
     try {
       await serializeAppend(
         filePath,
-        async (publicationPath, logicalPath, lockCreatedFile, lockedIdentity) => {
-          await appendCommittedLine(
-            publicationPath,
-            logicalPath,
-            line,
-            true,
-            lockedIdentity,
-            lockCreatedFile,
-          );
+        async (publicationPath, logicalPath, _lockCreatedFile, lockedIdentity) => {
+          await appendCommittedLine(publicationPath, logicalPath, line, true, lockedIdentity);
         },
       );
       return;
@@ -364,16 +356,11 @@ function sameRecorderFileIdentity(
   return left?.dev === right?.dev && left?.ino === right?.ino;
 }
 
-function recorderFileIdentityKey(identity: RecorderFileIdentity): string {
-  return `${identity.dev}:${identity.ino}`;
-}
-
-function rememberDurableRecorderIdentity(filePath: string, identity: RecorderFileIdentity): void {
-  durableRecorderIdentities.delete(filePath);
-  durableRecorderIdentities.set(filePath, recorderFileIdentityKey(identity));
-  if (durableRecorderIdentities.size > MAX_DURABLE_RECORDER_IDENTITIES) {
-    durableRecorderIdentities.delete(durableRecorderIdentities.keys().next().value!);
-  }
+function sameRecorderLockIdentity(
+  left: RecorderFileIdentity | undefined,
+  right: RecorderFileIdentity | undefined,
+): boolean {
+  return sameRecorderFileIdentity(left, right) && left?.nlink === right?.nlink;
 }
 
 async function resolveRecorderPublicationPath(filePath: string): Promise<string> {
@@ -521,16 +508,11 @@ async function appendCommittedLine(
   line: string,
   durable: boolean,
   expectedIdentity?: RecorderFileIdentity,
-  syncCreatedParent = false,
 ): Promise<void> {
   const opened = await openRecorderForAppend(publicationPath);
   const { handle } = opened;
   const identity = await handle.stat({ bigint: true });
   const recorderIdentity = { dev: identity.dev, ino: identity.ino, nlink: identity.nlink };
-  const needsParentSync =
-    opened.created ||
-    syncCreatedParent ||
-    durableRecorderIdentities.get(publicationPath) !== recorderFileIdentityKey(recorderIdentity);
   let published = false;
   let operationError: unknown;
   try {
@@ -546,9 +528,8 @@ async function appendCommittedLine(
     if (durable) {
       await handle.sync();
     }
-    if (durable && needsParentSync) {
+    if (durable) {
       await syncParentDirectory(publicationPath);
-      rememberDurableRecorderIdentity(publicationPath, recorderIdentity);
     }
   } catch (error) {
     operationError = published ? new ProviderRecorderCommittedError(logicalPath, error) : error;
@@ -615,15 +596,29 @@ function reportRecorderLockReleaseFailure(filePath: string, releaseError: unknow
   }
 }
 
-async function secureRecorderLockRoot(
+export async function secureProviderRecorderLockRoot(
   root: string,
   currentUserId: number | undefined,
+  options: {
+    platform?: NodeJS.Platform;
+    secureWindowsDirectory?: (directoryPath: string) => Promise<void>;
+  } = {},
 ): Promise<string> {
   await mkdir(root, { mode: 0o700, recursive: true });
-  if (process.platform === "win32") {
-    const identity = await lstat(root);
+  if ((options.platform ?? process.platform) === "win32") {
+    const identity = await lstat(root, { bigint: true });
     if (!identity.isDirectory() || identity.isSymbolicLink()) {
       throw new Error("Provider recorder lock directory is not a private directory.");
+    }
+    await (options.secureWindowsDirectory ?? applyOwnerOnlyWindowsDirectoryAcl)(root);
+    const secured = await lstat(root, { bigint: true });
+    if (
+      !secured.isDirectory() ||
+      secured.isSymbolicLink() ||
+      secured.dev !== identity.dev ||
+      secured.ino !== identity.ino
+    ) {
+      throw new Error("Provider recorder lock directory changed while securing it.");
     }
     return root;
   }
@@ -712,7 +707,7 @@ async function recorderIdentityLockTargets(
           ? { fallbackRoot: adjacentRecorderLockRoot(filePath, currentUserId) }
           : {}),
         preferred: recorderIdentityLockPath(
-          await secureRecorderLockRoot(sharedRoot, currentUserId),
+          await secureProviderRecorderLockRoot(sharedRoot, currentUserId),
           identity,
         ),
         userId: currentUserId,
@@ -729,7 +724,7 @@ async function recorderIdentityLockTargets(
       "Provider recorder hardlinks require a writable shared per-user lock directory.",
     );
   }
-  const adjacentRoot = await secureRecorderLockRoot(
+  const adjacentRoot = await secureProviderRecorderLockRoot(
     adjacentRecorderLockRoot(filePath, currentUserId),
     currentUserId,
   );
@@ -750,7 +745,7 @@ async function acquireRecorderIdentityLock(
     if (!targets.fallbackRoot || !recorderLockRootUnavailable(error)) {
       throw error;
     }
-    const fallbackRoot = await secureRecorderLockRoot(targets.fallbackRoot, targets.userId);
+    const fallbackRoot = await secureProviderRecorderLockRoot(targets.fallbackRoot, targets.userId);
     return await acquireRecorderLock(recorderIdentityLockPath(fallbackRoot, identity));
   }
 }
@@ -816,7 +811,7 @@ async function withRecorderLock<T>(
       const releaseIdentityLock = await acquireRecorderIdentityLock(filePath, identity);
       releases.push(releaseIdentityLock);
       const currentIdentity = await readRecorderFileIdentity(filePath);
-      if (sameRecorderFileIdentity(identity, currentIdentity)) {
+      if (sameRecorderLockIdentity(identity, currentIdentity)) {
         lockedIdentity = identity;
         break;
       }
@@ -1010,7 +1005,7 @@ export async function appendRecordedInboundBatch(
     try {
       return await serializeAppend(
         filePath,
-        async (publicationPath, logicalPath, lockCreatedFile, lockedIdentity) => {
+        async (publicationPath, logicalPath, _lockCreatedFile, lockedIdentity) => {
           const generation = await prepareRecorderPathForAppend(
             publicationPath,
             logicalPath,
@@ -1049,7 +1044,6 @@ export async function appendRecordedInboundBatch(
               line,
               true,
               generation.identity,
-              generation.created || lockCreatedFile,
             );
             await syncRecordIdentityIndex(publicationPath);
           } else if (

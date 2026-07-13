@@ -50,8 +50,6 @@ const pendingAppends = new Map<string, Promise<void>>();
 const pendingAdmissions = new Map<string, Promise<void>>();
 const pendingLogicalObservers = new Map<string, ObserverTask>();
 const pendingPublicationObservers = new Map<string, ObserverTask>();
-const durableRecorderIdentities = new Map<string, string>();
-const MAX_DURABLE_RECORDER_IDENTITIES = 128;
 const MAX_RECOVERY_VALIDATION_BYTES = 64 * 1024 * 1024;
 const MAX_RECOVERY_SCAN_BYTES = MAX_RECOVERY_VALIDATION_BYTES + 1;
 const RECORDER_LOCK_RETRY_MS = 100;
@@ -230,17 +228,6 @@ function requireRecorderIdentity(stats: { dev?: bigint | number; ino?: bigint | 
     throw new Error("Server recorder file identity is unavailable.");
   }
   return identity;
-}
-
-function rememberDurableRecorderIdentity(filePath: string, identity: string): void {
-  durableRecorderIdentities.delete(filePath);
-  durableRecorderIdentities.set(filePath, identity);
-  if (durableRecorderIdentities.size > MAX_DURABLE_RECORDER_IDENTITIES) {
-    const oldestPath = durableRecorderIdentities.keys().next().value;
-    if (oldestPath !== undefined) {
-      durableRecorderIdentities.delete(oldestPath);
-    }
-  }
 }
 
 function recorderLockReleaseError(
@@ -472,8 +459,6 @@ async function appendRecorderAttempt(params: {
         result = "retargeted";
       }
       if (result === undefined) {
-        const needsPathDurability =
-          opened.created || durableRecorderIdentities.get(params.publicationPath) !== identity;
         if (stats.size > 0) {
           const finalByte = await readBufferAt(file, 1, stats.size - 1);
           if (finalByte[0] !== 0x0a) {
@@ -514,11 +499,9 @@ async function appendRecorderAttempt(params: {
                 new ServerRecorderRotationError("Server recorder rotated during append."),
               );
             } else {
-              if (needsPathDurability) {
-                const firstCreatedPath =
-                  params.createdDirectory ?? (opened.created ? params.publicationPath : undefined);
-                await syncRecorderPathAncestry(params.publicationPath, firstCreatedPath);
-              }
+              const firstCreatedPath =
+                params.createdDirectory ?? (opened.created ? params.publicationPath : undefined);
+              await syncRecorderPathAncestry(params.publicationPath, firstCreatedPath);
               if (
                 !(await recorderPathHasIdentity(params.publicationPath, identity)) ||
                 (await resolveRecorderPath(params.logicalPath)) !== params.publicationPath
@@ -530,7 +513,6 @@ async function appendRecorderAttempt(params: {
                   ),
                 );
               } else {
-                rememberDurableRecorderIdentity(params.publicationPath, identity);
                 committed = true;
                 result = "committed";
               }
