@@ -42,15 +42,15 @@ describe("externally bound provider server credentials", () => {
     expect(first.telegram.manifest.env.TELEGRAM_BOT_TOKEN).toBe(first.telegram.manifest.botToken);
     expect(second.telegram.manifest.botToken).not.toBe(first.telegram.manifest.botToken);
 
-    expect(first.whatsapp.manifest.accessToken).toMatch(/^EAA[A-Za-z0-9_-]{32}$/u);
-    expect(first.whatsapp.manifest.env.CLOUD_API_ACCESS_TOKEN).toBe(
-      first.whatsapp.manifest.accessToken,
-    );
-    expect(second.whatsapp.manifest.accessToken).not.toBe(first.whatsapp.manifest.accessToken);
-
     expect(first.zalo.manifest.botToken).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     expect(first.zalo.manifest.env.ZALO_BOT_TOKEN).toBe(first.zalo.manifest.botToken);
     expect(second.zalo.manifest.botToken).not.toBe(first.zalo.manifest.botToken);
+  });
+
+  it("rejects cleartext WhatsApp listeners on non-loopback hosts", async () => {
+    await expect(startWhatsAppServer({ host: "0.0.0.0" })).rejects.toThrow(
+      /requires a loopback host/u,
+    );
   });
 });
 
@@ -59,8 +59,7 @@ async function startServers() {
   const matrix = await startMatrixServer({ host: "0.0.0.0" });
   const slack = await startSlackServer({ host: "0.0.0.0" });
   const telegram = await startTelegramServer({ host: "0.0.0.0" });
-  const whatsapp = await startWhatsAppServer({ host: "0.0.0.0" });
   const zalo = await startZaloServer({ host: "0.0.0.0" });
-  servers.push(mattermost, matrix, slack, telegram, whatsapp, zalo);
-  return { mattermost, matrix, slack, telegram, whatsapp, zalo };
+  servers.push(mattermost, matrix, slack, telegram, zalo);
+  return { mattermost, matrix, slack, telegram, zalo };
 }
