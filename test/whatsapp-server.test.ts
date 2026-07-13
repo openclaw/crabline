@@ -974,6 +974,57 @@ describe("whatsapp local provider server", () => {
     );
   });
 
+  it("persists unsupported message envelopes before allowing acknowledgement", async () => {
+    const node: BinaryNode = {
+      attrs: {
+        id: "unsupported-envelope",
+        to: "15557654321@s.whatsapp.net",
+      },
+      content: [
+        {
+          attrs: { type: "skmsg" },
+          content: Buffer.from("sender-key-envelope"),
+          tag: "enc",
+        },
+      ],
+      tag: "message",
+    };
+    const events: Array<{ accepted?: boolean; body?: unknown }> = [];
+
+    await expect(
+      persistAcceptedBaileysMessage({
+        appendEvent: async (event) => {
+          events.push(event);
+        },
+        node,
+        path: "/ws/chat",
+        remoteJid: "15550000001@s.whatsapp.net",
+        signalBundles: new WhatsAppSignalBundleStore(1),
+      }),
+    ).resolves.toBe(true);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        accepted: true,
+        body: expect.objectContaining({
+          attrs: expect.objectContaining({ id: "unsupported-envelope" }),
+          tag: "message",
+        }),
+      }),
+    );
+
+    await expect(
+      persistAcceptedBaileysMessage({
+        appendEvent: async () => {
+          throw new Error("simulated recorder failure");
+        },
+        node,
+        path: "/ws/chat",
+        remoteJid: "15550000001@s.whatsapp.net",
+        signalBundles: new WhatsAppSignalBundleStore(1),
+      }),
+    ).rejects.toThrow("simulated recorder failure");
+  });
+
   it("serializes first-contact Signal transactions by recipient bundle", async () => {
     const recipientJid = "15551234567@s.whatsapp.net";
     const receiver = new WhatsAppSignalBundleStore(1);

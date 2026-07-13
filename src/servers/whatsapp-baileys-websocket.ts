@@ -1211,6 +1211,18 @@ export async function persistAcceptedBaileysMessage(params: {
     return false;
   }
   const candidates = encryptedMessageCandidates(params.node);
+  if (candidates.length === 0) {
+    await params.appendEvent({
+      accepted: true,
+      at: new Date().toISOString(),
+      body: sanitizeNodeForJson(params.node),
+      method: "WEBSOCKET",
+      path: params.path,
+      query: {},
+      type: "api",
+    } as ServerRequestEvent & { accepted: true });
+    return true;
+  }
   const remoteCorrelationJid = canonicalizeWhatsAppUserCorrelationJid(params.remoteJid);
   candidates.sort((left, right) => {
     const leftIsSelf =
