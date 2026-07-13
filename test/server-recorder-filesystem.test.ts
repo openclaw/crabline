@@ -214,6 +214,33 @@ it.skipIf(process.platform === "win32")(
   },
 );
 
+it.skipIf(process.platform === "win32")(
+  "locks and appends through a dangling recorder symlink target",
+  async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "server.jsonl");
+    const targetPath = path.join(directory, "target.jsonl");
+    await symlink(targetPath, recorderPath, "file");
+
+    await recordServerEvent({
+      event: {
+        at: new Date().toISOString(),
+        method: "POST",
+        path: "/dangling",
+        query: {},
+        type: "api",
+      },
+      onEvent: undefined,
+      recorderPath,
+    });
+
+    const lines = (await readFile(targetPath, "utf8")).trimEnd().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toMatchObject({ path: "/dangling" });
+  },
+);
+
 it.skipIf(process.platform === "win32")("preserves an existing recorder file mode", async () => {
   const directory = await createTempDir();
   directories.push(directory);

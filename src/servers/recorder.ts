@@ -36,8 +36,6 @@ const pendingLogicalObservers = new Map<string, Promise<void>>();
 const pendingPublicationObservers = new Map<string, Promise<void>>();
 const observerContext = new AsyncLocalStorage<{
   active: boolean;
-  logicalPath: string;
-  publicationPath: string;
 }>();
 const durableRecorderIdentities = new Map<string, string>();
 const MAX_DURABLE_RECORDER_IDENTITIES = 128;
@@ -267,10 +265,11 @@ async function acquireRecorderLock(filePath: string): Promise<() => Promise<void
 }
 
 async function withRecorderLock(
-  filePath: string,
+  lockPath: string,
+  logicalPath: string,
   operation: () => Promise<boolean | undefined>,
 ): Promise<boolean | undefined> {
-  const release = await acquireRecorderLock(filePath);
+  const release = await acquireRecorderLock(lockPath);
   let operationFailed = false;
   let operationError: unknown;
   let result: boolean | undefined;
@@ -284,10 +283,10 @@ async function withRecorderLock(
     await release();
   } catch (releaseError) {
     if (operationFailed) {
-      throw recorderLockReleaseError(filePath, operationError, releaseError);
+      throw recorderLockReleaseError(logicalPath, operationError, releaseError);
     }
     if (result === true) {
-      throw new ServerRecorderCommittedError(filePath, releaseError);
+      throw new ServerRecorderCommittedError(logicalPath, releaseError);
     }
     throw releaseError;
   }
@@ -482,8 +481,6 @@ function enqueueObserver(params: {
   ]).then(async () => {
     const context = {
       active: true,
-      logicalPath: params.logicalPath,
-      publicationPath: params.key,
     };
     try {
       await observerContext.run(context, async () => await params.onEvent?.(params.event));
@@ -517,9 +514,7 @@ function enqueueObserver(params: {
 }
 
 type RecorderAppendResult = {
-  logicalPath: string;
   observation: Promise<void>;
-  publicationPath: string;
 };
 
 async function appendResolvedJsonLine(params: {
@@ -540,7 +535,7 @@ async function appendResolvedJsonLine(params: {
         await chmod(directory, 0o700);
       }
       // Keep the cross-process lock through append verification.
-      const committed = await withRecorderLock(key, async () => {
+      const committed = await withRecorderLock(key, logicalPath, async () => {
         if ((await resolveRecorderPath(logicalPath)) !== key) {
           return undefined;
         }
@@ -564,14 +559,12 @@ async function appendResolvedJsonLine(params: {
         return undefined;
       }
       return {
-        logicalPath,
         observation: enqueueObserver({
           event: params.event,
           key,
           logicalPath,
           onEvent: params.onEvent,
         }),
-        publicationPath: key,
       };
     });
   const tail = current.then(
@@ -595,6 +588,9 @@ async function appendJsonLine(params: {
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
 }): Promise<void> {
+  if (observerContext.getStore()?.active === true && params.onEvent !== undefined) {
+    throw new Error("Server recorder observers cannot register nested observers.");
+  }
   const logicalPath = path.resolve(params.recorderPath);
   const previous = pendingAdmissions.get(logicalPath) ?? Promise.resolve();
   const current = previous
@@ -628,15 +624,6 @@ async function appendJsonLine(params: {
     if (pendingAdmissions.get(logicalPath) === tail) {
       pendingAdmissions.delete(logicalPath);
     }
-  }
-  const activeObserver = observerContext.getStore();
-  if (
-    activeObserver?.active === true &&
-    (activeObserver.logicalPath === result.logicalPath ||
-      activeObserver.publicationPath === result.publicationPath)
-  ) {
-    // The callback remains queued behind the active observer; awaiting it here would deadlock.
-    return;
   }
   await result.observation;
 }
