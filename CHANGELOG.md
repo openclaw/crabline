@@ -30,7 +30,7 @@
 - Authenticate Feishu signatures before encrypted callback decryption and bound callback ciphertext work.
 - Correct Slack edited-message identity and text fallback handling, acknowledge unsupported callbacks, and fairly budget Events API address failover.
 - Preserve provider recorder cursors across parse failures, report post-commit lock cleanup failures without rejecting committed appends, and synchronize hardlink aliases.
-- Confine server recorder publication and locking to stable resolved paths across symlink retargets, start observers in durable append order without blocking later requests, snapshot observed events, classify post-commit lock cleanup failures, and preserve existing file modes.
+- Confine server recorder publication and locking to stable resolved paths and hardlink identities across symlink retargets, start observers in durable append order without blocking later requests, snapshot observed events, classify post-commit lock cleanup failures, and preserve existing file modes.
 - Cover local GitHub Actions with ownership, CodeQL, immutable image, and test-tool runtime policies.
 - Publish Matrix direct-room account data and share strict native identifier validation across server, target, and inbound paths.
 - Materialize Mattermost thread roots, keep root posts channel-scoped, and reject oversized WebSocket post events atomically without disconnecting unrelated clients.
