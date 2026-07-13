@@ -962,8 +962,8 @@ describe("OpenClaw local provider bridge", () => {
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "thread:-100123/42" }).to).toBe(
       "-100123:topic:42",
     );
-    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@valid" }).to).toBe(
-      "@valid",
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@abcd" }).to).toBe(
+      "@abcd",
     );
     expect(
       createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@ChannelUserName" }).to,
@@ -972,9 +972,9 @@ describe("OpenClaw local provider bridge", () => {
     expect(
       createOpenClawCrablineAgentDelivery({ manifest, target: `channel:${maxUsername}` }).to,
     ).toBe(maxUsername);
-    for (const target of ["channel:@tiny", "channel:@abc", `channel:@${"a".repeat(33)}`]) {
+    for (const target of ["channel:@abc", `channel:@${"a".repeat(33)}`]) {
       expect(() => createOpenClawCrablineAgentDelivery({ manifest, target })).toThrow(
-        "Telegram usernames must contain 5-32 letters, digits, or underscores.",
+        "Telegram usernames must contain 4-32 letters, digits, or underscores.",
       );
     }
 

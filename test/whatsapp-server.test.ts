@@ -1175,6 +1175,12 @@ describe("whatsapp local provider server", () => {
       "15557654321@s.whatsapp.net\0false-ack",
       duplicateOperation,
     );
+    let duplicateSettled = false;
+    void duplicate.finally(() => {
+      duplicateSettled = true;
+    });
+    await Promise.resolve();
+    expect(duplicateSettled).toBe(false);
     releaseAcceptance(false);
 
     await expect(acceptance).resolves.toBe(false);
@@ -1213,6 +1219,14 @@ describe("whatsapp local provider server", () => {
       "15557654321@s.whatsapp.net\0rejected-ack",
       duplicateOperation,
     );
+    let duplicateSettled = false;
+    void duplicate
+      .catch(() => undefined)
+      .finally(() => {
+        duplicateSettled = true;
+      });
+    await Promise.resolve();
+    expect(duplicateSettled).toBe(false);
     const outcomes = Promise.allSettled([acceptance, duplicate]);
     rejectAcceptance(new Error("simulated acceptance failure"));
     await expect(outcomes).resolves.toEqual([

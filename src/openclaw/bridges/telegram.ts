@@ -10,9 +10,10 @@ import {
 } from "../shared.js";
 import {
   canonicalizeTelegramUsername,
+  TELEGRAM_BOT_USERNAME_PATTERN,
+  TELEGRAM_CHAT_USERNAME_PATTERN,
   TELEGRAM_NATIVE_CHAT_ID_MAX,
   telegramUsernameChatId,
-  TELEGRAM_USERNAME_PATTERN,
 } from "../../servers/telegram-identity.js";
 
 const TELEGRAM_SYMBOLIC_ID_BASE = TELEGRAM_NATIVE_CHAT_ID_MAX + 1n;
@@ -47,7 +48,7 @@ function normalizeTelegramChatId(
   if (value.startsWith("@")) {
     const username = canonicalizeTelegramUsername(value);
     if (!username) {
-      throw new Error("Telegram usernames must contain 5-32 letters, digits, or underscores.");
+      throw new Error("Telegram usernames must contain 4-32 letters, digits, or underscores.");
     }
     if (kind === "group" && options.preserveGroupUsername) {
       return username;
@@ -160,7 +161,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           !readNonBlankString(result.first_name) ||
           (result.username !== undefined &&
             (typeof result.username !== "string" ||
-              !TELEGRAM_USERNAME_PATTERN.test(`@${result.username}`)))
+              !TELEGRAM_BOT_USERNAME_PATTERN.test(`@${result.username}`)))
         ) {
           throw new Error("Crabline Telegram getMe probe failed: invalid response.");
         }
@@ -220,7 +221,8 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
       createAgentDelivery(parsed) {
         const kind =
           parsed.native &&
-          (/^-\d+$/u.test(parsed.id.trim()) || TELEGRAM_USERNAME_PATTERN.test(parsed.id.trim()))
+          (/^-\d+$/u.test(parsed.id.trim()) ||
+            TELEGRAM_CHAT_USERNAME_PATTERN.test(parsed.id.trim()))
             ? "group"
             : parsed.kind;
         const chatId = normalizeTelegramChatId(kind, parsed.id, {
