@@ -419,6 +419,23 @@ describe("production package", () => {
     expect(launcher).toContain("Python 3.10 or newer is required");
   });
 
+  it("lints repository tooling with the type-aware gate", async () => {
+    const [pkgContents, launcher] = await Promise.all([
+      fs.readFile("package.json", "utf8"),
+      fs.readFile("tools/run-autoreview-tests.mjs", "utf8"),
+    ]);
+    const pkg = JSON.parse(pkgContents) as { scripts?: Record<string, string> };
+
+    expect(pkg.scripts?.lint).toBe(
+      "pnpm format:check && pnpm typecheck && oxlint --deny-warnings " +
+        "--allow vitest/require-mock-type-parameters --type-aware " +
+        "--tsconfig tsconfig.test.json src test tools",
+    );
+    expect(launcher).toContain(
+      "oxlint-disable-next-line no-console -- This CLI failure must be visible on stderr.",
+    );
+  });
+
   it("documents source-checkout and user-supplied script bridge commands", async () => {
     const root = process.cwd();
     const [readme, channelSetup] = await Promise.all([
