@@ -1333,6 +1333,62 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("drains an in-flight renewal before retiring the compatibility marker", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    let allowMarkerRenewal: (() => void) | undefined;
+    let markerRenewalStarted: (() => void) | undefined;
+    let renew: (() => Promise<void>) | undefined;
+    const markerRenewalGate = new Promise<void>((resolve) => {
+      allowMarkerRenewal = resolve;
+    });
+    const markerRenewalStartedPromise = new Promise<void>((resolve) => {
+      markerRenewalStarted = resolve;
+    });
+    let lock: Awaited<ReturnType<typeof acquireOpenClawCrablineSmokeRunLock>> | undefined;
+    try {
+      lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        beforeCompatibilityMarkerRenew: async () => {
+          markerRenewalStarted?.();
+          await markerRenewalGate;
+        },
+        startHeartbeat: (heartbeat, intervalMs) => {
+          renew = heartbeat;
+          return disableHeartbeat(heartbeat, intervalMs);
+        },
+      });
+      const renewal = renew!();
+      await markerRenewalStartedPromise;
+
+      let releaseSettled = false;
+      const release = lock.release().then(() => {
+        releaseSettled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(releaseSettled).toBe(false);
+
+      allowMarkerRenewal?.();
+      await renewal;
+      await release;
+
+      const compatibilityOwnerPath = path.join(
+        outputDir,
+        `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+        "owner.json",
+      );
+      expect((await fs.stat(compatibilityOwnerPath)).mtimeMs).toBeCloseTo(1, 0);
+
+      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        startHeartbeat: disableHeartbeat,
+      });
+      await replacementLock.release();
+    } finally {
+      allowMarkerRenewal?.();
+      await lock?.release().catch(() => undefined);
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("rejects a pointer commit when a pending final renewal fails during heartbeat drain", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
