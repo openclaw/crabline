@@ -35,6 +35,10 @@ const WHATSAPP_GRAPH_VERSION_RE = /^v\d+\.\d+$/u;
 const DEFAULT_GRAPH_VERSION = "v25.0";
 const MAX_WHATSAPP_READABLE_MESSAGE_IDS = 10_000;
 
+function createDefaultAccessToken(): string {
+  return `EAA${randomBytes(24).toString("base64url")}`;
+}
+
 type WhatsAppServerState = {
   accessToken: string;
   adminToken: string;
@@ -600,7 +604,7 @@ export async function startWhatsAppServer(
     throw new Error("WhatsApp selfJid must be a WhatsApp user JID.");
   }
   const state: WhatsAppServerState = {
-    accessToken: params.accessToken ?? `EAA${randomBytes(24).toString("base64url")}`,
+    accessToken: params.accessToken ?? createDefaultAccessToken(),
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     prepareInboundMessage: () => undefined,
     displayPhoneNumber: params.displayPhoneNumber ?? "15550000000",
