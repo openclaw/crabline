@@ -1,5 +1,4 @@
 import { lstat, mkdir, open, readFile, readlink, realpath } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import type { InboundEnvelope } from "./types.js";
@@ -76,6 +75,7 @@ type RecordIdentityIndex = {
 type RecorderFileIdentity = {
   dev: bigint;
   ino: bigint;
+  nlink: bigint;
 };
 
 type RecordedInboundBatchLine = {
@@ -335,6 +335,7 @@ async function readRecorderFileIdentity(
     return {
       dev: stats.dev,
       ino: stats.ino,
+      nlink: stats.nlink,
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -462,7 +463,7 @@ async function prepareRecorderPathForAppend(
   const opened = await openRecorderForAppend(publicationPath);
   const { handle } = opened;
   const identity = await handle.stat({ bigint: true });
-  const recorderIdentity = { dev: identity.dev, ino: identity.ino };
+  const recorderIdentity = { dev: identity.dev, ino: identity.ino, nlink: identity.nlink };
   try {
     const changed = await prepareRecorderTailForAppend(handle);
     if (changed && durable) {
@@ -506,7 +507,7 @@ async function appendCommittedLine(
   const opened = await openRecorderForAppend(publicationPath);
   const { handle } = opened;
   const identity = await handle.stat({ bigint: true });
-  const recorderIdentity = { dev: identity.dev, ino: identity.ino };
+  const recorderIdentity = { dev: identity.dev, ino: identity.ino, nlink: identity.nlink };
   const needsParentSync =
     opened.created ||
     syncCreatedParent ||
@@ -594,22 +595,21 @@ function reportRecorderLockReleaseFailure(filePath: string, releaseError: unknow
 
 async function privateRecorderLockRoot(): Promise<string> {
   const currentUserId = process.geteuid?.();
-  let parent = tmpdir();
-  if (currentUserId !== undefined) {
-    const temporaryDirectory = await lstat(parent, { bigint: true });
-    const privateTemporaryDirectory =
-      temporaryDirectory.isDirectory() &&
-      temporaryDirectory.uid === BigInt(currentUserId) &&
-      (temporaryDirectory.mode & 0o077n) === 0n;
-    if (!privateTemporaryDirectory) {
-      parent = homedir();
-    }
+  if (process.platform === "win32" || currentUserId === undefined) {
+    throw new Error("Hardlinked provider recorder paths are unsupported on this platform.");
   }
 
-  const root = path.join(parent, ".crabline", "locks", "provider-recorder");
-  await mkdir(root, { mode: 0o700, recursive: true });
+  const root = path.join("/tmp", `.crabline-provider-recorder-${currentUserId}`);
+  try {
+    await mkdir(root, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw error;
+    }
+  }
   const handle = await open(root, "r");
   try {
+    await handle.chmod(0o700);
     const identity = await handle.stat({ bigint: true });
     const current = await lstat(root, { bigint: true });
     if (
@@ -617,11 +617,11 @@ async function privateRecorderLockRoot(): Promise<string> {
       !current.isDirectory() ||
       identity.dev !== current.dev ||
       identity.ino !== current.ino ||
-      (currentUserId !== undefined && identity.uid !== BigInt(currentUserId))
+      identity.uid !== BigInt(currentUserId) ||
+      (identity.mode & 0o077n) !== 0n
     ) {
       throw new Error("Provider recorder lock directory is not privately owned.");
     }
-    await handle.chmod(0o700);
   } finally {
     await handle.close();
   }
@@ -663,7 +663,7 @@ async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>
   try {
     releases.push(await acquireRecorderLock(filePath));
     const identity = await readRecorderFileIdentity(filePath);
-    if (identity) {
+    if (identity && identity.nlink > 1n) {
       releases.push(await acquireRecorderLock(await recorderIdentityLockTarget(identity)));
     }
   } catch (error) {
