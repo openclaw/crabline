@@ -33,6 +33,7 @@ import {
 const WHATSAPP_CLOUD_RECIPIENT_RE = /^\d{7,15}$/u;
 const WHATSAPP_GRAPH_VERSION_RE = /^v\d+\.\d+$/u;
 const DEFAULT_GRAPH_VERSION = "v25.0";
+const MAX_WHATSAPP_READABLE_MESSAGE_IDS = 10_000;
 
 type WhatsAppServerState = {
   accessToken: string;
@@ -42,6 +43,7 @@ type WhatsAppServerState = {
     message: WhatsAppBaileysInboundMessage,
   ): PreparedWhatsAppBaileysInboundDelivery | undefined;
   graphVersion: string;
+  inboundMessageIds: Set<string>;
   nextMessageId: number;
   onEvent: ServerEventObserver | undefined;
   phoneNumberId: string;
@@ -322,7 +324,7 @@ function prepareSendMessage(params: {
   };
 }
 
-function handleMessageStatus(body: Record<string, unknown>): Response {
+function handleMessageStatus(state: WhatsAppServerState, body: Record<string, unknown>): Response {
   const productError = requireMessagingProduct(body);
   if (productError) {
     return productError;
@@ -333,13 +335,31 @@ function handleMessageStatus(body: Record<string, unknown>): Response {
       'status must be "read" for message status updates.',
     );
   }
-  if (!readTrimmedString(body.message_id)) {
+  const messageId = readTrimmedString(body.message_id);
+  if (!messageId) {
     return graphParameterError(
       "(#100) Missing required parameter: message_id",
       "A message status update requires message_id.",
     );
   }
+  if (!state.inboundMessageIds.has(messageId)) {
+    return graphParameterError(
+      "(#100) Invalid parameter: message_id",
+      "message_id must reference an accepted inbound message.",
+    );
+  }
   return jsonResponse({ success: true });
+}
+
+function rememberInboundMessageId(state: WhatsAppServerState, messageId: string): void {
+  state.inboundMessageIds.delete(messageId);
+  state.inboundMessageIds.add(messageId);
+  if (state.inboundMessageIds.size > MAX_WHATSAPP_READABLE_MESSAGE_IDS) {
+    const oldest = state.inboundMessageIds.values().next().value;
+    if (oldest !== undefined) {
+      state.inboundMessageIds.delete(oldest);
+    }
+  }
 }
 
 async function handleAdminInbound(params: {
@@ -376,7 +396,7 @@ async function handleAdminInbound(params: {
     fromMe: false,
     id: readTrimmedString(params.body.messageId) ?? nextMessageId(params.state),
     pushName: readTrimmedString(params.body.pushName) ?? "Test User",
-    remoteJid: chatJid,
+    remoteJid: isGroupChat ? chatJid : directPeerIdentity(chatJid),
     senderJid: isGroupChat ? senderJid : undefined,
     text,
   });
@@ -473,6 +493,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
     }
     if (result.message && preparedDelivery) {
       const delivery = await preparedDelivery.commit();
+      rememberInboundMessageId(params.state, result.message.key.id);
       return whatsappOk({ delivery, message: result.message, webhook: result.webhook });
     }
     return graphParameterError("(#100) Invalid inbound WhatsApp event");
@@ -522,7 +543,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
         "The request body must be a JSON object.",
       );
     } else if ("status" in body || "message_id" in body) {
-      response = handleMessageStatus(body);
+      response = handleMessageStatus(params.state, body);
       event.accepted = response.ok;
     } else {
       const prepared = prepareSendMessage({ body, state: params.state });
@@ -579,15 +600,12 @@ export async function startWhatsAppServer(
     throw new Error("WhatsApp selfJid must be a WhatsApp user JID.");
   }
   const state: WhatsAppServerState = {
-    accessToken:
-      params.accessToken ??
-      (isLoopbackHost(host)
-        ? "crabline-whatsapp-access-token"
-        : `EAA${randomBytes(24).toString("base64url")}`),
+    accessToken: params.accessToken ?? `EAA${randomBytes(24).toString("base64url")}`,
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     prepareInboundMessage: () => undefined,
     displayPhoneNumber: params.displayPhoneNumber ?? "15550000000",
     graphVersion,
+    inboundMessageIds: new Set(),
     nextMessageId: 1,
     onEvent: params.onEvent,
     phoneNumberId,

@@ -7,6 +7,7 @@ import {
   encodeBinaryNode,
   WHATSAPP_BINARY_NODE_MAX_DEPTH,
   WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES,
+  WHATSAPP_BINARY_NODE_MAX_LIST_ITEMS,
   WHATSAPP_BINARY_NODE_MAX_NODES,
   type BinaryNode,
 } from "../src/servers/whatsapp-wire/binary-node.js";
@@ -674,8 +675,21 @@ describe("WhatsApp binary nodes", () => {
       tag: "root",
     };
 
-    await expect(decodeBinaryNode(encodeBinaryNode(node))).rejects.toThrow(
+    expect(() => encodeBinaryNode(node)).toThrow(
       `WhatsApp binary node count exceeds ${WHATSAPP_BINARY_NODE_MAX_NODES}.`,
+    );
+  });
+
+  it("rejects aggregate list items beyond the decoder budget", () => {
+    const attrs = Object.fromEntries(
+      Array.from({ length: 32_766 }, (_, index) => [`key-${index}`, "value"]),
+    );
+    const leaf: BinaryNode = { attrs, tag: "leaf" };
+    const child: BinaryNode = { attrs, content: [leaf], tag: "child" };
+    const root: BinaryNode = { attrs, content: [child], tag: "root" };
+
+    expect(() => encodeBinaryNode(root)).toThrow(
+      `WhatsApp binary node list items exceed ${WHATSAPP_BINARY_NODE_MAX_LIST_ITEMS}.`,
     );
   });
 
@@ -708,6 +722,12 @@ describe("WhatsApp signal bundle store", () => {
       /signal bundle limit exceeded/u,
     );
     expect(store.size).toBe(1);
+    expect(
+      () =>
+        new WhatsAppSignalBundleStore(undefined, undefined, undefined, undefined, undefined, {
+          maxSessionsPerBundle: 0,
+        }),
+    ).toThrow(/maxSignalSessionsPerBundle/u);
   });
 
   it("bounds PN-to-LID associations and evicts the least recently associated entry", () => {

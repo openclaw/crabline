@@ -49,6 +49,7 @@ const MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENT_AGE_MS = 5 * 60 * 1_000;
 const MAX_WHATSAPP_RECENT_ACKNOWLEDGEMENTS = 10_000;
 export const MAX_WHATSAPP_WEBSOCKET_FRAGMENTS = 1_024;
 export const MAX_WHATSAPP_SIGNAL_BUNDLES = 1_024;
+export const MAX_WHATSAPP_SIGNAL_SESSIONS_PER_BUNDLE = 32;
 export const MAX_WHATSAPP_WEBSOCKET_CLOSE_REASON_BYTES = 123;
 type NodeBuffer = Buffer<ArrayBufferLike>;
 type WhatsAppWebSocketRawData = NodeBuffer | ArrayBuffer | NodeBuffer[];
@@ -120,6 +121,10 @@ export type WhatsAppSignalDecryptResult<T> =
   | { status: "unavailable" }
   | { status: "rejected" };
 
+export type WhatsAppSignalBundleStoreOptions = {
+  maxSessionsPerBundle?: number | undefined;
+};
+
 type PendingWhatsAppAcknowledgement = {
   acceptedAt: number | undefined;
   acknowledged: boolean;
@@ -130,7 +135,7 @@ export class WhatsAppSignalBundleStore {
   readonly #bundles = new Map<string, MockSignalBundle>();
   readonly #inFlightMessageAcceptances = new Map<string, Promise<boolean>>();
   readonly #lidByPhoneNumber = new Map<string, string>();
-  readonly #pendingMessageAcceptances = new Map<string, Promise<void>>();
+  readonly #maxSessionsPerBundle: number;
   readonly #pendingAcknowledgements = new Map<string, PendingWhatsAppAcknowledgement>();
   readonly #pendingTransactions = new Map<string, Promise<void>>();
   readonly #sessions = new Map<string, Map<string, SessionRecord>>();
@@ -141,9 +146,15 @@ export class WhatsAppSignalBundleStore {
     private readonly maxRecentAcknowledgements = MAX_WHATSAPP_RECENT_ACKNOWLEDGEMENTS,
     private readonly maxPendingAcknowledgementAgeMs = MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENT_AGE_MS,
     private readonly now: () => number = Date.now,
+    options: WhatsAppSignalBundleStoreOptions = {},
   ) {
+    const maxSessionsPerBundle =
+      options.maxSessionsPerBundle ?? MAX_WHATSAPP_SIGNAL_SESSIONS_PER_BUNDLE;
     if (!Number.isSafeInteger(maxBundles) || maxBundles < 1) {
       throw new Error("WhatsApp maxSignalBundles must be a positive safe integer.");
+    }
+    if (!Number.isSafeInteger(maxSessionsPerBundle) || maxSessionsPerBundle < 1) {
+      throw new Error("WhatsApp maxSignalSessionsPerBundle must be a positive safe integer.");
     }
     if (!Number.isSafeInteger(maxPendingAcknowledgements) || maxPendingAcknowledgements < 1) {
       throw new Error("WhatsApp maxPendingAcknowledgements must be a positive safe integer.");
@@ -157,6 +168,7 @@ export class WhatsAppSignalBundleStore {
     ) {
       throw new Error("WhatsApp maxPendingAcknowledgementAgeMs must be a positive safe integer.");
     }
+    this.#maxSessionsPerBundle = maxSessionsPerBundle;
   }
 
   get size(): number {
@@ -167,52 +179,56 @@ export class WhatsAppSignalBundleStore {
     return this.#lidByPhoneNumber.size;
   }
 
+  get sessionCount(): number {
+    let count = 0;
+    for (const sessions of this.#sessions.values()) {
+      count += sessions.size;
+    }
+    return count;
+  }
+
   async acceptMessageOnce(messageKey: string, operation: () => Promise<boolean>): Promise<boolean> {
     const inFlightAcceptance = this.#inFlightMessageAcceptances.get(messageKey);
     if (inFlightAcceptance) {
       return await inFlightAcceptance;
     }
-    const acceptance = this.#runSerialized(
-      this.#pendingMessageAcceptances,
-      "messages",
-      async () => {
-        this.#recoverExpiredPendingAcknowledgements();
-        if (this.#pendingAcknowledgements.has(messageKey)) {
-          return true;
-        }
-        if (this.#acknowledgedMessageIds.delete(messageKey)) {
-          this.#acknowledgedMessageIds.set(messageKey, true);
-          return true;
-        }
-        if (this.#pendingAcknowledgements.size >= this.maxPendingAcknowledgements) {
-          throw new Error(
-            `WhatsApp pending acknowledgement limit exceeded (${this.maxPendingAcknowledgements}).`,
-          );
-        }
-        const pendingAcknowledgement: PendingWhatsAppAcknowledgement = {
-          acceptedAt: undefined,
-          acknowledged: false,
-        };
-        this.#pendingAcknowledgements.set(messageKey, pendingAcknowledgement);
-        try {
-          const accepted = await operation();
-          if (!accepted) {
-            this.#pendingAcknowledgements.delete(messageKey);
-            return false;
-          }
-          if (pendingAcknowledgement.acknowledged) {
-            this.#pendingAcknowledgements.delete(messageKey);
-            this.#rememberAcknowledgedMessage(messageKey);
-          } else {
-            pendingAcknowledgement.acceptedAt = this.now();
-          }
-          return true;
-        } catch (error) {
+    this.#recoverExpiredPendingAcknowledgements();
+    if (this.#pendingAcknowledgements.has(messageKey)) {
+      return true;
+    }
+    if (this.#acknowledgedMessageIds.delete(messageKey)) {
+      this.#acknowledgedMessageIds.set(messageKey, true);
+      return true;
+    }
+    if (this.#pendingAcknowledgements.size >= this.maxPendingAcknowledgements) {
+      throw new Error(
+        `WhatsApp pending acknowledgement limit exceeded (${this.maxPendingAcknowledgements}).`,
+      );
+    }
+    const pendingAcknowledgement: PendingWhatsAppAcknowledgement = {
+      acceptedAt: undefined,
+      acknowledged: false,
+    };
+    this.#pendingAcknowledgements.set(messageKey, pendingAcknowledgement);
+    const acceptance = Promise.resolve().then(async () => {
+      try {
+        const accepted = await operation();
+        if (!accepted) {
           this.#pendingAcknowledgements.delete(messageKey);
-          throw error;
+          return false;
         }
-      },
-    );
+        if (pendingAcknowledgement.acknowledged) {
+          this.#pendingAcknowledgements.delete(messageKey);
+          this.#rememberAcknowledgedMessage(messageKey);
+        } else {
+          pendingAcknowledgement.acceptedAt = this.now();
+        }
+        return true;
+      } catch (error) {
+        this.#pendingAcknowledgements.delete(messageKey);
+        throw error;
+      }
+    });
     this.#inFlightMessageAcceptances.set(messageKey, acceptance);
     try {
       return await acceptance;
@@ -328,8 +344,12 @@ export class WhatsAppSignalBundleStore {
       return { status: "unavailable" };
     }
     const address = new ProtocolAddress(remoteAddress.name, remoteAddress.deviceId);
+    // Capacity checks, staged writes, and commits stay atomic per recipient bundle.
     return await this.#runTransaction(identityKey, async () => {
       const sessions = this.#sessions.get(identityKey) ?? new Map<string, SessionRecord>();
+      const sessionLimitError = new Error("WhatsApp Signal session limit exceeded.");
+      const maxSessionsPerBundle = this.#maxSessionsPerBundle;
+      let stagedNewSessionCount = 0;
       const stagedPreKeyRemovals = new Set<number>();
       const stagedSessions = new Map<string, SessionRecord>();
       const storage: SignalStorage = {
@@ -338,6 +358,12 @@ export class WhatsAppSignalBundleStore {
           return session ? cloneSignalSession(session) : undefined;
         },
         async storeSession(id, session) {
+          if (!sessions.has(id) && !stagedSessions.has(id)) {
+            if (stagedNewSessionCount >= maxSessionsPerBundle) {
+              throw sessionLimitError;
+            }
+            stagedNewSessionCount += 1;
+          }
           stagedSessions.set(id, cloneSignalSession(session));
         },
         isTrustedIdentity: () => true,
@@ -362,6 +388,9 @@ export class WhatsAppSignalBundleStore {
             ? await cipher.decryptPreKeyWhisperMessage(params.ciphertext)
             : await cipher.decryptWhisperMessage(params.ciphertext);
       } catch (error) {
+        if (error === sessionLimitError) {
+          return { status: "rejected" };
+        }
         return { error, status: "decrypt-failed" };
       }
       const replacementPreKey = stagedPreKeyRemovals.has(bundle.preKeyId)
@@ -374,7 +403,28 @@ export class WhatsAppSignalBundleStore {
       if (accepted === undefined) {
         return { status: "rejected" };
       }
+      const sessionsToEvict: string[] = [];
+      const evictionCount = Math.max(
+        0,
+        sessions.size + stagedNewSessionCount - maxSessionsPerBundle,
+      );
+      for (const id of sessions.keys()) {
+        if (sessionsToEvict.length >= evictionCount) {
+          break;
+        }
+        if (!stagedSessions.has(id)) {
+          sessionsToEvict.push(id);
+        }
+      }
+      if (sessionsToEvict.length < evictionCount) {
+        return { status: "rejected" };
+      }
+      for (const id of sessionsToEvict) {
+        sessions.delete(id);
+      }
       for (const [id, session] of stagedSessions) {
+        // Refresh insertion order so future reclamation evicts the least-recently used session.
+        sessions.delete(id);
         sessions.set(id, session);
       }
       if (stagedSessions.size > 0) {
