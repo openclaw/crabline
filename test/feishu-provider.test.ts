@@ -615,6 +615,22 @@ describe("Feishu webhook normalizer", () => {
         (await readFile(config.feishu!.recorder.path!, "utf8")).trim().split("\n"),
       ).toHaveLength(1);
 
+      const relatedPayload = {
+        ...validPayload,
+        event: {
+          ...validPayload.event,
+          message: {
+            ...validPayload.event.message,
+            content: JSON.stringify({ text: "distinct related event" }),
+          },
+        },
+        header: { event_id: "event-related" },
+      };
+      expect((await send(relatedPayload)).status).toBe(200);
+      expect(
+        (await readFile(config.feishu!.recorder.path!, "utf8")).trim().split("\n"),
+      ).toHaveLength(2);
+
       const rejectedPayload = {
         event: {
           message: {
