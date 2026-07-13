@@ -1503,7 +1503,7 @@ describe("telegram local provider server", () => {
     });
   });
 
-  it("requires explicit inbound IDs to stay positive, unique, and monotonic", async () => {
+  it("keeps explicit inbound IDs valid, unique, and monotonic", async () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
 
@@ -1523,7 +1523,6 @@ describe("telegram local provider server", () => {
       { chatId: 123, messageId: 11, text: "duplicate update", updateId: 20 },
       { chatId: 123, messageId: 9, text: "decreasing message", updateId: 21 },
       { chatId: 123, messageId: 11, text: "decreasing update", updateId: 19 },
-      { chatId: 123, messageId: 0, text: "zero message", updateId: 21 },
       { chatId: 123, messageId: 11, text: "negative update", updateId: -1 },
       {
         chatId: 123,
@@ -1549,9 +1548,20 @@ describe("telegram local provider server", () => {
       expect(response.status).toBe(400);
     }
 
+    const scheduled = await injectUpdate(server, {
+      chatId: 123,
+      messageId: 0,
+      text: "automatically scheduled",
+      updateId: 21,
+    });
+    expect(scheduled.status).toBe(200);
+    await expect(scheduled.json()).resolves.toMatchObject({
+      update: { message: { message_id: 0 }, update_id: 21 },
+    });
+
     const generated = await injectUpdate(server, { chatId: 123, text: "generated" });
     await expect(generated.json()).resolves.toMatchObject({
-      update: { message: { message_id: 11 }, update_id: 21 },
+      update: { message: { message_id: 11 }, update_id: 22 },
     });
 
     const ignored = await injectUpdate(server, {
@@ -1560,13 +1570,13 @@ describe("telegram local provider server", () => {
         message_id: 12,
         photo: [{ file_id: "photo", file_unique_id: "unique", height: 1, width: 1 }],
       },
-      update_id: 22,
+      update_id: 23,
     });
     expect(ignored.status).toBe(200);
 
     const afterIgnored = await injectUpdate(server, { chatId: 123, text: "after ignored" });
     await expect(afterIgnored.json()).resolves.toMatchObject({
-      update: { message: { message_id: 13 }, update_id: 23 },
+      update: { message: { message_id: 13 }, update_id: 24 },
     });
 
     const channelPost = await injectUpdate(server, {
