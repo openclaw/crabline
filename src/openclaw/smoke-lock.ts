@@ -1705,6 +1705,8 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         if (revalidatedDestinationPath !== resolvedDestinationPath) {
           throw new Error("OpenClaw Crabline smoke lock commit destination path identity changed.");
         }
+        // The owner-only output tree and smoke lock serialize supported writers; confinement does
+        // not treat another process running as the same OS user as a lower-privilege adversary.
         await fs.rename(claimedStagedFilePath, revalidatedDestinationPath);
       },
       async release() {
