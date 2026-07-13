@@ -119,15 +119,15 @@ describe("registry", () => {
   });
 
   it("enforces Telegram's native username length in shared target normalization", () => {
-    expect(normalizeBuiltinTarget("telegram", { id: "@abcd", metadata: {} })).toMatchObject({
-      channelId: "@abcd",
+    expect(normalizeBuiltinTarget("telegram", { id: "@abcde", metadata: {} })).toMatchObject({
+      channelId: "@abcde",
     });
     expect(
       normalizeBuiltinTarget("telegram", { id: `@${"a".repeat(32)}`, metadata: {} }),
     ).toMatchObject({
       channelId: `@${"a".repeat(32)}`,
     });
-    for (const id of ["@abc", `@${"a".repeat(33)}`]) {
+    for (const id of ["@abcd", "@abc", `@${"a".repeat(33)}`]) {
       expect(() => normalizeBuiltinTarget("telegram", { id, metadata: {} })).toThrow(
         /native Telegram chat id/u,
       );
@@ -148,20 +148,21 @@ describe("registry", () => {
     }
   });
 
-  it("enforces Telegram safe-integer and topic bounds", () => {
+  it("enforces Telegram native 52-bit chat and safe-integer topic bounds", () => {
+    const maxNativeChatId = String((1n << 52n) - 1n);
     const maxSafeInteger = String(Number.MAX_SAFE_INTEGER);
     expect(
       normalizeBuiltinTarget("telegram", {
-        id: `-${maxSafeInteger}`,
+        id: `-${maxNativeChatId}`,
         metadata: {},
         threadId: maxSafeInteger,
       }),
     ).toMatchObject({
-      channelId: `-${maxSafeInteger}`,
-      threadId: `-${maxSafeInteger}:${maxSafeInteger}`,
+      channelId: `-${maxNativeChatId}`,
+      threadId: `-${maxNativeChatId}:${maxSafeInteger}`,
     });
 
-    for (const id of ["9007199254740992", "-9007199254740992"]) {
+    for (const id of [String(1n << 52n), String(-(1n << 52n))]) {
       expect(() => normalizeBuiltinTarget("telegram", { id, metadata: {} })).toThrow(
         /native Telegram chat id/u,
       );

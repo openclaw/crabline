@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
-export const TELEGRAM_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{3,31}$/u;
+export const TELEGRAM_NATIVE_CHAT_ID_MAX = (1n << 52n) - 1n;
+export const TELEGRAM_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{4,31}$/u;
+
+const TELEGRAM_SYNTHETIC_ID_RANGE = 1n << 50n;
+const TELEGRAM_USERNAME_ID_BASE = (1n << 52n) + TELEGRAM_SYNTHETIC_ID_RANGE;
 
 export function canonicalizeTelegramUsername(value: string): string | undefined {
   const username = value.trim();
@@ -13,5 +17,7 @@ export function telegramUsernameChatId(value: string): number | undefined {
     return undefined;
   }
   const hash = createHash("sha256").update(username).digest();
-  return -1_000_000_000_000 - (hash.readUIntBE(0, 6) % 10_000_000_000);
+  return Number(
+    -(TELEGRAM_USERNAME_ID_BASE + (hash.readBigUInt64BE() % TELEGRAM_SYNTHETIC_ID_RANGE)),
+  );
 }

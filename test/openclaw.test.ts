@@ -915,7 +915,13 @@ describe("OpenClaw local provider bridge", () => {
       replyChannel: "telegram",
       replyTo: symbolicDelivery.to,
     });
-    expect(BigInt(symbolicDelivery.to)).toBeLessThan(1n << 52n);
+    expect(BigInt(symbolicDelivery.to)).toBeGreaterThanOrEqual(1n << 52n);
+    expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest,
+        target: `dm:${1n << 52n}`,
+      }),
+    ).toThrow("Telegram native numeric targets must fit within 52 significant bits.");
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:alice" }).to).toBe(
       symbolicDelivery.to,
     );
@@ -926,7 +932,7 @@ describe("OpenClaw local provider bridge", () => {
       manifest,
       target: "group:alice",
     });
-    expect(symbolicGroupDelivery.to).toMatch(/^-100\d+$/u);
+    expect(BigInt(symbolicGroupDelivery.to)).toBeLessThanOrEqual(-(1n << 52n));
     expect(Number.isSafeInteger(Number(symbolicGroupDelivery.to))).toBe(true);
     expect(
       createOpenClawCrablineAgentDelivery({
@@ -966,12 +972,9 @@ describe("OpenClaw local provider bridge", () => {
     expect(
       createOpenClawCrablineAgentDelivery({ manifest, target: `channel:${maxUsername}` }).to,
     ).toBe(maxUsername);
-    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@tiny" }).to).toBe(
-      "@tiny",
-    );
-    for (const target of ["channel:@abc", `channel:@${"a".repeat(33)}`]) {
+    for (const target of ["channel:@tiny", "channel:@abc", `channel:@${"a".repeat(33)}`]) {
       expect(() => createOpenClawCrablineAgentDelivery({ manifest, target })).toThrow(
-        "Telegram usernames must contain 4-32 letters, digits, or underscores.",
+        "Telegram usernames must contain 5-32 letters, digits, or underscores.",
       );
     }
 
@@ -1083,6 +1086,10 @@ describe("OpenClaw local provider bridge", () => {
       },
     });
     expect(usernameGroupInbound.providerBody.chatId).not.toBe("@channelusername");
+    expect(BigInt(String(usernameGroupInbound.providerBody.chatId))).toBeLessThan(
+      -((1n << 52n) + (1n << 50n)),
+    );
+    expect(usernameGroupInbound.providerBody.chatId).not.toBe(symbolicGroupDelivery.to);
     expect(
       createOpenClawCrablineInbound({
         manifest,
@@ -1167,7 +1174,7 @@ describe("OpenClaw local provider bridge", () => {
         },
       }).providerBody,
     ).toMatchObject({
-      chatId: expect.stringMatching(/^-100\d+$/u),
+      chatId: expect.stringMatching(/^-\d+$/u),
       messageThreadId: 42,
     });
     const normalizedTopicInbound = createOpenClawCrablineInbound({

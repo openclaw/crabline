@@ -26,7 +26,11 @@ import {
   validateWebhookTarget,
   type WebhookAddress,
 } from "./webhook-target.js";
-import { canonicalizeTelegramUsername, telegramUsernameChatId } from "./telegram-identity.js";
+import {
+  canonicalizeTelegramUsername,
+  TELEGRAM_NATIVE_CHAT_ID_MAX,
+  telegramUsernameChatId,
+} from "./telegram-identity.js";
 
 const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 const TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT = 5;
@@ -373,10 +377,18 @@ function telegramChatId(value: unknown): number | undefined {
     return undefined;
   }
   if (/^-?\d+$/u.test(stringValue)) {
-    const integerValue = toIntegerValue(stringValue);
-    return integerValue === 0 ? undefined : integerValue;
+    return telegramNumericChatId(stringValue);
   }
   return telegramUsernameChatId(stringValue);
+}
+
+function telegramNumericChatId(value: unknown): number | undefined {
+  const stringValue = toStringValue(value);
+  if (!stringValue || !/^-?\d+$/u.test(stringValue)) {
+    return undefined;
+  }
+  const integerValue = toIntegerValue(stringValue);
+  return integerValue === 0 ? undefined : integerValue;
 }
 
 async function appendEvent(state: TelegramServerState, event: TelegramServerEvent) {
@@ -421,7 +433,11 @@ function createBotUser(state: TelegramServerState) {
 }
 
 function inferTelegramChatType(chatId: number): TelegramChat["type"] {
-  return chatId >= 0 ? "private" : String(chatId).startsWith("-100") ? "supergroup" : "group";
+  return chatId >= 0
+    ? "private"
+    : String(chatId).startsWith("-100") || BigInt(chatId) < -TELEGRAM_NATIVE_CHAT_ID_MAX
+      ? "supergroup"
+      : "group";
 }
 
 function createChat(chatId: number): TelegramChat {
@@ -432,7 +448,7 @@ function createChat(chatId: number): TelegramChat {
 }
 
 function telegramChatUsername(value: unknown): string | undefined {
-  const username = toStringValue(value);
+  const username = toStringValue(value)?.trim();
   if (!username) {
     return undefined;
   }
@@ -493,21 +509,18 @@ function telegramChatFromRecord(value: unknown): TelegramChat | undefined {
   if (!isJsonObject(value)) {
     return undefined;
   }
-  const id = telegramChatId(value.id);
+  const id = telegramNumericChatId(value.id);
   const type = telegramChatType(value.type);
   if (id === undefined || !type) {
     return undefined;
   }
-  const rawUsername = toStringValue(value.username);
-  const username = telegramChatUsername(rawUsername);
+  const username = telegramChatUsername(value.username);
   const title = toStringValue(value.title);
   return {
     id,
     ...(title ? { title } : {}),
     type,
-    ...(username && rawUsername
-      ? { username: rawUsername.startsWith("@") ? rawUsername.slice(1) : rawUsername }
-      : {}),
+    ...(username ? { username: username.slice(1) } : {}),
   };
 }
 
@@ -668,7 +681,7 @@ function createEditedMessage(
 ): TelegramMessage | undefined {
   const chat = resolveTelegramChat(state, body.chat_id);
   const messageId = toIntegerValue(body.message_id);
-  if (!chat || messageId === undefined) {
+  if (!chat || messageId === undefined || messageId < 1) {
     return undefined;
   }
   const parsedThreadId = toIntegerValue(body.message_thread_id);
@@ -707,16 +720,18 @@ function createInboundUpdate(
   const fromId = toIntegerValue(fromIdValue);
   const parsedThreadId = toIntegerValue(threadIdValue);
   const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
-  const fromUsername = toStringValue(body.fromUsername ?? body.from_username);
+  const fromUsernameValue = body.fromUsername ?? body.from_username;
+  const fromUsername = telegramChatUsername(fromUsernameValue);
   const messageId = toIntegerValue(messageIdValue);
   const updateId = toIntegerValue(updateIdValue);
   const explicitChatType = telegramChatType(body.chatType ?? body.chat_type);
   if (
     ((body.chatType !== undefined || body.chat_type !== undefined) && !explicitChatType) ||
-    (fromIdValue !== undefined && fromId === undefined) ||
+    (fromIdValue !== undefined && (fromId === undefined || fromId < 1)) ||
+    (fromUsernameValue !== undefined && !fromUsername) ||
     (threadIdValue !== undefined && parsedThreadId === undefined) ||
-    (messageIdValue !== undefined && messageId === undefined) ||
-    (updateIdValue !== undefined && updateId === undefined)
+    (messageIdValue !== undefined && (messageId === undefined || messageId < 1)) ||
+    (updateIdValue !== undefined && (updateId === undefined || updateId < 1))
   ) {
     return undefined;
   }
@@ -732,7 +747,7 @@ function createInboundUpdate(
         first_name: toStringValue(body.fromName ?? body.from_name) ?? "QA User",
         id: fromId ?? 100001,
         is_bot: false,
-        ...(fromUsername ? { username: fromUsername } : {}),
+        ...(fromUsername ? { username: fromUsername.slice(1) } : {}),
       },
       message_id: messageId ?? nextTelegramMessageId(state, chat.id),
       ...(entities && entities.length > 0 ? { entities } : {}),
@@ -771,6 +786,8 @@ function parseTelegramEntities(
       offset === undefined ||
       offset < 0 ||
       offset + length > text.length ||
+      !isTelegramUtf16Boundary(text, offset) ||
+      !isTelegramUtf16Boundary(text, offset + length) ||
       !type ||
       (customEmojiId !== undefined &&
         (typeof customEmojiId !== "string" || customEmojiId.length === 0)) ||
@@ -793,6 +810,15 @@ function parseTelegramEntities(
   return entities;
 }
 
+function isTelegramUtf16Boundary(text: string, index: number): boolean {
+  if (index <= 0 || index >= text.length) {
+    return true;
+  }
+  const previous = text.charCodeAt(index - 1);
+  const next = text.charCodeAt(index);
+  return !(previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff);
+}
+
 function hasTelegramMedia(value: Record<string, unknown>): boolean {
   return TELEGRAM_MEDIA_FIELDS.some((field) => value[field] !== undefined);
 }
@@ -801,7 +827,6 @@ function explicitTelegramId(
   body: Record<string, unknown>,
   names: readonly string[],
   additionalValues: readonly unknown[] = [],
-  options: { allowZero?: boolean } = {},
 ): { present: false } | { present: true; value: number } | undefined {
   const values = [
     ...names.flatMap((name) => (body[name] === undefined ? [] : [body[name]])),
@@ -811,11 +836,8 @@ function explicitTelegramId(
     return { present: false };
   }
   const parsed = values.map(toIntegerValue);
-  const minimum = options.allowZero ? 0 : 1;
   if (
-    parsed.some(
-      (value) => value === undefined || value < minimum || value >= Number.MAX_SAFE_INTEGER,
-    ) ||
+    parsed.some((value) => value === undefined || value < 1 || value >= Number.MAX_SAFE_INTEGER) ||
     new Set(parsed).size !== 1
   ) {
     return undefined;
@@ -856,7 +878,7 @@ function explicitTelegramMessageChatId(body: Record<string, unknown>): number | 
       continue;
     }
     const chat = isJsonObject(message.chat) ? message.chat : undefined;
-    const chatId = telegramChatId(chat?.id);
+    const chatId = telegramNumericChatId(chat?.id);
     if (chatId === undefined) {
       return false;
     }
@@ -867,7 +889,7 @@ function explicitTelegramMessageChatId(body: Record<string, unknown>): number | 
     callbackQuery && isJsonObject(callbackQuery.message) ? callbackQuery.message : undefined;
   if (callbackMessage?.message_id !== undefined) {
     const chat = isJsonObject(callbackMessage.chat) ? callbackMessage.chat : undefined;
-    const chatId = telegramChatId(chat?.id);
+    const chatId = telegramNumericChatId(chat?.id);
     if (chatId === undefined) {
       return false;
     }
@@ -1032,11 +1054,12 @@ function isValidIgnoredTelegramUpdate(body: Record<string, unknown>): boolean {
     const chat = isJsonObject(message.chat) ? message.chat : undefined;
     if (
       updateId === undefined ||
+      updateId < 1 ||
       !chat ||
-      telegramChatId(chat.id) === undefined ||
-      toIntegerValue(message.message_id) === undefined ||
+      telegramNumericChatId(chat.id) === undefined ||
+      (toIntegerValue(message.message_id) ?? 0) < 1 ||
       (message.from !== undefined &&
-        (!isJsonObject(message.from) || toIntegerValue(message.from.id) === undefined)) ||
+        (!isJsonObject(message.from) || (toIntegerValue(message.from.id) ?? 0) < 1)) ||
       (message.message_thread_id !== undefined &&
         toIntegerValue(message.message_thread_id) === undefined)
     ) {
@@ -1079,7 +1102,6 @@ async function handleTelegramAdminInbound(params: {
       params.body,
       ["messageId", "message_id"],
       explicitTelegramMessageIdValues(params.body),
-      { allowZero: true },
     );
     const explicitMessageChatId = explicitTelegramMessageChatId(params.body);
     const explicitUpdateId = explicitTelegramId(params.body, ["updateId", "update_id"]);
@@ -1087,7 +1109,6 @@ async function handleTelegramAdminInbound(params: {
       {},
       [],
       referencedTelegramMessageIdValues(params.body),
-      { allowZero: true },
     );
     const topLevelChatId = resolveTelegramChat(
       params.state,
@@ -1925,6 +1946,10 @@ export async function startTelegramServer(
   if (!Number.isSafeInteger(botId) || botId < 1) {
     throw new Error("botId must be a positive safe integer.");
   }
+  const botUsername = telegramChatUsername(params.botUsername ?? "crabline_bot")?.slice(1);
+  if (!botUsername) {
+    throw new Error("botUsername must be a valid 5-32 character Telegram username.");
+  }
   const state: TelegramServerState = {
     activeUpdatePoll: undefined,
     activeWebhookDeliveries: new Set(),
@@ -1937,7 +1962,7 @@ export async function startTelegramServer(
       (isLoopbackHost(host)
         ? "424242:crabline-telegram-token"
         : `${botId}:${randomBytes(26).toString("base64url")}`),
-    botUsername: params.botUsername ?? "crabline_bot",
+    botUsername,
     chatsById: new Map(),
     chatsByUsername: new Map(),
     inboundAdmission: Promise.resolve(),
