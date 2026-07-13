@@ -213,6 +213,47 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("removes recorder references when publishing without a snapshot", async () => {
+    const outputDir = await createTempDir();
+    const params = publishParams(outputDir);
+    const paramsWithRecorderReference = {
+      ...params,
+      providerReadiness: {
+        result: {
+          proof: "provider-api-probe",
+          provider: "telegram",
+          ready: true,
+          recorderPath: "/tmp/crabline/telegram.jsonl",
+        },
+      },
+    };
+    try {
+      const first = await publishOpenClawCrablineArtifactGeneration(paramsWithRecorderReference, {
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      });
+      const readiness = JSON.parse(
+        await fs.readFile(path.join(outputDir, first.providerReadinessArtifactPath), "utf8"),
+      ) as {
+        providerReadiness: { result: Record<string, unknown> };
+        smoke: { result: Record<string, unknown> };
+      };
+      expect(readiness.providerReadiness.result).not.toHaveProperty("recorderPath");
+      expect(readiness.smoke.result).not.toHaveProperty("recorderPath");
+
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(paramsWithRecorderReference, {
+          createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+        }),
+      ).resolves.toMatchObject({
+        previousGeneration: first.generation,
+        recorderSnapshotPath: null,
+        version: 2,
+      });
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("replaces a legacy generation with an external recorder path", async () => {
     const outputDir = await createTempDir();
     try {
