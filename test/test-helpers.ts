@@ -79,15 +79,14 @@ export async function requestHttp(params: {
           });
         },
       );
+      request.once("error", fail);
+      if (params.body !== undefined) {
+        request.write(params.body);
+      }
+      request.end();
     } catch (error) {
       fail(error instanceof Error ? error : new Error(String(error)));
-      return;
     }
-    request.once("error", fail);
-    if (params.body !== undefined) {
-      request.write(params.body);
-    }
-    request.end();
   });
 }
 

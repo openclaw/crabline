@@ -59,6 +59,48 @@ describe("test helpers", () => {
     expect(request.setTimeout).not.toHaveBeenCalled();
   });
 
+  it.each(["once", "write", "end"] as const)(
+    "clears the HTTP deadline when request.%s throws synchronously",
+    async (failurePoint) => {
+      vi.useFakeTimers();
+      const failure = new Error(`${failurePoint} failed`);
+      const request = Object.assign(new EventEmitter(), {
+        destroy: vi.fn(),
+        end: vi.fn(() => {
+          if (failurePoint === "end") {
+            throw failure;
+          }
+        }),
+        write: vi.fn(() => {
+          if (failurePoint === "write") {
+            throw failure;
+          }
+          return true;
+        }),
+      });
+      if (failurePoint === "once") {
+        request.once = vi.fn(() => {
+          throw failure;
+        }) as typeof request.once;
+      }
+      const requestImpl = (() => request as unknown as ClientRequest) as typeof httpRequest;
+
+      try {
+        await expect(
+          requestHttp({
+            body: "payload",
+            method: "POST",
+            requestImpl,
+            url: "http://127.0.0.1/",
+          }),
+        ).rejects.toThrow(failure.message);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("preserves write overload callbacks while capturing output", async () => {
     const stdoutCallback = vi.fn();
     const stderrCallback = vi.fn();
