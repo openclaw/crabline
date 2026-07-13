@@ -421,6 +421,106 @@ describe("slack provider", () => {
     });
   });
 
+  it("preserves inline rich-text adjacency and repeated block text", async () => {
+    const config = await createSlackConfig(0);
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+    const context = createContext(config);
+    context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
+    const endpoint = endpointFromDetails((await provider.probe(context)).details);
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "inline-nonce",
+      since: new Date(Date.now() - 1_000).toISOString(),
+      timeoutMs: 500,
+    });
+
+    const response = await fetch(endpoint, {
+      body: JSON.stringify({
+        event: {
+          blocks: [
+            {
+              elements: [
+                {
+                  elements: [
+                    { text: "inline-", type: "text" },
+                    { style: { bold: true }, text: "nonce", type: "text" },
+                  ],
+                  type: "rich_text_section",
+                },
+                {
+                  elements: [{ text: "repeat", type: "text" }],
+                  type: "rich_text_section",
+                },
+                {
+                  elements: [{ text: "repeat", type: "text" }],
+                  type: "rich_text_section",
+                },
+              ],
+              type: "rich_text",
+            },
+          ],
+          channel: "C1234567890",
+          ts: "1700000001.000202",
+          type: "message",
+          user: "U1234567890",
+        },
+        type: "event_callback",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(waiting).resolves.toMatchObject({
+      id: "1700000001.000202",
+      text: "inline-nonce\nrepeat\nrepeat",
+    });
+  });
+
+  it("extracts valid card composition fields", async () => {
+    const config = await createSlackConfig(0);
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+    const context = createContext(config);
+    context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
+    const endpoint = endpointFromDetails((await provider.probe(context)).details);
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "card-body",
+      since: new Date(Date.now() - 1_000).toISOString(),
+      timeoutMs: 500,
+    });
+
+    const response = await fetch(endpoint, {
+      body: JSON.stringify({
+        event: {
+          blocks: [
+            {
+              body: { text: "card-body", type: "mrkdwn" },
+              subtitle: { text: "card subtitle", type: "plain_text" },
+              subtext: { text: "card subtext", type: "plain_text" },
+              type: "card",
+            },
+          ],
+          channel: "C1234567890",
+          ts: "1700000001.000203",
+          type: "message",
+          user: "U1234567890",
+        },
+        type: "event_callback",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(waiting).resolves.toMatchObject({
+      id: "1700000001.000203",
+      text: "card-body\ncard subtitle\ncard subtext",
+    });
+  });
+
   it("verifies Slack request signatures before parsing", async () => {
     const signingSecret = "test-token-placeholder";
     const config = await createSlackConfig(0, signingSecret);
