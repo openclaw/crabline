@@ -2351,6 +2351,92 @@ async function acquireDirectoryPrivateMutationClaim(
           expectedRootIdentity = undefined;
           continue;
         }
+        const terminalRelativePath = path.relative(rootClaimPath, claimPath);
+        const staleTreePath = `${rootClaimPath}.${randomUUID()}.stale-dir`;
+        await parent.assertIdentityAt();
+        await fs.rename(rootClaimPath, staleTreePath);
+        const relocatedClaimPath = path.join(staleTreePath, terminalRelativePath);
+        installedClaimPath = relocatedClaimPath;
+        const [movedRoot, movedClaim] = await Promise.all([
+          readPrivateMutationDirectoryClaim(staleTreePath),
+          readPrivateMutationDirectoryClaim(relocatedClaimPath),
+        ]);
+        if (
+          movedRoot === null ||
+          movedRoot.identity.device !== revalidatedRoot.identity.device ||
+          movedRoot.identity.inode !== revalidatedRoot.identity.inode ||
+          movedRoot.metadata.contents !== revalidatedRoot.metadata.contents ||
+          movedClaim === null ||
+          movedClaim.identity.device !== candidate.identity.device ||
+          movedClaim.identity.inode !== candidate.identity.inode ||
+          movedClaim.metadata.contents !== ownerContents
+        ) {
+          const compactionError = new Error(
+            "Private mutation directory claim changed during compaction.",
+          );
+          try {
+            await fs.rename(staleTreePath, rootClaimPath);
+            installedClaimPath = claimPath;
+          } catch (rollbackError) {
+            const aggregateError = new AggregateError(
+              [compactionError, rollbackError],
+              "Private mutation directory claim compaction failed and its stale tree could not be restored.",
+            );
+            aggregateError.cause = compactionError;
+            throw aggregateError;
+          }
+          throw compactionError;
+        }
+        try {
+          await fs.rename(relocatedClaimPath, rootClaimPath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+            try {
+              await fs.rename(staleTreePath, rootClaimPath);
+              installedClaimPath = claimPath;
+            } catch (rollbackError) {
+              const aggregateError = new AggregateError(
+                [error, rollbackError],
+                "Private mutation directory claim compaction failed and its stale tree could not be restored.",
+              );
+              aggregateError.cause = error;
+              throw aggregateError;
+            }
+            throw error;
+          }
+          const retainedClaim = await readPrivateMutationDirectoryClaim(relocatedClaimPath);
+          if (
+            retainedClaim === null ||
+            retainedClaim.identity.device !== candidate.identity.device ||
+            retainedClaim.identity.inode !== candidate.identity.inode ||
+            retainedClaim.metadata.contents !== ownerContents
+          ) {
+            throw new Error("Private mutation directory claim changed during compaction.", {
+              cause: error,
+            });
+          }
+          await fs.rm(staleTreePath, { force: true, recursive: true });
+          await syncParentDirectory(rootClaimPath, platform);
+          installedClaimPath = undefined;
+          candidate = await createCandidate();
+          claimPath = rootClaimPath;
+          expectedRootIdentity = undefined;
+          continue;
+        }
+        installedClaimPath = rootClaimPath;
+        const promotedClaim = await readPrivateMutationDirectoryClaim(rootClaimPath);
+        if (
+          promotedClaim === null ||
+          promotedClaim.identity.device !== candidate.identity.device ||
+          promotedClaim.identity.inode !== candidate.identity.inode ||
+          promotedClaim.metadata.contents !== ownerContents
+        ) {
+          throw new Error("Private mutation directory claim changed during compaction.");
+        }
+        await fs.rm(staleTreePath, { force: true, recursive: true });
+        await syncParentDirectory(rootClaimPath, platform);
+        claimPath = rootClaimPath;
+        expectedRootIdentity = undefined;
       }
       break;
     }
