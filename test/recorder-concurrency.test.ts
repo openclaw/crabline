@@ -13,6 +13,9 @@ const fsMocks = vi.hoisted(() => ({
   lockRelease: vi.fn<() => Promise<void>>(),
   providerDirectory: "",
   providerDirectorySync: vi.fn<(directoryPath: string) => Promise<void>>(),
+  providerLstatFailure: undefined as Error | undefined,
+  providerLstatFailureAfterLocks: 0,
+  providerRecorderPath: "",
   providerOpen: vi.fn<(filePath: string, flags: string, mode?: number | string) => void>(),
   providerSync: vi.fn<(filePath: string) => Promise<void>>(),
   providerWrite: vi.fn<(filePath: string, data: string) => Promise<void>>(),
@@ -50,6 +53,16 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    lstat: async (...args: Parameters<typeof actual.lstat>) => {
+      if (
+        String(args[0]) === fsMocks.providerRecorderPath &&
+        fsMocks.providerLstatFailure &&
+        fsMocks.lock.mock.calls.length >= fsMocks.providerLstatFailureAfterLocks
+      ) {
+        throw fsMocks.providerLstatFailure;
+      }
+      return await actual.lstat(...args);
+    },
     open: async (...args: Parameters<typeof actual.open>) => {
       const filePath = String(args[0]);
       if (args[1] === "r" && filePath === fsMocks.serverDirectory) {
@@ -148,6 +161,9 @@ beforeEach(() => {
   fsMocks.providerDirectory = "";
   fsMocks.providerDirectorySync.mockReset();
   fsMocks.providerDirectorySync.mockResolvedValue(undefined);
+  fsMocks.providerLstatFailure = undefined;
+  fsMocks.providerLstatFailureAfterLocks = 0;
+  fsMocks.providerRecorderPath = "";
   fsMocks.providerOpen.mockReset();
   fsMocks.providerSync.mockReset();
   fsMocks.providerSync.mockResolvedValue(undefined);
@@ -328,6 +344,38 @@ describe("recorder append serialization", () => {
       }
     },
   );
+
+  it("releases both recorder locks when identity verification fails", async () => {
+    const recorderPath = path.join(
+      "/tmp",
+      `crabline-provider-recorder-verification-${process.pid}-${Date.now()}.jsonl`,
+    );
+    fsMocks.providerDirectory = await realpath(path.dirname(recorderPath));
+    fsMocks.providerRecorderPath = path.join(
+      fsMocks.providerDirectory,
+      path.basename(recorderPath),
+    );
+    fsMocks.providerLstatFailure = Object.assign(new Error("simulated identity failure"), {
+      code: "EIO",
+    });
+    fsMocks.providerLstatFailureAfterLocks = 2;
+
+    try {
+      await expect(
+        appendRecordedInbound(recorderPath, {
+          author: "assistant",
+          id: "identity-verification-failure",
+          provider: "slack",
+          sentAt: "2026-07-12T10:00:00.000Z",
+          text: "verification",
+          threadId: "slack:C123",
+        }),
+      ).rejects.toBe(fsMocks.providerLstatFailure);
+      expect(fsMocks.lockRelease).toHaveBeenCalledTimes(2);
+    } finally {
+      await rm(recorderPath, { force: true });
+    }
+  });
 
   it.skipIf(process.platform === "win32")(
     "uses one private UID-scoped lock namespace for hardlinked provider recorders",

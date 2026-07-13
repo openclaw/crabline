@@ -776,13 +776,16 @@ async function withRecorderLock<T>(
       const releaseIdentityLock = await acquireRecorderLock(
         await recorderIdentityLockTarget(filePath, identity),
       );
+      releases.push(releaseIdentityLock);
       const currentIdentity = await readRecorderFileIdentity(filePath);
       if (sameRecorderFileIdentity(identity, currentIdentity)) {
-        releases.push(releaseIdentityLock);
         lockedIdentity = identity;
         break;
       }
-      const releaseErrors = await releaseRecorderLocks([releaseIdentityLock]);
+      const registeredIdentityRelease = releases.pop();
+      const releaseErrors = await releaseRecorderLocks(
+        registeredIdentityRelease ? [registeredIdentityRelease] : [],
+      );
       if (releaseErrors.length > 0) {
         throw recorderLockReleaseError(
           filePath,
