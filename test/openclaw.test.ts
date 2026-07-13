@@ -1370,12 +1370,41 @@ describe("OpenClaw local provider bridge", () => {
         },
       }),
     ).toThrow("WhatsApp inbound conversation kind does not match the native JID.");
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest: whatsappManifest,
+        input: {
+          conversation: { id: "15551234567@s.whatsapp.net", kind: "direct" },
+          senderId: "15557654321@s.whatsapp.net",
+          text: "mismatched direct identity",
+        },
+      }),
+    ).toThrow("WhatsApp direct conversation and sender must identify the same recipient.");
+    expect(
+      createOpenClawCrablineInbound({
+        manifest: whatsappManifest,
+        input: {
+          conversation: { id: "15551234567:2@s.whatsapp.net", kind: "direct" },
+          senderId: "15551234567:7@C.US",
+          text: "matching device identity",
+        },
+      }),
+    ).toMatchObject({
+      providerBody: {
+        chatJid: "15551234567:2@s.whatsapp.net",
+        senderJid: "15551234567:7@s.whatsapp.net",
+      },
+      stateConversation: {
+        id: "15551234567:2@s.whatsapp.net",
+        kind: "direct",
+      },
+    });
 
     const inbound = createOpenClawCrablineInbound({
       manifest: whatsappManifest,
       input: {
         conversation: { id: "120363001234567890@G.US", kind: "group" },
-        senderId: "15551234567@C.US",
+        senderId: "15557654321@C.US",
         senderName: "Alice",
         text: "hello",
       },
@@ -1383,7 +1412,7 @@ describe("OpenClaw local provider bridge", () => {
     expect(inbound).toEqual({
       providerBody: {
         chatJid: "120363001234567890@g.us",
-        senderJid: "15551234567@s.whatsapp.net",
+        senderJid: "15557654321@s.whatsapp.net",
         pushName: "Alice",
         text: "hello",
       },

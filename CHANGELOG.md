@@ -14,6 +14,7 @@
 - Make WhatsApp Web inbound acceptance retry-safe across recorder persistence, Signal ratchets, one-time prekeys, and acknowledgements; bound identity mappings and tighten request and crypto fallback handling.
 - Prevent pre-aborted WhatsApp listeners and preserve monotonic recorder progress across concurrent waits.
 - Recover stale Baileys acknowledgements into bounded recent deduplication without duplicate delivery.
+- Reject mismatched direct WhatsApp bridge identities while accepting matching device JIDs and distinct group senders.
 
 ## 0.1.11 - 2026-07-13
 
