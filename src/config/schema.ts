@@ -62,6 +62,24 @@ export const PROVIDER_PLATFORMS = [
 
 type BuiltinAdapterName = (typeof BUILTIN_ADAPTERS)[number];
 type ProviderPlatformName = (typeof PROVIDER_PLATFORMS)[number];
+type FixtureModeConstraintInput = {
+  inboundMatch: {
+    pattern?: string | undefined;
+    strategy: (typeof INBOUND_STRATEGIES)[number];
+  };
+  mode: (typeof FIXTURE_MODES)[number];
+};
+
+export function fixtureModeValidationError(value: FixtureModeConstraintInput): string | undefined {
+  if (
+    value.mode === "agent" &&
+    value.inboundMatch.strategy === "exact" &&
+    value.inboundMatch.pattern
+  ) {
+    return "agent mode cannot use inboundMatch.strategy=exact with a static pattern because replies must include the generated ACK nonce";
+  }
+  return undefined;
+}
 
 const HttpUrlSchema = z
   .string()
@@ -706,23 +724,34 @@ export const ProviderConfigSchema = z
     platform: value.platform ?? inferProviderPlatform(value.adapter) ?? "loopback",
   }));
 
-export const FixtureSchema = z.strictObject({
-  accountId: z.string().min(1).optional(),
-  env: z.array(z.string().min(1)).default([]),
-  id: z.string().min(1).refine(isValidNonceFixtureId, NONCE_FIXTURE_ID_ERROR),
-  inboundMatch: InboundMatchSchema.default({
-    author: "assistant",
-    nonce: "contains",
-    strategy: "contains",
-  }),
-  mode: z.enum(FIXTURE_MODES),
-  notes: z.string().optional(),
-  provider: z.string().min(1),
-  retries: z.number().int().min(0).max(MAX_FIXTURE_RETRIES).default(0),
-  tags: z.array(z.string().min(1)).default([]),
-  target: TargetSchema,
-  timeoutMs: TimerMsSchema.min(100).default(30_000),
-});
+export const FixtureSchema = z
+  .strictObject({
+    accountId: z.string().min(1).optional(),
+    env: z.array(z.string().min(1)).default([]),
+    id: z.string().min(1).refine(isValidNonceFixtureId, NONCE_FIXTURE_ID_ERROR),
+    inboundMatch: InboundMatchSchema.default({
+      author: "assistant",
+      nonce: "contains",
+      strategy: "contains",
+    }),
+    mode: z.enum(FIXTURE_MODES),
+    notes: z.string().optional(),
+    provider: z.string().min(1),
+    retries: z.number().int().min(0).max(MAX_FIXTURE_RETRIES).default(0),
+    tags: z.array(z.string().min(1)).default([]),
+    target: TargetSchema,
+    timeoutMs: TimerMsSchema.min(100).default(30_000),
+  })
+  .superRefine((value, ctx) => {
+    const validationError = fixtureModeValidationError(value);
+    if (validationError) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: validationError,
+        path: ["inboundMatch", "strategy"],
+      });
+    }
+  });
 
 const MANIFEST_EXTENSION_KEY_PATTERN = /^x-[a-z0-9][a-z0-9._-]*$/u;
 
