@@ -1,6 +1,7 @@
 import {
   appendFile,
   chmod,
+  link,
   open,
   readFile,
   rename,
@@ -669,6 +670,31 @@ describe("recorder", () => {
       provider: "whatsapp",
       sentAt: new Date().toISOString(),
       text: "one logical recorder",
+      threadId: "15551234567",
+    };
+
+    const results = await Promise.all([
+      appendRecordedInboundBatch(filePath, [event]),
+      appendRecordedInboundBatch(aliasPath, [event]),
+    ]);
+
+    expect(results.flat()).toHaveLength(1);
+    await expect(readRecordedInbound(filePath)).resolves.toEqual([
+      expect.objectContaining({ id: event.id }),
+    ]);
+  });
+
+  it("deduplicates concurrent batches through hardlink aliases", async () => {
+    const filePath = await createRecorderPath();
+    const aliasPath = `${filePath}.alias`;
+    await writeFile(filePath, "", "utf8");
+    await link(filePath, aliasPath);
+    const event = {
+      author: "user" as const,
+      id: "hardlink-alias-batch",
+      provider: "whatsapp",
+      sentAt: new Date().toISOString(),
+      text: "one recorder inode",
       threadId: "15551234567",
     };
 

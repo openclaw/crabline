@@ -1,4 +1,5 @@
 import { lstat, mkdir, open, readFile, readlink, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import type { InboundEnvelope } from "./types.js";
@@ -560,17 +561,24 @@ async function appendCommittedLine(
 function recorderLockReleaseError(
   filePath: string,
   operationError: unknown,
-  releaseError: unknown,
+  releaseErrors: unknown[],
 ): AggregateError {
   return new AggregateError(
-    [operationError, releaseError],
+    [operationError, ...releaseErrors],
     `Recorder append and lock release both failed for "${filePath}".`,
     { cause: operationError },
   );
 }
 
+function recorderErrorDetail(error: unknown): string {
+  if (error instanceof AggregateError) {
+    return error.errors.map(recorderErrorDetail).join("; ");
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 function reportRecorderLockReleaseFailure(filePath: string, releaseError: unknown): void {
-  const detail = releaseError instanceof Error ? releaseError.message : String(releaseError);
+  const detail = recorderErrorDetail(releaseError);
   try {
     process.emitWarning(
       `Provider recorder append committed but lock cleanup failed for "${filePath}": ${detail}`,
@@ -584,8 +592,16 @@ function reportRecorderLockReleaseFailure(filePath: string, releaseError: unknow
   }
 }
 
-async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
-  const release = await lock(filePath, {
+function recorderIdentityLockTarget(identity: RecorderFileIdentity): string {
+  const userScope = typeof process.getuid === "function" ? process.getuid() : "user";
+  return path.join(
+    tmpdir(),
+    `.crabline-provider-recorder-${userScope}-${identity.dev}-${identity.ino}`,
+  );
+}
+
+async function acquireRecorderLock(filePath: string): Promise<() => Promise<void>> {
+  return await lock(filePath, {
     realpath: false,
     retries: {
       factor: 1,
@@ -596,6 +612,36 @@ async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>
     stale: RECORDER_LOCK_STALE_MS,
     update: RECORDER_LOCK_UPDATE_MS,
   });
+}
+
+async function releaseRecorderLocks(releases: Array<() => Promise<void>>): Promise<unknown[]> {
+  const errors: unknown[] = [];
+  for (const release of releases.reverse()) {
+    try {
+      await release();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  return errors;
+}
+
+async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+  const releases: Array<() => Promise<void>> = [];
+  try {
+    releases.push(await acquireRecorderLock(filePath));
+    const identity = await readRecorderFileIdentity(filePath);
+    if (identity) {
+      releases.push(await acquireRecorderLock(recorderIdentityLockTarget(identity)));
+    }
+  } catch (error) {
+    const releaseErrors = await releaseRecorderLocks(releases);
+    if (releaseErrors.length > 0) {
+      throw recorderLockReleaseError(filePath, error, releaseErrors);
+    }
+    throw error;
+  }
+
   let operationFailed = false;
   let operationError: unknown;
   let result: T | undefined;
@@ -605,16 +651,20 @@ async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>
     operationFailed = true;
     operationError = error;
   }
-  try {
-    await release();
-  } catch (releaseError) {
-    if (operationFailed) {
-      throw recorderLockReleaseError(filePath, operationError, releaseError);
-    }
-    reportRecorderLockReleaseFailure(filePath, releaseError);
-  }
+  const releaseErrors = await releaseRecorderLocks(releases);
   if (operationFailed) {
+    if (releaseErrors.length > 0) {
+      throw recorderLockReleaseError(filePath, operationError, releaseErrors);
+    }
     throw operationError;
+  }
+  if (releaseErrors.length > 0) {
+    reportRecorderLockReleaseFailure(
+      filePath,
+      releaseErrors.length === 1
+        ? releaseErrors[0]
+        : new AggregateError(releaseErrors, "Multiple recorder lock cleanup operations failed."),
+    );
   }
   return result as T;
 }
