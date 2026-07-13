@@ -220,6 +220,42 @@ describe("WhatsApp provider lifecycle", () => {
     expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1);
   });
 
+  it("cancels waits and watches when cleanup wins deferred startup", async () => {
+    let resolveStart:
+      | ((server: { close(): Promise<void>; endpointUrl: string }) => void)
+      | undefined;
+    const close = vi.fn(async () => undefined);
+    webhookMocks.startWebhookServer.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+    const config = createConfig();
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createContext(config);
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "deferred-cleanup",
+      since: new Date(0).toISOString(),
+      timeoutMs: 30_000,
+    });
+    const stream = provider.watch({ ...context, since: new Date(0).toISOString() });
+    const watching = stream[Symbol.asyncIterator]();
+    const next = watching.next();
+    await vi.waitFor(() => expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1));
+
+    const cleanup = provider.cleanup();
+    resolveStart?.({
+      close,
+      endpointUrl: "http://127.0.0.1:43210/whatsapp/webhook",
+    });
+
+    await expect(waiting).resolves.toBeNull();
+    await expect(next).resolves.toEqual({ done: true, value: undefined });
+    await cleanup;
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("rechecks cleanup after awaiting an existing listener", async () => {
     const close = vi.fn(async () => undefined);
     webhookMocks.startWebhookServer.mockResolvedValueOnce({

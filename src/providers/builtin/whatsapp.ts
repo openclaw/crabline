@@ -193,6 +193,13 @@ function pruneInactiveWaitCursors(cursors: Map<string, WaitCursorState>): void {
   }
 }
 
+function pruneSettledWaitCursors(cursors: Map<string, WaitCursorState>): void {
+  if ([...cursors.values()].some((state) => state.active > 0)) {
+    return;
+  }
+  pruneInactiveWaitCursors(cursors);
+}
+
 export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   readonly #config: ProviderConfig;
   readonly #lifecycleAbort = new AbortController();
@@ -277,7 +284,17 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     if (context.signal?.aborted) {
       return null;
     }
-    await this.#ensureWebhookServer();
+    try {
+      await this.#ensureWebhookServer();
+    } catch (error) {
+      if (this.#cleanupBegun) {
+        return null;
+      }
+      throw error;
+    }
+    if (this.#cleanupBegun) {
+      return null;
+    }
     const target = this.normalizeTarget(context.fixture.target);
     const channelId = context.threadId ?? target.threadId ?? target.channelId ?? target.id;
     const cursorKey = JSON.stringify([
@@ -323,6 +340,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       ) {
         this.#waitCursors.delete(cursorKey);
       }
+      pruneSettledWaitCursors(this.#waitCursors);
     }
   }
 
@@ -330,7 +348,17 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     if (context.signal?.aborted) {
       return;
     }
-    await this.#ensureWebhookServer();
+    try {
+      await this.#ensureWebhookServer();
+    } catch (error) {
+      if (this.#cleanupBegun) {
+        return;
+      }
+      throw error;
+    }
+    if (this.#cleanupBegun) {
+      return;
+    }
     const target = this.normalizeTarget(context.fixture.target);
     for await (const event of watchRecordedInbound({
       filePath: this.#recorderPath,
