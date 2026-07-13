@@ -10,6 +10,7 @@ import {
   publishPrivateFileAtomically,
   removeSecuredPrivateDirectory,
   securePrivateDirectory,
+  verifySafeWindowsDirectoryMutationBoundary,
   verifyOwnerOnlyWindowsDirectoryAcl,
   type WindowsAclRunner,
 } from "../src/openclaw/private-file.js";
@@ -1961,6 +1962,47 @@ describe("OpenClaw private file publication", () => {
     expect(script).not.toContain("Set-Acl");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
   });
+
+  it("checks generic Windows access masks when verifying mutation ancestry", async () => {
+    const calls: Parameters<WindowsAclRunner>[] = [];
+    const run: WindowsAclRunner = async (...args) => {
+      calls.push(args);
+      return "";
+    };
+
+    await verifySafeWindowsDirectoryMutationBoundary(
+      String.raw`C:\Temp`,
+      run,
+      String.raw`C:\Windows`,
+    );
+
+    const script = calls[0]![1].at(-1);
+    expect(script).toContain("$genericMutationRights = [uint32]0x50000000");
+    expect(script).toContain("$ruleAccessMask = [uint32][int32]$rule.FileSystemRights");
+    expect(script).toContain(
+      "$ruleAccessMask -band ($mutationAccessMask -bor $genericMutationRights)",
+    );
+  });
+
+  it.skipIf(process.platform !== "win32")(
+    "rejects generic write access granted to Everyone on Windows",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        execFileSync(
+          "icacls.exe",
+          [directory, "/inheritance:r", "/grant", "*S-1-1-0:(OI)(CI)(GW)"],
+          { stdio: "ignore" },
+        );
+
+        await expect(verifySafeWindowsDirectoryMutationBoundary(directory)).rejects.toThrow(
+          "Private mutation ancestry has an unsafe Windows ACL.",
+        );
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it("reports Windows ACL tooling failures with their cause", async () => {
     const cause = new Error("powershell.exe missing");
