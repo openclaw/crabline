@@ -27,49 +27,62 @@ export async function requestHttp(params: {
   url: string;
 }): Promise<{ body: string; headers: import("node:http").IncomingHttpHeaders; status: number }> {
   return await new Promise((resolve, reject) => {
+    const timeoutMs = params.timeoutMs ?? 2_000;
     let settled = false;
+    let request: import("node:http").ClientRequest | undefined;
+    const timeout = setTimeout(() => {
+      const error = new Error(`HTTP request timed out after ${timeoutMs} ms.`);
+      request?.destroy(error);
+      fail(error);
+    }, timeoutMs);
+    const finish = () => {
+      clearTimeout(timeout);
+      settled = true;
+    };
     const fail = (error: Error) => {
       if (!settled) {
-        settled = true;
+        finish();
         reject(error);
       }
     };
-    const request = (params.requestImpl ?? httpRequest)(
-      params.url,
-      {
-        agent: params.agent,
-        headers: params.headers,
-        method: params.method,
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on("data", (chunk: Buffer) => chunks.push(chunk));
-        response.once("aborted", () => {
-          fail(new Error("HTTP response was aborted before completion."));
-        });
-        response.once("error", fail);
-        response.once("end", () => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          resolve({
-            body: Buffer.concat(chunks).toString("utf8"),
-            headers: response.headers,
-            status: response.statusCode ?? 0,
+    try {
+      request = (params.requestImpl ?? httpRequest)(
+        params.url,
+        {
+          agent: params.agent,
+          headers: params.headers,
+          method: params.method,
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.once("aborted", () => {
+            fail(new Error("HTTP response was aborted before completion."));
           });
-        });
-        response.once("close", () => {
-          if (!response.complete) {
-            fail(new Error("HTTP response closed before completion."));
-          }
-        });
-      },
-    );
+          response.once("error", fail);
+          response.once("end", () => {
+            if (settled) {
+              return;
+            }
+            finish();
+            resolve({
+              body: Buffer.concat(chunks).toString("utf8"),
+              headers: response.headers,
+              status: response.statusCode ?? 0,
+            });
+          });
+          response.once("close", () => {
+            if (!response.complete) {
+              fail(new Error("HTTP response closed before completion."));
+            }
+          });
+        },
+      );
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
     request.once("error", fail);
-    request.setTimeout(params.timeoutMs ?? 2_000, () => {
-      request.destroy(new Error(`HTTP request timed out after ${params.timeoutMs ?? 2_000} ms.`));
-    });
     if (params.body !== undefined) {
       request.write(params.body);
     }
@@ -90,43 +103,66 @@ export async function settleCleanup(operations: Promise<unknown>[]): Promise<voi
   }
 }
 
+type WriteCapture = {
+  active: boolean;
+  stderr: string[];
+  stdout: string[];
+};
+
+const writeCaptures: WriteCapture[] = [];
+let originalStdoutWrite: typeof process.stdout.write | undefined;
+let originalStderrWrite: typeof process.stderr.write | undefined;
+
+const createCaptureWriter =
+  (stream: "stderr" | "stdout") =>
+  (
+    chunk: string | Uint8Array,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void,
+  ) => {
+    const capture = writeCaptures.findLast((entry) => entry.active);
+    const encoding = typeof encodingOrCallback === "string" ? encodingOrCallback : undefined;
+    capture?.[stream].push(
+      typeof chunk === "string" ? chunk : Buffer.from(chunk).toString(encoding ?? "utf8"),
+    );
+    const completion = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    if (completion) {
+      queueMicrotask(() => completion(null));
+    }
+    return true;
+  };
+
 export const captureWrites = (): {
   restore: () => void;
   stderr: string[];
   stdout: string[];
 } => {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const originalStdoutWrite = process.stdout.write;
-  const originalStderrWrite = process.stderr.write;
-
-  const capture =
-    (target: string[]) =>
-    (
-      chunk: string | Uint8Array,
-      encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
-      callback?: (error?: Error | null) => void,
-    ) => {
-      const encoding = typeof encodingOrCallback === "string" ? encodingOrCallback : undefined;
-      target.push(
-        typeof chunk === "string" ? chunk : Buffer.from(chunk).toString(encoding ?? "utf8"),
-      );
-      const completion = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
-      if (completion) {
-        queueMicrotask(() => completion(null));
-      }
-      return true;
-    };
-
-  process.stdout.write = capture(stdout) as typeof process.stdout.write;
-  process.stderr.write = capture(stderr) as typeof process.stderr.write;
+  const capture: WriteCapture = { active: true, stderr: [], stdout: [] };
+  if (writeCaptures.length === 0) {
+    originalStdoutWrite = process.stdout.write;
+    originalStderrWrite = process.stderr.write;
+    process.stdout.write = createCaptureWriter("stdout") as typeof process.stdout.write;
+    process.stderr.write = createCaptureWriter("stderr") as typeof process.stderr.write;
+  }
+  writeCaptures.push(capture);
 
   return {
     restore() {
-      process.stdout.write = originalStdoutWrite;
-      process.stderr.write = originalStderrWrite;
+      if (!capture.active) {
+        return;
+      }
+      capture.active = false;
+      while (writeCaptures.at(-1)?.active === false) {
+        writeCaptures.pop();
+      }
+      if (writeCaptures.length === 0) {
+        process.stdout.write = originalStdoutWrite!;
+        process.stderr.write = originalStderrWrite!;
+        originalStdoutWrite = undefined;
+        originalStderrWrite = undefined;
+      }
     },
-    stderr,
-    stdout,
+    stderr: capture.stderr,
+    stdout: capture.stdout,
   };
 };
