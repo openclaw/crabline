@@ -162,6 +162,14 @@ type TelegramGetUpdatesState = Pick<
   "activeUpdatePoll" | "closing" | "updates"
 >;
 
+const TELEGRAM_MULTIPART_FILE = Symbol("telegramMultipartFile");
+
+type TelegramMultipartFile = {
+  [TELEGRAM_MULTIPART_FILE]: true;
+  contentDigest: string;
+  fileName: string;
+};
+
 type TelegramChat = {
   id: number;
   title?: string;
@@ -316,7 +324,16 @@ async function parseMultipartFormDataBody(
   }
   const fields: Record<string, unknown> = {};
   for (const [name, value] of form) {
-    fields[name] = typeof value === "string" ? value : value.name;
+    fields[name] =
+      typeof value === "string"
+        ? value
+        : ({
+            [TELEGRAM_MULTIPART_FILE]: true,
+            contentDigest: createHash("sha256")
+              .update(Buffer.from(await value.arrayBuffer()))
+              .digest("base64url"),
+            fileName: value.name,
+          } satisfies TelegramMultipartFile);
   }
   return fields;
 }
@@ -366,11 +383,26 @@ async function appendEvent(state: TelegramServerState, event: TelegramServerEven
   await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
 
-function redactTelegramSecrets<T>(body: Record<string, T>): Record<string, T | string> {
+function isTelegramMultipartFile(value: unknown): value is TelegramMultipartFile {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    TELEGRAM_MULTIPART_FILE in value &&
+    value[TELEGRAM_MULTIPART_FILE] === true
+  );
+}
+
+function redactTelegramSecrets(body: Record<string, string>): Record<string, string>;
+function redactTelegramSecrets(body: Record<string, unknown>): Record<string, unknown>;
+function redactTelegramSecrets(body: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(body).map(([key, value]) => [
       key,
-      key === "secret_token" ? "<redacted>" : value,
+      key === "secret_token"
+        ? "<redacted>"
+        : isTelegramMultipartFile(value)
+          ? value.fileName
+          : value,
     ]),
   );
 }
@@ -561,7 +593,9 @@ function createOutboundMediaMessage(
   caption: string | undefined,
 ): TelegramMessage | undefined {
   const chat = resolveTelegramChat(state, body.chat_id);
-  const fileName = toStringValue(body[mediaKind]);
+  const mediaInput = body[mediaKind];
+  const multipartFile = isTelegramMultipartFile(mediaInput) ? mediaInput : undefined;
+  const fileName = multipartFile?.fileName ?? toStringValue(mediaInput);
   if (!chat || !fileName) {
     return undefined;
   }
@@ -582,6 +616,7 @@ function createOutboundMediaMessage(
     fileName,
   )?.[1];
   const fileIdentity =
+    multipartFile?.contentDigest.slice(0, 32) ??
     reusedIdentity ??
     createHash("sha256")
       .update(mediaKind)

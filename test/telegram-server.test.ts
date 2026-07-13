@@ -2105,6 +2105,60 @@ describe("telegram local provider server", () => {
     });
   });
 
+  it("derives multipart file_unique_id from upload bytes instead of the filename", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
+
+    const uploadDocument = async (chatId: number, bytes: string) => {
+      const body = new FormData();
+      body.set("chat_id", String(chatId));
+      body.set(
+        "document",
+        new Blob([bytes], { type: "application/octet-stream" }),
+        "shared-name.bin",
+      );
+      const response = await fetch(`${apiRoot}/sendDocument`, {
+        body,
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      return (await response.json()) as {
+        result: {
+          document: { file_id: string; file_name: string; file_unique_id: string };
+        };
+      };
+    };
+
+    const first = await uploadDocument(100, "first bytes");
+    const different = await uploadDocument(200, "different bytes");
+    const repeated = await uploadDocument(300, "first bytes");
+
+    expect(first.result.document.file_name).toBe("shared-name.bin");
+    expect(different.result.document.file_name).toBe("shared-name.bin");
+    expect(repeated.result.document.file_name).toBe("shared-name.bin");
+    expect(different.result.document.file_unique_id).not.toBe(first.result.document.file_unique_id);
+    expect(repeated.result.document.file_unique_id).toBe(first.result.document.file_unique_id);
+
+    const reused = await fetch(`${apiRoot}/sendDocument`, {
+      body: JSON.stringify({
+        chat_id: 400,
+        document: first.result.document.file_id,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(reused.status).toBe(200);
+    await expect(reused.json()).resolves.toMatchObject({
+      result: {
+        document: {
+          file_name: first.result.document.file_id,
+          file_unique_id: first.result.document.file_unique_id,
+        },
+      },
+    });
+  });
+
   it("tracks explicit message IDs independently per chat", async () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
