@@ -73,7 +73,7 @@ export function readBearerToken(request: Request): string | undefined {
   return match?.[1];
 }
 
-function splitCacheControlDirectives(value: string): string[] {
+function splitCacheControlDirectives(value: string): string[] | undefined {
   const directives: string[] = [];
   let start = 0;
   let quoted = false;
@@ -95,6 +95,9 @@ function splitCacheControlDirectives(value: string): string[] {
       start = index + 1;
     }
   }
+  if (quoted || escaped) {
+    return undefined;
+  }
   directives.push(value.slice(start));
   return directives;
 }
@@ -105,12 +108,16 @@ function cacheControlDirectiveName(value: string): string | undefined {
 
 export function resolveHttpCacheExpiry(response: Response, now: number): number {
   const cacheControl = response.headers.get("cache-control");
+  const cacheControlDirectives = splitCacheControlDirectives(cacheControl ?? "");
+  if (!cacheControlDirectives) {
+    return now;
+  }
   if (/(?:^|,)\s*(?:no-cache|no-store)(?:\s*(?:=|,|$))/iu.test(cacheControl ?? "")) {
     return now;
   }
   const ageHeader = response.headers.get("age");
   const ageSeconds = ageHeader && /^\d+$/u.test(ageHeader) ? Number.parseInt(ageHeader, 10) : 0;
-  const maxAgeDirectives = splitCacheControlDirectives(cacheControl ?? "").filter(
+  const maxAgeDirectives = cacheControlDirectives.filter(
     (directive) => cacheControlDirectiveName(directive) === "max-age",
   );
   if (maxAgeDirectives.length > 0) {
