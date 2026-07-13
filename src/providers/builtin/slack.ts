@@ -252,10 +252,14 @@ export function handleSlackWebhookPayload(payload: unknown): Response | undefine
     if (eventType !== "message") {
       return new Response(null, { status: 200 });
     }
-    const message =
-      payload.event.subtype === "message_changed" && isRecord(payload.event.message)
-        ? payload.event.message
-        : payload.event;
+    const isMessageChanged = payload.event.subtype === "message_changed";
+    if (isMessageChanged && !isRecord(payload.event.message)) {
+      return undefined;
+    }
+    const message = isMessageChanged ? payload.event.message : payload.event;
+    if (!isRecord(message)) {
+      return undefined;
+    }
     if (typeof payload.event.channel !== "string" || hasMalformedSlackMessageContent(message)) {
       return undefined;
     }

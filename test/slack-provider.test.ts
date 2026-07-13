@@ -451,20 +451,32 @@ describe("slack provider", () => {
       expect(await response.text()).toBe("");
     }
 
-    const malformedBody = JSON.stringify({
-      event: { channel: "C1234567890", text: 42, type: "message" },
-      type: "event_callback",
-    });
-    const malformed = await fetch(endpoint, {
-      body: malformedBody,
-      headers: {
-        "content-type": "application/json",
-        "x-slack-request-timestamp": timestamp,
-        "x-slack-signature": slackSignature(signingSecret, timestamp, malformedBody),
+    for (const payload of [
+      {
+        event: { channel: "C1234567890", text: 42, type: "message" },
+        type: "event_callback",
       },
-      method: "POST",
-    });
-    expect(malformed.status).toBe(400);
+      {
+        event: {
+          channel: "C1234567890",
+          subtype: "message_changed",
+          type: "message",
+        },
+        type: "event_callback",
+      },
+    ]) {
+      const malformedBody = JSON.stringify(payload);
+      const malformed = await fetch(endpoint, {
+        body: malformedBody,
+        headers: {
+          "content-type": "application/json",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature(signingSecret, timestamp, malformedBody),
+        },
+        method: "POST",
+      });
+      expect(malformed.status).toBe(400);
+    }
     await expect(readFile(config.slack!.recorder.path!, "utf8")).rejects.toMatchObject({
       code: "ENOENT",
     });
