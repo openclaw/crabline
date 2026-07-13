@@ -21,7 +21,10 @@ type DiscordEnvironment = Partial<
 
 type DiscordRuntime = {
   env?: DiscordEnvironment | undefined;
+  now?: (() => number) | undefined;
 };
+
+const DISCORD_SIGNATURE_MAX_SKEW_SECONDS = 5 * 60;
 
 function resolveDiscordAdapterConfigValue(
   config: ProviderConfig,
@@ -66,13 +69,21 @@ function discordPublicKey(value: string): KeyObject {
   });
 }
 
-function authenticateDiscordWebhook(publicKey: KeyObject, request: Request, rawBody: string) {
+function authenticateDiscordWebhook(
+  publicKey: KeyObject,
+  request: Request,
+  rawBody: string,
+  now: () => number = Date.now,
+) {
   const signature = request.headers.get("x-signature-ed25519");
   const timestamp = request.headers.get("x-signature-timestamp");
+  const timestampSeconds = timestamp && /^\d+$/u.test(timestamp) ? Number(timestamp) : Number.NaN;
   if (
     !signature ||
     !timestamp ||
     !/^[0-9a-f]{128}$/iu.test(signature) ||
+    !Number.isSafeInteger(timestampSeconds) ||
+    Math.abs(now() / 1_000 - timestampSeconds) > DISCORD_SIGNATURE_MAX_SKEW_SECONDS ||
     !verify(null, Buffer.from(timestamp + rawBody), publicKey, Buffer.from(signature, "hex"))
   ) {
     return new Response("invalid request signature", { status: 401 });
@@ -234,7 +245,8 @@ export function handleDiscordWebhookPayload(payload: unknown): Response | undefi
 
 export class DiscordProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, userName: string, runtime?: unknown) {
-    const env = (runtime as DiscordRuntime | undefined)?.env ?? process.env;
+    const authRuntime = (runtime as DiscordRuntime | undefined) ?? {};
+    const env = authRuntime.env ?? process.env;
     const resolvedConfig = resolveDiscordAdapterConfigValue(config, userName, env);
     const publicKey = resolvedConfig.publicKey
       ? discordPublicKey(resolvedConfig.publicKey)
@@ -253,7 +265,7 @@ export class DiscordProviderAdapter extends LocalMockProviderAdapter implements 
         ...(publicKey
           ? {
               authenticateWebhookRequest: (request: Request, rawBody: string) =>
-                authenticateDiscordWebhook(publicKey, request, rawBody),
+                authenticateDiscordWebhook(publicKey, request, rawBody, authRuntime.now),
             }
           : {}),
         defaultWebhook: {

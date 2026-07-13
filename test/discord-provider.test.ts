@@ -240,19 +240,22 @@ describe("discord provider", () => {
 
   it("verifies configured signatures and answers PING without recording it", async () => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const now = 1_700_000_000_000;
     const config = await createDiscordConfig(0);
     config.discord!.publicKey = publicKey
       .export({ format: "der", type: "spki" })
       .subarray(-32)
       .toString("hex");
-    const provider = new DiscordProviderAdapter("discord", config, "crabline");
+    const provider = new DiscordProviderAdapter("discord", config, "crabline", {
+      now: () => now,
+    });
     providers.push(provider);
     const endpoint = (await provider.probe(createContext(config))).details
       .find((detail) => detail.startsWith("interactions endpoint "))
       ?.replace("interactions endpoint ", "");
     expect(endpoint).toBeDefined();
     const body = JSON.stringify({ type: 1 });
-    const timestamp = "1700000000";
+    const timestamp = String(now / 1_000);
     const signature = sign(null, Buffer.from(timestamp + body), privateKey).toString("hex");
 
     const unsigned = await fetch(endpoint!, {
@@ -287,6 +290,44 @@ describe("discord provider", () => {
     await expect(readFile(config.discord!.recorder.path!, "utf8")).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("rejects signed stale and far-future interactions before parsing payloads", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const now = 1_700_000_000_000;
+    const config = await createDiscordConfig(0);
+    config.discord!.publicKey = publicKey
+      .export({ format: "der", type: "spki" })
+      .subarray(-32)
+      .toString("hex");
+    const provider = new DiscordProviderAdapter("discord", config, "crabline", {
+      now: () => now,
+    });
+    providers.push(provider);
+    const endpoint = (await provider.probe(createContext(config))).details
+      .find((detail) => detail.startsWith("interactions endpoint "))
+      ?.replace("interactions endpoint ", "");
+    expect(endpoint).toBeDefined();
+    const body = "{";
+
+    for (const timestamp of [
+      String(now / 1_000 - 301),
+      String(now / 1_000 + 301),
+      `${now / 1_000}.5`,
+    ]) {
+      const signature = sign(null, Buffer.from(timestamp + body), privateKey).toString("hex");
+      const response = await fetch(endpoint!, {
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-signature-ed25519": signature,
+          "x-signature-timestamp": timestamp,
+        },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(401);
+    }
   });
 
   it("rejects malformed configured public keys", async () => {
