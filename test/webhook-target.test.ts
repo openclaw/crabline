@@ -154,11 +154,12 @@ describe("webhook target validation", () => {
     if (!address || typeof address === "string") {
       throw new Error("Unable to resolve webhook receiver.");
     }
-    const url = new URL(`http://127.0.0.1:${address.port}/webhook`);
+    const pinnedAddress = { address: "127.0.0.1", family: 4 as const };
+    const url = new URL(`http://dns-pinning.invalid:${address.port}/webhook`);
 
     try {
-      await postWebhookRequest({ body: "{}", timeoutMs: 1_000, url });
-      await postWebhookRequest({ body: "{}", timeoutMs: 1_000, url });
+      await postWebhookRequest({ address: pinnedAddress, body: "{}", timeoutMs: 1_000, url });
+      await postWebhookRequest({ address: pinnedAddress, body: "{}", timeoutMs: 1_000, url });
       expect(remotePorts).toHaveLength(2);
       expect(new Set(remotePorts).size).toBe(2);
     } finally {

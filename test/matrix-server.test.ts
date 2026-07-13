@@ -120,6 +120,17 @@ describe("Matrix local provider server", () => {
       method: "PUT",
     });
     expect(unauthorized.status).toBe(401);
+    const trailingAuthorization = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/account/whoami`,
+      {
+        headers: { authorization: "Bearer test-token trailing" },
+      },
+    );
+    expect(trailingAuthorization.status).toBe(401);
+    await expect(trailingAuthorization.json()).resolves.toEqual({
+      errcode: "M_UNKNOWN_TOKEN",
+      error: "Invalid access token",
+    });
     const unauthorizedOversized = await requestHttp({
       body: Buffer.alloc(1024 * 1024 + 1, 0x20),
       headers: {

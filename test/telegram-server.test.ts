@@ -165,6 +165,65 @@ describe("telegram local provider server", () => {
     expect(shorterUsername.status).toBe(400);
   });
 
+  it("normalizes non-positive topic ids while preserving private-chat topics", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const sendMessage = (messageThreadId: number) =>
+      fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`, {
+        body: JSON.stringify({
+          chat_id: 42,
+          message_thread_id: messageThreadId,
+          text: "private topic",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+    for (const messageThreadId of [0, -1]) {
+      const response = await sendMessage(messageThreadId);
+      const payload = (await response.json()) as {
+        result: { message_thread_id?: number };
+      };
+      expect(response.status).toBe(200);
+      expect(payload.result).not.toHaveProperty("message_thread_id");
+    }
+
+    const privateTopic = await sendMessage(42);
+    await expect(privateTopic.json()).resolves.toMatchObject({
+      result: {
+        chat: { id: 42, type: "private" },
+        message_thread_id: 42,
+      },
+    });
+
+    for (const messageThreadId of [0, -1]) {
+      const response = await injectUpdate(server, {
+        chatId: 42,
+        messageThreadId,
+        text: "private inbound",
+      });
+      const payload = (await response.json()) as {
+        update: { message: { message_thread_id?: number } };
+      };
+      expect(response.status).toBe(200);
+      expect(payload.update.message).not.toHaveProperty("message_thread_id");
+    }
+
+    const privateInboundTopic = await injectUpdate(server, {
+      chatId: 42,
+      messageThreadId: 42,
+      text: "private inbound topic",
+    });
+    await expect(privateInboundTopic.json()).resolves.toMatchObject({
+      update: {
+        message: {
+          chat: { id: 42, type: "private" },
+          message_thread_id: 42,
+        },
+      },
+    });
+  });
+
   it("serves Telegram Bot API calls and queues injected inbound updates", async () => {
     const directory = await createTempDir();
     directories.push(directory);

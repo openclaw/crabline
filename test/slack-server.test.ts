@@ -639,6 +639,48 @@ describe("slack local provider server", () => {
     await expect(history.json()).resolves.toMatchObject({ messages: [], ok: true });
   });
 
+  it("validates chat.postMessage metadata format and schema", async () => {
+    const server = await startTestSlackServer();
+    for (const [metadata, error] of [
+      ["{", "invalid_metadata_format"],
+      ["[]", "invalid_metadata_format"],
+      [null, "invalid_metadata_format"],
+      [{ event_payload: {} }, "invalid_metadata_schema"],
+      [{ event_type: "task_created" }, "invalid_metadata_schema"],
+      [{ event_payload: [], event_type: "task_created" }, "invalid_metadata_schema"],
+      [{ event_payload: {}, event_type: " " }, "invalid_metadata_schema"],
+    ] as const) {
+      const response = await slackApi(server, "chat.postMessage", {
+        channel: "C1234567890",
+        metadata,
+        text: "must not persist",
+      });
+      await expect(response.json()).resolves.toEqual({ error, ok: false });
+    }
+
+    const metadata = {
+      event_payload: { id: "task-1" },
+      event_type: "task_created",
+    };
+    const accepted = await slackApi(server, "chat.postMessage", {
+      channel: "C1234567890",
+      metadata: JSON.stringify(metadata),
+      text: "valid metadata",
+    });
+    await expect(accepted.json()).resolves.toMatchObject({
+      message: { metadata },
+      ok: true,
+    });
+
+    const history = await slackApi(server, "conversations.history", {
+      channel: "C1234567890",
+    });
+    await expect(history.json()).resolves.toMatchObject({
+      messages: [{ metadata, text: "valid metadata" }],
+      ok: true,
+    });
+  });
+
   it("delivers authenticated admin inbound through signed Slack Events API requests", async () => {
     type DeliveredEvent = {
       body: string;

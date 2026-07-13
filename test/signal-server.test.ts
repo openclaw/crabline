@@ -512,6 +512,77 @@ describe("signal local provider server", () => {
     }
   });
 
+  it("fans pending events out to every connected SSE client", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ sourceNumber: "+15557654321", text }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+    for (const text of ["first pending", "second pending", "third pending"]) {
+      expect((await sendInbound(text)).status).toBe(200);
+    }
+
+    const originalWrite = ServerResponse.prototype.write;
+    let backpressuredResponse: ServerResponse | undefined;
+    const write = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<typeof originalWrite>
+    ) {
+      const accepted = Reflect.apply(originalWrite, this, args) as boolean;
+      if (
+        backpressuredResponse === undefined &&
+        typeof args[0] === "string" &&
+        args[0].includes("first pending")
+      ) {
+        backpressuredResponse = this;
+        return false;
+      }
+      return accepted;
+    });
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const readPendingEvents = async (response: Response) => {
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let received = "";
+      while (!received.includes("third pending")) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          break;
+        }
+        received += decoder.decode(chunk.value, { stream: true });
+      }
+      return received;
+    };
+    try {
+      const firstEvents = await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: firstController.signal,
+      });
+      await vi.waitFor(() => expect(backpressuredResponse).toBeDefined());
+      const secondEvents = await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: secondController.signal,
+      });
+      firstController.abort();
+      await firstEvents.body?.cancel().catch(() => undefined);
+
+      const received = await readPendingEvents(secondEvents);
+      expect(received).toContain("first pending");
+      expect(received).toContain("second pending");
+      expect(received).toContain("third pending");
+      expect((await sendInbound("after disconnect")).status).toBe(200);
+    } finally {
+      firstController.abort();
+      secondController.abort();
+      write.mockRestore();
+    }
+  });
+
   it("moves near-capacity pending events into a client buffer without double-counting", async () => {
     const server = await startSignalServer({
       adminToken: "admin",

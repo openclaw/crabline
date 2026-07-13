@@ -192,6 +192,10 @@ function postEvent(
   };
 }
 
+function webSocketEventBytes(event: MattermostWebSocketEvent): number {
+  return Buffer.byteLength(JSON.stringify({ ...event, seq: 0 }), "utf8");
+}
+
 function sendEvent(
   state: MattermostServerState,
   client: WebSocket,
@@ -258,10 +262,7 @@ function broadcast(
   if (event.broadcast.omit_users?.[state.botUserId]) {
     return true;
   }
-  if (
-    Buffer.byteLength(JSON.stringify({ ...event, seq: 0 }), "utf8") >
-    state.maxWebSocketBufferedBytes
-  ) {
+  if (webSocketEventBytes(event) > state.maxWebSocketBufferedBytes) {
     for (const client of state.websocketClients.keys()) {
       state.websocketClients.delete(client);
       client.close(1013, "client too slow");
@@ -352,7 +353,7 @@ function handleAdminInbound(params: {
     state: params.state,
     userId: senderId,
   });
-  if (!broadcast(params.state, postEvent("posted", post, senderName, channelType))) {
+  const rollback = () => {
     params.state.posts.delete(post.id);
     params.state.nextPost = previousNextPost;
     if (previousUser) {
@@ -365,6 +366,14 @@ function handleAdminInbound(params: {
     } else {
       params.state.channels.delete(channelId);
     }
+  };
+  const event = postEvent("posted", post, senderName, channelType);
+  if (webSocketEventBytes(event) > params.state.maxWebSocketBufferedBytes) {
+    rollback();
+    return jsonResponse({ error: "Inbound event is too large", ok: false }, 413);
+  }
+  if (!broadcast(params.state, event)) {
+    rollback();
     return pendingQueueFullResponse(params.state);
   }
   return jsonResponse({ ok: true, post });
@@ -460,7 +469,7 @@ async function handleApi(params: {
     if (!channel) {
       return mattermostError("Channel not found", 404);
     }
-    const rootId = readTrimmedString(body.root_id) || readTrimmedString(body.post_id);
+    const rootId = readTrimmedString(body.root_id);
     if (rootId) {
       const rootPost = state.posts.get(rootId);
       if (!rootPost) {
