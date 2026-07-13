@@ -947,6 +947,9 @@ async function captureSafePrivateMutationBoundary(
   }
   const writableByAnotherPrincipal = (stats.mode & 0o022n) !== 0n;
   const trustedOwner = stats.uid === BigInt(currentUserId) || stats.uid === 0n;
+  if (!trustedOwner) {
+    throw new Error("Private mutation boundary is not owned by the current POSIX user or root.");
+  }
   const protectedByStickyOwnership =
     trustedOwner && (stats.mode & 0o1000n) !== 0n && stickyTargetOwnedByCurrentUser;
   if (writableByAnotherPrincipal && !protectedByStickyOwnership) {
