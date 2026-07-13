@@ -338,12 +338,14 @@ function nat64PrefixKey(prefix: Nat64Prefix): string {
   return `${prefix.length}:${prefix.bytes.slice(0, prefix.length / 8).join(".")}`;
 }
 
-function discoverNat64Prefixes(addresses: WebhookDnsLookupResult): Nat64Prefix[] {
-  const prefixes = new Map<string, Nat64Prefix>();
+function discoverNat64Prefixes(addresses: WebhookDnsLookupResult): Nat64Prefix[] | undefined {
+  const candidates = new Map<string, { addresses: Set<string>; prefix: Nat64Prefix }>();
+  let ipv6Answers = 0;
   for (const entry of addresses) {
     if (entry.family !== 6) {
       continue;
     }
+    ipv6Answers++;
     const bytes = ipv6Bytes(normalizeHostname(entry.address));
     if (!bytes) {
       continue;
@@ -356,10 +358,21 @@ function discoverNat64Prefixes(addresses: WebhookDnsLookupResult): Nat64Prefix[]
         continue;
       }
       const prefix = { bytes, length };
-      prefixes.set(nat64PrefixKey(prefix), prefix);
+      const key = nat64PrefixKey(prefix);
+      const candidate = candidates.get(key) ?? { addresses: new Set(), prefix };
+      candidate.addresses.add(extractRfc6052Ipv4(bytes, length));
+      candidates.set(key, candidate);
     }
   }
-  return [...prefixes.values()];
+  if (ipv6Answers === 0) {
+    return [];
+  }
+  const prefixes = [...candidates.values()]
+    .filter((candidate) =>
+      [...IPV4ONLY_ADDRESSES].every((address) => candidate.addresses.has(address)),
+    )
+    .map((candidate) => candidate.prefix);
+  return prefixes.length > 0 ? prefixes : undefined;
 }
 
 const WELL_KNOWN_NAT64_PREFIX: Nat64Prefix = {
@@ -471,7 +484,7 @@ export async function validateWebhookTarget(params: {
     return { error: "private-address" };
   }
   if (addresses.some((entry) => entry.family === 6)) {
-    let nat64Prefixes: Nat64Prefix[];
+    let nat64Prefixes: Nat64Prefix[] | undefined;
     try {
       nat64Prefixes = discoverNat64Prefixes(
         await (params.dnsLookupPool ?? webhookDnsLookupPool).resolve(
@@ -483,6 +496,9 @@ export async function validateWebhookTarget(params: {
       if (params.signal?.aborted) {
         throw error;
       }
+      return { error: "private-address" };
+    }
+    if (!nat64Prefixes) {
       return { error: "private-address" };
     }
     if (addresses.some((entry) => isBlockedWebhookAddress(entry.address, nat64Prefixes))) {
