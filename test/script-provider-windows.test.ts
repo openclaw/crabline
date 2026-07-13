@@ -129,7 +129,6 @@ describe("script provider Windows cleanup", () => {
     expect(terminationScript).toContain("$ChildCreated -lt $ParentCreated");
     expect(terminationScript).toContain("$Current.CreationDate -eq $Entry.CreationDate");
     expect(terminationScript).toContain("HashSet[string]");
-    expect(terminationScript).toContain("$RootPidReused");
     expect(terminationScript).toContain("$RootObservedBy");
     expect(terminationScript).toContain("$SnapshotAt=[datetime]::UtcNow");
     expect(terminationScript).toContain("CreationDate).ToUniversalTime()");
@@ -167,7 +166,7 @@ describe("script provider Windows cleanup", () => {
     expect(spawnMock.mock.calls[1]?.[0]).toBe("powershell.exe");
   });
 
-  it("cleans descendants after the direct shell has already exited", async () => {
+  it("does not infer descendants after the direct shell has already exited", async () => {
     const scriptChild = createFakeChild(6789);
     Object.defineProperty(scriptChild, "exitCode", {
       configurable: true,
@@ -191,8 +190,11 @@ describe("script provider Windows cleanup", () => {
     expect(spawnMock.mock.calls[1]?.[0]).toBe("powershell.exe");
     const terminationScript = String(spawnMock.mock.calls[1]?.[1]?.at(-1));
     expect(terminationScript).toContain("$RootExpectedAlive=$false");
-    expect(terminationScript).toContain("CreationDate=$RootNotBefore");
+    expect(terminationScript).not.toContain("CreationDate=$RootNotBefore");
     expect(scriptChild.kill).not.toHaveBeenCalledWith("SIGKILL");
+    expect(scriptChild.stdin.destroyed).toBe(true);
+    expect(scriptChild.stdout.destroyed).toBe(true);
+    expect(scriptChild.stderr.destroyed).toBe(true);
   });
 
   it("falls back to bounded taskkill when PowerShell cleanup fails for a live shell", async () => {
@@ -245,5 +247,22 @@ describe("script provider Windows cleanup", () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(2);
     expect(scriptChild.kill).not.toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it("preserves context cancellation when child close never arrives", async () => {
+    vi.useRealTimers();
+    const scriptChild = createFakeChild(9012);
+    spawnMock.mockReturnValueOnce(scriptChild).mockImplementationOnce(() => createCleanupChild(0));
+    const context = createContext();
+    const controller = new AbortController();
+    const cancellation = new Error("watch cancelled");
+    const provider = new ScriptProviderAdapter(context);
+    const next = provider.watch({ ...context, signal: controller.signal }).next();
+
+    scriptChild.stdout.end();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort(cancellation);
+
+    await expect(next).rejects.toBe(cancellation);
   });
 });
