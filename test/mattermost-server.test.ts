@@ -1089,6 +1089,65 @@ describe("Mattermost local provider server", () => {
     second.close();
   });
 
+  it("rejects an oversized delete event before removing the post", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "fake",
+      maxWebSocketBufferedBytes: 1024,
+    });
+    servers.push(server);
+    const registered = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ channelId: CHANNEL_ID, senderId: USER_ID, text: "register" }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(registered.status).toBe(200);
+
+    const created = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+      body: JSON.stringify({ channel_id: CHANNEL_ID, message: "small post" }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    const post = (await created.json()) as { id: string };
+    expect(created.status).toBe(201);
+
+    const boundaryEdit = await fetch(`${server.manifest.endpoints.apiRoot}/posts/${post.id}`, {
+      body: JSON.stringify({ message: "x".repeat(655) }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "PUT",
+    });
+    expect(boundaryEdit.status).toBe(200);
+
+    const rejectedDelete = await fetch(`${server.manifest.endpoints.apiRoot}/posts/${post.id}`, {
+      headers: { authorization: "Bearer fake" },
+      method: "DELETE",
+    });
+    expect(rejectedDelete.status).toBe(413);
+    await expect(rejectedDelete.json()).resolves.toMatchObject({
+      message: "WebSocket event is too large",
+      status_code: 413,
+    });
+
+    const stillPresent = await fetch(`${server.manifest.endpoints.apiRoot}/posts/${post.id}`, {
+      body: JSON.stringify({ message: "still present" }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "PUT",
+    });
+    expect(stillPresent.status).toBe(200);
+  });
+
   it("bounds unauthenticated clients and inbound WebSocket messages", async () => {
     const server = await startMattermostServer({
       botToken: "fake",
