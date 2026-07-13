@@ -2998,6 +2998,47 @@ describe("OpenClaw local provider bridge", () => {
     },
   );
 
+  it("fails closed when a successful probe produces no recorder evidence", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-missing-"));
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    const close = vi.fn(async () => undefined);
+    const publishGeneration = vi.fn<typeof publishOpenClawCrablineArtifactGeneration>();
+    const releaseLock = vi.fn(async (lock: { release(): Promise<void> }) => await lock.release());
+    let recorderPath: string | undefined;
+    const syncParent = vi.fn(async (unlinkedPath: string) => {
+      expect(unlinkedPath).toBe(recorderPath);
+      await expect(fs.stat(unlinkedPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+    try {
+      await expect(
+        runProviderReadinessWithDependencies(
+          { outputDir, selection },
+          {
+            publishGeneration,
+            releaseLock,
+            startAdapter: async (params) => {
+              recorderPath = params.recorderPath;
+              return {
+                close: async () => await close(),
+                manifest: { ...manifest, recorderPath: recorderPath! },
+                probe: async () => ({ ok: true }),
+              } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
+            },
+            syncParent,
+          },
+        ),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(publishGeneration).not.toHaveBeenCalled();
+      expect(syncParent).toHaveBeenCalledTimes(1);
+      expect(releaseLock).toHaveBeenCalledTimes(1);
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toBeNull();
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps readiness recorder snapshots immutable across later generations", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-snapshots-"));
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
@@ -3072,12 +3113,14 @@ describe("OpenClaw local provider bridge", () => {
       await runProviderReadinessWithDependencies(
         { outputDir, selection },
         {
-          startAdapter: async (params) =>
-            ({
+          startAdapter: async (params) => {
+            await fs.writeFile(params.recorderPath!, '{"event":"probe"}\n');
+            return {
               close: async () => undefined,
               manifest: { ...manifest, recorderPath: params.recorderPath! },
               probe: async () => ({ ok: true }),
-            }) as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>,
+            } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
+          },
         },
       );
 
@@ -3121,12 +3164,14 @@ describe("OpenClaw local provider bridge", () => {
     const removalFailure = new Error("simulated recorder lock tombstone removal interruption");
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     let rmSpy: ReturnType<typeof vi.spyOn> | undefined;
-    const startAdapter = async (params: Parameters<typeof startOpenClawCrablineAdapter>[0]) =>
-      ({
+    const startAdapter = async (params: Parameters<typeof startOpenClawCrablineAdapter>[0]) => {
+      await fs.writeFile(params.recorderPath!, '{"event":"probe"}\n');
+      return {
         close: async () => undefined,
         manifest: { ...manifest, recorderPath: params.recorderPath! },
         probe: async () => ({ ok: true }),
-      }) as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
+      } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
+    };
     try {
       await fs.mkdir(path.join(recorderDirectory, lockName), { recursive: true });
       const originalRm = fs.rm.bind(fs);
@@ -3191,12 +3236,14 @@ describe("OpenClaw local provider bridge", () => {
         await runProviderReadinessWithDependencies(
           { outputDir, selection },
           {
-            startAdapter: async (params) =>
-              ({
+            startAdapter: async (params) => {
+              await fs.writeFile(params.recorderPath!, '{"event":"probe"}\n');
+              return {
                 close: async () => undefined,
                 manifest: { ...manifest, recorderPath: params.recorderPath! },
                 probe: async () => ({ ok: true }),
-              }) as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>,
+              } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
+            },
           },
         );
 
