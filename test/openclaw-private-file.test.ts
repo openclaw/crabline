@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  applyOwnerOnlyWindowsAcl,
   applyOwnerOnlyWindowsDirectoryAcl,
+  createOwnerOnlyWindowsFile,
   publishPrivateFileAtomically,
   securePrivateDirectory,
   type WindowsAclRunner,
@@ -304,6 +304,41 @@ describe("OpenClaw private file publication", () => {
       expect(originalTemporaryPath).toBeDefined();
       expect(await fs.readFile(originalTemporaryPath!, "utf8")).toBe("");
       expect((await fs.readdir(directory)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("never ACL-mutates a Windows replacement substituted after atomic creation", async () => {
+    const directory = await createTempDir();
+    try {
+      const filePath = path.join(directory, "manifest.json");
+      await fs.writeFile(filePath, "stale\n");
+      const aclMutatedInodes: bigint[] = [];
+      let originalTemporaryPath: string | undefined;
+      let replacementInode: bigint | undefined;
+
+      await expect(
+        publishPrivateFileAtomically(filePath, "private\n", {
+          createWindowsFile: async (temporaryPath) => {
+            await fs.writeFile(temporaryPath, "");
+            const stats = await fs.stat(temporaryPath, { bigint: true });
+            originalTemporaryPath = `${temporaryPath}.original`;
+            aclMutatedInodes.push(stats.ino);
+            await fs.rename(temporaryPath, originalTemporaryPath);
+            await fs.writeFile(temporaryPath, "attacker-controlled\n");
+            replacementInode = (await fs.stat(temporaryPath, { bigint: true })).ino;
+            return { device: stats.dev, inode: stats.ino };
+          },
+          platform: "win32",
+        }),
+      ).rejects.toThrow("Private file path identity changed during publication.");
+
+      expect(aclMutatedInodes).toHaveLength(1);
+      expect(replacementInode).toBeDefined();
+      expect(aclMutatedInodes).not.toContain(replacementInode);
+      expect(await fs.readFile(filePath, "utf8")).toBe("stale\n");
+      expect(await fs.readFile(originalTemporaryPath!, "utf8")).toBe("");
     } finally {
       await disposeTempDir(directory);
     }
@@ -647,14 +682,20 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
-  it("uses Windows PowerShell to set and verify the current SID ACL", async () => {
+  it("uses Windows PowerShell to atomically create and verify the current SID ACL", async () => {
     const calls: Parameters<WindowsAclRunner>[] = [];
     const run: WindowsAclRunner = async (...args) => {
       calls.push(args);
+      return "123:456";
     };
     const filePath = String.raw`C:\Temp\crabline-manifest.json`;
 
-    await applyOwnerOnlyWindowsAcl(filePath, run, String.raw`C:\Windows`);
+    await expect(
+      createOwnerOnlyWindowsFile(filePath, run, String.raw`C:\Windows`),
+    ).resolves.toEqual({
+      device: 123n,
+      inode: 456n,
+    });
 
     expect(calls).toHaveLength(1);
     const [command, args, options] = calls[0]!;
@@ -662,9 +703,15 @@ describe("OpenClaw private file publication", () => {
     expect(args).toEqual(expect.arrayContaining(["-NoProfile", "-NonInteractive", "-Command"]));
     const script = args.at(-1);
     expect(script).toContain("WindowsIdentity");
+    expect(script).toContain("[System.IO.FileMode]::CreateNew");
+    expect(script).toContain("[System.Security.AccessControl.FileSecurity]::new()");
     expect(script).toContain("SetAccessRuleProtection($true, $false)");
-    expect(script).toContain("RemoveAccessRuleSpecific");
-    expect(script).toContain("Set-Acl");
+    expect(script).toContain("$stream.GetAccessControl()");
+    expect(script).toContain("NtQueryInformationFile");
+    expect(script).toContain("FileInternalInformationClass = 6");
+    expect(script).toContain("NtQueryVolumeInformationFile");
+    expect(script).toContain("FileFsVolumeInformationClass = 1");
+    expect(script).not.toContain("Set-Acl");
     expect(script).toContain("AreAccessRulesProtected");
     expect(script).toContain("$rules.Count -ne 1");
     expect(options.env.CRABLINE_PRIVATE_FILE_PATH).toBe(path.resolve(filePath));
@@ -675,6 +722,7 @@ describe("OpenClaw private file publication", () => {
     const calls: Parameters<WindowsAclRunner>[] = [];
     const run: WindowsAclRunner = async (...args) => {
       calls.push(args);
+      return "";
     };
     const directoryPath = String.raw`C:\Temp\crabline-generation`;
 
@@ -694,7 +742,7 @@ describe("OpenClaw private file publication", () => {
   it("reports Windows ACL tooling failures with their cause", async () => {
     const cause = new Error("powershell.exe missing");
     await expect(
-      applyOwnerOnlyWindowsAcl(
+      createOwnerOnlyWindowsFile(
         "manifest.json",
         async () => {
           throw cause;
@@ -704,19 +752,30 @@ describe("OpenClaw private file publication", () => {
     ).rejects.toMatchObject({
       cause,
       message:
-        "Could not apply and verify an owner-only Windows ACL; powershell.exe with Set-Acl is required.",
+        "Could not atomically create and verify an owner-only Windows private file; Windows PowerShell ACL support is required.",
     });
   });
+
+  it.each(["", "not-an-identity", "123:0"])(
+    "fails closed when Windows cannot prove the created file identity: %j",
+    async (output) => {
+      await expect(
+        createOwnerOnlyWindowsFile("manifest.json", async () => output, String.raw`C:\Windows`),
+      ).rejects.toThrow(
+        "Could not atomically create and verify an owner-only Windows private file",
+      );
+    },
+  );
 
   it("fails closed when SystemRoot is missing or non-local", async () => {
     const run = vi.fn<WindowsAclRunner>();
 
-    await expect(applyOwnerOnlyWindowsAcl("manifest.json", run, null)).rejects.toThrow(
-      "Could not apply and verify an owner-only Windows ACL",
+    await expect(createOwnerOnlyWindowsFile("manifest.json", run, null)).rejects.toThrow(
+      "Could not atomically create and verify an owner-only Windows private file",
     );
     await expect(
-      applyOwnerOnlyWindowsAcl("manifest.json", run, String.raw`\\server\windows`),
-    ).rejects.toThrow("Could not apply and verify an owner-only Windows ACL");
+      createOwnerOnlyWindowsFile("manifest.json", run, String.raw`\\server\windows`),
+    ).rejects.toThrow("Could not atomically create and verify an owner-only Windows private file");
     expect(run).not.toHaveBeenCalled();
   });
 });

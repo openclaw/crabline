@@ -6,12 +6,100 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const WINDOWS_OWNER_ONLY_ACL_SCRIPT = String.raw`
+const WINDOWS_CREATE_OWNER_ONLY_FILE_SCRIPT = String.raw`
 $ErrorActionPreference = "Stop"
 $filePath = $env:CRABLINE_PRIVATE_FILE_PATH
 if ([string]::IsNullOrWhiteSpace($filePath)) {
   throw "CRABLINE_PRIVATE_FILE_PATH is required."
 }
+
+Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class CrablinePrivateFileIdentity
+{
+    private const int FileInternalInformationClass = 6;
+    private const int FileFsVolumeInformationClass = 1;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoStatusBlock
+    {
+        public IntPtr Status;
+        public UIntPtr Information;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileInternalInformation
+    {
+        public long IndexNumber;
+    }
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryInformationFile(
+        SafeFileHandle file,
+        out IoStatusBlock ioStatus,
+        out FileInternalInformation fileInformation,
+        uint length,
+        int fileInformationClass
+    );
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryVolumeInformationFile(
+        SafeFileHandle file,
+        out IoStatusBlock ioStatus,
+        [Out] byte[] volumeInformation,
+        uint length,
+        int volumeInformationClass
+    );
+
+    [DllImport("ntdll.dll")]
+    private static extern uint RtlNtStatusToDosError(int status);
+
+    private static void ThrowIfFailed(int status)
+    {
+        if (status != 0) {
+            throw new Win32Exception(
+                unchecked((int)RtlNtStatusToDosError(status))
+            );
+        }
+    }
+
+    public static string Read(SafeFileHandle file)
+    {
+        IoStatusBlock ioStatus;
+        FileInternalInformation fileInfo;
+        int status = NtQueryInformationFile(
+            file,
+            out ioStatus,
+            out fileInfo,
+            (uint)Marshal.SizeOf(typeof(FileInternalInformation)),
+            FileInternalInformationClass
+        );
+        ThrowIfFailed(status);
+
+        byte[] volumeInfo = new byte[1024];
+        status = NtQueryVolumeInformationFile(
+            file,
+            out ioStatus,
+            volumeInfo,
+            (uint)volumeInfo.Length,
+            FileFsVolumeInformationClass
+        );
+        ThrowIfFailed(status);
+
+        uint device = BitConverter.ToUInt32(volumeInfo, 8);
+        ulong inode = unchecked((ulong)fileInfo.IndexNumber);
+        return device.ToString(
+            System.Globalization.CultureInfo.InvariantCulture
+        ) + ":" + inode.ToString(
+            System.Globalization.CultureInfo.InvariantCulture
+        );
+    }
+}
+"@
 
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $sid = $identity.User
@@ -19,49 +107,61 @@ if ($null -eq $sid) {
   throw "Could not resolve the current Windows user SID."
 }
 
-$acl = Get-Acl -LiteralPath $filePath
+$acl = [System.Security.AccessControl.FileSecurity]::new()
 $acl.SetOwner($sid)
 $acl.SetAccessRuleProtection($true, $false)
-$existingRules = @($acl.GetAccessRules(
-  $true,
-  $false,
-  [System.Security.Principal.SecurityIdentifier]
-))
-foreach ($existingRule in $existingRules) {
-  [void]$acl.RemoveAccessRuleSpecific($existingRule)
-}
 $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
   $sid,
   [System.Security.AccessControl.FileSystemRights]::FullControl,
   [System.Security.AccessControl.AccessControlType]::Allow
 )
 $acl.SetAccessRule($rule)
-Set-Acl -LiteralPath $filePath -AclObject $acl
 
-$actual = Get-Acl -LiteralPath $filePath
-$ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
-$rules = @($actual.GetAccessRules(
-  $true,
-  $true,
-  [System.Security.Principal.SecurityIdentifier]
-))
-if (-not $actual.AreAccessRulesProtected) {
-  throw "Private file DACL still inherits permissions."
-}
-if ($ownerSid.Value -ne $sid.Value) {
-  throw "Private file owner SID does not match the current user."
-}
-if ($rules.Count -ne 1) {
-  throw "Private file DACL must contain exactly one access rule."
-}
-$actualRule = $rules[0]
-if (
-  $actualRule.IsInherited -or
-  $actualRule.IdentityReference.Value -ne $sid.Value -or
-  $actualRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
-  (($actualRule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl)
-) {
-  throw "Private file DACL is not owner-only full control."
+$rights = (
+  [System.Security.AccessControl.FileSystemRights]::Read -bor
+  [System.Security.AccessControl.FileSystemRights]::Write -bor
+  [System.Security.AccessControl.FileSystemRights]::ReadPermissions
+)
+$stream = [System.IO.FileStream]::new(
+  $filePath,
+  [System.IO.FileMode]::CreateNew,
+  $rights,
+  [System.IO.FileShare]::ReadWrite,
+  4096,
+  [System.IO.FileOptions]::None,
+  $acl
+)
+try {
+  $actual = $stream.GetAccessControl()
+  $ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
+  $rules = @($actual.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ))
+  if (-not $actual.AreAccessRulesProtected) {
+    throw "Private file DACL still inherits permissions."
+  }
+  if ($ownerSid.Value -ne $sid.Value) {
+    throw "Private file owner SID does not match the current user."
+  }
+  if ($rules.Count -ne 1) {
+    throw "Private file DACL must contain exactly one access rule."
+  }
+  $actualRule = $rules[0]
+  if (
+    $actualRule.IsInherited -or
+    $actualRule.IdentityReference.Value -ne $sid.Value -or
+    $actualRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+    (($actualRule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl)
+  ) {
+    throw "Private file DACL is not owner-only full control."
+  }
+  [Console]::Out.Write(
+    [CrablinePrivateFileIdentity]::Read($stream.SafeFileHandle)
+  )
+} finally {
+  $stream.Dispose()
 }
 `;
 
@@ -142,10 +242,11 @@ export type WindowsAclRunner = (
     env: NodeJS.ProcessEnv;
     windowsHide: boolean;
   },
-) => Promise<void>;
+) => Promise<string>;
 
 const runWindowsAclCommand: WindowsAclRunner = async (command, args, options) => {
-  await execFileAsync(command, args, options);
+  const result = await execFileAsync(command, args, { ...options, encoding: "utf8" });
+  return result.stdout;
 };
 
 export function resolveWindowsPowerShellPath(systemRoot: string | null | undefined): string {
@@ -156,16 +257,22 @@ export function resolveWindowsPowerShellPath(systemRoot: string | null | undefin
   return path.win32.join(normalizedRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
-export async function applyOwnerOnlyWindowsAcl(
+export async function createOwnerOnlyWindowsFile(
   filePath: string,
   run: WindowsAclRunner = runWindowsAclCommand,
   systemRoot: string | null | undefined = process.env.SystemRoot,
-): Promise<void> {
+): Promise<FileIdentity> {
   try {
     const powershellPath = resolveWindowsPowerShellPath(systemRoot);
-    await run(
+    const output = await run(
       powershellPath,
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_OWNER_ONLY_ACL_SCRIPT],
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        WINDOWS_CREATE_OWNER_ONLY_FILE_SCRIPT,
+      ],
       {
         env: {
           ...process.env,
@@ -174,9 +281,21 @@ export async function applyOwnerOnlyWindowsAcl(
         windowsHide: true,
       },
     );
+    const match = /^(\d+):(\d+)$/u.exec(output.trim());
+    if (!match) {
+      throw new Error("Windows did not return a stable private file identity.");
+    }
+    const identity = {
+      device: BigInt(match[1]!),
+      inode: BigInt(match[2]!),
+    };
+    if (identity.inode <= 0n) {
+      throw new Error("Windows did not return a stable private file identity.");
+    }
+    return identity;
   } catch (error) {
     throw new Error(
-      "Could not apply and verify an owner-only Windows ACL; powershell.exe with Set-Acl is required.",
+      "Could not atomically create and verify an owner-only Windows private file; Windows PowerShell ACL support is required.",
       { cause: error },
     );
   }
@@ -218,6 +337,12 @@ type FileIdentity = {
   device: bigint;
   inode: bigint;
 };
+
+function assertSameFileIdentity(actual: FileIdentity, expected: FileIdentity): void {
+  if (actual.device !== expected.device || actual.inode !== expected.inode) {
+    throw new Error("Private file path identity changed during publication.");
+  }
+}
 
 async function readHandleIdentity(handle: FileHandle): Promise<FileIdentity> {
   const stats = await handle.stat({ bigint: true });
@@ -501,6 +626,7 @@ export async function publishPrivateFileAtomically(
   options: {
     afterRename?: (filePath: string) => Promise<void>;
     beforeRename?: (temporaryPath: string) => Promise<void>;
+    createWindowsFile?: (temporaryPath: string) => Promise<FileIdentity>;
     platform?: NodeJS.Platform;
     removeTemporaryFile?: (temporaryPath: string) => Promise<void>;
     secureWindowsFile?: (temporaryPath: string) => Promise<void>;
@@ -517,12 +643,23 @@ export async function publishPrivateFileAtomically(
   let publicationFailed = false;
   let primaryError: unknown;
   try {
-    handle = await fs.open(temporaryPath, "wx+", 0o600);
-    const identity = await readHandleIdentity(handle);
-    if ((options.platform ?? process.platform) === "win32") {
-      await (options.secureWindowsFile ?? applyOwnerOnlyWindowsAcl)(temporaryPath);
+    const platform = options.platform ?? process.platform;
+    let identity: FileIdentity;
+    if (platform === "win32" && options.secureWindowsFile === undefined) {
+      const createdIdentity = await (options.createWindowsFile ?? createOwnerOnlyWindowsFile)(
+        temporaryPath,
+      );
+      handle = await fs.open(temporaryPath, "r+");
+      identity = await readHandleIdentity(handle);
+      assertSameFileIdentity(identity, createdIdentity);
     } else {
-      await handle.chmod(0o600);
+      handle = await fs.open(temporaryPath, "wx+", 0o600);
+      identity = await readHandleIdentity(handle);
+      if (platform === "win32") {
+        await options.secureWindowsFile!(temporaryPath);
+      } else {
+        await handle.chmod(0o600);
+      }
     }
 
     await assertPathIdentity(temporaryPath, identity);

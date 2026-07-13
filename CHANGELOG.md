@@ -28,6 +28,7 @@
 - Cover local GitHub Actions with ownership, CodeQL, immutable image, and test-tool runtime policies.
 - Publish Matrix direct-room account data and share strict native identifier validation across server, target, and inbound paths.
 - Materialize Mattermost thread roots, keep root posts channel-scoped, and reject oversized WebSocket post events atomically without disconnecting unrelated clients.
+- Create Windows private files with atomic owner-only ACLs before publishing credentials.
 - Protect pnpm install-script policy and enforce immutable action pins across reusable workflows and composite actions.
 - Stop shipping a non-runnable OpenClaw script fixture and clarify source-checkout CLI invocation.
 - Bind npm and GitHub release mutations to the revalidated tag commit and fail closed on release lookup errors.
