@@ -758,6 +758,95 @@ describe("whatsapp local provider server", () => {
     ).resolves.toEqual(Buffer.from("second direct message"));
   });
 
+  it("bounds Signal sessions per bundle without evicting active ratchets", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1, undefined, undefined, undefined, undefined, {
+      maxSessionsPerBundle: 2,
+    });
+    const bundle = receiver.resolveMany([recipientJid])[0]!;
+    const createSender = async (senderJid: string, registrationId: number, message: string) => {
+      const identity = Curve.generateKeyPair();
+      const storage = createSignalTestStorage(identity, registrationId);
+      const address = new ProtocolAddress("15551234567", 0);
+      await new SessionBuilder(storage, address).initOutgoing({
+        identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+        preKey: {
+          keyId: bundle.preKeyId,
+          publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+        },
+        registrationId: bundle.registrationId,
+        signedPreKey: {
+          keyId: bundle.signedPreKey.keyId,
+          publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+          signature: bundle.signedPreKey.signature,
+        },
+      });
+      const cipher = new SessionCipher(storage, address);
+      const encrypted = await cipher.encrypt(Buffer.from(message));
+      return { cipher, ciphertext: signalCiphertext(encrypted.body), senderJid };
+    };
+    const accept = async (plaintext: Buffer) => plaintext;
+
+    const first = await createSender("15550000001@s.whatsapp.net", 2, "first sender");
+    await expect(
+      receiver.transactDirectMessage({
+        accept,
+        ciphertext: first.ciphertext,
+        recipientJid,
+        remoteJid: first.senderJid,
+        type: "pkmsg",
+      }),
+    ).resolves.toEqual({ status: "accepted", value: Buffer.from("first sender") });
+
+    const second = await createSender("15550000002@s.whatsapp.net", 3, "second sender");
+    await expect(
+      receiver.transactDirectMessage({
+        accept,
+        ciphertext: second.ciphertext,
+        recipientJid,
+        remoteJid: second.senderJid,
+        type: "pkmsg",
+      }),
+    ).resolves.toEqual({ status: "accepted", value: Buffer.from("second sender") });
+    expect(receiver.sessionCount).toBe(2);
+
+    const third = await createSender("15550000003@s.whatsapp.net", 4, "excess sender");
+    const retainedPreKey = bundle.preKey;
+    const retainedPreKeyId = bundle.preKeyId;
+    let acceptedExcess = false;
+    await expect(
+      receiver.transactDirectMessage({
+        accept: async () => {
+          acceptedExcess = true;
+          return true;
+        },
+        ciphertext: third.ciphertext,
+        recipientJid,
+        remoteJid: third.senderJid,
+        type: "pkmsg",
+      }),
+    ).resolves.toEqual({ status: "rejected" });
+    expect(acceptedExcess).toBe(false);
+    expect(receiver.sessionCount).toBe(2);
+    expect(bundle.preKey).toBe(retainedPreKey);
+    expect(bundle.preKeyId).toBe(retainedPreKeyId);
+
+    const followUp = await first.cipher.encrypt(Buffer.from("first sender follow-up"));
+    await expect(
+      receiver.transactDirectMessage({
+        accept,
+        ciphertext: signalCiphertext(followUp.body),
+        recipientJid,
+        remoteJid: first.senderJid,
+        type: followUp.type === 3 ? "pkmsg" : "msg",
+      }),
+    ).resolves.toEqual({
+      status: "accepted",
+      value: Buffer.from("first sender follow-up"),
+    });
+    expect(receiver.sessionCount).toBe(2);
+  });
+
   it("commits Signal ratchets and prekey replacement only after accepted evidence persists", async () => {
     const recipientJid = "15551234567@s.whatsapp.net";
     const senderJid = "15550000001@s.whatsapp.net";

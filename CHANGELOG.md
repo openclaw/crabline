@@ -5,6 +5,7 @@
 - Validate signed-JWT registered claims, clock skew, and synchronous key-loader failure cleanup.
 - Reject stale or far-future signed Discord interactions before payload handling.
 - Normalize malformed callback URLs, artifact pointers, and loopback thread addresses into stable domain errors.
+- Bound retained WhatsApp Signal sessions per bundle without evicting active ratchets or committing rejected staged state.
 - Bound shared JSON ingress, reject non-object payloads precisely, and strictly normalize loopback IP addresses.
 - Harden WhatsApp send evidence, direct-JID correlation, cursor and cleanup races, and cleartext listener exposure.
 - Revalidate npm package version, integrity, and provenance after every release publication outcome.

@@ -46,6 +46,7 @@ const MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENT_AGE_MS = 5 * 60 * 1_000;
 const MAX_WHATSAPP_RECENT_ACKNOWLEDGEMENTS = 10_000;
 export const MAX_WHATSAPP_WEBSOCKET_FRAGMENTS = 1_024;
 export const MAX_WHATSAPP_SIGNAL_BUNDLES = 1_024;
+export const MAX_WHATSAPP_SIGNAL_SESSIONS_PER_BUNDLE = 32;
 export const MAX_WHATSAPP_WEBSOCKET_CLOSE_REASON_BYTES = 123;
 type NodeBuffer = Buffer<ArrayBufferLike>;
 type WhatsAppWebSocketRawData = NodeBuffer | ArrayBuffer | NodeBuffer[];
@@ -117,10 +118,15 @@ export type WhatsAppSignalDecryptResult<T> =
   | { status: "unavailable" }
   | { status: "rejected" };
 
+export type WhatsAppSignalBundleStoreOptions = {
+  maxSessionsPerBundle?: number | undefined;
+};
+
 export class WhatsAppSignalBundleStore {
   readonly #acknowledgedMessageIds = new Map<string, true>();
   readonly #bundles = new Map<string, MockSignalBundle>();
   readonly #lidByPhoneNumber = new Map<string, string>();
+  readonly #maxSessionsPerBundle: number;
   readonly #pendingMessageAcceptances = new Map<string, Promise<void>>();
   readonly #pendingAcknowledgements = new Map<string, number>();
   readonly #pendingTransactions = new Map<string, Promise<void>>();
@@ -132,9 +138,15 @@ export class WhatsAppSignalBundleStore {
     private readonly maxRecentAcknowledgements = MAX_WHATSAPP_RECENT_ACKNOWLEDGEMENTS,
     private readonly maxPendingAcknowledgementAgeMs = MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENT_AGE_MS,
     private readonly now: () => number = Date.now,
+    options: WhatsAppSignalBundleStoreOptions = {},
   ) {
+    const maxSessionsPerBundle =
+      options.maxSessionsPerBundle ?? MAX_WHATSAPP_SIGNAL_SESSIONS_PER_BUNDLE;
     if (!Number.isSafeInteger(maxBundles) || maxBundles < 1) {
       throw new Error("WhatsApp maxSignalBundles must be a positive safe integer.");
+    }
+    if (!Number.isSafeInteger(maxSessionsPerBundle) || maxSessionsPerBundle < 1) {
+      throw new Error("WhatsApp maxSignalSessionsPerBundle must be a positive safe integer.");
     }
     if (!Number.isSafeInteger(maxPendingAcknowledgements) || maxPendingAcknowledgements < 1) {
       throw new Error("WhatsApp maxPendingAcknowledgements must be a positive safe integer.");
@@ -148,6 +160,7 @@ export class WhatsAppSignalBundleStore {
     ) {
       throw new Error("WhatsApp maxPendingAcknowledgementAgeMs must be a positive safe integer.");
     }
+    this.#maxSessionsPerBundle = maxSessionsPerBundle;
   }
 
   get size(): number {
@@ -156,6 +169,14 @@ export class WhatsAppSignalBundleStore {
 
   get lidMappingSize(): number {
     return this.#lidByPhoneNumber.size;
+  }
+
+  get sessionCount(): number {
+    let count = 0;
+    for (const sessions of this.#sessions.values()) {
+      count += sessions.size;
+    }
+    return count;
   }
 
   async acceptMessageOnce(messageKey: string, operation: () => Promise<boolean>): Promise<boolean> {
@@ -281,16 +302,29 @@ export class WhatsAppSignalBundleStore {
       return { status: "unavailable" };
     }
     const address = new ProtocolAddress(remoteAddress.name, remoteAddress.deviceId);
+    // Capacity checks, staged writes, and commits stay atomic per recipient bundle.
     return await this.#runTransaction(identityKey, async () => {
       const sessions = this.#sessions.get(identityKey) ?? new Map<string, SessionRecord>();
+      if (!sessions.has(address.toString()) && sessions.size >= this.#maxSessionsPerBundle) {
+        return { status: "rejected" };
+      }
       const stagedPreKeyRemovals = new Set<number>();
       const stagedSessions = new Map<string, SessionRecord>();
+      const sessionLimitError = new Error("WhatsApp Signal session limit exceeded.");
+      const maxSessionsPerBundle = this.#maxSessionsPerBundle;
+      let stagedNewSessionCount = 0;
       const storage: SignalStorage = {
         async loadSession(id) {
           const session = stagedSessions.get(id) ?? sessions.get(id);
           return session ? cloneSignalSession(session) : undefined;
         },
         async storeSession(id, session) {
+          if (!sessions.has(id) && !stagedSessions.has(id)) {
+            if (sessions.size + stagedNewSessionCount >= maxSessionsPerBundle) {
+              throw sessionLimitError;
+            }
+            stagedNewSessionCount += 1;
+          }
           stagedSessions.set(id, cloneSignalSession(session));
         },
         isTrustedIdentity: () => true,
@@ -315,6 +349,9 @@ export class WhatsAppSignalBundleStore {
             ? await cipher.decryptPreKeyWhisperMessage(params.ciphertext)
             : await cipher.decryptWhisperMessage(params.ciphertext);
       } catch (error) {
+        if (error === sessionLimitError) {
+          return { status: "rejected" };
+        }
         return { error, status: "decrypt-failed" };
       }
       const replacementPreKey = stagedPreKeyRemovals.has(bundle.preKeyId)
