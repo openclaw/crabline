@@ -540,9 +540,10 @@ directory, and then atomically switches the single `current.json` pointer.
 Readers therefore see either the prior complete generation or the next complete
 generation, never per-file mixtures. Setup, probe, cleanup, staging, or
 ownership failures leave the prior pointer unchanged. Crash-leftover staging
-directories and installed-but-uncommitted generations remain owner-only and are
-not removed automatically: a lease that can expire cannot safely authorize a
-resumed stale process to delete another publisher's generation.
+directories and installed-but-uncommitted generations remain owner-only.
+Publication rollback removes them when possible, and the next lock-owning
+publisher prunes any leftovers before staging a new generation. Post-commit
+cleanup retains only the current and previous pointer generations.
 
 POSIX generation directories use mode `0700` and files use mode `0600`. Windows
 hosts require `powershell.exe` with `Set-Acl`; Crabline resolves it from the

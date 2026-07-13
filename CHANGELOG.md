@@ -5,6 +5,7 @@
 - Protect pnpm install-script policy and enforce immutable action pins across reusable workflows and composite actions.
 - Stop shipping a non-runnable OpenClaw script fixture and clarify source-checkout CLI invocation.
 - Bind npm and GitHub release mutations to the revalidated tag commit and fail closed on release lookup errors.
+- Correct the OpenClaw artifact setup guide to reflect runtime pruning of abandoned generations.
 - Enforce native Telegram username bounds, map OpenClaw inbound usernames to numeric chat identities, and align direct sender identity.
 - Harden provider adapter authentication, target identity, credential redaction, and webhook lifecycle behavior.
 - Harden release provenance retries, provider-native contract tests, cross-platform tooling, cleanup ordering, and channel setup coverage.

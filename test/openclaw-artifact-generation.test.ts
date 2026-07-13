@@ -62,6 +62,21 @@ function publishParams(outputDir: string, lock = createLock()) {
 }
 
 describe("OpenClaw artifact generation publication", () => {
+  it("documents runtime pruning of abandoned artifact generations", async () => {
+    const channelSetup = await fs.readFile(
+      path.join(process.cwd(), "docs/channel-setup.md"),
+      "utf8",
+    );
+
+    expect(channelSetup).toMatch(
+      /the next lock-owning\s+publisher prunes any leftovers before staging a new generation/u,
+    );
+    expect(channelSetup).toMatch(
+      /Post-commit\s+cleanup retains only the current and previous pointer generations/u,
+    );
+    expect(channelSetup).not.toContain("not removed automatically");
+  });
+
   it("reads legacy smoke-only artifact pointers", async () => {
     const outputDir = await createTempDir();
     try {
