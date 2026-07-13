@@ -82,6 +82,8 @@ type ServeParamFactory = (
 const READY_FILE_LEASE_STALE_MS = 60_000;
 const READY_FILE_LEASE_UPDATE_MS = 1_000;
 const MAX_SERVE_CREDENTIALS_BYTES = 64 * 1024;
+const WATCH_SHUTDOWN_GRACE_MS = 250;
+const WATCH_SHUTDOWN_REACHED = Symbol("watch shutdown reached");
 
 const SERVE_CREDENTIAL_ENV = [
   ["accessToken", "CRABLINE_ACCESS_TOKEN"],
@@ -206,6 +208,30 @@ async function writeOutput(stream: NodeJS.WriteStream, value: string): Promise<b
 
 async function print(value: string): Promise<boolean> {
   return await writeOutput(process.stdout, `${value}\n`);
+}
+
+async function withWatchShutdownDeadline<T>(
+  operation: PromiseLike<T>,
+  operationName: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new CrablineError(
+          `Provider ${operationName} did not settle within ${WATCH_SHUTDOWN_GRACE_MS}ms during watch shutdown.`,
+          { kind: "timeout" },
+        ),
+      );
+    }, WATCH_SHUTDOWN_GRACE_MS);
+  });
+  try {
+    return await Promise.race([Promise.resolve(operation), deadline]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 async function withManifest<T>(
@@ -465,9 +491,13 @@ export function createProgram(
           | undefined;
         const stopWatch = onceAsync(async () => {
           controller.abort();
-          await iterator?.return?.();
+          const returnResult = iterator?.return?.();
+          if (returnResult) {
+            await withWatchShutdownDeadline(returnResult, "watch iterator return");
+          }
         });
         const shutdown = installShutdownHandler(stopWatch);
+        const shutdownSettled = shutdown.wait().then(() => WATCH_SHUTDOWN_REACHED);
         const lifecycleErrors: unknown[] = [];
         try {
           const watchContext = {
@@ -494,7 +524,10 @@ export function createProgram(
           const watch = provider.watch(watchContext);
           iterator = watch[Symbol.asyncIterator]();
           while (true) {
-            const result = await iterator.next();
+            const result = await Promise.race([iterator.next(), shutdownSettled]);
+            if (typeof result === "symbol") {
+              break;
+            }
             if (result.done) {
               break;
             }
@@ -519,7 +552,10 @@ export function createProgram(
           }
         }
         try {
-          await provider.cleanup?.();
+          const cleanup = provider.cleanup?.();
+          if (cleanup) {
+            await withWatchShutdownDeadline(cleanup, "cleanup");
+          }
         } catch (error) {
           if (!lifecycleErrors.includes(error)) {
             lifecycleErrors.push(error);
