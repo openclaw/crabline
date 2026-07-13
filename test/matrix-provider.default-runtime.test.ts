@@ -63,6 +63,30 @@ describe("matrix provider default runtime", () => {
     ).toMatchObject({ author: "assistant" });
   });
 
+  it("fills inline auth userID from the environment or local default", () => {
+    const config = createConfig({
+      auth: {
+        accessToken: "test-token-placeholder",
+        type: "accessToken",
+      },
+    });
+
+    expect(
+      resolveMatrixAdapterConfig(config, "crabline", {
+        MATRIX_USER_ID: "@env-bot:example.com",
+      }).auth,
+    ).toEqual({
+      accessToken: "test-token-placeholder",
+      type: "accessToken",
+      userID: "@env-bot:example.com",
+    });
+    expect(resolveMatrixAdapterConfig(config, "crabline", {}).auth).toEqual({
+      accessToken: "test-token-placeholder",
+      type: "accessToken",
+      userID: "@crabline:matrix.local",
+    });
+  });
+
   it("preserves configured Matrix metadata when provided", () => {
     expect(
       resolveMatrixAdapterConfig(

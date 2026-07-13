@@ -21,6 +21,37 @@ describe("Matrix webhook normalizer", () => {
     await provider.cleanup();
   });
 
+  it("aligns target identifiers with the Matrix server validator", async () => {
+    const config = await createLocalMockConfig("matrix", "/matrix/webhook");
+    const provider = new MatrixProviderAdapter("matrix", config, "crabline");
+    try {
+      for (const roomId of ["!room:123", "!room:01.2.003.4", "!room:[2001:db8::1]:8448"]) {
+        expect(provider.normalizeTarget({ id: roomId, metadata: {} })).toMatchObject({
+          channelId: roomId,
+        });
+      }
+      for (const roomId of [
+        "!room:999.1.1.1",
+        "!room:invalid_host",
+        `!${"a".repeat(250)}:matrix.test`,
+      ]) {
+        expect(() => provider.normalizeTarget({ id: roomId, metadata: {} })).toThrow(
+          /Matrix room_id/u,
+        );
+      }
+      expect(() =>
+        provider.normalizeTarget({
+          channelId: "!room:matrix.test",
+          id: "!room:matrix.test",
+          metadata: {},
+          threadId: "$event:invalid_host",
+        }),
+      ).toThrow(/Matrix event_id/u);
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
   it("rejects externally reachable webhooks without native authentication", async () => {
     const config = await createLocalMockConfig("matrix", "/matrix/webhook");
     config.matrix!.webhook.host = "0.0.0.0";

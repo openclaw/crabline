@@ -169,6 +169,7 @@ describe("telegram provider", () => {
   it("round-trips canonical topic ids through generic ingress", () => {
     const topLevel = {
       authorIsBot: true,
+      channelId: "-100123",
       id: "generic-1",
       text: "generic topic reply",
       threadId: "-100123:42",
@@ -183,6 +184,7 @@ describe("telegram provider", () => {
     const nested = {
       message: {
         authorIsBot: true,
+        channelId: "-100123",
         id: "generic-2",
         text: "nested topic reply",
         threadId: "-100123:42",
@@ -197,6 +199,25 @@ describe("telegram provider", () => {
         threadId: "-100123:42",
       },
     });
+
+    expect(() =>
+      normalizeTelegramWebhookPayload({
+        channelId: "-100999",
+        message: {
+          text: "wrong top-level channel",
+          threadId: "-100123:42",
+        },
+      }),
+    ).toThrow(/must match the inbound channelId/u);
+    expect(() =>
+      normalizeTelegramWebhookPayload({
+        message: {
+          channelId: "-100999",
+          text: "wrong nested channel",
+          threadId: "-100123:42",
+        },
+      }),
+    ).toThrow(/must match the inbound channelId/u);
   });
 
   it("normalizes edited channel posts", () => {

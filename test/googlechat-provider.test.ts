@@ -158,6 +158,25 @@ describe("Google Chat webhook authentication", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("rejects malformed JSON before accepting an arbitrary bearer token", async () => {
+    const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
+    const authenticate = createGoogleChatWebhookAuthenticator(config, {
+      fetch: async () => {
+        throw new Error("certificate lookup must not run for malformed JSON");
+      },
+    });
+
+    await expect(
+      authenticate!(
+        new Request(config.googlechat!.endpointUrl!, {
+          headers: { authorization: "Bearer arbitrary-token" },
+        }),
+        "{",
+      ),
+    ).resolves.toMatchObject({ status: 401 });
+  });
+
   it("defaults the Pub/Sub audience to the endpoint URL", async () => {
     const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
     config.googlechat!.endpointUrl = "https://chat.example.test/pubsub";
@@ -273,6 +292,23 @@ describe("Google Chat webhook authentication", () => {
         },
       }),
     ).toThrow(/must belong to message\.space\.name/u);
+  });
+
+  it("requires configured thread targets to belong to their space", async () => {
+    const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    const provider = new GoogleChatProviderAdapter("googlechat", config, "crabline");
+    try {
+      expect(() =>
+        provider.normalizeTarget({
+          channelId: "spaces/AAAABbbbCCC",
+          id: "spaces/AAAABbbbCCC",
+          metadata: {},
+          threadId: "spaces/OtherSpace/threads/BBBBccccDDD",
+        }),
+      ).toThrow(/must belong to the target space\.name/u);
+    } finally {
+      await provider.cleanup();
+    }
   });
 });
 
