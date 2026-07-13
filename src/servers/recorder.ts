@@ -37,6 +37,11 @@ type RecorderFileIdentity = {
   nlink: bigint;
 };
 
+type RecorderIdentityLock = {
+  hardlinkSafe: boolean;
+  release: () => Promise<void>;
+};
+
 type ObserverTask = {
   markStarted: () => void;
   started: Promise<void>;
@@ -343,6 +348,7 @@ async function recorderIdentityLockTargets(
 ): Promise<{
   fallbackRoot?: string;
   preferred: string;
+  preferredHardlinkSafe: boolean;
   userId: number | undefined;
 }> {
   const currentUserId = process.platform === "win32" ? undefined : process.geteuid?.();
@@ -366,6 +372,7 @@ async function recorderIdentityLockTargets(
           await secureRecorderLockRoot(sharedRoot, currentUserId),
           identity,
         ),
+        preferredHardlinkSafe: true,
         userId: currentUserId,
       };
     } catch (error) {
@@ -383,6 +390,7 @@ async function recorderIdentityLockTargets(
   );
   return {
     preferred: recorderIdentityLockPath(adjacentRoot, identity),
+    preferredHardlinkSafe: false,
     userId: currentUserId,
   };
 }
@@ -415,16 +423,22 @@ async function acquireRecorderLock(filePath: string): Promise<() => Promise<void
 async function acquireRecorderIdentityLock(
   filePath: string,
   identity: RecorderFileIdentity,
-): Promise<() => Promise<void>> {
+): Promise<RecorderIdentityLock> {
   const targets = await recorderIdentityLockTargets(filePath, identity);
   try {
-    return await acquireRecorderLock(targets.preferred);
+    return {
+      hardlinkSafe: targets.preferredHardlinkSafe,
+      release: await acquireRecorderLock(targets.preferred),
+    };
   } catch (error) {
     if (!targets.fallbackRoot || !recorderLockRootUnavailable(error)) {
       throw error;
     }
     const fallbackRoot = await secureRecorderLockRoot(targets.fallbackRoot, targets.userId);
-    return await acquireRecorderLock(recorderIdentityLockPath(fallbackRoot, identity));
+    return {
+      hardlinkSafe: false,
+      release: await acquireRecorderLock(recorderIdentityLockPath(fallbackRoot, identity)),
+    };
   }
 }
 
@@ -524,14 +538,17 @@ async function appendRecorderAttempt(params: {
       result = "retry";
     } else {
       const lockedIdentity = requireRecorderFileIdentity(stats);
-      releaseIdentityLock = await acquireRecorderIdentityLock(
+      const identityLock = await acquireRecorderIdentityLock(
         params.publicationPath,
         lockedIdentity,
       );
+      releaseIdentityLock = identityLock.release;
       stats = await file.stat();
+      const refreshedIdentity = requireRecorderFileIdentity(stats);
       identity = requireRecorderIdentity(stats);
       if (
         identity !== `${lockedIdentity.dev}:${lockedIdentity.ino}` ||
+        (!identityLock.hardlinkSafe && refreshedIdentity.nlink > 1n) ||
         !(await recorderPathHasIdentity(params.publicationPath, identity))
       ) {
         result = "retry";
