@@ -129,6 +129,7 @@ describe("release workflow", () => {
     expect(packageStep).toContain('execFileSync("tar", ["-xzf", tarballPath');
     expect(uploadStep?.with?.path).toBe("${{ steps.package.outputs.tarball }}");
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity');
+    expect(publishStep).toContain('npm view "$PACKAGE_NAME@$RELEASE_VERSION" version');
     expect(publishStep).toContain(
       'npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.attestations.provenance.predicateType',
     );
@@ -136,6 +137,7 @@ describe("release workflow", () => {
     expect(publishStep).toContain('"Refusing to publish " +');
     expect(publishStep).toContain('" because npm latest is newer at " +');
     expect(publishStep).toContain('npm publish "$PACKAGE_TARBALL" --access public --provenance');
+    expect(publishStep).toContain("for delay in 2 4 8 16; do");
     expect(releaseStep).toContain('gh release view "$RELEASE_TAG"');
     expect(releaseStep).toContain("--json isDraft,isPrerelease");
     expect(releaseStep).toContain("--verify-tag");
@@ -301,7 +303,7 @@ describe("release workflow", () => {
     ).rejects.toThrow("Packed CLI dist/src/bin/crabline.js is missing its Node shebang.");
   });
 
-  it("skips matching packages, rejects drift, and recovers after publish races", async () => {
+  it("verifies package postconditions after existing, successful, and raced publishes", async () => {
     const workflow = await readWorkflow();
     const publishStep = jobSteps(workflow, "publish").find(
       (step) => step.name === "Publish package with npm provenance",
@@ -315,6 +317,10 @@ describe("release workflow", () => {
     });
     expect(matchingCalls).toEqual([
       "view @openclaw/crabline@1.2.3 dist.integrity",
+      "view @openclaw/crabline@1.2.3 version",
+      "view @openclaw/crabline@1.2.3 dist.attestations.provenance.predicateType",
+      "view @openclaw/crabline@1.2.3 dist.integrity",
+      "view @openclaw/crabline@1.2.3 version",
       "view @openclaw/crabline@1.2.3 dist.attestations.provenance.predicateType",
     ]);
 
@@ -340,19 +346,26 @@ describe("release workflow", () => {
       "::error::Published @openclaw/crabline@1.2.3 has unsupported provenance predicate https://example.invalid/provenance.",
     );
 
-    const racedCalls = await runPublishStep(publishStep, {
-      MOCK_PUBLISH_STATUS: "1",
+    const publishedCalls = await runPublishStep(publishStep, {
       MOCK_VIEW_RESULT: "after-publish",
     });
-    expect(racedCalls).toEqual([
+    const expectedPublishCalls = [
       "view @openclaw/crabline@1.2.3 dist.integrity",
       "view @openclaw/crabline@latest version",
       expect.stringMatching(
         /publish .*\/release\/crabline-1\.2\.3\.tgz --access public --provenance$/u,
       ),
       "view @openclaw/crabline@1.2.3 dist.integrity",
+      "view @openclaw/crabline@1.2.3 version",
       "view @openclaw/crabline@1.2.3 dist.attestations.provenance.predicateType",
-    ]);
+    ];
+    expect(publishedCalls).toEqual(expectedPublishCalls);
+    await expect(
+      runPublishStep(publishStep, {
+        MOCK_PUBLISH_STATUS: "1",
+        MOCK_VIEW_RESULT: "after-publish",
+      }),
+    ).resolves.toEqual(expectedPublishCalls);
 
     await expect(
       runPublishStep(publishStep, {
@@ -365,6 +378,39 @@ describe("release workflow", () => {
       }),
     ).rejects.toThrow(
       "::error::Unable to resolve the current npm latest version for @openclaw/crabline.",
+    );
+  });
+
+  it("fails closed when successful publication violates package postconditions", async () => {
+    const workflow = await readWorkflow();
+    const publishStep = jobSteps(workflow, "publish").find(
+      (step) => step.name === "Publish package with npm provenance",
+    )?.run;
+    if (!publishStep) {
+      throw new Error("Release workflow is missing its npm publish step.");
+    }
+
+    await expect(
+      runPublishStep(publishStep, {
+        MOCK_VIEW_RESULT: "mismatch-after-publish",
+      }),
+    ).rejects.toThrow(
+      "::error::Published @openclaw/crabline@1.2.3 has integrity sha512-different, expected sha512-expected.",
+    );
+    await expect(
+      runPublishStep(publishStep, {
+        MOCK_PROVENANCE_RESULT: "missing",
+        MOCK_VIEW_RESULT: "after-publish",
+      }),
+    ).rejects.toThrow("::error::Published @openclaw/crabline@1.2.3 is missing npm provenance.");
+    await expect(
+      runPublishStep(publishStep, {
+        MOCK_VERSION_RESULT: "mismatch",
+        MOCK_VIEW_RESULT: "after-publish",
+      }),
+    ).rejects.toThrow("::error::Published @openclaw/crabline@1.2.3 reports version 1.2.4.");
+    await expect(runPublishStep(publishStep, {})).rejects.toThrow(
+      "::error::Unable to verify published @openclaw/crabline@1.2.3 after bounded retries.",
     );
   });
 });
@@ -582,8 +628,8 @@ async function runPublishStep(
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-release-publish-"));
   const binDir = path.join(tempDir, "bin");
   const logPath = path.join(tempDir, "npm.log");
+  const publishedPath = path.join(tempDir, "published");
   const releaseDir = path.join(tempDir, "release");
-  const viewCountPath = path.join(tempDir, "view-count");
 
   try {
     await Promise.all([fs.mkdir(binDir), fs.mkdir(releaseDir)]);
@@ -595,6 +641,7 @@ async function runPublishStep(
 set -euo pipefail
 echo "$*" >> "$MOCK_LOG"
 if [[ "$1" == "publish" ]]; then
+  touch "$MOCK_PUBLISHED"
   exit "\${MOCK_PUBLISH_STATUS:-0}"
 fi
 if [[ "$2" == "$PACKAGE_NAME@latest" ]]; then
@@ -602,6 +649,18 @@ if [[ "$2" == "$PACKAGE_NAME@latest" ]]; then
     exit "$MOCK_LATEST_STATUS"
   fi
   echo "\${MOCK_LATEST_VERSION:-1.2.2}"
+  exit 0
+fi
+view_result="\${MOCK_VIEW_RESULT:-missing}"
+if [[ "$view_result" == *"after-publish" && ! -f "$MOCK_PUBLISHED" ]]; then
+  exit 1
+fi
+if [[ "$3" == "version" ]]; then
+  case "\${MOCK_VERSION_RESULT:-matching}" in
+    matching) echo "$RELEASE_VERSION" ;;
+    mismatch) echo "1.2.4" ;;
+    *) exit 1 ;;
+  esac
   exit 0
 fi
 if [[ "$3" == "dist.attestations.provenance.predicateType" ]]; then
@@ -612,22 +671,9 @@ if [[ "$3" == "dist.attestations.provenance.predicateType" ]]; then
   esac
   exit 0
 fi
-count=0
-if [[ -f "$MOCK_VIEW_COUNT" ]]; then
-  count="$(cat "$MOCK_VIEW_COUNT")"
-fi
-count=$((count + 1))
-echo "$count" > "$MOCK_VIEW_COUNT"
-case "\${MOCK_VIEW_RESULT:-missing}" in
-  matching) echo "$PACKAGE_INTEGRITY" ;;
-  mismatch) echo "sha512-different" ;;
-  after-publish)
-    if [[ "$count" -gt 1 ]]; then
-      echo "$PACKAGE_INTEGRITY"
-    else
-      exit 1
-    fi
-    ;;
+case "$view_result" in
+  matching | after-publish) echo "$PACKAGE_INTEGRITY" ;;
+  mismatch | mismatch-after-publish) echo "sha512-different" ;;
   *) exit 1 ;;
 esac
 `,
@@ -641,7 +687,7 @@ esac
         ...process.env,
         ...overrides,
         MOCK_LOG: logPath,
-        MOCK_VIEW_COUNT: viewCountPath,
+        MOCK_PUBLISHED: publishedPath,
         PACKAGE_INTEGRITY: "sha512-expected",
         PACKAGE_NAME: "@openclaw/crabline",
         PATH: `${binDir}:${process.env.PATH}`,
