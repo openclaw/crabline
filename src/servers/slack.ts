@@ -1204,17 +1204,18 @@ async function handleRequest(params: { request: IncomingMessage; state: SlackSer
     state: params.state,
   });
   const mutation = ["chat.postMessage", "conversations.open"].includes(methodMatch[1]);
-  const payload = mutation
+  const recordsAcceptance = mutation || methodMatch[1] === "auth.test";
+  const payload = recordsAcceptance
     ? ((await response
         .clone()
         .json()
         .catch(() => undefined)) as unknown)
     : undefined;
   const committed = isJsonObject(payload) && payload.ok === true;
-  if (methodMatch[1] === "chat.postMessage") {
+  if (methodMatch[1] === "auth.test" || methodMatch[1] === "chat.postMessage") {
     event.accepted = committed;
   }
-  await appendEvent(params.state, event, committed);
+  await appendEvent(params.state, event, mutation && committed);
   return response;
 }
 

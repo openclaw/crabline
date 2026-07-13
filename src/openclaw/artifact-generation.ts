@@ -248,7 +248,7 @@ async function assertCurrentGenerationExists(
     OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
     pointer.generation,
   );
-  if (recorderPaths[1] === undefined && recorderPaths[2] === undefined) {
+  if (recorderPaths.every((recorderPath) => recorderPath === undefined)) {
     return;
   }
   const resolvedRecorderPaths = recorderPaths.map((recorderPath) =>
@@ -415,7 +415,9 @@ export async function publishOpenClawCrablineArtifactGeneration(
       : undefined;
     const publishedManifest = recorderSnapshotPath
       ? { ...params.manifest, recorderPath: recorderSnapshotPath }
-      : params.manifest;
+      : Object.fromEntries(
+          Object.entries(params.manifest).filter(([key]) => key !== "recorderPath"),
+        );
     const providerReadinessBase = recorderSnapshotPath
       ? withRecorderSnapshotPath(params.providerReadiness, recorderSnapshotPath)
       : params.providerReadiness;

@@ -799,6 +799,7 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
   if (method === "POST" && url.pathname === "/api/v4/posts") {
     event.accepted = response.status === 201;
   }
+  event.accepted ??= response.ok;
   await appendEvent(state, event, response.ok && method !== "GET");
   return response;
 }
