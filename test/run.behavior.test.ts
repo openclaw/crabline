@@ -270,6 +270,64 @@ describe("run behavior", () => {
     }
   });
 
+  it("preserves agent author, acknowledgement, and nonce gates with a compiled regex", async () => {
+    let waitCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => ({ accepted: true, messageId: "sent", threadId: "thread" }),
+      waitForInbound: async (context) => {
+        waitCalls += 1;
+        const candidates = [
+          { author: "user" as const, text: `ACK ${context.nonce} expected reply` },
+          { author: "assistant" as const, text: "ACK wrong-nonce expected reply" },
+          { author: "assistant" as const, text: `${context.nonce} expected reply` },
+          { author: "assistant" as const, text: `ACK ${context.nonce} expected reply` },
+        ];
+        const candidate = candidates[waitCalls - 1]!;
+        return {
+          ...candidate,
+          id: `inbound-${waitCalls}`,
+          provider: "mock",
+          sentAt: new Date().toISOString(),
+          threadId: "thread",
+        };
+      },
+    };
+    const regexManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [
+        {
+          ...manifest.fixtures[0]!,
+          inboundMatch: {
+            author: "assistant",
+            nonce: "exact",
+            pattern: "^.*expected reply$",
+            strategy: "regex",
+          },
+          mode: "agent",
+          timeoutMs: 100,
+        },
+      ],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: regexManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(waitCalls).toBe(4);
+  });
+
   it("uses one effective fixture for mode overrides in provider contexts", async () => {
     const contextFixtures: ManifestDefinition["fixtures"] = [];
     let outboundText = "";
@@ -975,6 +1033,56 @@ describe("run behavior", () => {
       "Provider returned more than 1024 distinct unmatched inbound envelopes.",
     );
     expect(waitCalls).toBe(1025);
+  });
+
+  it("checks duplicates and matching candidates before enforcing the envelope cap", async () => {
+    let waitCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["roundtrip"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => ({ accepted: true, messageId: "sent", threadId: "thread" }),
+      waitForInbound: async (context) => {
+        waitCalls += 1;
+        if (waitCalls === 1025) {
+          return {
+            author: "assistant",
+            id: "unmatched-1",
+            provider: "mock",
+            sentAt: new Date().toISOString(),
+            text: "still not the requested nonce",
+            threadId: "thread",
+          };
+        }
+        return {
+          author: "assistant",
+          id: waitCalls === 1026 ? "matching" : `unmatched-${waitCalls}`,
+          provider: "mock",
+          sentAt: new Date().toISOString(),
+          text: waitCalls === 1026 ? context.nonce : "not the requested nonce",
+          threadId: "thread",
+        };
+      },
+    };
+    const boundedManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [{ ...manifest.fixtures[0]!, timeoutMs: 5_000 }],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: boundedManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(waitCalls).toBe(1026);
   });
 
   it("bounds a hung inbound provider by the core deadline", async () => {

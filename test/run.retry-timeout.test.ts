@@ -33,66 +33,72 @@ const manifest: ManifestDefinition = {
 };
 
 describe("runFixtureCommand retries", () => {
-  it("keeps inbound deadlines monotonic when the wall clock moves backward", async () => {
-    let wallNow = 10_000;
-    let waitCalls = 0;
-    const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
-    const provider: ProviderAdapter = {
-      id: "mock",
-      platform: "loopback",
-      status: "ready",
-      supports: ["roundtrip"],
-      normalizeTarget(target) {
-        return { id: target.id, metadata: target.metadata };
-      },
-      async probe() {
-        return { details: [], healthy: true };
-      },
-      async send() {
-        return { accepted: true, messageId: "sent-1", threadId: "thread-1" };
-      },
-      async waitForInbound(context) {
-        waitCalls += 1;
-        expect(context.timeoutMs).toBeLessThanOrEqual(30);
-        if (waitCalls === 1) {
-          wallNow -= 60_000;
-        }
-        return {
-          author: "assistant",
-          id: "repeated",
-          provider: "mock",
-          sentAt: new Date(wallNow).toISOString(),
-          text: "not the requested nonce",
-          threadId: "thread-1",
-        };
-      },
-    };
-    const registry: Registry = {
-      catalog: OPENCLAW_SUPPORT_CATALOG,
-      resolve() {
-        return provider;
-      },
-    };
-    const boundedManifest: ManifestDefinition = {
-      ...manifest,
-      fixtures: [{ ...manifest.fixtures[0]!, retries: 0, timeoutMs: 30 }],
-    };
+  it.each([
+    ["backward", -60_000],
+    ["forward", 60_000],
+  ] as const)(
+    "keeps inbound deadlines monotonic when the wall clock moves %s",
+    async (_direction, wallShift) => {
+      let wallNow = 10_000;
+      let waitCalls = 0;
+      const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => wallNow);
+      const provider: ProviderAdapter = {
+        id: "mock",
+        platform: "loopback",
+        status: "ready",
+        supports: ["roundtrip"],
+        normalizeTarget(target) {
+          return { id: target.id, metadata: target.metadata };
+        },
+        async probe() {
+          return { details: [], healthy: true };
+        },
+        async send() {
+          return { accepted: true, messageId: "sent-1", threadId: "thread-1" };
+        },
+        async waitForInbound(context) {
+          waitCalls += 1;
+          expect(context.timeoutMs).toBeLessThanOrEqual(30);
+          if (waitCalls === 1) {
+            wallNow += wallShift;
+          }
+          return {
+            author: "assistant",
+            id: "repeated",
+            provider: "mock",
+            sentAt: new Date(wallNow).toISOString(),
+            text: "not the requested nonce",
+            threadId: "thread-1",
+          };
+        },
+      };
+      const registry: Registry = {
+        catalog: OPENCLAW_SUPPORT_CATALOG,
+        resolve() {
+          return provider;
+        },
+      };
+      const boundedManifest: ManifestDefinition = {
+        ...manifest,
+        fixtures: [{ ...manifest.fixtures[0]!, retries: 0, timeoutMs: 30 }],
+      };
 
-    try {
-      const result = await runFixtureCommand({
-        fixtureId: "fixture",
-        manifest: boundedManifest,
-        manifestPath: "/tmp/crabline.yaml",
-        registry,
-      });
+      try {
+        const result = await runFixtureCommand({
+          fixtureId: "fixture",
+          manifest: boundedManifest,
+          manifestPath: "/tmp/crabline.yaml",
+          registry,
+        });
 
-      expect(result).toMatchObject({ failureKind: "timeout", ok: false });
-      expect(waitCalls).toBeGreaterThan(1);
-      expect(waitCalls).toBeLessThan(10);
-    } finally {
-      dateNowSpy.mockRestore();
-    }
-  });
+        expect(result).toMatchObject({ failureKind: "timeout", ok: false });
+        expect(waitCalls).toBeGreaterThan(1);
+        expect(waitCalls).toBeLessThan(10);
+      } finally {
+        dateNowSpy.mockRestore();
+      }
+    },
+  );
 
   it("retries after a timeout and succeeds", async () => {
     let waitCalls = 0;
