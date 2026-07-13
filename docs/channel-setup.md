@@ -104,8 +104,10 @@ header before JSON parsing or recorder writes:
 - Feishu `verificationToken` or `FEISHU_VERIFICATION_TOKEN` verifies plaintext
   callback tokens on loopback and remains an additional check when configured
   with encryption. Externally reachable webhooks require `encryptKey` or
-  `FEISHU_ENCRYPT_KEY` to verify `X-Lark-Signature` and decrypt encrypted event
-  envelopes before challenge handling or event normalization.
+  `FEISHU_ENCRYPT_KEY` to verify `X-Lark-Signature` on event callbacks and
+  decrypt encrypted envelopes before normalization. Initial encrypted
+  `url_verification` challenges may omit signature headers and are accepted
+  only when their decrypted token matches the configured verification token.
 - Slack `signingSecret` or `SLACK_SIGNING_SECRET` verifies
   `X-Slack-Request-Timestamp` and `X-Slack-Signature`; it is required when the
   webhook host is non-loopback or `publicUrl` is set.
