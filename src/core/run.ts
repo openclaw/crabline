@@ -1,7 +1,7 @@
 import { matchesInbound } from "./matcher.js";
 import { createOutboundText } from "./message-template.js";
 import { createNonce } from "./nonces.js";
-import { inboundRegexSafetyError } from "./safe-regex.js";
+import { compileInboundRegex } from "./safe-regex.js";
 import { type FailureKind, CrablineError, ensureErrorMessage } from "./errors.js";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.js";
 import type { ManifestDefinition } from "../config/schema.js";
@@ -357,13 +357,11 @@ export async function runFixtureCommand(params: {
         return (result = toFailure(fixture.id, fixture.provider, mode, error, "connectivity"));
       }
     } else {
+      let compiledInboundRegex: ReturnType<typeof compileInboundRegex> | undefined;
       if (fixture.inboundMatch.strategy === "regex" && fixture.inboundMatch.pattern) {
         try {
           RegExp(fixture.inboundMatch.pattern, "u");
-          const safetyError = inboundRegexSafetyError(fixture.inboundMatch.pattern);
-          if (safetyError) {
-            throw new Error(safetyError);
-          }
+          compiledInboundRegex = compileInboundRegex(fixture.inboundMatch.pattern);
         } catch (error) {
           return (result = toFailure(
             fixture.id,
@@ -377,6 +375,9 @@ export async function runFixtureCommand(params: {
           ));
         }
       }
+      const preparedInboundMatch = compiledInboundRegex
+        ? { ...fixture.inboundMatch, pattern: undefined }
+        : fixture.inboundMatch;
 
       let attempts = 0;
       const maxAttempts = fixture.retries + 1;
@@ -505,9 +506,10 @@ export async function runFixtureCommand(params: {
               seenInbound.add(key);
 
               if (
-                matchesInbound(candidate, fixture.inboundMatch, nonce, {
+                matchesInbound(candidate, preparedInboundMatch, nonce, {
                   requireAcknowledgement: mode === "agent",
-                })
+                }) &&
+                (!compiledInboundRegex || compiledInboundRegex.test(candidate.text))
               ) {
                 inbound = candidate;
                 break;
