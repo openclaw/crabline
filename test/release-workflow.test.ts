@@ -77,6 +77,9 @@ describe("release workflow", () => {
     expect(checkoutStep?.with?.ref).toBe("refs/tags/${{ steps.release.outputs.tag }}");
     expect(verifyCheckoutStep).toContain("refs/tags/${RELEASE_TAG}^{commit}");
     expect(verifyCheckoutStep).toContain('"$release_commit" == "$GITHUB_EVENT_SHA"');
+    expect(workflow.jobs?.verify?.outputs?.commit).toBe(
+      "${{ steps.release-commit.outputs.commit }}",
+    );
   });
 
   it("pins tooling and makes package and GitHub publication retry-safe", async () => {
@@ -138,6 +141,31 @@ describe("release workflow", () => {
     expect(releaseStep).toContain("--verify-tag");
   });
 
+  it("revalidates the verified commit before irreversible release jobs", async () => {
+    const workflow = await readWorkflow();
+
+    for (const jobName of ["publish", "github-release"]) {
+      const steps = jobSteps(workflow, jobName);
+      const revalidateStep = steps.find(
+        (step) => step.name === "Revalidate release tag commit",
+      )?.run;
+      expect(revalidateStep).toContain('"$GITHUB_EVENT_SHA" != "$VERIFIED_COMMIT"');
+      expect(revalidateStep).toContain("git ls-remote --exit-code");
+      expect(revalidateStep).toContain('"$remote_commit" != "$VERIFIED_COMMIT"');
+      await expect(runTagRevalidationStep(revalidateStep, {})).resolves.toBeUndefined();
+      await expect(
+        runTagRevalidationStep(revalidateStep, {
+          MOCK_REMOTE_COMMIT: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        }),
+      ).rejects.toThrow("resolves to bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+      await expect(
+        runTagRevalidationStep(revalidateStep, {
+          GITHUB_EVENT_SHA: "cccccccccccccccccccccccccccccccccccccccc",
+        }),
+      ).rejects.toThrow("does not match verified commit");
+    }
+  });
+
   it("accepts only published stable GitHub releases as existing", async () => {
     const workflow = await readWorkflow();
     const releaseStep = jobSteps(workflow, "github-release").find(
@@ -160,6 +188,13 @@ describe("release workflow", () => {
     const missingCalls = await runGithubReleaseStep(releaseStep, "missing");
     expect(missingCalls).toHaveLength(2);
     expect(missingCalls[1]).toContain("release create v1.2.3");
+
+    await expect(runGithubReleaseStep(releaseStep, "api-error")).rejects.toThrow(
+      "Unable to inspect GitHub release v1.2.3",
+    );
+    await expect(runGithubReleaseStep(releaseStep, "unexpected-exit")).rejects.toThrow(
+      "Unable to inspect GitHub release v1.2.3",
+    );
   });
 
   it("pins privileged release actions to immutable revisions", async () => {
@@ -204,7 +239,7 @@ describe("release workflow", () => {
       .filter((run): run is string => Boolean(run));
 
     expect(verify?.permissions).toEqual({ contents: "read" });
-    expect(publish?.permissions).toEqual({ "id-token": "write" });
+    expect(publish?.permissions).toEqual({ contents: "read", "id-token": "write" });
     expect(githubRelease?.permissions).toEqual({ contents: "write" });
     expect(publish?.needs).toBe("verify");
     expect(githubRelease?.needs).toEqual(["verify", "publish"]);
@@ -423,8 +458,10 @@ if [[ "$1 $2" == "release view" ]]; then
     stable) printf 'false\\tfalse\\n' ;;
     draft) printf 'true\\tfalse\\n' ;;
     prerelease) printf 'false\\ttrue\\n' ;;
-    missing) exit 1 ;;
-    *) exit 2 ;;
+    missing) echo "release not found" >&2; exit 1 ;;
+    api-error) echo "HTTP 503: service unavailable" >&2; exit 1 ;;
+    unexpected-exit) echo "gh crashed" >&2; exit 2 ;;
+    *) exit 3 ;;
   esac
 fi
 `,
@@ -438,9 +475,47 @@ fi
         MOCK_RELEASE_STATE: state,
         PATH: `${binDir}:${process.env.PATH}`,
         RELEASE_TAG: "v1.2.3",
+        RUNNER_TEMP: tempDir,
       },
     });
     return (await fs.readFile(logPath, "utf8")).trim().split("\n");
+  } finally {
+    await fs.rm(tempDir, { force: true, recursive: true });
+  }
+}
+
+async function runTagRevalidationStep(
+  script: string | undefined,
+  overrides: Record<string, string>,
+): Promise<void> {
+  if (!script) {
+    throw new Error("Release workflow is missing its tag revalidation step.");
+  }
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-release-revalidate-"));
+  const binDir = path.join(tempDir, "bin");
+  try {
+    await fs.mkdir(binDir);
+    await writeExecutable(
+      path.join(binDir, "git"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\trefs/tags/v1.2.3\\n' "\${MOCK_TAG_OBJECT:-dddddddddddddddddddddddddddddddddddddddd}"
+printf '%s\\trefs/tags/v1.2.3^{}\\n' "\${MOCK_REMOTE_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+`,
+    );
+    await execFileWithOutput("bash", ["-c", script], {
+      cwd: tempDir,
+      env: {
+        ...process.env,
+        GITHUB_EVENT_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        GITHUB_REPOSITORY: "openclaw/crabline",
+        GITHUB_SERVER_URL: "https://github.com",
+        PATH: `${binDir}:${process.env.PATH}`,
+        RELEASE_TAG: "v1.2.3",
+        VERIFIED_COMMIT: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ...overrides,
+      },
+    });
   } finally {
     await fs.rm(tempDir, { force: true, recursive: true });
   }
