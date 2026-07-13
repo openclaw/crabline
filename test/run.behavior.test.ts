@@ -1052,6 +1052,30 @@ describe("run behavior", () => {
     expect(suite.results.map((result) => result.providerId)).toEqual(["disabled", "planned"]);
   });
 
+  it("does not hide unexpected failures for disabled providers", async () => {
+    const disabledManifest: ManifestDefinition = {
+      ...manifest,
+      providers: {
+        mock: { ...manifest.providers.mock!, status: "disabled" },
+      },
+    };
+    const unexpected = new Error("unexpected registry failure");
+
+    await expect(
+      runSuite({
+        fixtureIds: ["fixture"],
+        manifest: disabledManifest,
+        manifestPath: "/tmp/crabline.yaml",
+        registry: {
+          catalog: OPENCLAW_SUPPORT_CATALOG,
+          resolve() {
+            throw unexpected;
+          },
+        },
+      }),
+    ).rejects.toBe(unexpected);
+  });
+
   it("stops the suite while aborted provider work remains unsettled", async () => {
     let releaseSend: (() => void) | undefined;
     const send = vi.fn(

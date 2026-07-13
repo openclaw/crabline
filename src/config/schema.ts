@@ -96,7 +96,8 @@ function isLoopbackHost(host: string): boolean {
   const normalized = host
     .trim()
     .replace(/^\[(.*)\]$/u, "$1")
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/\.$/u, "");
   if (normalized === "localhost" || normalized.endsWith(".localhost")) {
     return true;
   }

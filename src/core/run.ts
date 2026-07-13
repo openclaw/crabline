@@ -642,7 +642,12 @@ export async function runSuite(params: {
     } catch (error) {
       const fixture = params.manifest.fixtures.find((entry) => entry.id === fixtureId);
       const provider = fixture ? params.manifest.providers[fixture.provider] : undefined;
-      if (!fixture || (provider?.status !== "disabled" && provider?.status !== "planned")) {
+      if (
+        !fixture ||
+        (provider?.status !== "disabled" && provider?.status !== "planned") ||
+        !(error instanceof CrablineError) ||
+        error.kind !== "config"
+      ) {
         throw error;
       }
       result = toFailure(fixture.id, fixture.provider, fixture.mode, error, "config");

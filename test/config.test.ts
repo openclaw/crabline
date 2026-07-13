@@ -149,7 +149,13 @@ describe("manifest schema", () => {
   });
 
   it("accepts equivalent IPv6 loopback hosts for local-only ingress", () => {
-    for (const host of ["0:0:0:0:0:0:0:1", "[0:0:0:0:0:0:0:1]", "0:0:0:0:0:ffff:7f00:1"]) {
+    for (const host of [
+      "0:0:0:0:0:0:0:1",
+      "[0:0:0:0:0:0:0:1]",
+      "0:0:0:0:0:ffff:7f00:1",
+      "localhost.",
+      "fixture.localhost.",
+    ]) {
       expect(() =>
         ManifestSchema.parse({
           configVersion: 1,
