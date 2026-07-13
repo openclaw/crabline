@@ -97,6 +97,29 @@ afterEach(() => {
 });
 
 describe("script provider Windows cleanup", () => {
+  it("redacts diagnostics for commands containing Windows paths", async () => {
+    const scriptChild = createFakeChild(1122);
+    spawnMock.mockReturnValueOnce(scriptChild);
+    const context = createContext();
+    context.config.script!.commands.send = 'node "C:\\workspace\\send.mjs" --label=opaque-value';
+    const provider = new ScriptProviderAdapter(context);
+
+    const failurePromise = provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    scriptChild.stderr.write("opaque-value failed");
+    scriptChild.emit("close", 7, null);
+    const failure = await failurePromise;
+
+    expect(ensureErrorMessage(failure)).toContain("[redacted command value] failed");
+    expect(ensureErrorMessage(failure)).not.toContain("opaque-value");
+  });
+
   it("uses identity-checked taskkill fallback and tears down inherited pipes", async () => {
     const scriptChild = createFakeChild(1234);
     spawnMock.mockReturnValueOnce(scriptChild).mockImplementationOnce(() => createCleanupChild(0));
