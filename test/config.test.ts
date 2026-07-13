@@ -345,7 +345,7 @@ describe("manifest schema", () => {
   });
 
   it("rejects fixture ids that cannot be embedded in nonces", () => {
-    for (const id of ["foo_bar", "foo.bar", "foo bar"]) {
+    for (const id of ["foo_bar", "foo.bar", "foo bar", "foo\n"]) {
       expect(() =>
         ManifestSchema.parse({
           configVersion: 1,

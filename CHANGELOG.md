@@ -6,6 +6,7 @@
 - Reject stale or far-future signed Discord interactions before payload handling.
 - Normalize malformed callback URLs, artifact pointers, and loopback thread addresses into stable domain errors.
 - Generate Signal bundle public keys with the provider-required type prefix while preserving raw WhatsApp wire encoding.
+- Reject nonce fixture IDs outside the extractor alphabet and share one validation boundary.
 - Bound shared JSON ingress, reject non-object payloads precisely, and strictly normalize loopback IP addresses.
 - Harden WhatsApp send evidence, direct-JID correlation, cursor and cleanup races, and cleartext listener exposure.
 - Revalidate npm package version, integrity, and provenance after every release publication outcome.
