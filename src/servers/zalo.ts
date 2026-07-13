@@ -827,12 +827,12 @@ async function handleZaloMethod(
     return zaloOk();
   }
   if (method === "setWebhook") {
-    const finish = async (response: Response, rejected: boolean): Promise<Response> => {
+    const finish = async (result: Response, rejected: boolean): Promise<Response> => {
       if (rejected && isJsonObject(event.body) && "url" in event.body) {
         event.body.url = "<redacted>";
       }
       await appendEvent(state, event);
-      return response;
+      return result;
     };
     const webhookUrl = requireParam(body, "url");
     const secretToken = requireParam(body, "secret_token");
