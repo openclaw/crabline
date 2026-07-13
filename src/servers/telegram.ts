@@ -85,6 +85,10 @@ const TELEGRAM_MESSAGE_REFERENCE_FIELDS = [
   "edited_channel_post",
   "edited_message",
 ] as const;
+const TELEGRAM_MESSAGE_UPDATE_FIELDS = [
+  ...TELEGRAM_NEW_MESSAGE_UPDATE_FIELDS,
+  ...TELEGRAM_MESSAGE_REFERENCE_FIELDS,
+] as const;
 
 type TelegramServerEvent = {
   accepted?: boolean | undefined;
@@ -643,7 +647,7 @@ function explicitTelegramMessageChatId(
     }
     chatIds.push(chatId);
   }
-  for (const field of TELEGRAM_NEW_MESSAGE_UPDATE_FIELDS) {
+  for (const field of TELEGRAM_MESSAGE_UPDATE_FIELDS) {
     const message = body[field];
     if (!isJsonObject(message) || message.message_id === undefined) {
       continue;
@@ -788,8 +792,20 @@ async function handleTelegramAdminInbound(params: {
     }
     if (!update) {
       if (isValidIgnoredTelegramUpdate(params.body)) {
-        if (explicitMessageId.present && messageChatKey !== undefined) {
-          params.state.nextMessageIds.set(messageChatKey, explicitMessageId.value + 1);
+        if (messageChatKey !== undefined) {
+          const observedNextMessageIds = [
+            ...(explicitMessageId.present ? [explicitMessageId.value + 1] : []),
+            ...(referencedMessageId.present ? [referencedMessageId.value + 1] : []),
+          ];
+          if (observedNextMessageIds.length > 0) {
+            params.state.nextMessageIds.set(
+              messageChatKey,
+              Math.max(
+                params.state.nextMessageIds.get(messageChatKey) ?? 1,
+                ...observedNextMessageIds,
+              ),
+            );
+          }
         }
         if (explicitUpdateId.present) {
           params.state.nextUpdateId = explicitUpdateId.value + 1;
@@ -807,7 +823,11 @@ async function handleTelegramAdminInbound(params: {
     const updateChatKey = telegramChatKey(update.message.chat.id);
     params.state.nextMessageIds.set(
       updateChatKey,
-      Math.max(params.state.nextMessageIds.get(updateChatKey) ?? 1, update.message.message_id + 1),
+      Math.max(
+        params.state.nextMessageIds.get(updateChatKey) ?? 1,
+        update.message.message_id + 1,
+        ...(referencedMessageId.present ? [referencedMessageId.value + 1] : []),
+      ),
     );
     params.state.nextUpdateId = Math.max(params.state.nextUpdateId, update.update_id + 1);
     const reservedNextMessageId = params.state.nextMessageIds.get(updateChatKey)!;
