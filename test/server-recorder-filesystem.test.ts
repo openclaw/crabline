@@ -88,6 +88,66 @@ it.skipIf(process.platform === "win32")(
   },
 );
 
+it.skipIf(process.platform === "win32")(
+  "preserves observer order when a recorder symlink is retargeted",
+  async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "server.jsonl");
+    const firstTarget = path.join(directory, "first.jsonl");
+    const secondTarget = path.join(directory, "second.jsonl");
+    await writeFile(firstTarget, "", "utf8");
+    await writeFile(secondTarget, "", "utf8");
+    await symlink(firstTarget, recorderPath, "file");
+
+    const order: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const first = recordServerEvent({
+      event: {
+        at: new Date().toISOString(),
+        method: "POST",
+        path: "/first",
+        query: {},
+        type: "api",
+      },
+      onEvent: async () => {
+        order.push("first:start");
+        await firstBlocked;
+        order.push("first:end");
+      },
+      recorderPath,
+    });
+    await expect.poll(() => [...order]).toEqual(["first:start"]);
+
+    await rm(recorderPath);
+    await symlink(secondTarget, recorderPath, "file");
+    const second = recordServerEvent({
+      event: {
+        at: new Date().toISOString(),
+        method: "POST",
+        path: "/second",
+        query: {},
+        type: "api",
+      },
+      onEvent: () => {
+        order.push("second");
+      },
+      recorderPath,
+    });
+    await expect
+      .poll(async () => await readFile(secondTarget, "utf8"))
+      .toContain('"path":"/second"');
+    expect(order).toEqual(["first:start"]);
+
+    releaseFirst?.();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["first:start", "first:end", "second"]);
+  },
+);
+
 it.skipIf(process.platform === "win32")("preserves an existing recorder file mode", async () => {
   const directory = await createTempDir();
   directories.push(directory);

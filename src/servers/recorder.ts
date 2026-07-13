@@ -31,7 +31,8 @@ class ServerRecorderRotationError extends Error {}
 
 const pendingAppends = new Map<string, Promise<void>>();
 const pendingAdmissions = new Map<string, Promise<void>>();
-const pendingObservers = new Map<string, Promise<void>>();
+const pendingLogicalObservers = new Map<string, Promise<void>>();
+const pendingPublicationObservers = new Map<string, Promise<void>>();
 const durableRecorderIdentities = new Map<string, string>();
 const MAX_DURABLE_RECORDER_IDENTITIES = 128;
 const MAX_RECOVERY_VALIDATION_BYTES = 64 * 1024 * 1024;
@@ -467,26 +468,35 @@ function enqueueObserver(params: {
   if (params.onEvent === undefined) {
     return Promise.resolve();
   }
-  const previous = pendingObservers.get(params.key) ?? Promise.resolve();
-  const current = previous
-    .catch(() => {})
-    .then(async () => {
-      try {
-        await params.onEvent?.(params.event);
-      } catch (error) {
-        throw new ServerRecorderCommittedError(params.logicalPath, error);
-      }
-    });
-  pendingObservers.set(params.key, current);
+  const previousLogical = pendingLogicalObservers.get(params.logicalPath) ?? Promise.resolve();
+  const previousPublication = pendingPublicationObservers.get(params.key) ?? Promise.resolve();
+  const current = Promise.all([
+    previousLogical.catch(() => {}),
+    previousPublication.catch(() => {}),
+  ]).then(async () => {
+    try {
+      await params.onEvent?.(params.event);
+    } catch (error) {
+      throw new ServerRecorderCommittedError(params.logicalPath, error);
+    }
+  });
+  pendingLogicalObservers.set(params.logicalPath, current);
+  pendingPublicationObservers.set(params.key, current);
   void current.then(
     () => {
-      if (pendingObservers.get(params.key) === current) {
-        pendingObservers.delete(params.key);
+      if (pendingLogicalObservers.get(params.logicalPath) === current) {
+        pendingLogicalObservers.delete(params.logicalPath);
+      }
+      if (pendingPublicationObservers.get(params.key) === current) {
+        pendingPublicationObservers.delete(params.key);
       }
     },
     () => {
-      if (pendingObservers.get(params.key) === current) {
-        pendingObservers.delete(params.key);
+      if (pendingLogicalObservers.get(params.logicalPath) === current) {
+        pendingLogicalObservers.delete(params.logicalPath);
+      }
+      if (pendingPublicationObservers.get(params.key) === current) {
+        pendingPublicationObservers.delete(params.key);
       }
     },
   );
