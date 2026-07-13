@@ -255,12 +255,20 @@ jobs:
           PACKAGE_TARBALL="${tarballs[0]}"
 
           check_existing_package() {
-            local actual_integrity
+            local actual_integrity actual_provenance
             if ! actual_integrity="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity 2>/dev/null)"; then
               return 1
             fi
+            if ! actual_provenance="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.attestations.provenance.predicateType 2>/dev/null)"; then
+              echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION is missing npm provenance."
+              return 2
+            fi
             if [[ "$actual_integrity" != "$PACKAGE_INTEGRITY" ]]; then
               echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION has integrity $actual_integrity, expected $PACKAGE_INTEGRITY."
+              return 2
+            fi
+            if [[ "$actual_provenance" != "https://slsa.dev/provenance/v1" ]]; then
+              echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION has unsupported provenance predicate $actual_provenance."
               return 2
             fi
             return 0

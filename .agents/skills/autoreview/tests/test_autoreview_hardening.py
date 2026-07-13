@@ -73,6 +73,30 @@ class AutoreviewHardeningTests(unittest.TestCase):
         for disabled_engine in ("droid", "copilot", "opencode", "cursor"):
             self.assertNotIn(f"'{disabled_engine}'", harness)
 
+    @unittest.skipIf(os.name == "nt", "POSIX directory traversal mode test")
+    def test_harness_cleanup_restores_directory_traversal_before_retry(self) -> None:
+        harness = SCRIPT.with_name("test-review-harness.py")
+        cleanup_repo = runpy.run_path(str(harness))["cleanup_repo"]
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = Path(tempdir) / "repo"
+            repo.mkdir()
+            repo.chmod(0o600)
+            retried_modes: list[int] = []
+
+            def fake_rmtree(path: Path, *, onerror: object) -> None:
+                callback = onerror
+
+                def retry(target: str) -> None:
+                    retried_modes.append(stat.S_IMODE(os.stat(target).st_mode))
+
+                callback(retry, str(path), None)
+
+            with mock.patch.object(shutil, "rmtree", side_effect=fake_rmtree):
+                cleanup_repo(repo)
+
+            self.assertEqual(retried_modes, [0o700])
+            repo.chmod(0o700)
+
     def test_powershell_wrappers_launch_only_verified_python3(self) -> None:
         scripts = SCRIPT.parent
         wrappers = {
@@ -89,6 +113,63 @@ class AutoreviewHardeningTests(unittest.TestCase):
                 self.assertIn("-CommandType Application", wrapper)
                 self.assertIn("sys.version_info.major == 3", wrapper)
                 self.assertIn(f"Join-Path $PSScriptRoot '{helper}'", wrapper)
+
+    @unittest.skipUnless(os.name == "nt", "native PowerShell wrapper execution test")
+    def test_powershell_wrappers_fallback_quote_and_propagate_exit(self) -> None:
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if powershell is None:
+            self.skipTest("PowerShell is unavailable")
+
+        scripts = SCRIPT.parent
+        cases = (
+            ("autoreview.ps1", ["--help", "two words"], "autoreview"),
+            (
+                "test-review-harness.ps1",
+                ["-Fixture", "benign", "-Engine", "codex"],
+                "test-review-harness.py",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            log_path = root / "launch.log"
+            (root / "py.cmd").write_text("@echo off\r\nexit /b 1\r\n", encoding="utf-8")
+            (root / "python3.cmd").write_text(
+                "@echo off\r\n"
+                'if "%~1"=="-c" exit /b 0\r\n'
+                'echo %*>>"%WRAPPER_LOG%"\r\n'
+                "exit /b 23\r\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{root}{os.pathsep}{env.get('PATH', '')}",
+                    "WRAPPER_LOG": str(log_path),
+                }
+            )
+
+            for filename, arguments, helper in cases:
+                with self.subTest(filename=filename):
+                    result = subprocess.run(
+                        [
+                            powershell,
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            str(scripts / filename),
+                            *arguments,
+                        ],
+                        check=False,
+                        env=env,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    self.assertEqual(result.returncode, 23, result.stderr)
+                    launched = log_path.read_text(encoding="utf-8").splitlines()[-1]
+                    self.assertIn(helper, launched)
+                    self.assertIn("two words" if filename == "autoreview.ps1" else "--fixture benign", launched)
 
     @unittest.skipIf(os.name == "nt", "POSIX harness wrapper test")
     def test_posix_harness_skips_non_python3_fallbacks(self) -> None:

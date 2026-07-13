@@ -172,4 +172,11 @@ runLocalMockProviderContract({
     type: "m.room.message",
   },
   webhookThreadId: "!abc123:matrix.org",
+  userWebhookPayload: (nonce) => ({
+    content: { body: `user ${nonce}`, msgtype: "m.text" },
+    event_id: "$user-inbound:matrix.org",
+    room_id: "!abc123:matrix.org",
+    sender: "@user:matrix.org",
+    type: "m.room.message",
+  }),
 });

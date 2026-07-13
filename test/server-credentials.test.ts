@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   startMattermostServer,
+  startMatrixServer,
   startSlackServer,
   startTelegramServer,
   startWhatsAppServer,
@@ -24,6 +25,11 @@ describe("externally bound provider server credentials", () => {
       first.mattermost.manifest.botToken,
     );
     expect(second.mattermost.manifest.botToken).not.toBe(first.mattermost.manifest.botToken);
+
+    expect(first.matrix.manifest.accessToken).toMatch(/^syt_crabline_[a-f0-9]{24}$/u);
+    expect(first.matrix.manifest.env.MATRIX_ACCESS_TOKEN).toBe(first.matrix.manifest.accessToken);
+    expect(first.matrix.manifest.env.MATRIX_USER_ID).toBe(first.matrix.manifest.botUserId);
+    expect(second.matrix.manifest.accessToken).not.toBe(first.matrix.manifest.accessToken);
 
     expect(first.slack.manifest.botToken).toMatch(/^xoxb-\d{12}-\d{12}-[A-Za-z0-9_-]{24}$/u);
     expect(first.slack.manifest.signingSecret).toMatch(/^[a-f0-9]{32}$/u);
@@ -50,10 +56,11 @@ describe("externally bound provider server credentials", () => {
 
 async function startServers() {
   const mattermost = await startMattermostServer({ host: "0.0.0.0" });
+  const matrix = await startMatrixServer({ host: "0.0.0.0" });
   const slack = await startSlackServer({ host: "0.0.0.0" });
   const telegram = await startTelegramServer({ host: "0.0.0.0" });
   const whatsapp = await startWhatsAppServer({ host: "0.0.0.0" });
   const zalo = await startZaloServer({ host: "0.0.0.0" });
-  servers.push(mattermost, slack, telegram, whatsapp, zalo);
-  return { mattermost, slack, telegram, whatsapp, zalo };
+  servers.push(mattermost, matrix, slack, telegram, whatsapp, zalo);
+  return { mattermost, matrix, slack, telegram, whatsapp, zalo };
 }

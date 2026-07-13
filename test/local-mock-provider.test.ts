@@ -36,10 +36,23 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await settleCleanup([
-    ...providers.splice(0).map(async (provider) => provider.cleanup?.()),
-    ...directories.splice(0).map(disposeTempDir),
-  ]);
+  const failures: unknown[] = [];
+  try {
+    await settleCleanup(providers.splice(0).map(async (provider) => provider.cleanup?.()));
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await settleCleanup(directories.splice(0).map(disposeTempDir));
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Provider and recorder cleanup failed.");
+  }
 });
 
 function sleep(ms: number): Promise<void> {

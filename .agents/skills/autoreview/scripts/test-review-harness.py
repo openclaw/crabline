@@ -196,7 +196,10 @@ def run_reviews(repo: Path, script_dir: Path, fixture: str, engines: list[str]) 
 def cleanup_repo(repo: Path) -> None:
     def make_writable_and_retry(function: Callable[[str], object], path: str, _exc_info: object) -> None:
         try:
-            os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+            mode = stat.S_IREAD | stat.S_IWRITE
+            if os.path.isdir(path):
+                mode |= stat.S_IEXEC
+            os.chmod(path, mode)
             function(path)
         except OSError as exc:
             print(f"warning: unable to remove temp path {path}: {exc}", file=sys.stderr)

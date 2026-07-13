@@ -566,4 +566,24 @@ runLocalMockProviderContract({
     ],
   },
   webhookThreadId: "15551234567",
+  userWebhookPayload: (nonce) => ({
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              metadata: { phone_number_id: "local-mock-phone" },
+              messages: [
+                {
+                  from: "15551234567",
+                  id: "wamid.user-inbound",
+                  text: { body: `user ${nonce}` },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  }),
 });

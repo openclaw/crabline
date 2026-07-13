@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
@@ -29,11 +30,25 @@ describe("CI workflow hardening", () => {
     );
   });
 
-  it("pins CodeQL actions to immutable revisions", async () => {
-    const workflow = await readWorkflow(".github/workflows/codeql.yml");
-    const actionRefs = Object.values(workflow.jobs ?? {}).flatMap(
-      (job) => job.steps?.map((step) => step.uses).filter(Boolean) ?? [],
-    );
+  it("pins every external workflow action to immutable revisions", async () => {
+    const workflowDirectory = ".github/workflows";
+    const workflowFiles = (await fs.readdir(workflowDirectory))
+      .filter((entry) => /\.ya?ml$/u.test(entry))
+      .map((entry) => path.join(workflowDirectory, entry));
+    const actionRefs = (
+      await Promise.all(
+        workflowFiles.map(async (filePath) => {
+          const workflow = await readWorkflow(filePath);
+          return Object.values(workflow.jobs ?? {}).flatMap(
+            (job) =>
+              job.steps
+                ?.map((step) => step.uses)
+                .filter((uses): uses is string => uses !== undefined && !uses.startsWith("./")) ??
+              [],
+          );
+        }),
+      )
+    ).flat();
 
     expect(actionRefs).not.toEqual([]);
     for (const actionRef of actionRefs) {

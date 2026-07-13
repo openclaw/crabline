@@ -126,6 +126,9 @@ describe("release workflow", () => {
     expect(packageStep).toContain('execFileSync("tar", ["-xzf", tarballPath');
     expect(uploadStep?.with?.path).toBe("${{ steps.package.outputs.tarball }}");
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity');
+    expect(publishStep).toContain(
+      'npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.attestations.provenance.predicateType',
+    );
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@latest" version');
     expect(publishStep).toContain('"Refusing to publish " +');
     expect(publishStep).toContain('" because npm latest is newer at " +');
@@ -274,7 +277,10 @@ describe("release workflow", () => {
     const matchingCalls = await runPublishStep(publishStep, {
       MOCK_VIEW_RESULT: "matching",
     });
-    expect(matchingCalls).toEqual(["view @openclaw/crabline@1.2.3 dist.integrity"]);
+    expect(matchingCalls).toEqual([
+      "view @openclaw/crabline@1.2.3 dist.integrity",
+      "view @openclaw/crabline@1.2.3 dist.attestations.provenance.predicateType",
+    ]);
 
     await expect(
       runPublishStep(publishStep, {
@@ -282,6 +288,20 @@ describe("release workflow", () => {
       }),
     ).rejects.toThrow(
       "::error::Published @openclaw/crabline@1.2.3 has integrity sha512-different, expected sha512-expected.",
+    );
+    await expect(
+      runPublishStep(publishStep, {
+        MOCK_PROVENANCE_RESULT: "missing",
+        MOCK_VIEW_RESULT: "matching",
+      }),
+    ).rejects.toThrow("::error::Published @openclaw/crabline@1.2.3 is missing npm provenance.");
+    await expect(
+      runPublishStep(publishStep, {
+        MOCK_PROVENANCE_RESULT: "unsupported",
+        MOCK_VIEW_RESULT: "matching",
+      }),
+    ).rejects.toThrow(
+      "::error::Published @openclaw/crabline@1.2.3 has unsupported provenance predicate https://example.invalid/provenance.",
     );
 
     const racedCalls = await runPublishStep(publishStep, {
@@ -295,6 +315,7 @@ describe("release workflow", () => {
         /publish .*\/release\/crabline-1\.2\.3\.tgz --access public --provenance$/u,
       ),
       "view @openclaw/crabline@1.2.3 dist.integrity",
+      "view @openclaw/crabline@1.2.3 dist.attestations.provenance.predicateType",
     ]);
 
     await expect(
@@ -505,6 +526,14 @@ if [[ "$2" == "$PACKAGE_NAME@latest" ]]; then
     exit "$MOCK_LATEST_STATUS"
   fi
   echo "\${MOCK_LATEST_VERSION:-1.2.2}"
+  exit 0
+fi
+if [[ "$3" == "dist.attestations.provenance.predicateType" ]]; then
+  case "\${MOCK_PROVENANCE_RESULT:-matching}" in
+    matching) echo "https://slsa.dev/provenance/v1" ;;
+    unsupported) echo "https://example.invalid/provenance" ;;
+    *) exit 1 ;;
+  esac
   exit 0
 fi
 count=0

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Harden provider adapter authentication, target identity, credential redaction, and webhook lifecycle behavior.
+- Harden release provenance retries, provider-native contract tests, cross-platform tooling, cleanup ordering, and channel setup coverage.
 
 ## 0.1.11 - 2026-07-13
 

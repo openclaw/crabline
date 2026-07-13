@@ -239,4 +239,12 @@ runLocalMockProviderContract({
     type: "message",
   },
   webhookThreadId: conversationId,
+  userWebhookPayload: (nonce) => ({
+    channelId: "msteams",
+    conversation: { id: conversationId },
+    from: { role: "user" },
+    id: "teams-user-inbound",
+    text: `user ${nonce}`,
+    type: "message",
+  }),
 });
