@@ -122,6 +122,28 @@ describe("manifest schema", () => {
     ).toThrow(/strategy=exact requires inboundMatch\.nonce=ignore/u);
   });
 
+  it("rejects exact static patterns for agent acknowledgements", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [
+          {
+            id: "impossible-agent-exact",
+            inboundMatch: {
+              nonce: "ignore",
+              pattern: "ACK",
+              strategy: "exact",
+            },
+            mode: "agent",
+            provider: "local",
+            target: { id: "agent-bot" },
+          },
+        ],
+        providers: { local: { adapter: "loopback" } },
+      }),
+    ).toThrow(/agent mode cannot use inboundMatch\.strategy=exact/u);
+  });
+
   it("accepts only HTTP(S) provider endpoint URLs", () => {
     for (const apiUrl of [
       "data:text/plain,hello",

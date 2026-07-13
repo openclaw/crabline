@@ -386,6 +386,41 @@ describe("run behavior", () => {
     expect(outboundText).toContain("crabline agent fixture");
   });
 
+  it("validates mode overrides before resolving or sending with the effective fixture", async () => {
+    const resolve = vi.fn();
+    const exactManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [
+        {
+          ...manifest.fixtures[0]!,
+          inboundMatch: {
+            author: "assistant",
+            nonce: "ignore",
+            pattern: "ACK",
+            strategy: "exact",
+          },
+        },
+      ],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: exactManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      modeOverride: "agent",
+      registry: {
+        catalog: OPENCLAW_SUPPORT_CATALOG,
+        resolve,
+      },
+    });
+
+    expect(result).toMatchObject({ failureKind: "config", mode: "agent", ok: false });
+    expect(result.diagnostics.join("\n")).toContain(
+      "agent mode cannot use inboundMatch.strategy=exact",
+    );
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it("requires an exact ACK and canonical nonce for agent replies", async () => {
     let waitCalls = 0;
     const provider: ProviderAdapter = {
@@ -628,6 +663,45 @@ describe("run behavior", () => {
     expect(computeExitCode(wait)).toBe(EXIT_CODES.INBOUND);
     expect(wait.diagnostics).toEqual(["accepted message sent", "wait exploded"]);
   });
+
+  it.each(["auth", "config"] as const)(
+    "does not retry permanent %s send failures",
+    async (failureKind) => {
+      let sendCalls = 0;
+      const provider: ProviderAdapter = {
+        id: "mock",
+        platform: "loopback",
+        status: "ready",
+        supports: ["roundtrip"],
+        normalizeTarget(target) {
+          return { id: target.id, metadata: target.metadata };
+        },
+        probe: async () => ({ details: [], healthy: true }),
+        send: async () => {
+          sendCalls += 1;
+          throw new CrablineError(`permanent ${failureKind} failure`, { kind: failureKind });
+        },
+        waitForInbound: async () => {
+          throw new Error("wait must not run");
+        },
+      };
+      const retryingManifest = withAllCapabilities({
+        ...manifest,
+        fixtures: [{ ...manifest.fixtures[0]!, retries: 3 }],
+      });
+
+      const result = await runFixtureCommand({
+        fixtureId: "fixture",
+        manifest: retryingManifest,
+        manifestPath: "/tmp/crabline.yaml",
+        registry: buildRegistry(provider),
+      });
+
+      expect(result).toMatchObject({ failureKind, ok: false });
+      expect(result.diagnostics).toContain(`permanent ${failureKind} failure`);
+      expect(sendCalls).toBe(1);
+    },
+  );
 
   it("retries rejected outbound results and fails when rejection persists", async () => {
     let sendCalls = 0;

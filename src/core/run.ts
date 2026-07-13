@@ -5,7 +5,7 @@ import { createNonce } from "./nonces.js";
 import { compileInboundRegex } from "./safe-regex.js";
 import { type FailureKind, CrablineError, ensureErrorMessage } from "./errors.js";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.js";
-import type { ManifestDefinition } from "../config/schema.js";
+import { fixtureModeValidationError, type ManifestDefinition } from "../config/schema.js";
 import type { Registry } from "../providers/registry.js";
 
 export type CommandRunResult = {
@@ -285,6 +285,18 @@ export async function runFixtureCommand(params: {
   const mode = params.modeOverride ?? configuredFixture.mode;
   const fixture =
     mode === configuredFixture.mode ? configuredFixture : { ...configuredFixture, mode };
+  const validationError = fixtureModeValidationError(fixture);
+  if (validationError) {
+    return toFailure(
+      configuredFixture.id,
+      configuredFixture.provider,
+      mode,
+      new CrablineError(`Invalid effective fixture "${configuredFixture.id}": ${validationError}`, {
+        kind: "config",
+      }),
+      "config",
+    );
+  }
   const provider = params.registry.resolve(fixture.provider, fixture.id);
   const diagnostics: string[] = [];
   let abortDrainFailed = false;
@@ -420,6 +432,9 @@ export async function runFixtureCommand(params: {
             if (error instanceof UnsettledProviderOperationError) {
               abortDrainFailed = true;
               unsettledProviderOperations.push(error.operation);
+              break;
+            }
+            if (lastFailure.failureKind === "auth" || lastFailure.failureKind === "config") {
               break;
             }
             continue;
