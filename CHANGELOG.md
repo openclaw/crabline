@@ -7,6 +7,7 @@
 - Bound watch iterator return and provider cleanup during CLI shutdown, forcing process exit after deadline failures.
 - Correct provider-native channel target examples, admin-ingress setup, and contract maintenance coverage.
 - Preserve native Slack rich text and block fallbacks, isolate Feishu replay identities, ignore non-message Google Chat interactions, and fail closed on invalid Zalo adapter inputs.
+- Discover network-specific NAT64 prefixes and safely recycle aborted DNS lookup capacity without accepting stale results.
 - Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
 - Suppress serve readiness output when shutdown begins during ready-file publication.
 - Treat Unicode format characters as continuations when recognizing standalone acknowledgement tokens.

@@ -32,9 +32,16 @@ const BLOCKED_IPV6_ADDRESSES = createBlockedIpv6Addresses();
 const GLOBAL_IPV4_EXCEPTIONS = createGlobalIpv4Exceptions();
 const GLOBAL_IPV6_EXCEPTIONS = createGlobalIpv6Exceptions();
 const ALLOCATED_GLOBAL_IPV6_RANGES = createAllocatedGlobalIpv6Ranges();
+const RFC6052_PREFIX_LENGTHS = [32, 40, 48, 56, 64, 96] as const;
+const IPV4ONLY_ADDRESSES = new Set(["192.0.0.170", "192.0.0.171"]);
 
 type WebhookDnsLookupResult = ReadonlyArray<{ address: string; family: number }>;
 type WebhookDnsLookup = (hostname: string) => Promise<WebhookDnsLookupResult>;
+type Nat64PrefixLength = (typeof RFC6052_PREFIX_LENGTHS)[number];
+type Nat64Prefix = {
+  bytes: readonly number[];
+  length: Nat64PrefixLength;
+};
 
 type PendingWebhookDnsLookup = {
   hostname: string;
@@ -43,6 +50,7 @@ type PendingWebhookDnsLookup = {
   resolve(addresses: WebhookDnsLookupResult): void;
   settled: boolean;
   signal: AbortSignal | undefined;
+  slotHeld: boolean;
   started: boolean;
 };
 
@@ -74,6 +82,8 @@ export class WebhookDnsLookupPool {
             if (index >= 0) {
               this.#pending.splice(index, 1);
             }
+          } else {
+            this.#releaseSlot(pending);
           }
           signal?.removeEventListener("abort", pending.onAbort);
           reject(abortSignalError(signal));
@@ -83,6 +93,7 @@ export class WebhookDnsLookupPool {
         resolve,
         settled: false,
         signal,
+        slotHeld: false,
         started: false,
       };
       if (signal?.aborted) {
@@ -105,8 +116,15 @@ export class WebhookDnsLookupPool {
         continue;
       }
       pending.started = true;
+      pending.slotHeld = true;
       this.#active += 1;
-      void this.lookupHostname(pending.hostname)
+      let lookupPromise: Promise<WebhookDnsLookupResult>;
+      try {
+        lookupPromise = this.lookupHostname(pending.hostname);
+      } catch (error) {
+        lookupPromise = Promise.reject(error);
+      }
+      void lookupPromise
         .then(
           (addresses) => {
             if (!pending.settled) {
@@ -123,10 +141,18 @@ export class WebhookDnsLookupPool {
         )
         .finally(() => {
           pending.signal?.removeEventListener("abort", pending.onAbort);
-          this.#active -= 1;
-          this.#pump();
+          this.#releaseSlot(pending);
         });
     }
+  }
+
+  #releaseSlot(pending: PendingWebhookDnsLookup): void {
+    if (!pending.slotHeld) {
+      return;
+    }
+    pending.slotHeld = false;
+    this.#active -= 1;
+    this.#pump();
   }
 }
 
@@ -281,20 +307,84 @@ function parseIpv6Hextets(address: string): number[] | undefined {
   return hextets.length === 8 ? hextets : undefined;
 }
 
-function embeddedNat64Ipv4(address: string): string | undefined {
-  const hextets = parseIpv6Hextets(address);
-  if (
-    !hextets ||
-    hextets[0] !== 0x64 ||
-    hextets[1] !== 0xff9b ||
-    hextets.slice(2, 6).some((value) => value !== 0)
-  ) {
+function ipv6Bytes(address: string): number[] | undefined {
+  if (isIP(address) !== 6) {
     return undefined;
   }
-  return [hextets[6]! >> 8, hextets[6]! & 0xff, hextets[7]! >> 8, hextets[7]! & 0xff].join(".");
+  const hextets = parseIpv6Hextets(address);
+  if (!hextets) {
+    return undefined;
+  }
+  return hextets.flatMap((value) => [value >> 8, value & 0xff]);
 }
 
-function isBlockedWebhookAddress(address: string): boolean {
+function extractRfc6052Ipv4(bytes: readonly number[], prefixLength: Nat64PrefixLength): string {
+  if (prefixLength === 96) {
+    return bytes.slice(12, 16).join(".");
+  }
+  const prefixBytes = prefixLength / 8;
+  const leadingIpv4Bytes = 8 - prefixBytes;
+  return [...bytes.slice(prefixBytes, 8), ...bytes.slice(9, 9 + (4 - leadingIpv4Bytes))].join(".");
+}
+
+function prefixMatches(bytes: readonly number[], prefix: Nat64Prefix): boolean {
+  const prefixBytes = prefix.length / 8;
+  return prefix.bytes.slice(0, prefixBytes).every((value, index) => bytes[index] === value);
+}
+
+function nat64PrefixKey(prefix: Nat64Prefix): string {
+  return `${prefix.length}:${prefix.bytes.slice(0, prefix.length / 8).join(".")}`;
+}
+
+function discoverNat64Prefixes(addresses: WebhookDnsLookupResult): Nat64Prefix[] {
+  const prefixes = new Map<string, Nat64Prefix>();
+  for (const entry of addresses) {
+    if (entry.family !== 6) {
+      continue;
+    }
+    const bytes = ipv6Bytes(normalizeHostname(entry.address));
+    if (!bytes) {
+      continue;
+    }
+    for (const length of RFC6052_PREFIX_LENGTHS) {
+      if (length !== 96 && bytes[8] !== 0) {
+        continue;
+      }
+      if (!IPV4ONLY_ADDRESSES.has(extractRfc6052Ipv4(bytes, length))) {
+        continue;
+      }
+      const prefix = { bytes, length };
+      prefixes.set(nat64PrefixKey(prefix), prefix);
+    }
+  }
+  return [...prefixes.values()];
+}
+
+const WELL_KNOWN_NAT64_PREFIX: Nat64Prefix = {
+  bytes: ipv6Bytes("64:ff9b::")!,
+  length: 96,
+};
+
+function embeddedNat64Ipv4(
+  address: string,
+  nat64Prefixes: readonly Nat64Prefix[],
+): string | undefined {
+  const bytes = ipv6Bytes(address);
+  if (!bytes) {
+    return undefined;
+  }
+  for (const prefix of [WELL_KNOWN_NAT64_PREFIX, ...nat64Prefixes]) {
+    if (prefixMatches(bytes, prefix)) {
+      return extractRfc6052Ipv4(bytes, prefix.length);
+    }
+  }
+  return undefined;
+}
+
+function isBlockedWebhookAddress(
+  address: string,
+  nat64Prefixes: readonly Nat64Prefix[] = [],
+): boolean {
   const normalized = normalizeHostname(address);
   const family = isIP(normalized);
   if (family === 4) {
@@ -304,7 +394,7 @@ function isBlockedWebhookAddress(address: string): boolean {
     );
   }
   if (family === 6) {
-    const embeddedIpv4 = embeddedNat64Ipv4(normalized);
+    const embeddedIpv4 = embeddedNat64Ipv4(normalized, nat64Prefixes);
     if (embeddedIpv4 && isBlockedWebhookAddress(embeddedIpv4)) {
       return true;
     }
@@ -377,6 +467,25 @@ export async function validateWebhookTarget(params: {
   }
   if (addresses.some((entry) => isBlockedWebhookAddress(entry.address))) {
     return { error: "private-address" };
+  }
+  if (addresses.some((entry) => entry.family === 6)) {
+    let nat64Prefixes: Nat64Prefix[];
+    try {
+      nat64Prefixes = discoverNat64Prefixes(
+        await (params.dnsLookupPool ?? webhookDnsLookupPool).resolve(
+          "ipv4only.arpa",
+          params.signal,
+        ),
+      );
+    } catch (error) {
+      if (params.signal?.aborted) {
+        throw error;
+      }
+      return { error: "private-address" };
+    }
+    if (addresses.some((entry) => isBlockedWebhookAddress(entry.address, nat64Prefixes))) {
+      return { error: "private-address" };
+    }
   }
   return { addresses };
 }
