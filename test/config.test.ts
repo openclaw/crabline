@@ -106,6 +106,28 @@ describe("manifest schema", () => {
     ).toThrow(/webhook path must start with \//u);
   });
 
+  it.each([
+    "/slack/../events",
+    "/slack\\events",
+    "//example.test/events",
+    "/slack events",
+    "/slack/events?challenge=1",
+    "/slack/events#fragment",
+  ])("rejects webhook paths changed by URL normalization: %s", (webhookPath) => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          slack: {
+            adapter: "slack",
+            slack: { webhook: { path: webhookPath } },
+          },
+        },
+      }),
+    ).toThrow(/webhook path must be a canonical URL pathname/u);
+  });
+
   it("requires HTTPS for public Microsoft Teams webhooks", () => {
     expect(() =>
       ManifestSchema.parse({

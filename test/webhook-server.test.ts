@@ -62,6 +62,17 @@ describe("webhook server", () => {
     expect(response.status).toBe(404);
   });
 
+  it("rejects configured paths changed by URL normalization", async () => {
+    await expect(
+      startWebhookServer({
+        handle: async () => new Response("ok"),
+        host: "127.0.0.1",
+        path: "/slack/../events",
+        port: 0,
+      }),
+    ).rejects.toThrow(/canonical URL pathname/u);
+  });
+
   it("can serve explicit GET webhook routes", async () => {
     const server = await startWebhookServer({
       async handle(request) {
@@ -114,6 +125,44 @@ describe("webhook server", () => {
     expect(observedErrors).toEqual([
       expect.objectContaining({ message: "sensitive internal detail" }),
     ]);
+  });
+
+  it("clears response headers before a fallback 500", async () => {
+    const observedErrors: unknown[] = [];
+    const server = await startWebhookServer({
+      async handle() {
+        return new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.error(new Error("response body failed"));
+            },
+          }),
+          {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": "999",
+              "content-type": "application/json",
+              "x-response-kind": "provider",
+            },
+          },
+        );
+      },
+      host: "127.0.0.1",
+      onError: (error) => observedErrors.push(error),
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+
+    const response = await fetch(server.endpointUrl, { method: "POST" });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("content-length")).not.toBe("999");
+    expect(response.headers.get("content-type")).toBe("text/plain;charset=UTF-8");
+    expect(response.headers.get("x-response-kind")).toBeNull();
+    await expect(response.text()).resolves.toBe("internal server error");
+    expect(observedErrors).toEqual([expect.objectContaining({ message: "response body failed" })]);
   });
 
   it("returns 413 for oversized request bodies without invoking the handler", async () => {
