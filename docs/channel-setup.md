@@ -192,17 +192,28 @@ watch commands are terminated when cancellation fires.
 Server-backed channels currently include Mattermost, Matrix, Signal, Slack,
 Telegram, WhatsApp, and Zalo. Loopback binds retain stable local credentials for
 fixture compatibility. Non-loopback binds generate fresh provider-shaped
-credentials unless the corresponding token or secret option is supplied.
+credentials unless the corresponding credential is supplied.
 WhatsApp is loopback-only because its HTTP and WebSocket endpoints carry bearer
 credentials over cleartext and the built-in server does not terminate TLS.
 
 Commands in this section use the installed-package form. In a source checkout,
 replace `crabline` with `pnpm dev`; `pnpm exec crabline` is not available.
 
-Serve credential flags take precedence over their optional environment
-fallbacks: `--admin-token` over `CRABLINE_ADMIN_TOKEN`, `--access-token` over
-`CRABLINE_ACCESS_TOKEN`, `--bot-token` over `CRABLINE_BOT_TOKEN`, and
-`--signing-secret` over `CRABLINE_SIGNING_SECRET`.
+`serve` rejects credential values in command-line arguments because argv and
+shell history are not secret-safe. Use the `CRABLINE_ADMIN_TOKEN`,
+`CRABLINE_ACCESS_TOKEN`, `CRABLINE_BOT_TOKEN`, and
+`CRABLINE_SIGNING_SECRET` environment fallbacks, or pass a JSON object through
+stdin or an inherited file descriptor:
+
+```bash
+crabline --json serve slack --credentials-fd 0 < .crabline/serve-credentials.json
+crabline --json serve slack --credentials-fd 3 3< .crabline/serve-credentials.json
+```
+
+The accepted JSON fields are `adminToken`, `accessToken`, `botToken`, and
+`signingSecret`. The input is bounded to 64 KiB, must contain only string
+values, and overrides environment fallbacks field by field. Keep credential
+files owner-readable or pipe the JSON directly from a secret manager.
 
 ### Mattermost
 
@@ -343,8 +354,9 @@ Manifest fields:
 - `endpoints.adminInboundUrl`: authenticated admin ingress for test user messages
 - `recorderPath`: JSONL provider traffic recorder
 
-The admin token is generated randomly unless `--admin-token <token>` is
-provided. Requests may also use `Authorization: Bearer <token>`.
+The admin token is generated randomly unless `adminToken` is supplied through
+the credential ingress above. Requests may also use
+`Authorization: Bearer <token>`.
 
 The admin ingress accepts JSON like:
 
@@ -410,7 +422,8 @@ Group outbound uses sender-key `skmsg` encryption and is outside this supported
 subset, so OpenClaw Crabline outbound targets are direct users only. Group
 inbound injection remains supported. The WebSocket endpoint rejects clients
 that do not present the access token embedded in the manifest URL. The admin
-token is generated randomly unless `--admin-token <token>` is provided.
+token is generated randomly unless `adminToken` is supplied through the
+credential ingress above.
 
 OpenClaw bridge callers should post injected user messages with the
 `providerUrl`, `providerHeaders`, and `providerBody` returned by

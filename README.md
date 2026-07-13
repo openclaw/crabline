@@ -150,6 +150,21 @@ but the provider endpoint is local and deterministic.
 Commands in this section use the installed-package form. In a source checkout,
 replace `crabline` with `pnpm dev`.
 
+`serve` never accepts credential values in command-line arguments. Set
+`CRABLINE_ACCESS_TOKEN`, `CRABLINE_ADMIN_TOKEN`, `CRABLINE_BOT_TOKEN`, or
+`CRABLINE_SIGNING_SECRET`, or pass a bounded JSON object through stdin or an
+inherited file descriptor:
+
+```bash
+crabline --json serve slack --credentials-fd 0 < .crabline/serve-credentials.json
+crabline --json serve slack --credentials-fd 3 3< .crabline/serve-credentials.json
+```
+
+The JSON fields are `accessToken`, `adminToken`, `botToken`, and
+`signingSecret`. File-descriptor values override environment fallbacks. Keep
+credential files owner-readable or pipe the JSON directly from a secret
+manager.
+
 Library callers can pass `onEvent` to `startCrablineServer`, an individual
 provider server, or `startOpenClawCrablineAdapter`. Crabline awaits the callback
 after appending each API/admin event to `recorderPath`, so callers can react in
@@ -223,8 +238,8 @@ The JSON manifest contains:
 - `endpoints.eventsUrl`: local Slack Events API endpoint
 - `recorderPath`: JSONL file of local provider API/admin traffic
 
-The admin token is generated randomly unless `--admin-token <token>` is
-provided. Implemented Slack Web API endpoints include `auth.test`,
+The admin token is generated randomly unless `adminToken` is supplied through
+the credential ingress above. Implemented Slack Web API endpoints include `auth.test`,
 `chat.postMessage`, `conversations.open`, `conversations.info`,
 `conversations.history`, and `conversations.replies`.
 
@@ -266,9 +281,9 @@ The JSON manifest contains:
   messages; OpenClaw reads them through Telegram `getUpdates`
 - `recorderPath`: JSONL file of local provider API/admin traffic
 
-The admin token is generated randomly unless `--admin-token <token>` is
-provided. The inbound endpoint rejects requests without the matching admin
-header (or `Authorization: Bearer <token>`).
+The admin token is generated randomly unless `adminToken` is supplied through
+the credential ingress above. The inbound endpoint rejects requests without
+the matching admin header (or `Authorization: Bearer <token>`).
 
 Implemented Telegram Bot API endpoints include `getMe`, `sendMessage`,
 `sendPhoto`, `sendDocument`, `sendVideo`, `sendAudio`, `sendAnimation`, `editMessageText`,
@@ -319,7 +334,8 @@ Group outbound uses sender-key `skmsg` encryption and is outside this supported
 subset, so OpenClaw Crabline outbound targets are direct users only. Group
 inbound injection remains supported. The WebSocket endpoint rejects clients
 that do not present the access token embedded in the manifest URL. The admin
-token is generated randomly unless `--admin-token <token>` is provided.
+token is generated randomly unless `adminToken` is supplied through the
+credential ingress above.
 
 OpenClaw bridge callers should post injected user messages with the
 `providerUrl`, `providerHeaders`, and `providerBody` returned by
