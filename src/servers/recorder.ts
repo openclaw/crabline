@@ -2,6 +2,7 @@ import { constants as fsConstants } from "node:fs";
 import { chmod, lstat, mkdir, open, readlink, realpath, stat as statPath } from "node:fs/promises";
 import path from "node:path";
 import { lock } from "proper-lockfile";
+import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
 import type { ServerRequestEvent } from "./http.js";
 
 export type ServerEventObserver = (event: ServerRequestEvent) => void | Promise<void>;
@@ -320,9 +321,11 @@ async function recorderIdentityLockTarget(
 
 async function acquireRecorderLock(filePath: string): Promise<() => Promise<void>> {
   const deadline = performance.now() + RECORDER_LOCK_STALE_MS + RECORDER_LOCK_WAIT_MARGIN_MS;
+  const lockFileSystem = createProcessOwnedLockFileSystem();
   for (;;) {
     try {
       return await lock(filePath, {
+        fs: lockFileSystem,
         realpath: false,
         retries: 0,
         stale: RECORDER_LOCK_STALE_MS,

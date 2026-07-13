@@ -3,6 +3,7 @@ import { lstat, mkdir, open, readFile, readlink, realpath } from "node:fs/promis
 import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
+import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
 import { applyOwnerOnlyWindowsDirectoryAcl } from "../platform/windows-acl.js";
 import type { InboundEnvelope } from "./types.js";
 
@@ -752,6 +753,7 @@ async function acquireRecorderIdentityLock(
 
 async function acquireRecorderLock(filePath: string): Promise<() => Promise<void>> {
   return await lock(filePath, {
+    fs: createProcessOwnedLockFileSystem(),
     realpath: false,
     retries: {
       factor: 1,
