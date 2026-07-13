@@ -286,12 +286,17 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
       expect(JSON.parse(await fs.readFile(compatibilityOwnerPath, "utf8"))).toMatchObject({
         createdAtMs: 1,
+        pid: 2_147_483_647,
+        processStartedAtMs: 1,
       });
       expect((await fs.stat(compatibilityOwnerPath)).mtimeMs).toBeCloseTo(1, 0);
 
+      const sleep = vi.fn(async () => undefined);
       const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        sleep,
         startHeartbeat: disableHeartbeat,
       });
+      expect(sleep).not.toHaveBeenCalled();
       await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
       await replacementLock.release();
     } finally {
@@ -1376,6 +1381,11 @@ describe("OpenClaw smoke lock cleanup", () => {
         `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
         "owner.json",
       );
+      expect(JSON.parse(await fs.readFile(compatibilityOwnerPath, "utf8"))).toMatchObject({
+        createdAtMs: 1,
+        pid: 2_147_483_647,
+        processStartedAtMs: 1,
+      });
       expect((await fs.stat(compatibilityOwnerPath)).mtimeMs).toBeCloseTo(1, 0);
 
       const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
