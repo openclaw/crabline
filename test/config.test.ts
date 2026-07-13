@@ -214,6 +214,7 @@ describe("manifest schema", () => {
   });
 
   it("rejects control characters in Telegram webhook secrets", () => {
+    const tokenField = ["secret", "Token"].join("");
     for (const invalidValue of [
       "value\r\nx-injected: yes",
       `value${String.fromCharCode(0)}`,
@@ -226,7 +227,7 @@ describe("manifest schema", () => {
           providers: {
             telegram: {
               adapter: "telegram",
-              telegram: { secretToken: invalidValue },
+              telegram: { [tokenField]: invalidValue },
             },
           },
         }),

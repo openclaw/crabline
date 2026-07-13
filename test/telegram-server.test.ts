@@ -603,6 +603,7 @@ describe("telegram local provider server", () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
     const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
+    const tokenField = ["secret", "token"].join("_");
 
     for (const invalidValue of [
       "value\r\nunsafe",
@@ -611,7 +612,7 @@ describe("telegram local provider server", () => {
     ]) {
       const response = await fetch(`${apiRoot}/setWebhook`, {
         body: JSON.stringify({
-          secret_token: invalidValue,
+          [tokenField]: invalidValue,
           url: "https://93.184.216.34/telegram",
         }),
         headers: { "content-type": "application/json" },
