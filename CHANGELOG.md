@@ -7,6 +7,7 @@
 - Bind npm and GitHub release mutations to the revalidated tag commit and fail closed on release lookup errors.
 - Correct the OpenClaw artifact setup guide to reflect runtime pruning of abandoned generations.
 - Enforce native Telegram username bounds, map OpenClaw inbound usernames to numeric chat identities, and align direct sender identity.
+- Bound JWKS cache lifetimes and start unknown-key refresh cooldowns after refresh completion.
 - Require HTTPS public URLs for authenticated external webhook ingress while preserving loopback-local HTTP.
 - Reject webhook paths changed by URL normalization and clear stale response headers before fallback errors.
 - Expose synchronous provider cleanup fences and prune inactive LocalMock wait cursors after concurrent waits settle.

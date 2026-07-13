@@ -97,6 +97,35 @@ describe("signed JWT remote key cache", () => {
         now,
       ),
     ).toBe(now);
+    expect(
+      resolveHttpCacheExpiry(
+        new Response(null, {
+          headers: { age: "172800", "cache-control": "public, max-age=604800" },
+        }),
+        now,
+      ),
+    ).toBe(now + 86_400_000);
+  });
+
+  it("clamps absurd cache lifetimes and rejects unsafe max-age values", () => {
+    const now = 1_700_000_000_000;
+
+    expect(
+      resolveHttpCacheExpiry(
+        new Response(null, {
+          headers: { "cache-control": "public, max-age=999999" },
+        }),
+        now,
+      ),
+    ).toBe(now + 86_400_000);
+    expect(
+      resolveHttpCacheExpiry(
+        new Response(null, {
+          headers: { "cache-control": `public, max-age=${"9".repeat(400)}` },
+        }),
+        now,
+      ),
+    ).toBe(now);
   });
 
   it("distinguishes absent Expires from invalid or stale values", () => {
@@ -112,6 +141,19 @@ describe("signed JWT remote key cache", () => {
         now,
       ),
     ).toBe(now);
+  });
+
+  it("clamps far-future Expires cache lifetimes", () => {
+    const now = 1_700_000_000_000;
+
+    expect(
+      resolveHttpCacheExpiry(
+        new Response(null, {
+          headers: { expires: new Date(now + 7 * 24 * 60 * 60 * 1_000).toUTCString() },
+        }),
+        now,
+      ),
+    ).toBe(now + 86_400_000);
   });
 
   it("single-flights unknown-key refreshes and applies a global cooldown", async () => {
@@ -145,6 +187,32 @@ describe("signed JWT remote key cache", () => {
     now += 10_001;
     await expect(resolveKey({ alg: "RS256", kid: "missing-c" })).rejects.toThrow("unknown key");
     expect(fetches).toBe(3);
+  });
+
+  it("starts the unknown-key cooldown after refresh completion", async () => {
+    let now = 1_700_000_000_000;
+    let fetches = 0;
+    const resolveKey = createCachedJwtKeyResolver<string>({
+      async fetchKeys() {
+        fetches += 1;
+        if (fetches === 2) {
+          now += 20_000;
+        }
+        return {
+          expiresAt: now + 60_000,
+          values: ["known"],
+        };
+      },
+      keyId: (value) => value,
+      now: () => now,
+      refreshCooldownMs: 10_000,
+      unknownKeyMessage: "unknown key",
+    });
+
+    await expect(resolveKey({ alg: "RS256", kid: "known" })).resolves.toBe("known");
+    await expect(resolveKey({ alg: "RS256", kid: "missing-a" })).rejects.toThrow("unknown key");
+    await expect(resolveKey({ alg: "RS256", kid: "missing-b" })).rejects.toThrow("unknown key");
+    expect(fetches).toBe(2);
   });
 
   it("refetches cache-control no-store key sets for each verification", async () => {
@@ -206,6 +274,37 @@ describe("signed JWT remote key cache", () => {
     now += 10_001;
     await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
     expect(fetches).toBe(2);
+  });
+
+  it("backs off failed unknown-key refreshes while a positive cache remains fresh", async () => {
+    let now = 1_700_000_000_000;
+    let fetches = 0;
+    const fetchError = new Error("JWKS unavailable");
+    const resolveKey = createCachedJwtKeyResolver<string>({
+      fetchKeys() {
+        fetches += 1;
+        if (fetches > 1) {
+          throw fetchError;
+        }
+        return Promise.resolve({
+          expiresAt: now + 60_000,
+          values: ["known"],
+        });
+      },
+      keyId: (value) => value,
+      now: () => now,
+      refreshCooldownMs: 10_000,
+      unknownKeyMessage: "unknown key",
+    });
+
+    await expect(resolveKey({ alg: "RS256", kid: "known" })).resolves.toBe("known");
+    await expect(resolveKey({ alg: "RS256", kid: "missing-a" })).rejects.toBe(fetchError);
+    await expect(resolveKey({ alg: "RS256", kid: "missing-b" })).rejects.toThrow("unknown key");
+    expect(fetches).toBe(2);
+
+    now += 10_001;
+    await expect(resolveKey({ alg: "RS256", kid: "missing-c" })).rejects.toBe(fetchError);
+    expect(fetches).toBe(3);
   });
 
   it("invalidates negative entries when a refreshed key set contains them", async () => {
