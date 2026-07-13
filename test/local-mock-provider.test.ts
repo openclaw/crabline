@@ -1229,9 +1229,9 @@ describe("local mock provider", () => {
     expect(
       new Set([channelDelimiter.threadId, threadDelimiter.threadId, encodedLooking.threadId]).size,
     ).toBe(3);
-    expect(codec.normalize({ id: "loopback:room", metadata: {} }).channelId).toBe(
-      "loopback:loopback%3Aroom",
-    );
+    expect(codec.normalize({ id: "loopback:room", metadata: {} }).channelId).toBe("loopback:room");
+    expect(codec.normalize(channelDelimiter)).toEqual(channelDelimiter);
+    expect(codec.resolveThreadId(channelDelimiter)).toBe(channelDelimiter.threadId);
   });
 
   it("classifies unencodable generic target components as config errors", () => {
@@ -1239,6 +1239,9 @@ describe("local mock provider", () => {
 
     expect(() => codec.normalize({ id: "\uD800", metadata: {} })).toThrow(
       /loopback channelId cannot be encoded/u,
+    );
+    expect(() => codec.normalize({ id: "loopback:room%2f", metadata: {} })).toThrow(
+      /loopback canonical channelId is malformed/u,
     );
   });
 
