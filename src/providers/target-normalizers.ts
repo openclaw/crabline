@@ -1,6 +1,7 @@
 import type { BuiltinAdapterId, FixtureDefinition, ProviderPlatform } from "../config/schema.js";
 import { CrablineError } from "../core/errors.js";
 import { isMatrixEventId, isMatrixRoomId } from "../matrix-ids.js";
+import { TELEGRAM_NATIVE_CHAT_ID_MAX } from "../servers/telegram-identity.js";
 import type { LocalMockTargetCodec } from "./local-mock.js";
 import { matchesNativeId, type NativeIdRule } from "./native-ids.js";
 import { slackTargetKey, SLACK_SEND_TARGET_ID_RULE, SLACK_TS_RULE } from "./slack-ids.js";
@@ -75,9 +76,16 @@ export const MSTEAMS_CONVERSATION_ID_RULE: NativeIdRule = {
 export const TELEGRAM_CHAT_ID_RULE: NativeIdRule = {
   example: "-1001234567890 or @channelusername",
   name: "Telegram chat id",
-  pattern: /^(?:-?[1-9]\d*|@[A-Za-z][A-Za-z0-9_]{3,31})$/u,
+  pattern: /^(?:-?[1-9]\d*|@[A-Za-z][A-Za-z0-9_]{4,31})$/u,
   validate: (value) =>
-    value.startsWith("@") || BigInt(value.replace(/^-/u, "")) <= BigInt(Number.MAX_SAFE_INTEGER),
+    value.startsWith("@") || BigInt(value.replace(/^-/u, "")) <= TELEGRAM_NATIVE_CHAT_ID_MAX,
+};
+
+export const TELEGRAM_INBOUND_CHAT_ID_RULE: NativeIdRule = {
+  example: "-1001234567890",
+  name: "Telegram inbound chat id",
+  pattern: /^-?[1-9]\d*$/u,
+  validate: (value) => BigInt(value.replace(/^-/u, "")) <= TELEGRAM_NATIVE_CHAT_ID_MAX,
 };
 
 export const TELEGRAM_MESSAGE_THREAD_ID_RULE: NativeIdRule = {
@@ -233,6 +241,19 @@ const TELEGRAM_BASE_CODEC = createNativeTargetCodec({
 export function parseCanonicalTelegramTopic(
   value: string,
 ): { chatId: string; topicId: string } | undefined {
+  return parseCanonicalTelegramTopicWithRule(value, TELEGRAM_CHAT_ID_RULE);
+}
+
+export function parseCanonicalTelegramInboundTopic(
+  value: string,
+): { chatId: string; topicId: string } | undefined {
+  return parseCanonicalTelegramTopicWithRule(value, TELEGRAM_INBOUND_CHAT_ID_RULE);
+}
+
+function parseCanonicalTelegramTopicWithRule(
+  value: string,
+  chatRule: NativeIdRule,
+): { chatId: string; topicId: string } | undefined {
   const separator = value.lastIndexOf(":");
   if (separator <= 0) {
     return undefined;
@@ -240,7 +261,7 @@ export function parseCanonicalTelegramTopic(
   const chatId = value.slice(0, separator);
   const topicId = value.slice(separator + 1);
   if (
-    !matchesNativeId(chatId, TELEGRAM_CHAT_ID_RULE) ||
+    !matchesNativeId(chatId, chatRule) ||
     !matchesNativeId(topicId, TELEGRAM_MESSAGE_THREAD_ID_RULE)
   ) {
     return undefined;

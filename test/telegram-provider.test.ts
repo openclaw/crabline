@@ -141,6 +141,9 @@ describe("telegram provider", () => {
     expect(() => provider.normalizeTarget({ id: "telegram:-100123", metadata: {} })).toThrow(
       /Telegram chat_id/u,
     );
+    expect(() => provider.normalizeTarget({ id: String(1n << 52n), metadata: {} })).toThrow(
+      /Telegram chat_id/u,
+    );
   });
 
   it("isolates identical topic ids across Telegram chats", () => {
@@ -164,6 +167,19 @@ describe("telegram provider", () => {
     expect(firstThreadId).toBe("-1001:42");
     expect(secondThreadId).toBe("-1002:42");
     expect(firstThreadId).not.toBe(secondThreadId);
+  });
+
+  it("rejects outbound-only usernames in native inbound chat identities", () => {
+    expect(() =>
+      normalizeTelegramWebhookPayload({
+        message: {
+          chat: { id: "@channelusername" },
+          message_id: 1,
+          text: "invalid inbound username",
+        },
+        update_id: 1,
+      }),
+    ).toThrow(/Telegram inbound chat id/u);
   });
 
   it("round-trips canonical topic ids through generic ingress", () => {

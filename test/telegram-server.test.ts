@@ -75,6 +75,23 @@ describe("telegram local provider server", () => {
     });
   });
 
+  it("rejects non-positive message identifiers in edits", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    for (const messageId of [0, -1]) {
+      const response = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/editMessageText`,
+        {
+          body: JSON.stringify({ chat_id: 42, message_id: messageId, text: "invalid edit" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(response.status).toBe(400);
+    }
+  });
+
   it("advertises valid URLs when bound to IPv6", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -139,34 +156,36 @@ describe("telegram local provider server", () => {
     });
     expect(usernameTopicBody.result.chat.id).toBeLessThan(-1_000_000_000_000);
 
-    const shortUsername = await fetch(
+    const minimumUsername = await fetch(
       `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
       {
         body: JSON.stringify({
-          chat_id: "@tiny",
-          text: "collectible username",
+          chat_id: "@valid",
+          text: "minimum username",
         }),
         headers: { "content-type": "application/json" },
         method: "POST",
       },
     );
-    expect(shortUsername.status).toBe(200);
-    await expect(shortUsername.json()).resolves.toMatchObject({
+    expect(minimumUsername.status).toBe(200);
+    await expect(minimumUsername.json()).resolves.toMatchObject({
       result: { chat: { id: expect.any(Number), type: "supergroup" } },
     });
 
-    const shorterUsername = await fetch(
-      `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
-      {
-        body: JSON.stringify({
-          chat_id: "@abc",
-          text: "invalid short username",
-        }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      },
-    );
-    expect(shorterUsername.status).toBe(400);
+    for (const chatId of ["@tiny", "@abc"]) {
+      const shortUsername = await fetch(
+        `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
+        {
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: "invalid short username",
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(shortUsername.status).toBe(400);
+    }
   });
 
   it("resolves username chats case-insensitively to one message sequence", async () => {
@@ -213,7 +232,7 @@ describe("telegram local provider server", () => {
               id: -1001111111111,
               title: "Announcements",
               type: "channel",
-              username: "Crabline_News",
+              username: "  @Crabline_News  ",
             },
           },
           update_id: 1,
@@ -256,7 +275,7 @@ describe("telegram local provider server", () => {
           id: -1001111111111,
           title: "Announcements",
           type: "channel",
-          username: "Crabline_News",
+          username: "crabline_news",
         },
       },
     });
@@ -266,7 +285,7 @@ describe("telegram local provider server", () => {
           id: -1002222222222,
           title: "Discussion",
           type: "supergroup",
-          username: "Crabline_Group",
+          username: "crabline_group",
         },
       },
     });
@@ -279,7 +298,7 @@ describe("telegram local provider server", () => {
               id: -1001111111111,
               title: "Announcements",
               type: "channel",
-              username: "Crabline_Updates",
+              username: "  Crabline_Updates  ",
             },
           },
           update_id: 3,
@@ -291,7 +310,7 @@ describe("telegram local provider server", () => {
         chat: {
           id: -1001111111111,
           type: "channel",
-          username: "Crabline_Updates",
+          username: "crabline_updates",
         },
       },
     });
@@ -623,6 +642,8 @@ describe("telegram local provider server", () => {
     for (const entities of [
       [{ length: 1.5, offset: 0, type: "bold" }],
       [{ length: 1, offset: -1, type: "bold" }],
+      [{ length: 1, offset: 0, type: "bold" }],
+      [{ length: 1, offset: 1, type: "bold" }],
       [{ length: 2, offset: 2, type: "bold" }],
     ]) {
       const invalidEntity = await injectUpdate(server, {
@@ -635,6 +656,7 @@ describe("telegram local provider server", () => {
     const utf16Entity = await injectUpdate(server, {
       chatId: 42,
       entities: [{ length: 2, offset: 0, type: "custom_emoji" }],
+      fromUsername: "  @Alice_User  ",
       text: "😀",
     });
     await expect(utf16Entity.json()).resolves.toMatchObject({
@@ -642,6 +664,7 @@ describe("telegram local provider server", () => {
       update: {
         message: {
           entities: [{ length: 2, offset: 0, type: "custom_emoji" }],
+          from: { username: "alice_user" },
         },
       },
     });
@@ -1916,6 +1939,7 @@ describe("telegram local provider server", () => {
       { chatId: 123, messageId: 11, text: "duplicate update", updateId: 20 },
       { chatId: 123, messageId: 9, text: "decreasing message", updateId: 21 },
       { chatId: 123, messageId: 11, text: "decreasing update", updateId: 19 },
+      { chatId: 123, messageId: 0, text: "zero message", updateId: 21 },
       { chatId: 123, messageId: 11, text: "negative update", updateId: -1 },
       {
         chatId: 123,
@@ -1941,20 +1965,9 @@ describe("telegram local provider server", () => {
       expect(response.status).toBe(400);
     }
 
-    const scheduled = await injectUpdate(server, {
-      chatId: 123,
-      messageId: 0,
-      text: "automatically scheduled",
-      updateId: 21,
-    });
-    expect(scheduled.status).toBe(200);
-    await expect(scheduled.json()).resolves.toMatchObject({
-      update: { message: { message_id: 0 }, update_id: 21 },
-    });
-
     const generated = await injectUpdate(server, { chatId: 123, text: "generated" });
     await expect(generated.json()).resolves.toMatchObject({
-      update: { message: { message_id: 11 }, update_id: 22 },
+      update: { message: { message_id: 11 }, update_id: 21 },
     });
 
     const ignored = await injectUpdate(server, {
@@ -1963,13 +1976,13 @@ describe("telegram local provider server", () => {
         message_id: 12,
         photo: [{ file_id: "photo", file_unique_id: "unique", height: 1, width: 1 }],
       },
-      update_id: 23,
+      update_id: 22,
     });
     expect(ignored.status).toBe(200);
 
     const afterIgnored = await injectUpdate(server, { chatId: 123, text: "after ignored" });
     await expect(afterIgnored.json()).resolves.toMatchObject({
-      update: { message: { message_id: 13 }, update_id: 24 },
+      update: { message: { message_id: 13 }, update_id: 23 },
     });
 
     const channelPost = await injectUpdate(server, {

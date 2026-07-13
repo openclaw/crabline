@@ -10,14 +10,13 @@ import {
 } from "../shared.js";
 import {
   canonicalizeTelegramUsername,
+  TELEGRAM_NATIVE_CHAT_ID_MAX,
   telegramUsernameChatId,
   TELEGRAM_USERNAME_PATTERN,
 } from "../../servers/telegram-identity.js";
 
-const TELEGRAM_SYMBOLIC_DIRECT_ID_BASE = 1n << 51n;
-const TELEGRAM_SYMBOLIC_DIRECT_ID_MASK = TELEGRAM_SYMBOLIC_DIRECT_ID_BASE - 1n;
-const TELEGRAM_SYMBOLIC_GROUP_ID_BASE = 1_000_000_000_000n;
-const TELEGRAM_SYMBOLIC_GROUP_ID_RANGE = 10_000_000_000n;
+const TELEGRAM_SYMBOLIC_ID_BASE = TELEGRAM_NATIVE_CHAT_ID_MAX + 1n;
+const TELEGRAM_SYMBOLIC_ID_RANGE = 1n << 50n;
 const TELEGRAM_OUTBOUND_METHOD_RE =
   /\/(sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/iu;
 function normalizeTelegramChatId(
@@ -40,12 +39,15 @@ function normalizeTelegramChatId(
     ) {
       throw new Error("Telegram numeric target must be a safe integer.");
     }
+    if (numericId < -TELEGRAM_NATIVE_CHAT_ID_MAX || numericId > TELEGRAM_NATIVE_CHAT_ID_MAX) {
+      throw new Error("Telegram native numeric targets must fit within 52 significant bits.");
+    }
     return numericId.toString();
   }
   if (value.startsWith("@")) {
     const username = canonicalizeTelegramUsername(value);
     if (!username) {
-      throw new Error("Telegram usernames must contain 4-32 letters, digits, or underscores.");
+      throw new Error("Telegram usernames must contain 5-32 letters, digits, or underscores.");
     }
     if (kind === "group" && options.preserveGroupUsername) {
       return username;
@@ -61,9 +63,9 @@ function normalizeTelegramChatId(
 function syntheticTelegramChatId(kind: "direct" | "group", value: string): string {
   const hash = createHash("sha256").update(`${kind}:${value}`).digest().readBigUInt64BE();
   if (kind === "group") {
-    return String(-(TELEGRAM_SYMBOLIC_GROUP_ID_BASE + (hash % TELEGRAM_SYMBOLIC_GROUP_ID_RANGE)));
+    return String(-(TELEGRAM_SYMBOLIC_ID_BASE + (hash % TELEGRAM_SYMBOLIC_ID_RANGE)));
   }
-  return String(TELEGRAM_SYMBOLIC_DIRECT_ID_BASE + (hash & TELEGRAM_SYMBOLIC_DIRECT_ID_MASK));
+  return String(TELEGRAM_SYMBOLIC_ID_BASE + (hash % TELEGRAM_SYMBOLIC_ID_RANGE));
 }
 
 function telegramTargetKey(chatId: string, threadId?: number) {

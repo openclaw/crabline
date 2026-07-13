@@ -4,8 +4,8 @@ import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import {
   getBuiltinTargetCodec,
-  parseCanonicalTelegramTopic,
-  TELEGRAM_CHAT_ID_RULE,
+  parseCanonicalTelegramInboundTopic,
+  TELEGRAM_INBOUND_CHAT_ID_RULE,
   TELEGRAM_MESSAGE_THREAD_ID_RULE,
 } from "../target-normalizers.js";
 import type { ProviderAdapter } from "../types.js";
@@ -60,7 +60,7 @@ function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {
   const threadId =
     (message ? optionalString(message, "threadId") : undefined) ??
     optionalString(payload, "threadId");
-  const canonicalTopic = threadId ? parseCanonicalTelegramTopic(threadId) : undefined;
+  const canonicalTopic = threadId ? parseCanonicalTelegramInboundTopic(threadId) : undefined;
   const channelIds = [
     optionalString(payload, "channelId"),
     ...(message ? [optionalString(message, "channelId")] : []),
@@ -68,7 +68,7 @@ function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {
   if (canonicalTopic) {
     for (const channelId of channelIds) {
       if (
-        requireNativeInboundId(channelId, TELEGRAM_CHAT_ID_RULE, "Telegram channelId") !==
+        requireNativeInboundId(channelId, TELEGRAM_INBOUND_CHAT_ID_RULE, "Telegram channelId") !==
         canonicalTopic.chatId
       ) {
         throw new CrablineError(
@@ -95,7 +95,7 @@ function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {
         }
     : payload;
   const normalized = genericMockPayloadWithNativeThread({
-    channelRule: TELEGRAM_CHAT_ID_RULE,
+    channelRule: TELEGRAM_INBOUND_CHAT_ID_RULE,
     payload: genericPayload,
     threadRule: TELEGRAM_MESSAGE_THREAD_ID_RULE,
   });
@@ -147,7 +147,7 @@ export function normalizeTelegramWebhookPayload(payload: unknown) {
   const topicId = optionalStringish(message, "message_thread_id");
   const normalizedChatId = requireNativeInboundId(
     chatId,
-    TELEGRAM_CHAT_ID_RULE,
+    TELEGRAM_INBOUND_CHAT_ID_RULE,
     "Telegram message.chat.id",
   );
   const from = optionalRecord(message, "from");
