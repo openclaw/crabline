@@ -44,15 +44,19 @@ function signalRecipientValues(value: unknown): string[] {
   return values.map(readString).filter((entry): entry is string => entry !== undefined);
 }
 
+function signalDirectRecipientValues(value: unknown): string[] {
+  return signalRecipientValues(value).map((id) => signalDirectIdentity(id).recipient);
+}
+
 function signalOutboundTargets(params: Record<string, unknown>, account: string): string[] {
   const targets = [
     ...signalRecipientValues(params.groupId).map((id) => `group:${id}`),
     ...signalRecipientValues(params.groupIds).map((id) => `group:${id}`),
-    ...signalRecipientValues(params.recipient),
-    ...signalRecipientValues(params.recipients),
+    ...signalDirectRecipientValues(params.recipient),
+    ...signalDirectRecipientValues(params.recipients),
     ...signalRecipientValues(params.username),
     ...signalRecipientValues(params.usernames),
-    ...(params.noteToSelf === true ? [account] : []),
+    ...(params.noteToSelf === true ? [signalDirectIdentity(account).recipient] : []),
   ];
   return [...new Set(targets)];
 }
