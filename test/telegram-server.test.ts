@@ -2110,14 +2110,10 @@ describe("telegram local provider server", () => {
     servers.push(server);
     const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
 
-    const uploadDocument = async (chatId: number, bytes: string) => {
+    const uploadDocument = async (chatId: number, bytes: string, fileName = "shared-name.bin") => {
       const body = new FormData();
       body.set("chat_id", String(chatId));
-      body.set(
-        "document",
-        new Blob([bytes], { type: "application/octet-stream" }),
-        "shared-name.bin",
-      );
+      body.set("document", new Blob([bytes], { type: "application/octet-stream" }), fileName);
       const response = await fetch(`${apiRoot}/sendDocument`, {
         body,
         method: "POST",
@@ -2140,9 +2136,19 @@ describe("telegram local provider server", () => {
     expect(different.result.document.file_unique_id).not.toBe(first.result.document.file_unique_id);
     expect(repeated.result.document.file_unique_id).toBe(first.result.document.file_unique_id);
 
+    const collidingName = await uploadDocument(
+      400,
+      "unrelated bytes",
+      first.result.document.file_id,
+    );
+    expect(collidingName.result.document.file_name).toBe(first.result.document.file_id);
+    expect(collidingName.result.document.file_unique_id).not.toBe(
+      first.result.document.file_unique_id,
+    );
+
     const reused = await fetch(`${apiRoot}/sendDocument`, {
       body: JSON.stringify({
-        chat_id: 400,
+        chat_id: 500,
         document: first.result.document.file_id,
       }),
       headers: { "content-type": "application/json" },

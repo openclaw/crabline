@@ -612,18 +612,19 @@ function createOutboundMediaMessage(
   const height = Math.max(1, toIntegerValue(body.height) ?? 1);
   const width = Math.max(1, toIntegerValue(body.width) ?? 1);
   const chatIdentity = Buffer.from(telegramChatKey(chat.id)).toString("base64url");
-  const reusedIdentity = new RegExp(`^crabline-${mediaKind}-([A-Za-z0-9_-]{32})-`, "u").exec(
-    fileName,
-  )?.[1];
-  const fileIdentity =
-    multipartFile?.contentDigest.slice(0, 32) ??
-    reusedIdentity ??
-    createHash("sha256")
-      .update(mediaKind)
-      .update("\0")
-      .update(fileName)
-      .digest("base64url")
-      .slice(0, 32);
+  let fileIdentity: string;
+  if (multipartFile) {
+    fileIdentity = multipartFile.contentDigest.slice(0, 32);
+  } else {
+    fileIdentity =
+      new RegExp(`^crabline-${mediaKind}-([A-Za-z0-9_-]{32})-`, "u").exec(fileName)?.[1] ??
+      createHash("sha256")
+        .update(mediaKind)
+        .update("\0")
+        .update(fileName)
+        .digest("base64url")
+        .slice(0, 32);
+  }
   const fileId = `crabline-${mediaKind}-${fileIdentity}-${chatIdentity}-${messageId}`;
   const fileUniqueId = `crabline-${mediaKind}-unique-${fileIdentity}`;
   const media = {
