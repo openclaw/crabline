@@ -1374,10 +1374,21 @@ describe("cli", () => {
 
   it("stops and cleans a serve command when stdout closes", async () => {
     const close = vi.fn(async () => undefined);
+    const release = vi.fn(async () => undefined);
+    const remove = vi.fn(async () => undefined);
     const write = vi.spyOn(process.stdout, "write").mockImplementation((() => {
       throw Object.assign(new Error("closed stdout"), { code: "EPIPE" });
     }) as typeof process.stdout.write);
     const program = createProgram(() => undefined, {
+      acquireReadyFileLease: async () => release,
+      publishReadyFile: async () => ({
+        birthtimeNs: 1n,
+        ctimeNs: 1n,
+        dev: 1n,
+        ino: 1n,
+        size: 1n,
+      }),
+      removeReadyFile: remove,
       startServer: async () => ({
         close,
         manifest: {
@@ -1398,13 +1409,23 @@ describe("cli", () => {
 
     try {
       await expect(
-        program.parseAsync(["node", "crabline", "--json", "serve", "telegram"]),
+        program.parseAsync([
+          "node",
+          "crabline",
+          "--json",
+          "serve",
+          "telegram",
+          "--ready-file",
+          "server.json",
+        ]),
       ).resolves.toBe(program);
     } finally {
       write.mockRestore();
     }
 
     expect(close).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("retains ready-file ownership when server close fails", async () => {
