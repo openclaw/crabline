@@ -490,14 +490,42 @@ export function createProgram(
           settlePublication?.();
         }
       };
+      let releaseReadyLease: (() => Promise<void>) | undefined;
+      let publishedReady: { contents: string; identity: ReadyFileIdentity } | undefined;
       const close = onceAsync(async () => {
         await startup;
         await publication;
-        await server?.close();
+        const lifecycleErrors: unknown[] = [];
+        if (commandOptions.readyFile && publishedReady) {
+          try {
+            await removeReady(
+              commandOptions.readyFile,
+              publishedReady.contents,
+              publishedReady.identity,
+            );
+          } catch (error) {
+            lifecycleErrors.push(error);
+          }
+        }
+        let serverClosed = false;
+        try {
+          await server?.close();
+          serverClosed = true;
+        } catch (error) {
+          lifecycleErrors.push(error);
+        }
+        if (serverClosed && releaseReadyLease) {
+          try {
+            await releaseReadyLease();
+          } catch (error) {
+            lifecycleErrors.push(error);
+          }
+        }
+        if (lifecycleErrors.length > 0) {
+          throw combineLifecycleErrors(lifecycleErrors, "Crabline server shutdown failed.");
+        }
       });
       const shutdown = installShutdownHandler(close);
-      let releaseReadyLease: (() => Promise<void>) | undefined;
-      let publishedReady: { contents: string; identity: ReadyFileIdentity } | undefined;
       let actionFailed = false;
       let actionError: unknown;
       try {
@@ -527,6 +555,7 @@ export function createProgram(
             finishPublication();
             await shutdown.wait();
           } else {
+            let outputWritten = true;
             try {
               const payload = formatJson(server.manifest);
               if (commandOptions.readyFile) {
@@ -536,15 +565,21 @@ export function createProgram(
                   identity: await publish(commandOptions.readyFile, readyContents),
                 };
               }
-              await print(
+              outputWritten = await print(
                 options.json
                   ? payload
                   : renderServeText(server.manifest, commandOptions.showSecrets === true),
               );
+              if (!outputWritten) {
+                finishPublication();
+              }
+              if (!outputWritten) {
+                await close();
+              }
             } finally {
               finishPublication();
             }
-            if (shutdown.requested() || !commandOptions.once) {
+            if (outputWritten && (shutdown.requested() || !commandOptions.once)) {
               await shutdown.wait();
             }
           }
@@ -556,27 +591,11 @@ export function createProgram(
       finishStartup();
       finishPublication();
       const cleanupErrors: unknown[] = [];
-      const readyToRemove = publishedReady;
-      for (const cleanup of [
-        close,
-        ...(commandOptions.readyFile && readyToRemove
-          ? [
-              () =>
-                removeReady(
-                  commandOptions.readyFile!,
-                  readyToRemove.contents,
-                  readyToRemove.identity,
-                ),
-            ]
-          : []),
-        ...(releaseReadyLease ? [releaseReadyLease] : []),
-      ]) {
-        try {
-          await cleanup();
-        } catch (error) {
-          if (!actionFailed || error !== actionError) {
-            cleanupErrors.push(error);
-          }
+      try {
+        await close();
+      } catch (error) {
+        if (!actionFailed || error !== actionError) {
+          cleanupErrors.push(error);
         }
       }
       shutdown.dispose();
