@@ -14,6 +14,7 @@ export type RemoteJwtKeySet<T> = {
 
 const DEFAULT_KEY_FETCH_TIMEOUT_MS = 5_000;
 const DEFAULT_UNKNOWN_KEY_COOLDOWN_MS = 30_000;
+const MAX_HTTP_CACHE_AGE_SECONDS = 24 * 60 * 60;
 const MAX_NEGATIVE_KEY_IDS = 128;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
@@ -76,14 +77,22 @@ export function resolveHttpCacheExpiry(response: Response, now: number): number 
   const ageSeconds = ageHeader && /^\d+$/u.test(ageHeader) ? Number.parseInt(ageHeader, 10) : 0;
   const maxAge = /(?:^|,)\s*max-age=(\d+)/iu.exec(cacheControl ?? "");
   if (maxAge) {
-    return now + Math.max(0, Number(maxAge[1]) - ageSeconds) * 1_000;
+    const maxAgeSeconds = Number(maxAge[1]);
+    if (!Number.isSafeInteger(maxAgeSeconds)) {
+      return now;
+    }
+    return (
+      now + Math.min(MAX_HTTP_CACHE_AGE_SECONDS, Math.max(0, maxAgeSeconds - ageSeconds)) * 1_000
+    );
   }
   const expiresHeader = response.headers.get("expires");
   if (expiresHeader === null) {
     return now + Math.max(0, 60 * 60 - ageSeconds) * 1_000;
   }
   const expires = Date.parse(expiresHeader);
-  return Number.isFinite(expires) && expires > now ? expires : now;
+  return Number.isFinite(expires) && expires > now
+    ? Math.min(expires, now + MAX_HTTP_CACHE_AGE_SECONDS * 1_000)
+    : now;
 }
 
 export function createCachedJwtKeyResolver<T>(params: {
@@ -198,14 +207,24 @@ export function createCachedJwtKeyResolver<T>(params: {
     if (refreshInFlight) {
       refreshed = await refreshInFlight;
     } else {
-      const refreshTime = now();
-      if (refreshCooldownUntil > refreshTime) {
+      if (refreshCooldownUntil > now()) {
         return rejectUnknownKey(header.kid, refreshCooldownUntil);
       }
-      refreshCooldownUntil = refreshTime + refreshCooldownMs;
-      refreshInFlight = fetchKeys().finally(() => {
-        refreshInFlight = undefined;
-      });
+      refreshInFlight = Promise.resolve()
+        .then(fetchKeys)
+        .then(
+          (refreshedKeySet) => {
+            refreshCooldownUntil = now() + refreshCooldownMs;
+            return refreshedKeySet;
+          },
+          (error: unknown) => {
+            refreshCooldownUntil = now() + refreshCooldownMs;
+            throw error;
+          },
+        )
+        .finally(() => {
+          refreshInFlight = undefined;
+        });
       refreshed = await refreshInFlight;
     }
 
