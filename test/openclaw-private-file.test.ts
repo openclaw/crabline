@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -77,9 +79,30 @@ describe("OpenClaw private file publication", () => {
         await publishPrivateFileAtomically(filePath, "private\n", { platform: "linux" });
 
         expect((await fs.stat(firstParent)).mode & 0o777).toBe(0o700);
+        expect((await fs.stat(firstParent)).mode & 0o1000).toBe(0o1000);
         expect((await fs.stat(finalParent)).mode & 0o777).toBe(0o700);
       } finally {
         process.umask(previousUmask);
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects missing publication ancestry beneath an unsafe writable boundary",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        await fs.chmod(directory, 0o777);
+        const filePath = path.join(directory, "nested", "manifest.json");
+
+        await expect(publishPrivateFileAtomically(filePath, "private\n")).rejects.toThrow(
+          "Private mutation boundary is writable by another POSIX principal.",
+        );
+
+        await expect(fs.stat(path.dirname(filePath))).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await fs.chmod(directory, 0o700);
         await disposeTempDir(directory);
       }
     },
@@ -596,7 +619,9 @@ describe("OpenClaw private file publication", () => {
               entry.endsWith(".claim"),
             );
             expect(claimName).toBeDefined();
-            expect((await fs.stat(path.join(directory, claimName!))).mode & 0o777).toBe(0o700);
+            const claimStats = await fs.stat(path.join(directory, claimName!));
+            expect(claimStats.isFile()).toBe(true);
+            expect(claimStats.mode & 0o777).toBe(0o600);
             commitReached();
             await commitReleased;
           },
@@ -620,26 +645,870 @@ describe("OpenClaw private file publication", () => {
     },
   );
 
-  it.skipIf(process.platform === "win32")(
-    "fails closed without changing a permissive publication parent",
-    async () => {
+  it("falls back to an atomically renamed claim directory without hard-link support", async () => {
+    const directory = await createTempDir();
+    const linkSpy = vi
+      .spyOn(fs, "link")
+      .mockRejectedValue(Object.assign(new Error("hard links unsupported"), { code: "ENOTSUP" }));
+    let releaseCommit!: () => void;
+    const commitReleased = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    let commitReached!: () => void;
+    const reachedCommit = new Promise<void>((resolve) => {
+      commitReached = resolve;
+    });
+    let firstPublication: Promise<void> | undefined;
+    try {
+      const filePath = path.join(directory, "manifest.json");
+      firstPublication = publishPrivateFileAtomically(filePath, "private\n", {
+        beforeCommitRename: async () => {
+          commitReached();
+          await commitReleased;
+        },
+      });
+      await reachedCommit;
+
+      await expect(publishPrivateFileAtomically(filePath, "second\n")).rejects.toThrow(
+        "Private path mutation is already claimed.",
+      );
+
+      releaseCommit();
+      await firstPublication;
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+      expect(
+        (await fs.readdir(directory)).filter((entry) =>
+          entry.startsWith(".crabline-private-mutation"),
+        ),
+      ).toEqual([]);
+    } finally {
+      releaseCommit();
+      await firstPublication?.catch(() => undefined);
+      linkSpy.mockRestore();
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("recovers a stale directory claim on filesystems without hard-link support", async () => {
+    const directory = await createTempDir();
+    try {
+      const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+      await fs.mkdir(claimPath, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(claimPath, "owner.json"),
+        `${JSON.stringify({
+          ownerId: "stale-directory-owner",
+          pid: 999_994,
+          processIdentity: "dead:stale-directory-owner",
+          processStartedAtMs: 100,
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
+        claimRuntime: {
+          getProcessIdentity: () => null,
+          isProcessAlive: () => false,
+          ownerId: "replacement-owner",
+          pid: process.pid,
+          processIdentity: "test:replacement-owner",
+          processStartedAtMs: 200,
+        },
+      });
+
+      await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
+        "private\n",
+      );
+      expect(
+        (await fs.readdir(directory)).filter((entry) =>
+          entry.startsWith(".crabline-private-mutation"),
+        ),
+      ).toEqual([]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("uses one parent-wide claim for filesystem-equivalent target names", async () => {
+    const directory = await createTempDir();
+    let releaseCommit!: () => void;
+    const commitReleased = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    let commitReached!: () => void;
+    const reachedCommit = new Promise<void>((resolve) => {
+      commitReached = resolve;
+    });
+    try {
+      const firstPublication = publishPrivateFileAtomically(
+        path.join(directory, "manifest.json"),
+        "first\n",
+        {
+          beforeCommitRename: async () => {
+            commitReached();
+            await commitReleased;
+          },
+        },
+      );
+      await reachedCommit;
+
+      await expect(
+        publishPrivateFileAtomically(path.join(directory, "MANIFEST.JSON"), "second\n"),
+      ).rejects.toThrow("Private path mutation is already claimed.");
+
+      releaseCommit();
+      await firstPublication;
+    } finally {
+      releaseCommit();
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("serializes recursive removal across an owned legacy 0755 descendant", async () => {
+    const directory = await createTempDir();
+    let releaseCommit!: () => void;
+    const commitReleased = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    let commitReached!: () => void;
+    const reachedCommit = new Promise<void>((resolve) => {
+      commitReached = resolve;
+    });
+    let publication: Promise<void> | undefined;
+    try {
+      const generationPath = path.join(directory, "generation");
+      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+      const legacyPath = path.join(generationPath, "legacy");
+      await fs.mkdir(legacyPath, { mode: 0o755 });
+      await fs.chmod(legacyPath, 0o755);
+      const filePath = path.join(legacyPath, "nested", "manifest.json");
+      publication = publishPrivateFileAtomically(filePath, "private\n", {
+        beforeCommitRename: async () => {
+          commitReached();
+          await commitReleased;
+        },
+      });
+      await reachedCommit;
+
+      await expect(
+        removeSecuredPrivateDirectory(secured, undefined, undefined, {
+          platform: "linux",
+        }),
+      ).rejects.toThrow("Private path mutation is already claimed.");
+
+      releaseCommit();
+      await publication;
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+    } finally {
+      releaseCommit();
+      await publication?.catch(() => undefined);
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("retries when an active claim disappears before its metadata is opened", async () => {
+    const directory = await createTempDir();
+    let releaseCommit!: () => void;
+    const commitReleased = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    let commitReached!: () => void;
+    const reachedCommit = new Promise<void>((resolve) => {
+      commitReached = resolve;
+    });
+    let firstPublication: Promise<void> | undefined;
+    let releasedDuringOpen = false;
+    let openSpy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const filePath = path.join(directory, "manifest.json");
+      firstPublication = publishPrivateFileAtomically(filePath, "first\n", {
+        beforeCommitRename: async () => {
+          commitReached();
+          await commitReleased;
+        },
+      });
+      await reachedCommit;
+
+      const actualOpen = fs.open.bind(fs);
+      openSpy = vi.spyOn(fs, "open").mockImplementation(async (openedPath, flags, mode) => {
+        if (
+          !releasedDuringOpen &&
+          openedPath === path.join(directory, ".crabline-private-mutation.claim") &&
+          (flags === "r" || typeof flags === "number")
+        ) {
+          releasedDuringOpen = true;
+          releaseCommit();
+          await firstPublication;
+        }
+        return mode === undefined
+          ? await actualOpen(openedPath, flags)
+          : await actualOpen(openedPath, flags, mode);
+      });
+      await publishPrivateFileAtomically(filePath, "second\n");
+
+      expect(releasedDuringOpen).toBe(true);
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
+    } finally {
+      releaseCommit();
+      await firstPublication?.catch(() => undefined);
+      openSpy?.mockRestore();
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("retries the root claim when its owner releases after stale classification", async () => {
+    const directory = await createTempDir();
+    let releaseCommit!: () => void;
+    const commitReleased = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    let commitReached!: () => void;
+    const reachedCommit = new Promise<void>((resolve) => {
+      commitReached = resolve;
+    });
+    let firstPublication: Promise<void> | undefined;
+    try {
+      const filePath = path.join(directory, "manifest.json");
+      firstPublication = publishPrivateFileAtomically(filePath, "first\n", {
+        beforeCommitRename: async () => {
+          commitReached();
+          await commitReleased;
+        },
+      });
+      await reachedCommit;
+
+      const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+      const actualOpen = fs.open.bind(fs);
+      let claimReadCount = 0;
+      const openSpy = vi.spyOn(fs, "open").mockImplementation(async (openedPath, flags, mode) => {
+        if (openedPath === claimPath && (flags === "r" || typeof flags === "number")) {
+          claimReadCount += 1;
+          if (claimReadCount === 2) {
+            releaseCommit();
+            await firstPublication;
+          }
+        }
+        return mode === undefined
+          ? await actualOpen(openedPath, flags)
+          : await actualOpen(openedPath, flags, mode);
+      });
+      try {
+        await publishPrivateFileAtomically(filePath, "second\n", {
+          claimRuntime: {
+            getProcessIdentity: () => null,
+            isProcessAlive: () => false,
+            ownerId: "replacement-owner",
+            pid: process.pid,
+            processIdentity: "test:replacement-owner",
+            processStartedAtMs: 200,
+          },
+        });
+      } finally {
+        openSpy.mockRestore();
+      }
+
+      expect(claimReadCount).toBeGreaterThanOrEqual(2);
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
+    } finally {
+      releaseCommit();
+      await firstPublication?.catch(() => undefined);
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("rolls back a linked claim when its first parent sync fails", async () => {
+    const directory = await createTempDir();
+    const actualOpen = fs.open.bind(fs);
+    const actualLink = fs.link.bind(fs);
+    const syncFailure = new Error("claim parent sync failed");
+    let claimLinked = false;
+    let syncFailed = false;
+    const linkSpy = vi.spyOn(fs, "link").mockImplementation(async (...args) => {
+      await actualLink(...args);
+      claimLinked = true;
+    });
+    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (filePath, flags, mode) => {
+      if (claimLinked && !syncFailed && filePath === directory && flags === "r") {
+        syncFailed = true;
+        throw syncFailure;
+      }
+      return mode === undefined
+        ? await actualOpen(filePath, flags)
+        : await actualOpen(filePath, flags, mode);
+    });
+    try {
+      const filePath = path.join(directory, "manifest.json");
+
+      await expect(publishPrivateFileAtomically(filePath, "first\n")).rejects.toBe(syncFailure);
+
+      linkSpy.mockRestore();
+      openSpy.mockRestore();
+      await publishPrivateFileAtomically(filePath, "second\n");
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
+    } finally {
+      linkSpy.mockRestore();
+      openSpy.mockRestore();
+      await disposeTempDir(directory);
+    }
+  });
+
+  it.each([".crabline-private-mutation.claim", ".CRABLINE-PRIVATE-MUTATION.claim"])(
+    "rejects the reserved claim namespace before changing destination %s",
+    async (fileName) => {
       const directory = await createTempDir();
       try {
-        await fs.chmod(directory, 0o755);
+        const filePath = path.join(directory, fileName);
+        await fs.writeFile(filePath, "existing\n", { mode: 0o600 });
 
-        await expect(
-          publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n"),
-        ).rejects.toThrow(
-          "Private mutation parent must be owned by the current user and owner-only.",
+        await expect(publishPrivateFileAtomically(filePath, "replacement\n")).rejects.toThrow(
+          "Private path uses Crabline's reserved mutation claim namespace.",
         );
 
-        expect((await fs.stat(directory)).mode & 0o777).toBe(0o755);
-        await expect(fs.readdir(directory)).resolves.toEqual([]);
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("existing\n");
+        await expect(fs.readdir(directory)).resolves.toEqual([fileName]);
       } finally {
         await disposeTempDir(directory);
       }
     },
   );
+
+  it("rejects oversized mutation claim metadata without allocating from its contents", async () => {
+    const directory = await createTempDir();
+    try {
+      const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+      await fs.writeFile(claimPath, "x".repeat(4097), { mode: 0o600 });
+      await fs.chmod(claimPath, 0o600);
+
+      const filePath = path.join(directory, "manifest.json");
+      await expect(publishPrivateFileAtomically(filePath, "private\n")).rejects.toThrow(
+        "Private path mutation claim metadata size is invalid.",
+      );
+
+      await expect(fs.stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.readdir(directory)).resolves.toEqual([".crabline-private-mutation.claim"]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a FIFO claim without waiting for a writer",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+        execFileSync("mkfifo", [claimPath]);
+
+        await expect(
+          publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n"),
+        ).rejects.toThrow("Private path mutation claim metadata size is invalid.");
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it("accepts valid claim metadata returned through short reads", async () => {
+    const directory = await createTempDir();
+    const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+    const contents = `${JSON.stringify({
+      ownerId: "short-read-owner",
+      pid: 999_996,
+      processIdentity: "dead:short-read-owner",
+      processStartedAtMs: 100,
+    })}\n`;
+    await fs.writeFile(claimPath, contents, { mode: 0o600 });
+    const actualOpen = fs.open.bind(fs);
+    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (openedPath, flags, mode) => {
+      const handle =
+        mode === undefined
+          ? await actualOpen(openedPath, flags)
+          : await actualOpen(openedPath, flags, mode);
+      if (openedPath === claimPath) {
+        const actualRead = handle.read.bind(handle);
+        vi.spyOn(handle, "read").mockImplementation(
+          (async (buffer: Buffer, offset: number, length: number, position: number) =>
+            await actualRead(buffer, offset, Math.min(length, 7), position)) as never,
+        );
+      }
+      return handle;
+    });
+    try {
+      await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
+        claimRuntime: {
+          getProcessIdentity: () => null,
+          isProcessAlive: () => false,
+          ownerId: "replacement-owner",
+          pid: process.pid,
+          processIdentity: "test:replacement-owner",
+          processStartedAtMs: 200,
+        },
+      });
+
+      await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
+        "private\n",
+      );
+    } finally {
+      openSpy.mockRestore();
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("recovers a stale claim with a maximum-length replacement owner ID", async () => {
+    const directory = await createTempDir();
+    try {
+      const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+      await fs.writeFile(
+        claimPath,
+        `${JSON.stringify({
+          ownerId: "stale-owner",
+          pid: 999_999,
+          processIdentity: "dead:stale-owner",
+          processStartedAtMs: 100,
+        })}\n`,
+        { mode: 0o600 },
+      );
+      await fs.chmod(claimPath, 0o600);
+
+      await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
+        claimRuntime: {
+          getProcessIdentity: () => null,
+          isProcessAlive: () => false,
+          ownerId: "r".repeat(128),
+          pid: process.pid,
+          processIdentity: "test:replacement-owner",
+          processStartedAtMs: 200,
+        },
+      });
+
+      await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
+        "private\n",
+      );
+      expect(
+        (await fs.readdir(directory)).filter((entry) =>
+          entry.startsWith(".crabline-private-mutation"),
+        ),
+      ).toEqual([]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("recovers a stale claim when its PID belongs to a different process identity", async () => {
+    const directory = await createTempDir();
+    try {
+      const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+      await fs.writeFile(
+        claimPath,
+        `${JSON.stringify({
+          ownerId: "reused-pid-owner",
+          pid: process.pid,
+          processStartedAtMs: 100,
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
+        claimRuntime: {
+          getProcessIdentity: () => null,
+          isProcessAlive: () => true,
+          ownerId: "current-owner",
+          pid: process.pid,
+          processStartedAtMs: 200,
+        },
+      });
+
+      await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
+        "private\n",
+      );
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("does not let a delayed stale contender displace a live successor claim", async () => {
+    const directory = await createTempDir();
+    let releaseCommit!: () => void;
+    const commitReleased = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    let commitReached!: () => void;
+    const reachedCommit = new Promise<void>((resolve) => {
+      commitReached = resolve;
+    });
+    try {
+      await fs.writeFile(
+        path.join(directory, ".crabline-private-mutation.claim"),
+        `${JSON.stringify({
+          ownerId: "stale-root-owner",
+          pid: 999_997,
+          processIdentity: "dead:stale-root-owner",
+          processStartedAtMs: 100,
+        })}\n`,
+        { mode: 0o600 },
+      );
+      const firstPublication = publishPrivateFileAtomically(
+        path.join(directory, "manifest.json"),
+        "first\n",
+        {
+          beforeCommitRename: async () => {
+            commitReached();
+            await commitReleased;
+          },
+          claimRuntime: {
+            getProcessIdentity: () => "test:first-owner",
+            isProcessAlive: (pid) => pid === 111,
+            ownerId: "first-owner",
+            pid: 111,
+            processIdentity: "test:first-owner",
+            processStartedAtMs: 100,
+          },
+        },
+      );
+      await reachedCommit;
+
+      await expect(
+        publishPrivateFileAtomically(path.join(directory, "manifest.json"), "second\n", {
+          claimRuntime: {
+            getProcessIdentity: () => "test:first-owner",
+            isProcessAlive: (pid) => pid === 111,
+            ownerId: "second-owner",
+            pid: 222,
+            processIdentity: "test:second-owner",
+            processStartedAtMs: 200,
+          },
+        }),
+      ).rejects.toThrow("Private path mutation is already claimed.");
+
+      releaseCommit();
+      await firstPublication;
+      await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
+        "first\n",
+      );
+    } finally {
+      releaseCommit();
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("recovers past a stale claim left with its candidate hard link", async () => {
+    const directory = await createTempDir();
+    try {
+      const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+      const candidatePath = `${claimPath}.crashed.candidate`;
+      await fs.writeFile(
+        candidatePath,
+        `${JSON.stringify({
+          ownerId: "crashed-owner",
+          pid: 999_998,
+          processIdentity: "dead:crashed-owner",
+          processStartedAtMs: 100,
+        })}\n`,
+        { mode: 0o600 },
+      );
+      await fs.link(candidatePath, claimPath);
+      expect((await fs.stat(claimPath)).nlink).toBe(2);
+
+      await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
+        claimRuntime: {
+          getProcessIdentity: () => null,
+          isProcessAlive: () => false,
+          ownerId: "next-owner",
+          pid: process.pid,
+          processIdentity: "test:next-owner",
+          processStartedAtMs: 200,
+        },
+      });
+
+      await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
+        "private\n",
+      );
+      expect(
+        (await fs.readdir(directory)).filter((entry) =>
+          entry.startsWith(".crabline-private-mutation"),
+        ),
+      ).toEqual([]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("recovers a root claim hard-linked to its deterministic successor", async () => {
+    const directory = await createTempDir();
+    try {
+      const rootClaimPath = path.join(directory, ".crabline-private-mutation.claim");
+      const contents = `${JSON.stringify({
+        ownerId: "crashed-compactor",
+        pid: 999_995,
+        processIdentity: "dead:crashed-compactor",
+        processStartedAtMs: 100,
+      })}\n`;
+      await fs.writeFile(rootClaimPath, contents, { mode: 0o600 });
+      const successorPath = path.join(
+        directory,
+        `.crabline-private-mutation.${createHash("sha256").update(contents).digest("hex")}.claim`,
+      );
+      await fs.link(rootClaimPath, successorPath);
+
+      await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
+        claimRuntime: {
+          getProcessIdentity: () => null,
+          isProcessAlive: () => false,
+          ownerId: "replacement-owner",
+          pid: process.pid,
+          processIdentity: "test:replacement-owner",
+          processStartedAtMs: 200,
+        },
+      });
+
+      await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
+        "private\n",
+      );
+      expect(
+        (await fs.readdir(directory)).filter((entry) =>
+          entry.startsWith(".crabline-private-mutation"),
+        ),
+      ).toEqual([]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("compacts more stale claims than the former fixed traversal limit", async () => {
+    const directory = await createTempDir();
+    try {
+      let claimPath = path.join(directory, ".crabline-private-mutation.claim");
+      for (let index = 0; index < 1025; index += 1) {
+        const contents = `${JSON.stringify({
+          ownerId: `stale-${index}`,
+          pid: 900_000 + index,
+          processIdentity: `dead:stale-${index}`,
+          processStartedAtMs: index + 1,
+        })}\n`;
+        await fs.writeFile(claimPath, contents, { mode: 0o600 });
+        claimPath = path.join(
+          directory,
+          `.crabline-private-mutation.${createHash("sha256").update(contents).digest("hex")}.claim`,
+        );
+      }
+
+      await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
+        claimRuntime: {
+          getProcessIdentity: () => null,
+          isProcessAlive: () => false,
+          ownerId: "replacement-owner",
+          pid: process.pid,
+          processIdentity: "test:replacement-owner",
+          processStartedAtMs: 2000,
+        },
+      });
+
+      await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
+        "private\n",
+      );
+      expect(
+        (await fs.readdir(directory)).filter((entry) =>
+          entry.startsWith(".crabline-private-mutation"),
+        ),
+      ).toEqual([]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "migrates an owned permissive publication parent before writing",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        await fs.chmod(directory, 0o755);
+
+        const filePath = path.join(directory, "manifest.json");
+        await publishPrivateFileAtomically(filePath, "private\n");
+
+        expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "rejects inherited macOS ACL risk without mutating the existing ancestor",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        execFileSync(
+          "/bin/chmod",
+          ["+a", "everyone allow add_file,delete_child,file_inherit,directory_inherit", directory],
+          { stdio: "ignore" },
+        );
+        const filePath = path.join(directory, "nested", "manifest.json");
+
+        await expect(publishPrivateFileAtomically(filePath, "private\n")).rejects.toThrow(
+          "Private directory must not have a macOS extended ACL.",
+        );
+
+        expect(
+          execFileSync("/bin/ls", ["-lde", directory], { encoding: "utf8" })
+            .trimStart()
+            .split(/\s+/u, 1)[0],
+        ).toContain("+");
+        await expect(fs.stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        execFileSync("/bin/chmod", ["-RN", directory], { stdio: "ignore" });
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "migrates an existing macOS publication parent with a legacy ACL",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        execFileSync(
+          "/bin/chmod",
+          ["+a", "everyone allow add_file,delete_child,file_inherit,directory_inherit", directory],
+          { stdio: "ignore" },
+        );
+        const filePath = path.join(directory, "manifest.json");
+
+        await publishPrivateFileAtomically(filePath, "private\n");
+
+        expect(
+          execFileSync("/bin/ls", ["-lde", directory], { encoding: "utf8" })
+            .trimStart()
+            .split(/\s+/u, 1)[0],
+        ).not.toContain("+");
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+      } finally {
+        execFileSync("/bin/chmod", ["-RN", directory], { stdio: "ignore" });
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "removes a private directory beneath a sticky shared parent without chmodding it",
+    async () => {
+      const parent = await createTempDir();
+      try {
+        await fs.chmod(parent, 0o1777);
+        const generationPath = path.join(parent, "generation");
+        const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+        await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+
+        await removeSecuredPrivateDirectory(secured, undefined, undefined, {
+          platform: "linux",
+        });
+
+        expect((await fs.stat(parent)).mode & 0o7777).toBe(0o1777);
+        await expect(fs.stat(generationPath)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await fs.chmod(parent, 0o700);
+        await disposeTempDir(parent);
+      }
+    },
+  );
+
+  it("removes a secured directory whose basename uses the reserved claim prefix", async () => {
+    const directory = await createTempDir();
+    try {
+      const generationPath = path.join(directory, ".crabline-private-mutation.data");
+      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+      await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+
+      await removeSecuredPrivateDirectory(secured, undefined, undefined, {
+        platform: "linux",
+      });
+
+      await expect(fs.stat(generationPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("closes the leaf claim handle before recursively deleting its container", async () => {
+    const directory = await createTempDir();
+    const actualOpen = fs.open.bind(fs);
+    let claimHandleClosed = false;
+    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (filePath, flags, mode) => {
+      const handle =
+        mode === undefined
+          ? await actualOpen(filePath, flags)
+          : await actualOpen(filePath, flags, mode);
+      if (
+        typeof filePath === "string" &&
+        filePath.includes(".crabline-private-mutation.claim.") &&
+        filePath.endsWith(".candidate")
+      ) {
+        const actualClose = handle.close.bind(handle);
+        vi.spyOn(handle, "close").mockImplementation(async () => {
+          claimHandleClosed = true;
+          await actualClose();
+        });
+      }
+      return handle;
+    });
+    try {
+      const generationPath = path.join(directory, "generation");
+      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+      await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+
+      await removeSecuredPrivateDirectory(secured, undefined, undefined, {
+        platform: "linux",
+        removeDirectory: async (quarantinePath) => {
+          expect(claimHandleClosed).toBe(true);
+          await fs.rm(quarantinePath, { force: true, recursive: true });
+        },
+      });
+    } finally {
+      openSpy.mockRestore();
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("retries ancestor claim release after the removed container is gone", async () => {
+    const directory = await createTempDir();
+    const actualRename = fs.rename.bind(fs);
+    let ancestorReleaseAttempts = 0;
+    try {
+      await securePrivateDirectory(directory, { platform: "linux" });
+      const generationPath = path.join(directory, "generation");
+      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+      await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+      const ancestorClaimPath = path.join(directory, ".crabline-private-mutation.claim");
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (oldPath, newPath) => {
+        if (
+          oldPath === ancestorClaimPath &&
+          typeof newPath === "string" &&
+          newPath.endsWith(".release")
+        ) {
+          ancestorReleaseAttempts += 1;
+          if (ancestorReleaseAttempts === 1) {
+            throw new Error("injected ancestor release failure");
+          }
+        }
+        await actualRename(oldPath, newPath);
+      });
+      try {
+        await expect(
+          removeSecuredPrivateDirectory(secured, undefined, undefined, {
+            platform: "linux",
+          }),
+        ).rejects.toThrow("injected ancestor release failure");
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expect(ancestorReleaseAttempts).toBe(2);
+      await expect(fs.stat(ancestorClaimPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
 
   it("preserves a substituted quarantine directory at the recursive removal boundary", async () => {
     const directory = await createTempDir();
@@ -650,18 +1519,21 @@ describe("OpenClaw private file publication", () => {
       let originalQuarantinePath: string | undefined;
       let substitutePath: string | undefined;
 
-      await expect(
-        removeSecuredPrivateDirectory(secured, undefined, undefined, {
-          beforeRecursiveRemove: async (quarantinePath) => {
-            originalQuarantinePath = `${quarantinePath}.original`;
-            substitutePath = quarantinePath;
-            await fs.rename(quarantinePath, originalQuarantinePath);
-            await fs.mkdir(quarantinePath);
-            await fs.writeFile(path.join(quarantinePath, "substitute.json"), "substitute\n");
-          },
-          platform: "linux",
-        }),
-      ).rejects.toThrow("Private directory path identity changed during publication.");
+      const removalError = await removeSecuredPrivateDirectory(secured, undefined, undefined, {
+        beforeRecursiveRemove: async (quarantinePath) => {
+          originalQuarantinePath = `${quarantinePath}.original`;
+          substitutePath = quarantinePath;
+          await fs.rename(quarantinePath, originalQuarantinePath);
+          await fs.mkdir(quarantinePath);
+          await fs.writeFile(path.join(quarantinePath, "substitute.json"), "substitute\n");
+        },
+        platform: "linux",
+      }).catch((error: unknown) => error);
+
+      expect(removalError).toBeInstanceOf(AggregateError);
+      expect((removalError as AggregateError).cause).toMatchObject({
+        message: "Private directory path identity changed during publication.",
+      });
 
       await expect(
         fs.readFile(path.join(originalQuarantinePath!, "private.json"), "utf8"),
