@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   createMsTeamsWebhookAuthenticator,
+  handleMsTeamsWebhookPayload,
   MsTeamsProviderAdapter,
   normalizeMsTeamsWebhookPayload,
 } from "../src/providers/builtin/msteams.js";
@@ -13,6 +14,12 @@ import {
 } from "./local-mock-provider-helpers.js";
 
 const conversationId = "a:opaque-conversation-id";
+
+function jwtForKeyLookup(claims: Record<string, unknown>, kid = "test-key"): string {
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", kid })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  return `${header}.${payload}.AA`;
+}
 
 function endpointFromDetails(details: string[]): string {
   const detail = details.find((entry) => entry.includes("http://"));
@@ -44,6 +51,19 @@ describe("Microsoft Teams webhook authentication", () => {
         type: "message",
       }),
     ).toThrow(/channelId=msteams/u);
+  });
+
+  it("returns the Bot Framework unsupported status for invoke activities", async () => {
+    const response = handleMsTeamsWebhookPayload({
+      channelId: "msteams",
+      name: "task/fetch",
+      type: "invoke",
+      value: {},
+    });
+
+    expect(response?.status).toBe(501);
+    await expect(response?.text()).resolves.toBe("");
+    expect(handleMsTeamsWebhookPayload({ type: "conversationUpdate" })?.status).toBe(200);
   });
 
   it("requires Bot Connector auth for externally reachable webhooks", async () => {
@@ -236,6 +256,76 @@ describe("Microsoft Teams webhook authentication", () => {
         body,
       ),
     ).resolves.toMatchObject({ status: 401 });
+  });
+
+  it("distinguishes Bot Connector signing infrastructure failures from invalid credentials", async () => {
+    const config = await createLocalMockConfig("msteams", "/msteams/webhook");
+    config.msteams!.appId = "teams-app-id";
+    const now = Date.now();
+    let fetches = 0;
+    const authenticate = createMsTeamsWebhookAuthenticator(config, {
+      fetch: async () => {
+        fetches += 1;
+        throw new Error("JWKS unavailable");
+      },
+      now: () => now,
+    });
+    const body = JSON.stringify({
+      channelId: "msteams",
+      serviceUrl: "https://smba.trafficmanager.net/emea/",
+      type: "message",
+    });
+    const signedRequest = jwtForKeyLookup({
+      aud: "teams-app-id",
+      exp: Math.floor(now / 1000) + 60,
+      iss: "https://api.botframework.com",
+      serviceurl: "https://smba.trafficmanager.net/emea/",
+    });
+    const request = () =>
+      new Request("https://bot.example.test/msteams/webhook", {
+        headers: { authorization: `Bearer ${signedRequest}` },
+      });
+
+    const first = await authenticate!(request(), body);
+    expect(first?.status).toBe(503);
+    expect(first?.headers.get("cache-control")).toBe("no-store");
+    expect(first?.headers.get("www-authenticate")).toBeNull();
+    await expect(first?.text()).resolves.toBe("service unavailable");
+
+    await expect(authenticate!(request(), body)).resolves.toMatchObject({ status: 503 });
+    expect(fetches).toBe(1);
+    await expect(
+      authenticate!(new Request("https://bot.example.test/msteams/webhook"), body),
+    ).resolves.toMatchObject({ status: 401 });
+  });
+
+  it("treats malformed Bot Connector key material as an infrastructure failure", async () => {
+    const config = await createLocalMockConfig("msteams", "/msteams/webhook");
+    config.msteams!.appId = "teams-app-id";
+    const now = Date.now();
+    const authenticate = createMsTeamsWebhookAuthenticator(config, {
+      fetch: async (input: string | URL | Request) =>
+        String(input).includes("openidconfiguration")
+          ? Response.json({ jwks_uri: "https://login.example.test/keys" })
+          : Response.json({ keys: [{ kty: "RSA" }] }),
+      now: () => now,
+    });
+    const serviceUrl = "https://smba.trafficmanager.net/emea/";
+    const signedRequest = jwtForKeyLookup({
+      aud: "teams-app-id",
+      exp: Math.floor(now / 1000) + 60,
+      iss: "https://api.botframework.com",
+      serviceurl: serviceUrl,
+    });
+
+    await expect(
+      authenticate!(
+        new Request("https://bot.example.test/msteams/webhook", {
+          headers: { authorization: `Bearer ${signedRequest}` },
+        }),
+        JSON.stringify({ channelId: "msteams", serviceUrl, type: "message" }),
+      ),
+    ).resolves.toMatchObject({ status: 503 });
   });
 
   it("acknowledges authenticated non-message activities without recording them", async () => {

@@ -6,6 +6,7 @@ import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
 import {
   createCachedJwtKeyResolver,
+  JwtKeyInfrastructureError,
   readBearerToken,
   resolveHttpCacheExpiry,
   verifySignedJwt,
@@ -62,33 +63,42 @@ export function createMsTeamsWebhookAuthenticator(
   const fetchImpl = runtime.fetch ?? fetch;
   const resolveSigningKey = createCachedJwtKeyResolver<BotConnectorKey>({
     async fetchKeys(signal) {
-      const fetchedAt = runtime.now?.() ?? Date.now();
-      const metadataResponse = await fetchImpl(BOT_CONNECTOR_OPENID_URL, { signal });
-      if (!metadataResponse.ok) {
-        throw new Error(
-          `Bot Connector metadata fetch failed with HTTP ${metadataResponse.status}.`,
-        );
+      try {
+        const fetchedAt = runtime.now?.() ?? Date.now();
+        const metadataResponse = await fetchImpl(BOT_CONNECTOR_OPENID_URL, { signal });
+        if (!metadataResponse.ok) {
+          throw new Error(
+            `Bot Connector metadata fetch failed with HTTP ${metadataResponse.status}.`,
+          );
+        }
+        const metadataExpiry = resolveHttpCacheExpiry(metadataResponse, fetchedAt);
+        const metadata = (await metadataResponse.json()) as { jwks_uri?: unknown };
+        if (typeof metadata.jwks_uri !== "string") {
+          throw new Error("Bot Connector metadata omitted jwks_uri.");
+        }
+        const keysResponse = await fetchImpl(metadata.jwks_uri, { signal });
+        if (!keysResponse.ok) {
+          throw new Error(`Bot Connector key fetch failed with HTTP ${keysResponse.status}.`);
+        }
+        const keyExpiry = resolveHttpCacheExpiry(keysResponse, fetchedAt);
+        const keys = (await keysResponse.json()) as { keys?: unknown };
+        if (!Array.isArray(keys.keys)) {
+          throw new Error("Bot Connector key response omitted keys.");
+        }
+        return {
+          expiresAt: Math.min(metadataExpiry, keyExpiry),
+          values: keys.keys as BotConnectorKey[],
+        };
+      } catch (error) {
+        throw error instanceof JwtKeyInfrastructureError
+          ? error
+          : new JwtKeyInfrastructureError(
+              error instanceof Error ? error.message : "Bot Connector key fetch failed.",
+              { cause: error },
+            );
       }
-      const metadataExpiry = resolveHttpCacheExpiry(metadataResponse, fetchedAt);
-      const metadata = (await metadataResponse.json()) as { jwks_uri?: unknown };
-      if (typeof metadata.jwks_uri !== "string") {
-        throw new Error("Bot Connector metadata omitted jwks_uri.");
-      }
-      const keysResponse = await fetchImpl(metadata.jwks_uri, { signal });
-      if (!keysResponse.ok) {
-        throw new Error(`Bot Connector key fetch failed with HTTP ${keysResponse.status}.`);
-      }
-      const keyExpiry = resolveHttpCacheExpiry(keysResponse, fetchedAt);
-      const keys = (await keysResponse.json()) as { keys?: unknown };
-      if (!Array.isArray(keys.keys)) {
-        throw new Error("Bot Connector key response omitted keys.");
-      }
-      return {
-        expiresAt: Math.min(metadataExpiry, keyExpiry),
-        values: keys.keys as BotConnectorKey[],
-      };
     },
-    keyId: (value) => value.kid,
+    keyId: (value) => (isRecord(value) && typeof value.kid === "string" ? value.kid : undefined),
     now: runtime.now,
     refreshCooldownMs: runtime.unknownKeyCooldownMs,
     timeoutMs: runtime.keyFetchTimeoutMs,
@@ -97,10 +107,7 @@ export function createMsTeamsWebhookAuthenticator(
   return async (request: Request, rawBody: string): Promise<Response | undefined> => {
     const token = readBearerToken(request);
     if (!token) {
-      return new Response("unauthorized", {
-        headers: { "www-authenticate": "Bearer" },
-        status: 401,
-      });
+      return botConnectorAuthenticationResponse(401);
     }
     try {
       const payload: unknown = JSON.parse(rawBody);
@@ -121,7 +128,13 @@ export function createMsTeamsWebhookAuthenticator(
           if (key.endorsements && !key.endorsements.includes(channelId)) {
             throw new Error("Bot Connector JWT key does not endorse the activity channel.");
           }
-          return createPublicKey({ format: "jwk", key });
+          try {
+            return createPublicKey({ format: "jwk", key });
+          } catch (error) {
+            throw new JwtKeyInfrastructureError("Bot Connector JWT signing key is invalid.", {
+              cause: error,
+            });
+          }
         },
         token,
       });
@@ -129,13 +142,22 @@ export function createMsTeamsWebhookAuthenticator(
         throw new Error("Bot Connector serviceurl claim does not match the activity.");
       }
       return undefined;
-    } catch {
-      return new Response("unauthorized", {
-        headers: { "www-authenticate": "Bearer" },
-        status: 401,
-      });
+    } catch (error) {
+      return botConnectorAuthenticationResponse(
+        error instanceof JwtKeyInfrastructureError ? 503 : 401,
+      );
     }
   };
+}
+
+function botConnectorAuthenticationResponse(status: 401 | 503): Response {
+  return new Response(status === 401 ? "unauthorized" : "service unavailable", {
+    headers: {
+      "cache-control": "no-store",
+      ...(status === 401 ? { "www-authenticate": "Bearer" } : {}),
+    },
+    status,
+  });
 }
 
 export class MsTeamsProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
@@ -226,6 +248,9 @@ export function normalizeMsTeamsWebhookPayload(payload: unknown) {
 }
 
 export function handleMsTeamsWebhookPayload(payload: unknown): Response | undefined {
+  if (isRecord(payload) && payload.type === "invoke") {
+    return new Response(null, { status: 501 });
+  }
   if (
     isRecord(payload) &&
     typeof payload.type === "string" &&
