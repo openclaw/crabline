@@ -7,6 +7,7 @@
 - Validate signed-JWT registered claims, clock skew, and synchronous key-loader failure cleanup.
 - Reject stale or far-future signed Discord interactions before payload handling.
 - Normalize malformed callback URLs, artifact pointers, and loopback thread addresses into stable domain errors.
+- Honor injected WhatsApp runtime credentials during delayed webhook startup.
 - Generate Signal bundle public keys with the provider-required type prefix while preserving raw WhatsApp wire encoding.
 - Reject nonce fixture IDs outside the extractor alphabet and share one validation boundary.
 - Reject provider and fixture timer durations above Node's supported ceiling.

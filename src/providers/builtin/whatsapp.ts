@@ -54,6 +54,16 @@ type NormalizedWhatsAppWebhookMessage = {
   threadId?: string;
 };
 
+type WhatsAppEnvironment = Partial<
+  Pick<
+    NodeJS.ProcessEnv,
+    | "WHATSAPP_ACCESS_TOKEN"
+    | "WHATSAPP_APP_SECRET"
+    | "WHATSAPP_PHONE_NUMBER_ID"
+    | "WHATSAPP_VERIFY_TOKEN"
+  >
+>;
+
 const DEFAULT_WHATSAPP_WEBHOOK = {
   host: "127.0.0.1",
   path: "/whatsapp/webhook",
@@ -140,7 +150,7 @@ async function readWhatsAppWebhookBody(
 
 export function resolveWhatsAppAdapterConfig(
   config: ProviderConfig,
-  env: NodeJS.ProcessEnv = process.env,
+  env: WhatsAppEnvironment = process.env,
 ) {
   const appSecret = config.whatsapp?.appSecret ?? env.WHATSAPP_APP_SECRET;
   const verifyToken = config.whatsapp?.verifyToken ?? env.WHATSAPP_VERIFY_TOKEN;
@@ -202,6 +212,7 @@ function pruneSettledWaitCursors(cursors: Map<string, WaitCursorState>): void {
 
 export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   readonly #config: ProviderConfig;
+  readonly #env: WhatsAppEnvironment;
   readonly #lifecycleAbort = new AbortController();
   readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
@@ -216,7 +227,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   #serverClosing: Promise<void> | null = null;
   #serverStarting: Promise<StartedWebhookServer> | null = null;
 
-  constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
+  constructor(id: string, config: ProviderConfig, _userName: string, runtime?: unknown) {
     super({
       codec: getBuiltinTargetCodec("whatsapp"),
       config,
@@ -234,6 +245,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       },
     });
     this.#config = config;
+    this.#env = (runtime as { env?: WhatsAppEnvironment } | undefined)?.env ?? process.env;
     this.#publicUrl = config.whatsapp?.webhook.publicUrl;
     this.#recorderPath = config.whatsapp?.recorder.path
       ? path.resolve(config.whatsapp.recorder.path)
@@ -524,7 +536,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       return await this.#serverStarting;
     }
 
-    const resolvedConfig = resolveWhatsAppAdapterConfig(this.#config);
+    const resolvedConfig = resolveWhatsAppAdapterConfig(this.#config, this.#env);
     const host = this.#webhook?.host ?? DEFAULT_WHATSAPP_WEBHOOK.host;
     const port = this.#webhook?.port ?? DEFAULT_WHATSAPP_WEBHOOK.port;
     const webhookPath = this.#webhook?.path ?? DEFAULT_WHATSAPP_WEBHOOK.path;
