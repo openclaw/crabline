@@ -246,7 +246,14 @@ describe("signal local provider server", () => {
       result: { timestamp: expect.any(Number) },
     });
     for (const [method, params] of [
-      ["send", { attachment: "/tmp/test-attachment-placeholder", recipients: ["+15551234567"] }],
+      [
+        "send",
+        {
+          attachment: "/tmp/test-attachment-placeholder",
+          message: "",
+          recipients: ["+15551234567"],
+        },
+      ],
       ["sendReceipt", { targetTimestamps: [1_700_000_000_000], usernames: ["alice"] }],
       [
         "sendReaction",

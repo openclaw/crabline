@@ -650,7 +650,7 @@ function hasValidSignalRecipientFieldTypes(params: Record<string, unknown>): boo
 }
 
 function hasValidOptionalSignalString(params: Record<string, unknown>, field: string): boolean {
-  return params[field] === undefined || readSignalRpcString(params[field]) !== undefined;
+  return params[field] === undefined || typeof params[field] === "string";
 }
 
 function validSignalRpcParams(method: string, value: unknown): boolean {
