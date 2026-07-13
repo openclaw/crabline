@@ -97,11 +97,37 @@ afterEach(() => {
 });
 
 describe("script provider Windows cleanup", () => {
-  it("redacts diagnostics for commands containing Windows paths", async () => {
+  it.each([":", "="])(
+    "redacts diagnostics for Windows slash options using %s",
+    async (separator) => {
+      const scriptChild = createFakeChild(1122);
+      spawnMock.mockReturnValueOnce(scriptChild);
+      const context = createContext();
+      context.config.script!.commands.send = `node "C:\\workspace\\send.mjs" /label${separator}opaque-value`;
+      const provider = new ScriptProviderAdapter(context);
+
+      const failurePromise = provider
+        .send({
+          ...context,
+          mode: "send",
+          nonce: "nonce",
+          text: "payload",
+        })
+        .catch((error: unknown) => error);
+      scriptChild.stderr.write("opaque-value failed");
+      scriptChild.emit("close", 7, null);
+      const failure = await failurePromise;
+
+      expect(ensureErrorMessage(failure)).toContain("[redacted command value] failed");
+      expect(ensureErrorMessage(failure)).not.toContain("opaque-value");
+    },
+  );
+
+  it("suppresses diagnostics for unsupported Windows slash options", async () => {
     const scriptChild = createFakeChild(1122);
     spawnMock.mockReturnValueOnce(scriptChild);
     const context = createContext();
-    context.config.script!.commands.send = 'node "C:\\workspace\\send.mjs" --label=opaque-value';
+    context.config.script!.commands.send = 'node "C:\\workspace\\send.mjs" /label';
     const provider = new ScriptProviderAdapter(context);
 
     const failurePromise = provider
@@ -116,7 +142,7 @@ describe("script provider Windows cleanup", () => {
     scriptChild.emit("close", 7, null);
     const failure = await failurePromise;
 
-    expect(ensureErrorMessage(failure)).toContain("[redacted command value] failed");
+    expect(ensureErrorMessage(failure)).toContain("[script diagnostics redacted]");
     expect(ensureErrorMessage(failure)).not.toContain("opaque-value");
   });
 
@@ -222,7 +248,7 @@ describe("script provider Windows cleanup", () => {
     }
   });
 
-  it("uses identity-checked taskkill fallback and tears down inherited pipes", async () => {
+  it("uses handle-bound process termination and tears down inherited pipes", async () => {
     const scriptChild = createFakeChild(1234);
     spawnMock.mockReturnValueOnce(scriptChild).mockImplementationOnce(() => createCleanupChild(0));
     const context = createContext();
@@ -247,12 +273,13 @@ describe("script provider Windows cleanup", () => {
       expect.arrayContaining(["-NonInteractive", "-Command"]),
     );
     const terminationScript = String(spawnMock.mock.calls[1]?.[1]?.at(-1));
-    expect(terminationScript).toContain("taskkill.exe");
-    expect(terminationScript).toContain("$Taskkill.ExitCode");
-    expect(terminationScript).toContain("$Taskkill.Kill()");
+    expect(terminationScript).toContain("OpenProcess");
+    expect(terminationScript).toContain("GetProcessTimes");
+    expect(terminationScript).toContain("TerminateProcess");
+    expect(terminationScript).toContain("TerminateVerified");
+    expect(terminationScript).not.toContain("taskkill.exe");
     expect(terminationScript).toContain("CreationDate");
     expect(terminationScript).toContain("$ChildCreated -lt $ParentCreated");
-    expect(terminationScript).toContain("$Current.CreationDate -eq $Entry.CreationDate");
     expect(terminationScript).toContain("HashSet[string]");
     expect(terminationScript).toContain("$RootObservedBy");
     expect(terminationScript).toContain("$SnapshotAt=[datetime]::UtcNow");
@@ -335,12 +362,9 @@ describe("script provider Windows cleanup", () => {
     expect(scriptChild.stderr.destroyed).toBe(true);
   });
 
-  it("falls back to bounded taskkill when PowerShell cleanup fails for a live shell", async () => {
+  it("falls back to the child handle when PowerShell cleanup fails for a live shell", async () => {
     const scriptChild = createFakeChild(7890);
-    spawnMock
-      .mockReturnValueOnce(scriptChild)
-      .mockImplementationOnce(() => createCleanupChild(1))
-      .mockImplementationOnce(() => createCleanupChild(0));
+    spawnMock.mockReturnValueOnce(scriptChild).mockImplementationOnce(() => createCleanupChild(1));
     const context = createContext();
     const provider = new ScriptProviderAdapter(context);
 
@@ -355,11 +379,11 @@ describe("script provider Windows cleanup", () => {
     await vi.advanceTimersByTimeAsync(context.fixture.timeoutMs);
     await failurePromise;
 
-    expect(spawnMock.mock.calls[2]?.[0]).toBe("taskkill.exe");
-    expect(spawnMock.mock.calls[2]?.[1]).toEqual(["/PID", "7890", "/T", "/F"]);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(scriptChild.kill).toHaveBeenCalledWith("SIGKILL");
   });
 
-  it("does not taskkill after the script exits during PowerShell cleanup", async () => {
+  it("does not kill the child handle after the script exits during PowerShell cleanup", async () => {
     const scriptChild = createFakeChild(8901);
     spawnMock.mockReturnValueOnce(scriptChild).mockImplementationOnce(() =>
       createCleanupChild(1, () => {
