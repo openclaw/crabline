@@ -280,9 +280,9 @@ describe("script provider Windows cleanup", () => {
     expect(terminationScript).not.toContain("taskkill.exe");
     expect(terminationScript).toContain("CreationDate");
     expect(terminationScript).toContain("$ChildCreated -lt $ParentCreated");
+    expect(terminationScript).not.toContain("$ChildCreated -gt");
     expect(terminationScript).toContain("HashSet[string]");
     expect(terminationScript).toContain("$RootObservedBy");
-    expect(terminationScript).toContain("$SnapshotAt=[datetime]::UtcNow");
     expect(terminationScript).toContain("CreationDate).ToUniversalTime()");
     expect(terminationScript).toContain("$CleanupFailed=$RootExpectedAlive -and !$RootMatches");
     expect(terminationScript).toContain("if($CleanupFailed){exit 1}");
