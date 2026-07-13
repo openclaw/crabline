@@ -1,5 +1,5 @@
 import path from "node:path";
-import { realpath, rm } from "node:fs/promises";
+import { realpath, rm, stat } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendRecordedInbound,
@@ -8,7 +8,7 @@ import {
 import { recordServerEvent } from "../src/servers/recorder.js";
 
 const fsMocks = vi.hoisted(() => ({
-  lock: vi.fn<() => Promise<() => Promise<void>>>(),
+  lock: vi.fn<(filePath: string, options?: unknown) => Promise<() => Promise<void>>>(),
   lockRelease: vi.fn<() => Promise<void>>(),
   providerDirectory: "",
   providerDirectorySync: vi.fn<(directoryPath: string) => Promise<void>>(),
@@ -259,6 +259,11 @@ describe("recorder append serialization", () => {
         ["ax+", 0o600],
         ["a+", 0o600],
       ]);
+      const identityLockPath = fsMocks.lock.mock.calls
+        .map(([lockPath]) => String(lockPath))
+        .find((lockPath) => path.basename(lockPath).startsWith("recorder-"));
+      expect(identityLockPath).toBeDefined();
+      expect((await stat(path.dirname(identityLockPath!))).mode & 0o777).toBe(0o700);
     } finally {
       await rm(recorderPath, { force: true });
     }

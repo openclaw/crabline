@@ -1,5 +1,5 @@
 import { lstat, mkdir, open, readFile, readlink, realpath } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import type { InboundEnvelope } from "./types.js";
@@ -592,12 +592,44 @@ function reportRecorderLockReleaseFailure(filePath: string, releaseError: unknow
   }
 }
 
-function recorderIdentityLockTarget(identity: RecorderFileIdentity): string {
-  const userScope = typeof process.getuid === "function" ? process.getuid() : "user";
-  return path.join(
-    tmpdir(),
-    `.crabline-provider-recorder-${userScope}-${identity.dev}-${identity.ino}`,
-  );
+async function privateRecorderLockRoot(): Promise<string> {
+  const currentUserId = process.geteuid?.();
+  let parent = tmpdir();
+  if (currentUserId !== undefined) {
+    const temporaryDirectory = await lstat(parent, { bigint: true });
+    const privateTemporaryDirectory =
+      temporaryDirectory.isDirectory() &&
+      temporaryDirectory.uid === BigInt(currentUserId) &&
+      (temporaryDirectory.mode & 0o077n) === 0n;
+    if (!privateTemporaryDirectory) {
+      parent = homedir();
+    }
+  }
+
+  const root = path.join(parent, ".crabline", "locks", "provider-recorder");
+  await mkdir(root, { mode: 0o700, recursive: true });
+  const handle = await open(root, "r");
+  try {
+    const identity = await handle.stat({ bigint: true });
+    const current = await lstat(root, { bigint: true });
+    if (
+      !identity.isDirectory() ||
+      !current.isDirectory() ||
+      identity.dev !== current.dev ||
+      identity.ino !== current.ino ||
+      (currentUserId !== undefined && identity.uid !== BigInt(currentUserId))
+    ) {
+      throw new Error("Provider recorder lock directory is not privately owned.");
+    }
+    await handle.chmod(0o700);
+  } finally {
+    await handle.close();
+  }
+  return root;
+}
+
+async function recorderIdentityLockTarget(identity: RecorderFileIdentity): Promise<string> {
+  return path.join(await privateRecorderLockRoot(), `recorder-${identity.dev}-${identity.ino}`);
 }
 
 async function acquireRecorderLock(filePath: string): Promise<() => Promise<void>> {
@@ -632,7 +664,7 @@ async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>
     releases.push(await acquireRecorderLock(filePath));
     const identity = await readRecorderFileIdentity(filePath);
     if (identity) {
-      releases.push(await acquireRecorderLock(recorderIdentityLockTarget(identity)));
+      releases.push(await acquireRecorderLock(await recorderIdentityLockTarget(identity)));
     }
   } catch (error) {
     const releaseErrors = await releaseRecorderLocks(releases);
