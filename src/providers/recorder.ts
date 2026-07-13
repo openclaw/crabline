@@ -1,4 +1,6 @@
+import { constants as fsConstants } from "node:fs";
 import { lstat, mkdir, open, readFile, readlink, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import type { InboundEnvelope } from "./types.js";
@@ -594,9 +596,21 @@ function reportRecorderLockReleaseFailure(filePath: string, releaseError: unknow
 }
 
 async function privateRecorderLockRoot(): Promise<string> {
+  if (process.platform === "win32") {
+    const localAppData =
+      process.env.LOCALAPPDATA?.trim() || path.join(homedir(), "AppData", "Local");
+    const root = path.join(localAppData, "Crabline", "locks", "provider-recorder");
+    await mkdir(root, { recursive: true });
+    const identity = await lstat(root);
+    if (!identity.isDirectory() || identity.isSymbolicLink()) {
+      throw new Error("Provider recorder lock directory is not a private directory.");
+    }
+    return root;
+  }
+
   const currentUserId = process.geteuid?.();
-  if (process.platform === "win32" || currentUserId === undefined) {
-    throw new Error("Hardlinked provider recorder paths are unsupported on this platform.");
+  if (currentUserId === undefined) {
+    throw new Error("Provider recorder identity locking requires a current user id.");
   }
 
   const root = path.join("/tmp", `.crabline-provider-recorder-${currentUserId}`);
@@ -607,9 +621,11 @@ async function privateRecorderLockRoot(): Promise<string> {
       throw error;
     }
   }
-  const handle = await open(root, "r");
+  const handle = await open(
+    root,
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+  );
   try {
-    await handle.chmod(0o700);
     const identity = await handle.stat({ bigint: true });
     const current = await lstat(root, { bigint: true });
     if (
@@ -618,9 +634,16 @@ async function privateRecorderLockRoot(): Promise<string> {
       identity.dev !== current.dev ||
       identity.ino !== current.ino ||
       identity.uid !== BigInt(currentUserId) ||
-      (identity.mode & 0o077n) !== 0n
+      current.uid !== BigInt(currentUserId)
     ) {
       throw new Error("Provider recorder lock directory is not privately owned.");
+    }
+    if ((identity.mode & 0o077n) !== 0n) {
+      await handle.chmod(0o700);
+      const secured = await handle.stat({ bigint: true });
+      if ((secured.mode & 0o077n) !== 0n) {
+        throw new Error("Provider recorder lock directory permissions are not private.");
+      }
     }
   } finally {
     await handle.close();
@@ -663,7 +686,7 @@ async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>
   try {
     releases.push(await acquireRecorderLock(filePath));
     const identity = await readRecorderFileIdentity(filePath);
-    if (identity && identity.nlink > 1n) {
+    if (identity) {
       releases.push(await acquireRecorderLock(await recorderIdentityLockTarget(identity)));
     }
   } catch (error) {
