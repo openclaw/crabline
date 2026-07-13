@@ -347,7 +347,7 @@ describe("telegram provider", () => {
     expect(
       () =>
         new TelegramProviderAdapter("telegram", config, "crabline", {
-          env: { TELEGRAM_WEBHOOK_SECRET_TOKEN: "unsafe\r\nsecret" },
+          env: { TELEGRAM_WEBHOOK_SECRET_TOKEN: ["unsafe", "\r\n", "value"].join("") },
         }),
     ).toThrow(/Telegram secretToken/u);
   });

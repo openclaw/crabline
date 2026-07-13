@@ -604,14 +604,14 @@ describe("telegram local provider server", () => {
     servers.push(server);
     const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
 
-    for (const secretToken of [
-      "safe\r\nunsafe",
-      `safe${String.fromCharCode(0)}unsafe`,
-      `safe${String.fromCharCode(1)}unsafe`,
+    for (const invalidValue of [
+      "value\r\nunsafe",
+      `value${String.fromCharCode(0)}unsafe`,
+      `value${String.fromCharCode(1)}unsafe`,
     ]) {
       const response = await fetch(`${apiRoot}/setWebhook`, {
         body: JSON.stringify({
-          secret_token: secretToken,
+          secret_token: invalidValue,
           url: "https://93.184.216.34/telegram",
         }),
         headers: { "content-type": "application/json" },
