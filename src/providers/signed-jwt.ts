@@ -45,7 +45,12 @@ function readHeader(value: Record<string, unknown>): JwtHeader {
 }
 
 function hasAudience(claim: unknown, expected: string): boolean {
-  return claim === expected || (Array.isArray(claim) && claim.includes(expected));
+  return (
+    claim === expected ||
+    (Array.isArray(claim) &&
+      claim.every((candidate): candidate is string => typeof candidate === "string") &&
+      claim.includes(expected))
+  );
 }
 
 function numericClaim(claims: JwtClaims, name: string, required = false): number | undefined {
@@ -145,7 +150,8 @@ export function createCachedJwtKeyResolver<T>(params: {
         reject(new Error("JWT signing key fetch timed out."));
       }, timeoutMs);
     });
-    fetchInFlight = Promise.race([params.fetchKeys(controller.signal), timedOut])
+    const keyFetch = Promise.resolve().then(() => params.fetchKeys(controller.signal));
+    fetchInFlight = Promise.race([keyFetch, timedOut])
       .then((keySet) => {
         cached = keySet.expiresAt > now() ? keySet : undefined;
         fetchFailureCooldownUntil = 0;
@@ -257,7 +263,7 @@ export async function verifySignedJwt(params: {
     throw new Error("JWT signature is invalid.");
   }
 
-  if (!params.issuers.includes(String(claims.iss ?? ""))) {
+  if (typeof claims.iss !== "string" || !params.issuers.includes(claims.iss)) {
     throw new Error("JWT issuer is invalid.");
   }
   if (!hasAudience(claims.aud, params.audience)) {
@@ -266,6 +272,9 @@ export async function verifySignedJwt(params: {
 
   const now = Math.floor((params.now?.() ?? Date.now()) / 1000);
   const skew = params.clockSkewSeconds ?? 300;
+  if (!Number.isFinite(skew) || skew < 0) {
+    throw new Error("JWT clock skew must be a finite non-negative number.");
+  }
   const expiresAt = numericClaim(claims, "exp", true)!;
   if (expiresAt <= now - skew) {
     throw new Error("JWT is expired.");

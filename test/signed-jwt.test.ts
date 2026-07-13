@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createCachedJwtKeyResolver,
   resolveHttpCacheExpiry,
@@ -55,6 +55,59 @@ describe("signed JWT remote key cache", () => {
         }),
       ),
     ).rejects.toThrow(/expired/u);
+  });
+
+  it("rejects malformed registered claim types", async () => {
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = 1_700_000_000_000;
+    const claims = {
+      aud: "crabline",
+      exp: Math.floor(now / 1000) + 60,
+      iss: "issuer",
+    };
+    const verify = (overrides: Record<string, unknown>) =>
+      verifySignedJwt({
+        audience: "crabline",
+        issuers: ["issuer"],
+        now: () => now,
+        resolveKey: async () => keys.publicKey,
+        token: signedJwt(keys.privateKey, { ...claims, ...overrides }),
+      });
+
+    for (const iss of [["issuer"], 1, true, { value: "issuer" }]) {
+      await expect(verify({ iss })).rejects.toThrow(/issuer is invalid/u);
+    }
+    for (const aud of [["crabline", 1], ["crabline", null], { value: "crabline" }]) {
+      await expect(verify({ aud })).rejects.toThrow(/audience is invalid/u);
+    }
+  });
+
+  it("rejects non-finite and negative clock skew", async () => {
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = 1_700_000_000_000;
+    const token = signedJwt(keys.privateKey, {
+      aud: "crabline",
+      exp: 0,
+      iss: "issuer",
+    });
+
+    for (const clockSkewSeconds of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      -1,
+    ]) {
+      await expect(
+        verifySignedJwt({
+          audience: "crabline",
+          clockSkewSeconds,
+          issuers: ["issuer"],
+          now: () => now,
+          resolveKey: async () => keys.publicKey,
+          token,
+        }),
+      ).rejects.toThrow(/clock skew must be a finite non-negative number/u);
+    }
   });
 
   it("does not cache responses marked no-cache or no-store", () => {
@@ -274,6 +327,32 @@ describe("signed JWT remote key cache", () => {
     now += 10_001;
     await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
     expect(fetches).toBe(2);
+  });
+
+  it("backs off synchronously thrown key fetches and clears their timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchError = new Error("JWKS unavailable");
+      let fetches = 0;
+      const resolveKey = createCachedJwtKeyResolver<string>({
+        fetchKeys() {
+          fetches += 1;
+          throw fetchError;
+        },
+        keyId: (value) => value,
+        now: () => 1_700_000_000_000,
+        refreshCooldownMs: 10_000,
+        timeoutMs: 5_000,
+        unknownKeyMessage: "unknown key",
+      });
+
+      await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
+      await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
+      expect(fetches).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("backs off failed unknown-key refreshes while a positive cache remains fresh", async () => {
