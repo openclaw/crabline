@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Derive Telegram multipart media identity from upload bytes while preserving filenames and file reference reuse.
 - Require valid OpenClaw readiness recorder evidence and allow unauthenticated loopback callback URLs.
 - Merge repeated WhatsApp handshake message occurrences according to protobuf semantics.
 - Close inherited credential descriptors and preserve runtime failure classification and accepted-send diagnostics.
