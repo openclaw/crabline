@@ -600,6 +600,7 @@ function explicitTelegramId(
   body: Record<string, unknown>,
   names: readonly string[],
   additionalValues: readonly unknown[] = [],
+  options: { allowZero?: boolean } = {},
 ): { present: false } | { present: true; value: number } | undefined {
   const values = [
     ...names.flatMap((name) => (body[name] === undefined ? [] : [body[name]])),
@@ -609,8 +610,11 @@ function explicitTelegramId(
     return { present: false };
   }
   const parsed = values.map(toIntegerValue);
+  const minimum = options.allowZero ? 0 : 1;
   if (
-    parsed.some((value) => value === undefined || value < 1 || value >= Number.MAX_SAFE_INTEGER) ||
+    parsed.some(
+      (value) => value === undefined || value < minimum || value >= Number.MAX_SAFE_INTEGER,
+    ) ||
     new Set(parsed).size !== 1
   ) {
     return undefined;
@@ -753,6 +757,7 @@ async function handleTelegramAdminInbound(params: {
       params.body,
       ["messageId", "message_id"],
       explicitTelegramMessageIdValues(params.body),
+      { allowZero: true },
     );
     const explicitMessageChatId = explicitTelegramMessageChatId(params.body);
     const explicitUpdateId = explicitTelegramId(params.body, ["updateId", "update_id"]);
@@ -760,6 +765,7 @@ async function handleTelegramAdminInbound(params: {
       {},
       [],
       referencedTelegramMessageIdValues(params.body),
+      { allowZero: true },
     );
     const topLevelChatId = telegramChatId(params.body.chatId ?? params.body.chat_id);
     const messageChatId =
@@ -775,10 +781,11 @@ async function handleTelegramAdminInbound(params: {
       explicitUpdateId === undefined ||
       referencedMessageId === undefined ||
       (explicitMessageId.present &&
+        explicitMessageId.value > 0 &&
         (nextMessageId === undefined || explicitMessageId.value < nextMessageId)) ||
       (explicitUpdateId.present && explicitUpdateId.value < nextUpdateId)
     ) {
-      return telegramError("Bad Request: explicit IDs must be positive and monotonic");
+      return telegramError("Bad Request: explicit IDs must be valid and monotonic");
     }
     const update = createInboundUpdate(params.state, params.body);
     params.state.nextUpdateId = nextUpdateId;
@@ -794,8 +801,12 @@ async function handleTelegramAdminInbound(params: {
       if (isValidIgnoredTelegramUpdate(params.body)) {
         if (messageChatKey !== undefined) {
           const observedNextMessageIds = [
-            ...(explicitMessageId.present ? [explicitMessageId.value + 1] : []),
-            ...(referencedMessageId.present ? [referencedMessageId.value + 1] : []),
+            ...(explicitMessageId.present && explicitMessageId.value > 0
+              ? [explicitMessageId.value + 1]
+              : []),
+            ...(referencedMessageId.present && referencedMessageId.value > 0
+              ? [referencedMessageId.value + 1]
+              : []),
           ];
           if (observedNextMessageIds.length > 0) {
             params.state.nextMessageIds.set(
@@ -826,7 +837,9 @@ async function handleTelegramAdminInbound(params: {
       Math.max(
         params.state.nextMessageIds.get(updateChatKey) ?? 1,
         update.message.message_id + 1,
-        ...(referencedMessageId.present ? [referencedMessageId.value + 1] : []),
+        ...(referencedMessageId.present && referencedMessageId.value > 0
+          ? [referencedMessageId.value + 1]
+          : []),
       ),
     );
     params.state.nextUpdateId = Math.max(params.state.nextUpdateId, update.update_id + 1);
