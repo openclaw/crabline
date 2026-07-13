@@ -203,9 +203,8 @@ const WINDOWS_JOB_HELPER_SOURCE = [
   "if(job!=IntPtr.Zero){CloseHandle(job);}",
   "}",
   "}",
-  "public static int Main(string[] arguments){",
+  "public static int Main(){",
   "try{",
-  'if(arguments.Length==1&&arguments[0]=="--probe"){return 0;}',
   `string shellValue=Environment.GetEnvironmentVariable("${WINDOWS_JOB_SHELL_ENV}");`,
   `string commandValue=Environment.GetEnvironmentVariable("${WINDOWS_JOB_COMMAND_ENV}");`,
   `Environment.SetEnvironmentVariable("${WINDOWS_JOB_SHELL_ENV}",null);`,
@@ -302,7 +301,13 @@ function ensureWindowsJobHelper(): string | undefined {
         windowsHide: true,
       },
     );
-    execFileSync(helperPath, ["--probe"], {
+    const probeCommand = windowsShellCommand("exit 0");
+    execFileSync(helperPath, [], {
+      env: {
+        ...process.env,
+        [WINDOWS_JOB_COMMAND_ENV]: Buffer.from(probeCommand.commandLine).toString("base64"),
+        [WINDOWS_JOB_SHELL_ENV]: Buffer.from(probeCommand.shell).toString("base64"),
+      },
       stdio: "ignore",
       timeout: 5_000,
       windowsHide: true,

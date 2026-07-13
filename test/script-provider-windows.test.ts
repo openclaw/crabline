@@ -181,7 +181,13 @@ describe("script provider Windows cleanup", () => {
     expect(helperSource).toContain("JobObjectLimitKillOnJobClose");
     expect(helperSource).toContain("ProcThreadAttributeJobList");
     expect(helperSource).toContain("CreateSuspended|ExtendedStartupInfoPresent");
-    expect(execFileSyncMock.mock.calls[1]?.[1]).toEqual(["--probe"]);
+    expect(execFileSyncMock.mock.calls[1]?.[1]).toEqual([]);
+    expect(execFileSyncMock.mock.calls[1]?.[2]).toMatchObject({
+      env: {
+        CRABLINE_INTERNAL_SCRIPT_JOB_COMMAND: expect.any(String),
+        CRABLINE_INTERNAL_SCRIPT_JOB_SHELL: expect.any(String),
+      },
+    });
     expect(spawnMock.mock.calls[0]?.[0]).toMatch(/crabline-script-job\.exe$/u);
     expect(spawnMock.mock.calls[0]?.[1]).toEqual([]);
     expect(spawnMock.mock.calls[0]?.[2]).toMatchObject({
