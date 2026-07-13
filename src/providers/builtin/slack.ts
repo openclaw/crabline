@@ -163,6 +163,14 @@ export function handleSlackWebhookPayload(payload: unknown): Response | undefine
   ) {
     return Response.json({ challenge: payload.challenge });
   }
+  if (
+    isRecord(payload) &&
+    payload.type === "event_callback" &&
+    isRecord(payload.event) &&
+    (payload.event.type === "reaction_added" || payload.event.type === "reaction_removed")
+  ) {
+    return new Response(null, { status: 200 });
+  }
   return undefined;
 }
 

@@ -116,16 +116,18 @@ export function normalizeMatrixWebhookPayload(payload: unknown, botUserId?: stri
   const eventId = optionalString(payload, "event_id");
   const eventType = optionalString(payload, "type");
   const senderId = optionalString(payload, "sender");
-  const text = content ? optionalString(content, "body") : undefined;
+  const msgtype = content?.msgtype;
+  const text = content?.body;
   if (eventType !== "m.room.message") {
     throw new CrablineError("Matrix event payload requires type=m.room.message", {
       kind: "inbound",
     });
   }
-  if (!roomId || !eventId || !text) {
-    throw new CrablineError("Matrix event payload requires room_id, event_id, and content.body", {
-      kind: "inbound",
-    });
+  if (!roomId || !eventId || typeof msgtype !== "string" || typeof text !== "string") {
+    throw new CrablineError(
+      "Matrix event payload requires room_id, event_id, string content.msgtype, and string content.body",
+      { kind: "inbound" },
+    );
   }
 
   const relation = content ? optionalRecord(content, "m.relates_to") : undefined;

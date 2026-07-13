@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProviderConfig } from "../src/config/schema.js";
@@ -351,6 +352,43 @@ describe("slack provider", () => {
       method: "POST",
     });
     expect(accepted.status).toBe(200);
+  });
+
+  it("acknowledges authenticated reaction callbacks without recording them", async () => {
+    const signingSecret = "test-token-placeholder";
+    const config = await createSlackConfig(0, signingSecret);
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+    const endpoint = endpointFromDetails((await provider.probe(createContext(config))).details);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = JSON.stringify({
+      event: {
+        item: { channel: "C1234567890", ts: "1700000001.000200", type: "message" },
+        reaction: "white_check_mark",
+        type: "reaction_added",
+        user: "U1234567890",
+      },
+      event_id: "Ev1234567890",
+      type: "event_callback",
+    });
+    const signature = `v0=${createHmac("sha256", signingSecret)
+      .update(`v0:${timestamp}:${body}`)
+      .digest("hex")}`;
+
+    const response = await fetch(endpoint, {
+      body,
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": signature,
+      },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(readFile(config.slack!.recorder.path!, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("scopes generic thread webhooks and rejects bare timestamps", async () => {

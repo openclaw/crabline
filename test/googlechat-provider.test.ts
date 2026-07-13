@@ -1,4 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   createGoogleChatWebhookAuthenticator,
@@ -8,6 +9,7 @@ import {
 } from "../src/providers/builtin/googlechat.js";
 import {
   createLocalMockConfig,
+  createProviderContext,
   runLocalMockProviderContract,
 } from "./local-mock-provider-helpers.js";
 
@@ -22,6 +24,14 @@ function signedJwt(
     "base64url",
   );
   return `${header}.${payload}.${signature}`;
+}
+
+function endpointFromDetails(details: string[]): string {
+  const detail = details.find((entry) => entry.includes("http://"));
+  if (!detail) {
+    throw new Error(`No Google Chat webhook endpoint found in ${details.join("\n")}`);
+  }
+  return detail.replace(/^.*?(https?:\/\/\S+)$/u, "$1");
 }
 
 describe("Google Chat webhook authentication", () => {
@@ -177,6 +187,53 @@ describe("Google Chat webhook authentication", () => {
     ).resolves.toMatchObject({ status: 401 });
   });
 
+  it("acknowledges authenticated lifecycle events without recording them", async () => {
+    const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = Date.now();
+    const provider = new GoogleChatProviderAdapter("googlechat", config, "crabline", {
+      fetch: async () =>
+        Response.json({
+          "test-key": keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+        }),
+      now: () => now,
+    });
+    try {
+      const endpoint = endpointFromDetails(
+        (
+          await provider.probe(
+            createProviderContext("googlechat", config, {
+              id: "spaces/AAAABbbbCCC",
+              metadata: {},
+            }),
+          )
+        ).details,
+      );
+      const jwt = signedJwt(keys.privateKey, {
+        aud: config.googlechat!.endpointUrl,
+        email: "chat@system.gserviceaccount.com",
+        email_verified: true,
+        exp: Math.floor(now / 1000) + 60,
+        iss: "https://accounts.google.com",
+      });
+
+      for (const type of ["ADDED_TO_SPACE", "REMOVED_FROM_SPACE"]) {
+        const response = await fetch(endpoint, {
+          body: JSON.stringify({ space: { name: "spaces/AAAABbbbCCC" }, type }),
+          headers: { authorization: `Bearer ${jwt}`, "content-type": "application/json" },
+          method: "POST",
+        });
+        expect(response.status).toBe(200);
+      }
+      await expect(readFile(config.googlechat!.recorder.path!, "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
   it("defaults the Pub/Sub audience to the endpoint URL", async () => {
     const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
     config.googlechat!.endpointUrl = "https://chat.example.test/pubsub";
@@ -292,6 +349,16 @@ describe("Google Chat webhook authentication", () => {
         },
       }),
     ).toThrow(/must belong to message\.space\.name/u);
+
+    expect(() =>
+      normalizeGoogleChatWebhookPayload({
+        message: {
+          name: "spaces/OtherSpace/messages/msg-native",
+          space: { name: "spaces/AAAABbbbCCC" },
+          text: "wrong parent",
+        },
+      }),
+    ).toThrow(/message\.name must belong to message\.space\.name/u);
   });
 
   it("requires configured thread targets to belong to their space", async () => {

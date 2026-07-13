@@ -151,6 +151,7 @@ export class MsTeamsProviderAdapter extends LocalMockProviderAdapter implements 
         ...(authenticateWebhookRequest ? { authenticateWebhookRequest } : {}),
         defaultWebhook: { host: "127.0.0.1", path: "/msteams/webhook", port: 8791 },
         endpointLabel: "webhook endpoint",
+        handleWebhookPayload: handleMsTeamsWebhookPayload,
         normalizeWebhookPayload: normalizeMsTeamsWebhookPayload,
         platform: "msteams",
         publicUrl: config.msteams?.webhook.publicUrl,
@@ -183,7 +184,8 @@ export function normalizeMsTeamsWebhookPayload(payload: unknown) {
     });
   }
 
-  if (optionalRecord(payload, "message")) {
+  const activityType = payload.type;
+  if (activityType === undefined && optionalRecord(payload, "message")) {
     return genericMockPayloadWithNativeThread({
       channelRule: MSTEAMS_CONVERSATION_ID_RULE,
       payload,
@@ -191,7 +193,7 @@ export function normalizeMsTeamsWebhookPayload(payload: unknown) {
     });
   }
 
-  if (optionalString(payload, "type") !== "message") {
+  if (activityType !== "message") {
     throw new CrablineError("Microsoft Teams activity payload requires type=message", {
       kind: "inbound",
     });
@@ -221,4 +223,16 @@ export function normalizeMsTeamsWebhookPayload(payload: unknown) {
       "Microsoft Teams conversation.id",
     ),
   };
+}
+
+export function handleMsTeamsWebhookPayload(payload: unknown): Response | undefined {
+  if (
+    isRecord(payload) &&
+    typeof payload.type === "string" &&
+    payload.type.length > 0 &&
+    payload.type !== "message"
+  ) {
+    return new Response(null, { status: 200 });
+  }
+  return undefined;
 }

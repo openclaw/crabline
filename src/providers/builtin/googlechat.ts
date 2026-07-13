@@ -225,6 +225,7 @@ export class GoogleChatProviderAdapter extends LocalMockProviderAdapter implemen
         ...(authenticateWebhookRequest ? { authenticateWebhookRequest } : {}),
         defaultWebhook: { host: "127.0.0.1", path: "/googlechat/webhook", port: 8792 },
         endpointLabel: "webhook endpoint",
+        handleWebhookPayload: handleGoogleChatWebhookPayload,
         matchesThread: matchesGoogleChatThread,
         normalizeWebhookPayload: normalizeGoogleChatWebhookPayload,
         platform: "googlechat",
@@ -268,9 +269,15 @@ export function normalizeGoogleChatWebhookPayload(payload: unknown) {
   const sender = optionalRecord(message, "sender");
   const spaceName = space ? optionalString(space, "name") : undefined;
   const threadName = thread ? optionalString(thread, "name") : undefined;
+  const messageName = optionalString(message, "name");
   const text = optionalString(message, "text") ?? optionalString(message, "argumentText");
   if (!spaceName || !text) {
     throw new CrablineError("Google Chat message payload requires space.name and text", {
+      kind: "inbound",
+    });
+  }
+  if (messageName && !messageName.startsWith(`${spaceName}/messages/`)) {
+    throw new CrablineError("Google Chat message.name must belong to message.space.name", {
       kind: "inbound",
     });
   }
@@ -282,13 +289,26 @@ export function normalizeGoogleChatWebhookPayload(payload: unknown) {
 
   return {
     author: authorFromBotFlag(optionalString(sender ?? {}, "type") === "BOT"),
-    ...(optionalString(message, "name") ? { id: optionalString(message, "name") } : {}),
+    ...(messageName ? { id: messageName } : {}),
     raw: payload,
     text,
     threadId: threadName
       ? requireNativeInboundId(threadName, GOOGLE_CHAT_THREAD_RULE, "Google Chat thread.name")
       : requireNativeInboundId(spaceName, GOOGLE_CHAT_SPACE_RULE, "Google Chat space.name"),
   };
+}
+
+export function handleGoogleChatWebhookPayload(payload: unknown): Response | undefined {
+  let event: unknown;
+  try {
+    event = unwrapGoogleChatPubsubPayload(payload);
+  } catch {
+    return undefined;
+  }
+  if (isRecord(event) && (event.type === "ADDED_TO_SPACE" || event.type === "REMOVED_FROM_SPACE")) {
+    return new Response(null, { status: 200 });
+  }
+  return undefined;
 }
 
 function unwrapGoogleChatPubsubPayload(payload: unknown): unknown {

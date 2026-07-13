@@ -83,6 +83,23 @@ describe("Zalo webhook normalizer", () => {
     });
   });
 
+  it("normalizes the documented top-level generic payload", () => {
+    const payload = {
+      author: "user",
+      id: "zalo-generic-1",
+      text: "top-level fallback",
+      threadId: "123456789012",
+    };
+
+    expect(normalizeZaloWebhookPayload(payload)).toEqual({
+      author: "user",
+      id: "zalo-generic-1",
+      raw: payload,
+      text: "top-level fallback",
+      threadId: "123456789012",
+    });
+  });
+
   it("requires the configured webhook secret before parsing", async () => {
     const config = await createLocalMockConfig("zalo", "/zalo/webhook");
     config.zalo!.webhookSecret = "test-token-placeholder";
