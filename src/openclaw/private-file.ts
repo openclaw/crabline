@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -388,6 +388,51 @@ if ($created.Count -gt 0) {
 }
 `;
 
+const WINDOWS_VERIFY_OWNER_ONLY_DIRECTORY_ACL_SCRIPT = String.raw`
+$ErrorActionPreference = "Stop"
+$directoryPath = $env:CRABLINE_PRIVATE_DIRECTORY_PATH
+if ([string]::IsNullOrWhiteSpace($directoryPath)) {
+  throw "CRABLINE_PRIVATE_DIRECTORY_PATH is required."
+}
+
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$sid = $identity.User
+if ($null -eq $sid) {
+  throw "Could not resolve the current Windows user SID."
+}
+
+$actual = Get-Acl -LiteralPath $directoryPath
+$ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
+$rules = @($actual.GetAccessRules(
+  $true,
+  $true,
+  [System.Security.Principal.SecurityIdentifier]
+))
+$requiredInheritance = (
+  [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+  [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+)
+if (-not $actual.AreAccessRulesProtected) {
+  throw "Private directory DACL still inherits permissions."
+}
+if ($ownerSid.Value -ne $sid.Value) {
+  throw "Private directory owner SID does not match the current user."
+}
+if ($rules.Count -ne 1) {
+  throw "Private directory DACL must contain exactly one access rule."
+}
+$actualRule = $rules[0]
+if (
+  $actualRule.IsInherited -or
+  $actualRule.IdentityReference.Value -ne $sid.Value -or
+  $actualRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+  (($actualRule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) -or
+  (($actualRule.InheritanceFlags -band $requiredInheritance) -ne $requiredInheritance)
+) {
+  throw "Private directory DACL is not owner-only inheritable full control."
+}
+`;
+
 export type WindowsAclRunner = (
   command: string,
   args: string[],
@@ -517,6 +562,37 @@ export async function createOwnerOnlyWindowsDirectoryAncestry(
       "Could not atomically create and verify owner-only Windows private directory ancestry; Windows PowerShell security descriptor support is required.",
       { cause: error },
     );
+  }
+}
+
+export async function verifyOwnerOnlyWindowsDirectoryAcl(
+  directoryPath: string,
+  run: WindowsAclRunner = runWindowsAclCommand,
+  systemRoot: string | null | undefined = process.env.SystemRoot,
+): Promise<void> {
+  try {
+    const powershellPath = resolveWindowsPowerShellPath(systemRoot);
+    await run(
+      powershellPath,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        WINDOWS_VERIFY_OWNER_ONLY_DIRECTORY_ACL_SCRIPT,
+      ],
+      {
+        env: {
+          ...process.env,
+          CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
+        },
+        windowsHide: true,
+      },
+    );
+  } catch (error) {
+    throw new Error("Private mutation parent must have an owner-only protected Windows ACL.", {
+      cause: error,
+    });
   }
 }
 
@@ -682,6 +758,14 @@ export async function removeSecuredPrivateDirectory(
   secured: SecuredPrivateDirectory,
   currentPath = secured.directoryPath,
   quarantineBaseName = path.basename(currentPath),
+  options: {
+    beforeRecursiveRemove?: (quarantinePath: string) => Promise<void>;
+    beforeRename?: (currentPath: string) => Promise<void>;
+    createWindowsDirectories?: (directoryPath: string) => Promise<string | undefined>;
+    platform?: NodeJS.Platform;
+    removeDirectory?: (quarantinePath: string) => Promise<void>;
+    syncParent?: (filePath: string, platform?: NodeJS.Platform) => Promise<void>;
+  } = {},
 ): Promise<void> {
   if (path.basename(quarantineBaseName) !== quarantineBaseName || quarantineBaseName.length === 0) {
     throw new Error("Private directory quarantine basename is malformed.");
@@ -690,12 +774,61 @@ export async function removeSecuredPrivateDirectory(
     path.dirname(currentPath),
     `.${quarantineBaseName}.${process.pid}.${randomUUID()}.remove`,
   );
-  await secured.assertIdentityAt(currentPath);
-  await fs.rename(currentPath, quarantinePath);
-  await secured.assertIdentityAt(quarantinePath);
-  await syncParentDirectory(quarantinePath);
-  await fs.rm(quarantinePath, { force: true, recursive: true });
-  await syncParentDirectory(quarantinePath);
+  const parent = await captureOwnerOnlyMutationParent(path.dirname(currentPath));
+  const claim = await acquirePrivateMutationClaim(parent, quarantineBaseName, {
+    ...(options.createWindowsDirectories
+      ? { createWindowsDirectories: options.createWindowsDirectories }
+      : {}),
+    ...(options.platform ? { platform: options.platform } : {}),
+  });
+  let removalFailed = false;
+  let primaryError: unknown;
+  try {
+    await parent.assertIdentityAt();
+    await claim.assertOwned();
+    await secured.assertIdentityAt(currentPath);
+    await options.beforeRename?.(currentPath);
+    await parent.assertIdentityAt();
+    await claim.assertOwned();
+    await secured.assertIdentityAt(currentPath);
+    await fs.rename(currentPath, quarantinePath);
+    await parent.assertIdentityAt();
+    await claim.assertOwned();
+    await secured.assertIdentityAt(quarantinePath);
+    const syncParent = options.syncParent ?? syncParentDirectory;
+    await syncParent(quarantinePath, options.platform);
+    await options.beforeRecursiveRemove?.(quarantinePath);
+    await parent.assertIdentityAt();
+    await claim.assertOwned();
+    await secured.assertIdentityAt(quarantinePath);
+    await (
+      options.removeDirectory ??
+      ((candidatePath: string) => fs.rm(candidatePath, { force: true, recursive: true }))
+    )(quarantinePath);
+    await parent.assertIdentityAt();
+    await claim.assertOwned();
+    await syncParent(quarantinePath, options.platform);
+  } catch (error) {
+    removalFailed = true;
+    primaryError = error;
+  }
+
+  try {
+    await claim.release();
+  } catch (releaseError) {
+    if (removalFailed) {
+      const aggregateError = new AggregateError(
+        [primaryError, releaseError],
+        "Private directory removal failed and its mutation claim could not be released.",
+      );
+      aggregateError.cause = primaryError;
+      throw aggregateError;
+    }
+    throw releaseError;
+  }
+  if (removalFailed) {
+    throw primaryError;
+  }
 }
 
 export async function securePrivateDirectory(
@@ -711,6 +844,7 @@ export async function securePrivateDirectory(
 ): Promise<SecuredPrivateDirectory> {
   const platform = options.platform ?? process.platform;
   let created = false;
+  let createdAtomically = false;
   if (platform === "win32") {
     try {
       await fs.lstat(directoryPath);
@@ -718,13 +852,23 @@ export async function securePrivateDirectory(
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
-      const firstCreatedDirectory = await (
-        options.createWindowsDirectories ?? createOwnerOnlyWindowsDirectoryAncestry
-      )(directoryPath);
+      const createWindowsDirectories =
+        options.createWindowsDirectories ??
+        (process.platform === "win32" || options.secureWindowsDirectory === undefined
+          ? createOwnerOnlyWindowsDirectoryAncestry
+          : async (candidatePath: string) => {
+              await fs.mkdir(candidatePath);
+              return candidatePath;
+            });
+      const firstCreatedDirectory = await createWindowsDirectories(directoryPath);
       if (firstCreatedDirectory === undefined) {
-        throw new Error("Windows private directory creation did not create the requested path.");
+        throw new Error("Windows private directory creation did not create the requested path.", {
+          cause: error,
+        });
       }
       created = true;
+      createdAtomically =
+        options.createWindowsDirectories !== undefined || process.platform === "win32";
     }
   } else {
     try {
@@ -771,8 +915,11 @@ export async function securePrivateDirectory(
   try {
     await secured.assertIdentityAt();
     if (platform === "win32") {
-      if (!created) {
+      if (!createdAtomically) {
         await (options.secureWindowsDirectory ?? applyOwnerOnlyWindowsDirectoryAcl)(directoryPath);
+      }
+      if (process.platform !== "win32") {
+        await handle.chmod(0o700);
       }
     } else {
       const currentUserId = options.currentUserId ?? process.geteuid?.();
@@ -828,11 +975,113 @@ export async function securePrivateDirectory(
   return secured;
 }
 
+type PrivateMutationClaim = {
+  assertOwned(): Promise<void>;
+  release(): Promise<void>;
+};
+
+function privateMutationClaimPath(parentDirectory: string, targetBaseName: string): string {
+  const digest = createHash("sha256").update(targetBaseName).digest("hex").slice(0, 32);
+  return path.join(parentDirectory, `.crabline-private-${digest}.claim`);
+}
+
+async function acquirePrivateMutationClaim(
+  parent: SecuredPrivateDirectory,
+  targetBaseName: string,
+  options: {
+    createWindowsDirectories?: (directoryPath: string) => Promise<string | undefined>;
+    platform?: NodeJS.Platform;
+  },
+): Promise<PrivateMutationClaim> {
+  const platform = options.platform ?? process.platform;
+  const claimPath = privateMutationClaimPath(parent.directoryPath, targetBaseName);
+  if (platform === "win32" && process.platform === "win32") {
+    const firstCreatedDirectory = await (
+      options.createWindowsDirectories ?? createOwnerOnlyWindowsDirectoryAncestry
+    )(claimPath);
+    if (firstCreatedDirectory === undefined) {
+      throw new Error("Private path mutation is already claimed.");
+    }
+  } else {
+    try {
+      await fs.mkdir(claimPath, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new Error("Private path mutation is already claimed.", { cause: error });
+      }
+      throw error;
+    }
+  }
+
+  const securedClaim = await captureDirectoryIdentity(claimPath);
+  const assertOwned = async () => {
+    await parent.assertIdentityAt();
+    await securedClaim.assertIdentityAt();
+    if ((await fs.readdir(claimPath)).length !== 0) {
+      throw new Error("Private path mutation claim was modified.");
+    }
+  };
+  try {
+    await assertOwned();
+    await syncParentDirectory(claimPath, options.platform);
+  } catch (error) {
+    try {
+      await fs.rmdir(claimPath);
+    } catch (cleanupError) {
+      const aggregateError = new AggregateError(
+        [error, cleanupError],
+        "Private path mutation claim creation failed and cleanup also failed.",
+      );
+      aggregateError.cause = error;
+      throw aggregateError;
+    }
+    throw error;
+  }
+
+  let released = false;
+  return {
+    assertOwned,
+    async release() {
+      if (released) {
+        return;
+      }
+      await assertOwned();
+      await fs.rmdir(claimPath);
+      released = true;
+      await parent.assertIdentityAt();
+      await syncParentDirectory(claimPath, options.platform);
+    },
+  };
+}
+
+async function captureOwnerOnlyMutationParent(
+  directoryPath: string,
+): Promise<SecuredPrivateDirectory> {
+  const secured = await captureDirectoryIdentity(directoryPath);
+  if (process.platform === "win32") {
+    await verifyOwnerOnlyWindowsDirectoryAcl(directoryPath);
+  } else {
+    const stats = await fs.lstat(directoryPath, { bigint: true });
+    const currentUserId = process.geteuid?.();
+    if (
+      !stats.isDirectory() ||
+      currentUserId === undefined ||
+      stats.uid !== BigInt(currentUserId) ||
+      (stats.mode & 0o077n) !== 0n
+    ) {
+      throw new Error("Private mutation parent must be owned by the current user and owner-only.");
+    }
+  }
+  await secured.assertIdentityAt();
+  return secured;
+}
+
 export async function publishPrivateFileAtomically(
   filePath: string,
   contents: string,
   options: {
     afterRename?: (filePath: string) => Promise<void>;
+    beforeCommitRename?: (temporaryPath: string) => Promise<void>;
     beforeRename?: (temporaryPath: string) => Promise<void>;
     createWindowsFile?: (temporaryPath: string) => Promise<FileIdentity>;
     createWindowsDirectories?: (directoryPath: string) => Promise<string | undefined>;
@@ -864,6 +1113,13 @@ export async function publishPrivateFileAtomically(
           }
         })()
       : await fs.mkdir(parentDirectory, { recursive: true, mode: 0o700 });
+  const parent = await captureOwnerOnlyMutationParent(parentDirectory);
+  const claim = await acquirePrivateMutationClaim(parent, path.basename(filePath), {
+    ...(options.createWindowsDirectories
+      ? { createWindowsDirectories: options.createWindowsDirectories }
+      : {}),
+    ...(options.platform ? { platform: options.platform } : {}),
+  });
   let handle: FileHandle | undefined;
   let publicationFailed = false;
   let primaryError: unknown;
@@ -891,8 +1147,18 @@ export async function publishPrivateFileAtomically(
     await handle.sync();
     await assertPathIdentity(temporaryPath, identity);
     await options.beforeRename?.(temporaryPath);
+    await parent.assertIdentityAt();
+    await claim.assertOwned();
     await assertPathIdentity(temporaryPath, identity);
+    await options.beforeCommitRename?.(temporaryPath);
+    await parent.assertIdentityAt();
+    await claim.assertOwned();
+    await assertPathIdentity(temporaryPath, identity);
+    // Node has no portable renameat API. The owner-only parent and target-specific claim fence
+    // every supported same-user writer while these path identities are revalidated.
     await fs.rename(temporaryPath, filePath);
+    await parent.assertIdentityAt();
+    await claim.assertOwned();
     await syncPathAncestry(
       filePath,
       options.syncParent ?? syncParentDirectory,
@@ -900,6 +1166,8 @@ export async function publishPrivateFileAtomically(
       firstCreatedDirectory,
     );
     await options.afterRename?.(filePath);
+    await parent.assertIdentityAt();
+    await claim.assertOwned();
     await assertPathIdentity(filePath, identity);
   } catch (error) {
     publicationFailed = true;
@@ -909,6 +1177,11 @@ export async function publishPrivateFileAtomically(
   const cleanupErrors: unknown[] = [];
   try {
     await handle?.close();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  try {
+    await claim.release();
   } catch (error) {
     cleanupErrors.push(error);
   }

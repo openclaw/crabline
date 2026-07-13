@@ -6,7 +6,9 @@ import {
   createOwnerOnlyWindowsDirectoryAncestry,
   createOwnerOnlyWindowsFile,
   publishPrivateFileAtomically,
+  removeSecuredPrivateDirectory,
   securePrivateDirectory,
+  verifyOwnerOnlyWindowsDirectoryAcl,
   type WindowsAclRunner,
 } from "../src/openclaw/private-file.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
@@ -550,6 +552,128 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
+  it("rejects a temporary substitution at the claimed rename boundary", async () => {
+    const directory = await createTempDir();
+    try {
+      const filePath = path.join(directory, "manifest.json");
+      await fs.writeFile(filePath, "stale\n");
+      let originalTemporaryPath: string | undefined;
+
+      await expect(
+        publishPrivateFileAtomically(filePath, "private\n", {
+          beforeCommitRename: async (temporaryPath) => {
+            originalTemporaryPath = `${temporaryPath}.original`;
+            await fs.rename(temporaryPath, originalTemporaryPath);
+            await fs.writeFile(temporaryPath, "substitute\n");
+          },
+        }),
+      ).rejects.toThrow("Private file path identity changed during publication.");
+
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("stale\n");
+      await expect(fs.readFile(originalTemporaryPath!, "utf8")).resolves.toBe("private\n");
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "serializes same-target publication with an owner-only mutation claim",
+    async () => {
+      const directory = await createTempDir();
+      let releaseCommit!: () => void;
+      const commitReleased = new Promise<void>((resolve) => {
+        releaseCommit = resolve;
+      });
+      let commitReached!: () => void;
+      const reachedCommit = new Promise<void>((resolve) => {
+        commitReached = resolve;
+      });
+      try {
+        const filePath = path.join(directory, "manifest.json");
+        const firstPublication = publishPrivateFileAtomically(filePath, "first\n", {
+          beforeCommitRename: async () => {
+            const claimName = (await fs.readdir(directory)).find((entry) =>
+              entry.endsWith(".claim"),
+            );
+            expect(claimName).toBeDefined();
+            expect((await fs.stat(path.join(directory, claimName!))).mode & 0o777).toBe(0o700);
+            commitReached();
+            await commitReleased;
+          },
+        });
+        await reachedCommit;
+
+        await expect(publishPrivateFileAtomically(filePath, "second\n")).rejects.toThrow(
+          "Private path mutation is already claimed.",
+        );
+
+        releaseCommit();
+        await firstPublication;
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("first\n");
+        expect((await fs.readdir(directory)).filter((entry) => entry.endsWith(".claim"))).toEqual(
+          [],
+        );
+      } finally {
+        releaseCommit();
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "fails closed without changing a permissive publication parent",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        await fs.chmod(directory, 0o755);
+
+        await expect(
+          publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n"),
+        ).rejects.toThrow(
+          "Private mutation parent must be owned by the current user and owner-only.",
+        );
+
+        expect((await fs.stat(directory)).mode & 0o777).toBe(0o755);
+        await expect(fs.readdir(directory)).resolves.toEqual([]);
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it("preserves a substituted quarantine directory at the recursive removal boundary", async () => {
+    const directory = await createTempDir();
+    try {
+      const generationPath = path.join(directory, "generation");
+      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+      await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+      let originalQuarantinePath: string | undefined;
+      let substitutePath: string | undefined;
+
+      await expect(
+        removeSecuredPrivateDirectory(secured, undefined, undefined, {
+          beforeRecursiveRemove: async (quarantinePath) => {
+            originalQuarantinePath = `${quarantinePath}.original`;
+            substitutePath = quarantinePath;
+            await fs.rename(quarantinePath, originalQuarantinePath);
+            await fs.mkdir(quarantinePath);
+            await fs.writeFile(path.join(quarantinePath, "substitute.json"), "substitute\n");
+          },
+          platform: "linux",
+        }),
+      ).rejects.toThrow("Private directory path identity changed during publication.");
+
+      await expect(
+        fs.readFile(path.join(originalQuarantinePath!, "private.json"), "utf8"),
+      ).resolves.toBe("private\n");
+      await expect(
+        fs.readFile(path.join(substitutePath!, "substitute.json"), "utf8"),
+      ).resolves.toBe("substitute\n");
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
   it("stops safely at an inaccessible pre-existing ancestor after publication", async () => {
     const directory = await createTempDir();
     try {
@@ -806,6 +930,24 @@ describe("OpenClaw private file publication", () => {
       message:
         "Could not atomically create and verify owner-only Windows private directory ancestry; Windows PowerShell security descriptor support is required.",
     });
+  });
+
+  it("verifies Windows mutation parents without changing their ACL", async () => {
+    const calls: Parameters<WindowsAclRunner>[] = [];
+    const run: WindowsAclRunner = async (...args) => {
+      calls.push(args);
+      return "";
+    };
+    const directoryPath = String.raw`C:\Temp\private`;
+
+    await verifyOwnerOnlyWindowsDirectoryAcl(directoryPath, run, String.raw`C:\Windows`);
+
+    const [, args, options] = calls[0]!;
+    const script = args.at(-1);
+    expect(script).toContain("AreAccessRulesProtected");
+    expect(script).toContain("owner-only inheritable full control");
+    expect(script).not.toContain("Set-Acl");
+    expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
   });
 
   it("reports Windows ACL tooling failures with their cause", async () => {
