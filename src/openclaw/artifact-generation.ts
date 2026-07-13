@@ -111,12 +111,16 @@ function withRecorderSnapshotPath(
 }
 
 function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer {
-  let value: Partial<OpenClawCrablineArtifactPointer>;
+  let parsed: unknown;
   try {
-    value = JSON.parse(contents) as Partial<OpenClawCrablineArtifactPointer>;
+    parsed = JSON.parse(contents);
   } catch (error) {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.", { cause: error });
   }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("OpenClaw Crabline artifact pointer is malformed.");
+  }
+  const value = parsed as Partial<OpenClawCrablineArtifactPointer>;
   if (value.version !== 1) {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.");
   }

@@ -57,6 +57,17 @@ function toPostableText(message: PostableMessage): string {
   return message.fallbackText ?? "[card]";
 }
 
+function decodeThreadAddressComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch (error) {
+    throw new CrablineError("Loopback v2 thread address is malformed.", {
+      cause: error,
+      kind: "inbound",
+    });
+  }
+}
+
 export class LoopbackChatAdapter {
   readonly name = "loopback";
   readonly persistMessageHistory = true;
@@ -97,13 +108,13 @@ export class LoopbackChatAdapter {
     }
 
     const decoded: ThreadAddress = {
-      id: decodeURIComponent(rawId ?? rawChannelOrId),
+      id: decodeThreadAddressComponent(rawId ?? rawChannelOrId),
     };
     if (rawId) {
-      decoded.channelId = decodeURIComponent(rawChannelOrId);
+      decoded.channelId = decodeThreadAddressComponent(rawChannelOrId);
     }
     if (rawThreadId) {
-      decoded.threadId = decodeURIComponent(rawThreadId);
+      decoded.threadId = decodeThreadAddressComponent(rawThreadId);
     }
     return decoded;
   }

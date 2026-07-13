@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { CrablineError } from "../src/core/errors.js";
 import { LoopbackChatAdapter } from "../src/providers/builtin/loopback.js";
 
 let adapter: LoopbackChatAdapter | undefined;
@@ -45,6 +46,26 @@ describe("loopback chat adapter", () => {
       threadId: "topic%2F",
     });
   });
+
+  it.each(["loopback+v2:%", "loopback+v2:channel:%", "loopback+v2:user::%"])(
+    "classifies malformed v2 thread addresses: %s",
+    (threadId) => {
+      adapter = new LoopbackChatAdapter("crabline");
+
+      let failure: unknown;
+      try {
+        adapter.decodeThreadId(threadId);
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeInstanceOf(CrablineError);
+      expect(failure).toMatchObject({
+        kind: "inbound",
+        message: "Loopback v2 thread address is malformed.",
+      });
+    },
+  );
 
   it("returns a cursor with the initial limited page", async () => {
     adapter = new LoopbackChatAdapter("crabline");

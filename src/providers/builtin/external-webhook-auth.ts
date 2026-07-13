@@ -33,7 +33,15 @@ export function requireExternalWebhookAuthentication(params: {
     );
   }
 
-  const url = new URL(publicUrl);
+  let url: URL;
+  try {
+    url = new URL(publicUrl);
+  } catch (error) {
+    throw new CrablineError(`${params.provider} public callback URL is invalid.`, {
+      cause: error,
+      kind: "config",
+    });
+  }
   const safeLoopbackHttp =
     url.protocol === "http:" && hostIsLoopback && isLoopbackHost(url.hostname);
   if (url.protocol !== "https:" && !safeLoopbackHttp) {
