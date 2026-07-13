@@ -1198,17 +1198,48 @@ describe("local mock provider", () => {
     }
   });
 
-  it("rejects canonical generic threads whose parent differs from the target channel", () => {
+  it("keeps generic channel and thread components collision-free", () => {
     const codec = createGenericLocalMockTargetCodec("loopback");
 
-    expect(() =>
-      codec.normalize({
-        channelId: "room-a",
-        id: "room-a",
-        metadata: {},
-        threadId: "loopback:room-b:topic",
-      }),
-    ).toThrow(/thread parent must match the target channel/u);
+    const channelDelimiter = codec.normalize({
+      channelId: "room:a",
+      id: "fixture-a",
+      metadata: {},
+      threadId: "topic",
+    });
+    const threadDelimiter = codec.normalize({
+      channelId: "room",
+      id: "fixture-b",
+      metadata: {},
+      threadId: "a:topic",
+    });
+    const encodedLooking = codec.normalize({
+      channelId: "room%3Aa",
+      id: "fixture-c",
+      metadata: {},
+      threadId: "topic",
+    });
+
+    expect(channelDelimiter).toMatchObject({
+      channelId: "loopback:room%3Aa",
+      threadId: "loopback:room%3Aa:topic",
+    });
+    expect(threadDelimiter.threadId).toBe("loopback:room:a%3Atopic");
+    expect(encodedLooking.channelId).toBe("loopback:room%253Aa");
+    expect(
+      new Set([channelDelimiter.threadId, threadDelimiter.threadId, encodedLooking.threadId]).size,
+    ).toBe(3);
+    expect(codec.normalize({ id: "loopback:room", metadata: {} }).channelId).toBe(
+      "loopback:loopback%3Aroom",
+    );
+  });
+
+  it("classifies unencodable generic target components as config errors", () => {
+    const codec = createGenericLocalMockTargetCodec("loopback");
+
+    expect(() => codec.normalize({ id: "\uD800", metadata: {} })).toThrow(
+      /loopback channelId cannot be encoded/u,
+    );
   });
 
   it("bounds successful wait cursors while retaining recent progress", async () => {
