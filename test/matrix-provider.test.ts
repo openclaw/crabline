@@ -25,7 +25,12 @@ describe("Matrix webhook normalizer", () => {
     const config = await createLocalMockConfig("matrix", "/matrix/webhook");
     const provider = new MatrixProviderAdapter("matrix", config, "crabline");
     try {
-      for (const roomId of ["!room:123", "!room:01.2.003.4", "!room:[2001:db8::1]:8448"]) {
+      for (const roomId of [
+        "!room:123",
+        "!room:01.2.003.4",
+        "!room:[2001:db8::1]:8448",
+        "!room:matrix.test:99999",
+      ]) {
         expect(provider.normalizeTarget({ id: roomId, metadata: {} })).toMatchObject({
           channelId: roomId,
         });
@@ -174,6 +179,27 @@ describe("Matrix webhook normalizer", () => {
         type: "m.room.message",
       }),
     ).toThrow(/m\.thread relation requires event_id/u);
+    expect(() =>
+      normalizeMatrixWebhookPayload({
+        content: { body: "invalid room server", msgtype: "m.text" },
+        event_id: "$event123:matrix.org",
+        room_id: "!abc123:invalid_host",
+        type: "m.room.message",
+      }),
+    ).toThrow(/Matrix room_id/u);
+    expect(() =>
+      normalizeMatrixWebhookPayload({
+        content: { body: "invalid event server", msgtype: "m.text" },
+        event_id: "$event123:invalid_host",
+        room_id: "!abc123:matrix.org",
+        type: "m.room.message",
+      }),
+    ).toThrow(/Matrix event_id/u);
+    expect(() =>
+      normalizeMatrixWebhookPayload({
+        message: { threadId: "!abc123:invalid_host" },
+      }),
+    ).toThrow(/mock webhook threadId/u);
   });
 });
 

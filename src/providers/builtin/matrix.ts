@@ -1,12 +1,11 @@
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
+import { isMatrixEventId, isMatrixRoomId } from "../../matrix-ids.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
 import {
   getBuiltinTargetCodec,
-  isMatrixEventId,
-  isMatrixRoomId,
   MATRIX_EVENT_ID_RULE,
   MATRIX_ROOM_ID_RULE,
 } from "../target-normalizers.js";
@@ -16,7 +15,6 @@ import {
   isRecord,
   optionalRecord,
   optionalString,
-  requireNativeInboundId,
 } from "./native-local-mock.js";
 import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
@@ -104,11 +102,22 @@ export function normalizeMatrixWebhookPayload(payload: unknown, botUserId?: stri
   }
 
   if (optionalRecord(payload, "message")) {
-    return genericMockPayloadWithNativeThread({
+    const normalized = genericMockPayloadWithNativeThread({
       channelRule: MATRIX_ROOM_ID_RULE,
       payload,
       threadRule: MATRIX_EVENT_ID_RULE,
     });
+    if (
+      "threadId" in normalized &&
+      !isMatrixRoomId(normalized.threadId) &&
+      !isMatrixEventId(normalized.threadId)
+    ) {
+      throw new CrablineError(
+        `mock webhook threadId must be a native ${MATRIX_EVENT_ID_RULE.name} or ${MATRIX_ROOM_ID_RULE.name}.`,
+        { kind: "inbound" },
+      );
+    }
+    return normalized;
   }
 
   const content = optionalRecord(payload, "content");
@@ -138,17 +147,30 @@ export function normalizeMatrixWebhookPayload(payload: unknown, botUserId?: stri
       kind: "inbound",
     });
   }
+  if (!isMatrixRoomId(roomId)) {
+    throw new CrablineError(
+      `Matrix room_id must be a native ${MATRIX_ROOM_ID_RULE.name} such as ${MATRIX_ROOM_ID_RULE.example}.`,
+      { kind: "inbound" },
+    );
+  }
+  if (!isMatrixEventId(eventId)) {
+    throw new CrablineError(
+      `Matrix event_id must be a native ${MATRIX_EVENT_ID_RULE.name} such as ${MATRIX_EVENT_ID_RULE.example}.`,
+      { kind: "inbound" },
+    );
+  }
+  if (threadRootId && !isMatrixEventId(threadRootId)) {
+    throw new CrablineError(
+      `Matrix thread root event_id must be a native ${MATRIX_EVENT_ID_RULE.name} such as ${MATRIX_EVENT_ID_RULE.example}.`,
+      { kind: "inbound" },
+    );
+  }
 
   return {
     author: authorFromBotFlag(senderId !== undefined && senderId === botUserId),
-    id: requireNativeInboundId(eventId, MATRIX_EVENT_ID_RULE, "Matrix event_id"),
+    id: eventId,
     raw: payload,
     text,
-    threadId: threadRootId
-      ? matrixThreadKey(
-          requireNativeInboundId(roomId, MATRIX_ROOM_ID_RULE, "Matrix room_id"),
-          requireNativeInboundId(threadRootId, MATRIX_EVENT_ID_RULE, "Matrix thread root event_id"),
-        )
-      : requireNativeInboundId(roomId, MATRIX_ROOM_ID_RULE, "Matrix room_id"),
+    threadId: threadRootId ? matrixThreadKey(roomId, threadRootId) : roomId,
   };
 }
