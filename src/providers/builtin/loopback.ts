@@ -22,6 +22,8 @@ type StoredLoopbackMessage = {
   sequence: number;
 };
 
+const LOOPBACK_V2_PREFIX = "loopback+v2:";
+
 function createMessageId(): string {
   return `loopback-mock-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -56,15 +58,24 @@ function toPostableText(message: PostableMessage): string {
   return message.fallbackText ?? "[card]";
 }
 
+function malformedThreadAddress(cause?: unknown): CrablineError {
+  return new CrablineError("Loopback v2 thread address is malformed.", {
+    ...(cause === undefined ? {} : { cause }),
+    kind: "inbound",
+  });
+}
+
 function decodeThreadAddressComponent(value: string): string {
+  let decoded: string;
   try {
-    return decodeURIComponent(value);
+    decoded = decodeURIComponent(value);
   } catch (error) {
-    throw new CrablineError("Loopback v2 thread address is malformed.", {
-      cause: error,
-      kind: "inbound",
-    });
+    throw malformedThreadAddress(error);
   }
+  if (!decoded || encodeURIComponent(decoded) !== value) {
+    throw malformedThreadAddress();
+  }
+  return decoded;
 }
 
 export class LoopbackChatAdapter {
@@ -85,35 +96,48 @@ export class LoopbackChatAdapter {
 
   channelIdFromThreadId(threadId: string): string {
     const [address = threadId] = threadId.split("::");
-    if (!address.startsWith("loopback+v2:")) {
+    if (!threadId.startsWith(LOOPBACK_V2_PREFIX)) {
       return address;
     }
     return this.decodeThreadId(threadId).channelId ?? address;
   }
 
   decodeThreadId(threadId: string): ThreadAddress {
-    const [address = threadId, rawThreadId] = threadId.split("::");
-    const [platform, rawChannelOrId, rawId] = address.split(":");
-    if (platform !== "loopback+v2" || !rawChannelOrId) {
-      const [, channelId = address, id = address] = address.split(":");
-      const decoded: ThreadAddress = { id };
-      if (channelId) {
-        decoded.channelId = channelId;
+    if (threadId.startsWith(LOOPBACK_V2_PREFIX)) {
+      const threadParts = threadId.split("::");
+      if (threadParts.length > 2) {
+        throw malformedThreadAddress();
       }
-      if (rawThreadId) {
-        decoded.threadId = rawThreadId;
+      const [address = "", rawThreadId] = threadParts;
+      const addressParts = address.slice(LOOPBACK_V2_PREFIX.length).split(":");
+      if (
+        (addressParts.length !== 1 && addressParts.length !== 2) ||
+        addressParts.some((part) => part.length === 0) ||
+        rawThreadId === ""
+      ) {
+        throw malformedThreadAddress();
+      }
+      const [rawChannelOrId = "", rawId] = addressParts;
+      const decoded: ThreadAddress = {
+        id: decodeThreadAddressComponent(rawId ?? rawChannelOrId),
+      };
+      if (rawId !== undefined) {
+        decoded.channelId = decodeThreadAddressComponent(rawChannelOrId);
+      }
+      if (rawThreadId !== undefined) {
+        decoded.threadId = decodeThreadAddressComponent(rawThreadId);
       }
       return decoded;
     }
 
-    const decoded: ThreadAddress = {
-      id: decodeThreadAddressComponent(rawId ?? rawChannelOrId),
-    };
-    if (rawId) {
-      decoded.channelId = decodeThreadAddressComponent(rawChannelOrId);
+    const [address = threadId, rawThreadId] = threadId.split("::");
+    const [, channelId = address, id = address] = address.split(":");
+    const decoded: ThreadAddress = { id };
+    if (channelId) {
+      decoded.channelId = channelId;
     }
     if (rawThreadId) {
-      decoded.threadId = decodeThreadAddressComponent(rawThreadId);
+      decoded.threadId = rawThreadId;
     }
     return decoded;
   }
@@ -150,8 +174,8 @@ export class LoopbackChatAdapter {
 
   encodeThreadId(platformData: ThreadAddress): string {
     const address = platformData.channelId
-      ? `loopback+v2:${encodeURIComponent(platformData.channelId)}:${encodeURIComponent(platformData.id)}`
-      : `loopback+v2:${encodeURIComponent(platformData.id)}`;
+      ? `${LOOPBACK_V2_PREFIX}${encodeURIComponent(platformData.channelId)}:${encodeURIComponent(platformData.id)}`
+      : `${LOOPBACK_V2_PREFIX}${encodeURIComponent(platformData.id)}`;
     return platformData.threadId
       ? `${address}::${encodeURIComponent(platformData.threadId)}`
       : address;
