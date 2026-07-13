@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   appendRecordedInbound,
   appendRecordedInboundBatch,
+  cloneRecordedInboundCursor,
   createRecordedInboundCursor,
   readRecordedInbound,
   waitForRecordedInbound,
@@ -921,6 +922,55 @@ describe("recorder", () => {
     await appendFile(filePath, '{"id":"malformed"} trailing\n   ', "utf8");
 
     await expect(readRecordedInbound(filePath)).rejects.toThrow(SyntaxError);
+  });
+
+  it("does not advance an incremental cursor past a malformed completed partial record", async () => {
+    const filePath = await createRecorderPath();
+    const cursor = createRecordedInboundCursor();
+    const partial = '{"author":"assistant"';
+    await writeFile(filePath, partial, "utf8");
+
+    await expect(
+      waitForRecordedInbound({
+        cursor,
+        filePath,
+        matches: () => false,
+        pollMs: 5,
+        timeoutMs: 15,
+      }),
+    ).resolves.toBeNull();
+    const beforeFailure = cloneRecordedInboundCursor(cursor);
+
+    const recovered = {
+      author: "assistant",
+      id: "recovered-after-malformed",
+      provider: "slack",
+      recordedAt: new Date().toISOString(),
+      sentAt: new Date().toISOString(),
+      text: "recover me",
+      threadId: "slack:C123",
+    } as const;
+    await appendFile(filePath, ` trailing\n${JSON.stringify(recovered)}\n`, "utf8");
+
+    await expect(
+      waitForRecordedInbound({
+        cursor,
+        filePath,
+        matches: () => true,
+        timeoutMs: 30,
+      }),
+    ).rejects.toThrow(SyntaxError);
+    expect(cursor).toEqual(beforeFailure);
+
+    await writeFile(filePath, `${JSON.stringify(recovered)}\n`, "utf8");
+    await expect(
+      waitForRecordedInbound({
+        cursor,
+        filePath,
+        matches: () => true,
+        timeoutMs: 30,
+      }),
+    ).resolves.toEqual(recovered);
   });
 
   it("waits for a matching inbound event", async () => {
