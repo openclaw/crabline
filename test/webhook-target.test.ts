@@ -221,6 +221,28 @@ describe("webhook target validation", () => {
     ).resolves.toEqual({ error: "private-address" });
   });
 
+  it("blocks private IPv4 embeddings under overlapping discovered NAT64 prefixes", async () => {
+    const dnsLookupPool = new WebhookDnsLookupPool(1, async (hostname) =>
+      hostname === "ipv4only.arpa"
+        ? [
+            { address: rfc6052Address(32, "192.0.0.170"), family: 6 },
+            { address: rfc6052Address(32, "192.0.0.171"), family: 6 },
+            { address: rfc6052Address(96, "192.0.0.170"), family: 6 },
+            { address: rfc6052Address(96, "192.0.0.171"), family: 6 },
+          ]
+        : [],
+    );
+
+    await expect(
+      validateWebhookTarget({
+        allowLoopbackHttp: false,
+        dnsLookupPool,
+        restrictPrivateAddresses: true,
+        url: new URL(`https://[${rfc6052Address(96, "127.0.0.1")}]/webhook`),
+      }),
+    ).resolves.toEqual({ error: "private-address" });
+  });
+
   it("skips address resolution when private-target restriction is disabled", async () => {
     const resolve = vi.fn(async () => {
       throw new Error("resolution should not run");

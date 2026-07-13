@@ -218,6 +218,28 @@ describe("webhook server", () => {
     await expect(response.text()).resolves.toBe("ok");
   });
 
+  it("does not restore cookies nominated by the Connection header", async () => {
+    const server = await startWebhookServer({
+      async handle() {
+        return new Response("ok", {
+          headers: {
+            connection: "set-cookie",
+            "set-cookie": "session=secret; Path=/",
+          },
+        });
+      },
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+
+    const response = await fetch(server.endpointUrl, { method: "POST" });
+
+    expect(response.headers.getSetCookie()).toEqual([]);
+    await expect(response.text()).resolves.toBe("ok");
+  });
+
   it("streams response chunks before the provider body completes", async () => {
     let releaseBody!: () => void;
     const bodyReleased = new Promise<void>((resolve) => {

@@ -8,7 +8,7 @@
 - Correct provider-native channel target examples, admin-ingress setup, and contract maintenance coverage.
 - Preserve native Slack rich text and block fallbacks, isolate Feishu replay identities, ignore non-message Google Chat interactions, and fail closed on invalid Zalo adapter inputs.
 - Correlate complete NAT64 discovery pairs and safely recycle aborted DNS lookup capacity without accepting stale results.
-- Verify loopback bindings by their listening address, sanitize Fetch response headers, and advertise usable endpoints for every wildcard address spelling.
+- Verify loopback bindings by their listening address, sanitize framing and connection-nominated Fetch response headers, and advertise usable endpoints for every wildcard address spelling.
 - Route local-mock GET hooks through the real server and parse structured JSON media types as JSON.
 - Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
 - Suppress serve readiness output when shutdown begins during ready-file publication.

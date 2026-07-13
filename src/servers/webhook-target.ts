@@ -380,20 +380,21 @@ const WELL_KNOWN_NAT64_PREFIX: Nat64Prefix = {
   length: 96,
 };
 
-function embeddedNat64Ipv4(
+function embeddedNat64Ipv4Addresses(
   address: string,
   nat64Prefixes: readonly Nat64Prefix[],
-): string | undefined {
+): string[] {
   const bytes = ipv6Bytes(address);
   if (!bytes) {
-    return undefined;
+    return [];
   }
+  const addresses: string[] = [];
   for (const prefix of [WELL_KNOWN_NAT64_PREFIX, ...nat64Prefixes]) {
     if (prefixMatches(bytes, prefix)) {
-      return extractRfc6052Ipv4(bytes, prefix.length);
+      addresses.push(extractRfc6052Ipv4(bytes, prefix.length));
     }
   }
-  return undefined;
+  return addresses;
 }
 
 function isBlockedWebhookAddress(
@@ -409,8 +410,11 @@ function isBlockedWebhookAddress(
     );
   }
   if (family === 6) {
-    const embeddedIpv4 = embeddedNat64Ipv4(normalized, nat64Prefixes);
-    if (embeddedIpv4 && isBlockedWebhookAddress(embeddedIpv4)) {
+    if (
+      embeddedNat64Ipv4Addresses(normalized, nat64Prefixes).some((embeddedIpv4) =>
+        isBlockedWebhookAddress(embeddedIpv4),
+      )
+    ) {
       return true;
     }
     if (GLOBAL_IPV6_EXCEPTIONS.check(normalized, "ipv6")) {
