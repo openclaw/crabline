@@ -5,6 +5,7 @@
 - Fail OpenClaw provider readiness when a successful probe produces no recorder evidence.
 - Merge repeated WhatsApp handshake message occurrences according to protobuf semantics.
 - Close inherited credential descriptors and preserve runtime failure classification and accepted-send diagnostics.
+- Validate every configured webhook callback independently and gracefully drain admitted provider responses before bounded connection teardown.
 - Confine generated local-mock recorder paths by rejecting absolute and parent-traversal provider IDs.
 - Accept native Zalo image callbacks, honor injected webhook auth environments, and bound recursive credential redaction.
 - Use one case-insensitive numeric identity for Telegram username chats across provider sends, OpenClaw inbound injection, and recorder correlation.

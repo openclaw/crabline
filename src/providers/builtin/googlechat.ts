@@ -207,7 +207,9 @@ export class GoogleChatProviderAdapter extends LocalMockProviderAdapter implemen
       );
     requireExternalWebhookAuthentication({
       authenticated: authenticationConfigured,
-      authenticatedIngressUrl: endpointAudience,
+      authenticatedIngressUrls: config.googlechat?.endpointUrl
+        ? [config.googlechat.endpointUrl]
+        : undefined,
       provider: "Google Chat",
       requirement:
         "googlechat.endpointUrl, googlechat.googleChatProjectNumber, or googlechat.pubsubAudience with a Pub/Sub service-account identity and signature verification enabled",

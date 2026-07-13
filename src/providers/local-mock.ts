@@ -268,6 +268,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   #cleanupBegun = false;
   #cleanupPromise: Promise<void> | null = null;
   #server: StartedWebhookServer | null = null;
+  #serverClosing: Promise<void> | null = null;
   #serverStarting: Promise<StartedWebhookServer> | null = null;
 
   constructor(params: {
@@ -463,6 +464,8 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     this.#cleanupBegun = true;
     this.#cleanupController.abort(this.#cleanedUpError());
     this.#waitCursors.clear();
+    this.#serverClosing = this.#closeWebhookServer();
+    void this.#serverClosing.catch(() => undefined);
   }
 
   #installCleanupFence(): void {
@@ -481,7 +484,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       const sends = [...this.#activeSends];
       const webhookHandlers = [...this.#activeWebhookHandlers];
       const [serverResult] = await Promise.allSettled([
-        this.#closeWebhookServer(),
+        this.#serverClosing,
         ...sends,
         ...webhookHandlers,
       ]);

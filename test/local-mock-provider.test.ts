@@ -700,7 +700,7 @@ describe("local mock provider", () => {
     expect((await readFile(recorderPath, "utf8")).trim().split("\n")).toHaveLength(2);
   });
 
-  it("drains webhook handlers admitted before cleanup", async () => {
+  it("closes ingress at the cleanup fence and drains admitted webhook handlers", async () => {
     let handleRequest: ((request: Request) => Promise<Response>) | undefined;
     let releaseHandler!: () => void;
     const handlerReleased = new Promise<void>((resolve) => {
@@ -745,12 +745,13 @@ describe("local mock provider", () => {
       }),
     );
     await admitted;
+    (provider as ProviderAdapter).beginCleanup?.();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
     let cleanupResolved = false;
     const cleanup = provider.cleanup().then(() => {
       cleanupResolved = true;
     });
 
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
     expect(cleanupResolved).toBe(false);
     await expect(
       handleRequest!(
