@@ -326,8 +326,7 @@ export function parseCanonicalTelegramTopic(
   const topicId = value.slice(separator + 1);
   if (
     !matchesNativeId(chatId, TELEGRAM_CHAT_ID_RULE) ||
-    !matchesNativeId(topicId, TELEGRAM_MESSAGE_THREAD_ID_RULE) ||
-    (!chatId.startsWith("@") && !chatId.startsWith("-"))
+    !matchesNativeId(topicId, TELEGRAM_MESSAGE_THREAD_ID_RULE)
   ) {
     return undefined;
   }

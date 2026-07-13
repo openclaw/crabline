@@ -173,13 +173,13 @@ describe("registry", () => {
         threadId: "9007199254740992",
       }),
     ).toThrow(/native Telegram message_thread_id/u);
-    expect(() =>
+    expect(
       normalizeBuiltinTarget("telegram", {
         id: "123",
         metadata: {},
         threadId: "123:42",
       }),
-    ).toThrow(/native Telegram message_thread_id/u);
+    ).toMatchObject({ channelId: "123", threadId: "123:42" });
   });
 
   it.each([
