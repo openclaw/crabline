@@ -896,7 +896,7 @@ describe("whatsapp local provider server", () => {
     expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
   });
 
-  it("keeps Signal ciphertext retryable when acknowledgement fails", async () => {
+  it("deduplicates accepted evidence when acknowledgement retries", async () => {
     const recipientJid = "15551234567@s.whatsapp.net";
     const senderJid = "15550000001@s.whatsapp.net";
     const receiver = new WhatsAppSignalBundleStore(1);
@@ -932,27 +932,6 @@ describe("whatsapp local provider server", () => {
 
     await expect(
       persistAcceptedBaileysMessage({
-        acknowledge: async () => {
-          throw new Error("simulated acknowledgement failure");
-        },
-        appendEvent: async (event) => {
-          events.push(event);
-        },
-        node,
-        path: "/ws/chat",
-        remoteJid: senderJid,
-        signalBundles: receiver,
-      }),
-    ).rejects.toThrow("simulated acknowledgement failure");
-    expect(bundle.preKey).toBe(originalPreKey);
-    expect(bundle.preKeyId).toBe(originalPreKeyId);
-
-    let acknowledged = false;
-    await expect(
-      persistAcceptedBaileysMessage({
-        acknowledge: async () => {
-          acknowledged = true;
-        },
         appendEvent: async (event) => {
           events.push(event);
         },
@@ -962,14 +941,28 @@ describe("whatsapp local provider server", () => {
         signalBundles: receiver,
       }),
     ).resolves.toBe(true);
-    expect(acknowledged).toBe(true);
+    expect(events).toHaveLength(1);
+    expect(bundle.preKey).not.toBe(originalPreKey);
+    expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
+
+    await expect(
+      persistAcceptedBaileysMessage({
+        appendEvent: async (event) => {
+          events.push(event);
+        },
+        node,
+        path: "/ws/chat",
+        remoteJid: senderJid,
+        signalBundles: receiver,
+      }),
+    ).resolves.toBe(true);
+    expect(events).toHaveLength(1);
     expect(events.at(-1)).toMatchObject({
       accepted: true,
       body: {
         message: { conversation: "retry" },
       },
     });
-    expect(bundle.preKey).not.toBe(originalPreKey);
     expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
   });
 

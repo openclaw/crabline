@@ -41,6 +41,7 @@ export const MAX_WHATSAPP_NOISE_FRAMES_PER_MESSAGE = 1_024;
 export const WHATSAPP_WEBSOCKET_SEND_TIMEOUT_MS = 5_000;
 const MAX_PENDING_WEBSOCKET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_WEBSOCKET_MESSAGES = 32;
+const MAX_WHATSAPP_ACCEPTED_MESSAGE_IDS = 10_000;
 export const MAX_WHATSAPP_WEBSOCKET_FRAGMENTS = 1_024;
 export const MAX_WHATSAPP_SIGNAL_BUNDLES = 1_024;
 export const MAX_WHATSAPP_WEBSOCKET_CLOSE_REASON_BYTES = 123;
@@ -115,8 +116,10 @@ export type WhatsAppSignalDecryptResult<T> =
   | { status: "rejected" };
 
 export class WhatsAppSignalBundleStore {
+  readonly #acceptedMessageIds = new Map<string, true>();
   readonly #bundles = new Map<string, MockSignalBundle>();
   readonly #lidByPhoneNumber = new Map<string, string>();
+  readonly #pendingMessageAcceptances = new Map<string, Promise<void>>();
   readonly #pendingTransactions = new Map<string, Promise<void>>();
   readonly #sessions = new Map<string, Map<string, SessionRecord>>();
 
@@ -132,6 +135,27 @@ export class WhatsAppSignalBundleStore {
 
   get lidMappingSize(): number {
     return this.#lidByPhoneNumber.size;
+  }
+
+  async acceptMessageOnce(messageKey: string, operation: () => Promise<boolean>): Promise<boolean> {
+    return await this.#runSerialized(this.#pendingMessageAcceptances, messageKey, async () => {
+      if (this.#acceptedMessageIds.delete(messageKey)) {
+        this.#acceptedMessageIds.set(messageKey, true);
+        return true;
+      }
+      const accepted = await operation();
+      if (!accepted) {
+        return false;
+      }
+      this.#acceptedMessageIds.set(messageKey, true);
+      if (this.#acceptedMessageIds.size > MAX_WHATSAPP_ACCEPTED_MESSAGE_IDS) {
+        const oldestMessageKey = this.#acceptedMessageIds.keys().next().value;
+        if (oldestMessageKey !== undefined) {
+          this.#acceptedMessageIds.delete(oldestMessageKey);
+        }
+      }
+      return true;
+    });
   }
 
   associateLid(phoneNumberJid: string, lidJid: string): void {
@@ -174,6 +198,7 @@ export class WhatsAppSignalBundleStore {
       }
     }
     if (this.#bundles.size + uniqueNewIdentities.size > this.maxBundles) {
+      // Published bundle identities stay stable for the store lifetime.
       throw new Error(`WhatsApp signal bundle limit exceeded (${this.maxBundles}).`);
     }
     return identityKeys.map((identityKey) => this.#resolve(identityKey));
@@ -298,18 +323,26 @@ export class WhatsAppSignalBundleStore {
   }
 
   async #runTransaction<T>(key: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.#pendingTransactions.get(key) ?? Promise.resolve();
+    return await this.#runSerialized(this.#pendingTransactions, key, operation);
+  }
+
+  async #runSerialized<T>(
+    pending: Map<string, Promise<void>>,
+    key: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = pending.get(key) ?? Promise.resolve();
     const result = previous.catch(() => undefined).then(operation);
     const settled = result.then(
       () => undefined,
       () => undefined,
     );
-    this.#pendingTransactions.set(key, settled);
+    pending.set(key, settled);
     try {
       return await result;
     } finally {
-      if (this.#pendingTransactions.get(key) === settled) {
-        this.#pendingTransactions.delete(key);
+      if (pending.get(key) === settled) {
+        pending.delete(key);
       }
     }
   }
@@ -694,17 +727,6 @@ class WhatsAppBaileysWebSocketSession {
     if (node.tag === "message") {
       const peer = requireAttr(node, "to");
       const accepted = await persistAcceptedBaileysMessage({
-        acknowledge: () =>
-          this.#sendNode({
-            attrs: {
-              class: "message",
-              from: peer,
-              id: requireAttr(node, "id"),
-              to: this.params.selfJid,
-              ...(node.attrs.type ? { type: node.attrs.type } : {}),
-            },
-            tag: "ack",
-          }),
         appendEvent: this.params.appendEvent,
         node,
         path: this.params.path,
@@ -714,6 +736,16 @@ class WhatsAppBaileysWebSocketSession {
       if (!accepted) {
         return;
       }
+      await this.#sendNode({
+        attrs: {
+          class: "message",
+          from: peer,
+          id: requireAttr(node, "id"),
+          to: this.params.selfJid,
+          ...(node.attrs.type ? { type: node.attrs.type } : {}),
+        },
+        tag: "ack",
+      });
     }
   }
 
@@ -1200,7 +1232,6 @@ function children(node: BinaryNode): BinaryNode[] {
 }
 
 export async function persistAcceptedBaileysMessage(params: {
-  acknowledge?(): Promise<void>;
   appendEvent(event: ServerRequestEvent): Promise<void>;
   node: BinaryNode;
   path: string;
@@ -1212,70 +1243,70 @@ export async function persistAcceptedBaileysMessage(params: {
   if (!peer || !messageId) {
     return false;
   }
-  const candidates = encryptedMessageCandidates(params.node);
-  if (candidates.length === 0) {
-    await params.appendEvent({
-      accepted: true,
-      at: new Date().toISOString(),
-      body: sanitizeNodeForJson(params.node),
-      method: "WEBSOCKET",
-      path: params.path,
-      query: {},
-      type: "api",
-    } as ServerRequestEvent & { accepted: true });
-    await params.acknowledge?.();
-    return true;
-  }
-  const remoteCorrelationJid = canonicalizeWhatsAppUserCorrelationJid(params.remoteJid);
-  candidates.sort((left, right) => {
-    const leftIsSelf =
-      canonicalizeWhatsAppUserCorrelationJid(left.recipientJid) === remoteCorrelationJid;
-    const rightIsSelf =
-      canonicalizeWhatsAppUserCorrelationJid(right.recipientJid) === remoteCorrelationJid;
-    return Number(leftIsSelf) - Number(rightIsSelf);
-  });
-  for (const candidate of candidates) {
-    const result = await params.signalBundles.transactDirectMessage({
-      accept: async (decrypted) => {
-        let text: string | undefined;
-        try {
-          text = readWhatsAppConversation(unpadRandomMax16(decrypted));
-        } catch {
-          text = undefined;
-        }
-        const message: WhatsAppBaileysInboundMessage | undefined = text
-          ? {
-              key: {
-                fromMe: true,
-                id: messageId,
-                remoteJid: peer,
-              },
-              message: { conversation: text },
-              messageTimestamp: Math.floor(Date.now() / 1000),
-            }
-          : undefined;
-        await params.appendEvent({
-          accepted: true,
-          at: new Date().toISOString(),
-          body: message ?? sanitizeNodeForJson(params.node),
-          method: "WEBSOCKET",
-          path: params.path,
-          query: {},
-          type: "api",
-        } as ServerRequestEvent & { accepted: true });
-        await params.acknowledge?.();
-        return true;
-      },
-      ciphertext: candidate.ciphertext,
-      recipientJid: candidate.recipientJid,
-      remoteJid: params.remoteJid,
-      type: candidate.type,
-    });
-    if (result.status === "accepted") {
+  return await params.signalBundles.acceptMessageOnce(`${peer}\0${messageId}`, async () => {
+    const candidates = encryptedMessageCandidates(params.node);
+    if (candidates.length === 0) {
+      await params.appendEvent({
+        accepted: true,
+        at: new Date().toISOString(),
+        body: sanitizeNodeForJson(params.node),
+        method: "WEBSOCKET",
+        path: params.path,
+        query: {},
+        type: "api",
+      } as ServerRequestEvent & { accepted: true });
       return true;
     }
-  }
-  return false;
+    const remoteCorrelationJid = canonicalizeWhatsAppUserCorrelationJid(params.remoteJid);
+    candidates.sort((left, right) => {
+      const leftIsSelf =
+        canonicalizeWhatsAppUserCorrelationJid(left.recipientJid) === remoteCorrelationJid;
+      const rightIsSelf =
+        canonicalizeWhatsAppUserCorrelationJid(right.recipientJid) === remoteCorrelationJid;
+      return Number(leftIsSelf) - Number(rightIsSelf);
+    });
+    for (const candidate of candidates) {
+      const result = await params.signalBundles.transactDirectMessage({
+        accept: async (decrypted) => {
+          let text: string | undefined;
+          try {
+            text = readWhatsAppConversation(unpadRandomMax16(decrypted));
+          } catch {
+            text = undefined;
+          }
+          const message: WhatsAppBaileysInboundMessage | undefined = text
+            ? {
+                key: {
+                  fromMe: true,
+                  id: messageId,
+                  remoteJid: peer,
+                },
+                message: { conversation: text },
+                messageTimestamp: Math.floor(Date.now() / 1000),
+              }
+            : undefined;
+          await params.appendEvent({
+            accepted: true,
+            at: new Date().toISOString(),
+            body: message ?? sanitizeNodeForJson(params.node),
+            method: "WEBSOCKET",
+            path: params.path,
+            query: {},
+            type: "api",
+          } as ServerRequestEvent & { accepted: true });
+          return true;
+        },
+        ciphertext: candidate.ciphertext,
+        recipientJid: candidate.recipientJid,
+        remoteJid: params.remoteJid,
+        type: candidate.type,
+      });
+      if (result.status === "accepted") {
+        return true;
+      }
+    }
+    return false;
+  });
 }
 
 function encryptedMessageCandidates(node: BinaryNode): Array<{
