@@ -72,6 +72,11 @@ describe("WhatsApp OpenClaw bridge", () => {
           body: { ...body, message_id: "wamid.status", status: "read" },
           method: "POST",
         },
+        {
+          ...base,
+          body: { ...body, messaging_product: null, type: 1 },
+          method: "POST",
+        },
         { ...base, body, method: "GET" },
         { ...base, body: { ...body, type: "image" }, method: "POST" },
       ]) {
