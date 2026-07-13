@@ -26,15 +26,21 @@ const STAGING_NAME_PATTERN =
   /^\.staging-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const REMOVAL_TOMBSTONE_PATTERN =
   /^\.(.+)\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove$/iu;
-export type OpenClawCrablineArtifactPointer = {
+type OpenClawCrablineArtifactPointerBase = {
   capabilityMatrixPath: string;
   generation: string;
   manifestPath: string;
   previousGeneration?: string;
   providerReadinessArtifactPath: string;
   smokeArtifactPath: string;
-  version: 1 | 2;
 };
+
+export type OpenClawCrablineArtifactPointer =
+  | (OpenClawCrablineArtifactPointerBase & { version: 1 })
+  | (OpenClawCrablineArtifactPointerBase & {
+      recorderSnapshotPath: string | null;
+      version: 2;
+    });
 
 export type PublishedOpenClawCrablineArtifactGeneration = OpenClawCrablineArtifactPointer & {
   pointerPath: string;
@@ -120,7 +126,10 @@ function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.");
   }
-  const value = parsed as Partial<OpenClawCrablineArtifactPointer>;
+  const value = parsed as Partial<OpenClawCrablineArtifactPointerBase> & {
+    recorderSnapshotPath?: unknown;
+    version?: unknown;
+  };
   if (value.version !== 1 && value.version !== 2) {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.");
   }
@@ -159,16 +168,39 @@ function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer
   ) {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.");
   }
+  if (value.version === 1 && value.recorderSnapshotPath !== undefined) {
+    throw new Error("OpenClaw Crabline artifact pointer is malformed.");
+  }
+  if (value.version === 2) {
+    if (value.recorderSnapshotPath !== null && typeof value.recorderSnapshotPath !== "string") {
+      throw new Error("OpenClaw Crabline artifact pointer is malformed.");
+    }
+    if (typeof value.recorderSnapshotPath === "string") {
+      const recorderFileName = path.basename(value.recorderSnapshotPath);
+      if (
+        !recorderFileName.endsWith(".jsonl") ||
+        value.recorderSnapshotPath !== generationArtifactPath(value.generation, recorderFileName)
+      ) {
+        throw new Error("OpenClaw Crabline artifact pointer is malformed.");
+      }
+    }
+  }
 
-  return {
+  const pointer = {
     capabilityMatrixPath: value.capabilityMatrixPath,
     generation: value.generation,
     ...(value.previousGeneration ? { previousGeneration: value.previousGeneration } : {}),
     manifestPath: value.manifestPath,
     providerReadinessArtifactPath: value.providerReadinessArtifactPath ?? value.smokeArtifactPath!,
     smokeArtifactPath: value.smokeArtifactPath ?? value.providerReadinessArtifactPath!,
-    version: value.version,
   };
+  return value.version === 1
+    ? { ...pointer, version: 1 }
+    : {
+        ...pointer,
+        recorderSnapshotPath: value.recorderSnapshotPath as string | null,
+        version: 2,
+      };
 }
 
 export async function readOpenClawCrablineArtifactPointer(
@@ -193,23 +225,47 @@ async function assertCurrentGenerationExists(
   outputDir: string,
   pointer: OpenClawCrablineArtifactPointer,
 ): Promise<void> {
+  const generationDirectory = path.resolve(
+    outputDir,
+    OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
+    pointer.generation,
+  );
+  let currentGeneration: Awaited<ReturnType<typeof captureDirectoryIdentity>>;
+  try {
+    currentGeneration = await captureDirectoryIdentity(generationDirectory);
+  } catch (error) {
+    throw new Error("OpenClaw Crabline current artifact generation is incomplete.", {
+      cause: error,
+    });
+  }
+  const assertGenerationIdentity = async (): Promise<void> => {
+    try {
+      await currentGeneration.assertIdentityAt();
+    } catch (error) {
+      throw new Error("OpenClaw Crabline current artifact generation is incomplete.", {
+        cause: error,
+      });
+    }
+  };
+
   for (const artifactPath of [
     pointer.manifestPath,
     pointer.capabilityMatrixPath,
     pointer.providerReadinessArtifactPath,
   ]) {
+    await assertGenerationIdentity();
     const stats = await fs.lstat(path.join(outputDir, artifactPath));
     if (!stats.isFile()) {
       throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
     }
-  }
-  if (pointer.version === 1) {
-    return;
+    await assertGenerationIdentity();
   }
 
   const readArtifactObject = async (artifactPath: string): Promise<Record<string, unknown>> => {
     try {
+      await assertGenerationIdentity();
       const value = JSON.parse(await fs.readFile(path.join(outputDir, artifactPath), "utf8"));
+      await assertGenerationIdentity();
       if (value === null || typeof value !== "object" || Array.isArray(value)) {
         throw new Error("artifact is not an object");
       }
@@ -237,21 +293,27 @@ async function assertCurrentGenerationExists(
 
   const manifest = await readArtifactObject(pointer.manifestPath);
   const readiness = await readArtifactObject(pointer.providerReadinessArtifactPath);
-  const recorderPaths = [
-    typeof manifest.recorderPath === "string" ? manifest.recorderPath : undefined,
-    readNestedRecorderPath(readiness.providerReadiness),
-    readNestedRecorderPath(readiness.smoke),
-  ];
+  const manifestRecorderPath =
+    typeof manifest.recorderPath === "string" ? manifest.recorderPath : undefined;
+  const providerReadinessRecorderPath = readNestedRecorderPath(readiness.providerReadiness);
+  const smokeRecorderPath = readNestedRecorderPath(readiness.smoke);
+  const recorderPaths = [manifestRecorderPath, providerReadinessRecorderPath, smokeRecorderPath];
   if (manifest.recorderPath !== undefined && typeof manifest.recorderPath !== "string") {
     throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
   }
-
-  const generationDirectory = path.resolve(
-    outputDir,
-    OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
-    pointer.generation,
-  );
-  if (recorderPaths.every((recorderPath) => recorderPath === undefined)) {
+  if (
+    pointer.version === 1 &&
+    manifestRecorderPath !== undefined &&
+    providerReadinessRecorderPath === undefined &&
+    smokeRecorderPath === undefined &&
+    path.dirname(path.resolve(outputDir, manifestRecorderPath)) !== generationDirectory
+  ) {
+    return;
+  }
+  if (pointer.version === 2 && pointer.recorderSnapshotPath === null) {
+    if (recorderPaths.some((recorderPath) => recorderPath !== undefined)) {
+      throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
+    }
     return;
   }
   const resolvedRecorderPaths = recorderPaths.map((recorderPath) =>
@@ -267,9 +329,18 @@ async function assertCurrentGenerationExists(
     throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
   }
   const recorderPath = resolvedRecorderPaths[0]!;
+  if (
+    pointer.version === 2 &&
+    pointer.recorderSnapshotPath !== null &&
+    recorderPath !== path.resolve(outputDir, pointer.recorderSnapshotPath)
+  ) {
+    throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
+  }
   try {
+    await assertGenerationIdentity();
     const recorderStats = await fs.lstat(recorderPath, { bigint: true });
     if (recorderStats.isFile() && recorderStats.nlink === 1n) {
+      await assertGenerationIdentity();
       return;
     }
   } catch (error) {
@@ -391,6 +462,16 @@ export async function publishOpenClawCrablineArtifactGeneration(
   let primaryError: unknown;
   let published: PublishedOpenClawCrablineArtifactGeneration | undefined;
   try {
+    if (
+      params.recorderSnapshot &&
+      (path.basename(params.recorderSnapshot.fileName) !== params.recorderSnapshot.fileName ||
+        !params.recorderSnapshot.fileName.endsWith(".jsonl"))
+    ) {
+      throw new Error("OpenClaw Crabline recorder snapshot filename is malformed.");
+    }
+    const recorderSnapshotPath = params.recorderSnapshot
+      ? generationArtifactPath(generation, params.recorderSnapshot.fileName)
+      : undefined;
     const pointer: OpenClawCrablineArtifactPointer = {
       capabilityMatrixPath: generationArtifactPath(
         generation,
@@ -403,19 +484,10 @@ export async function publishOpenClawCrablineArtifactGeneration(
         generation,
         providerReadinessArtifactPath,
       ),
+      recorderSnapshotPath: recorderSnapshotPath ?? null,
       smokeArtifactPath: generationArtifactPath(generation, providerReadinessArtifactPath),
       version: 2,
     };
-    if (
-      params.recorderSnapshot &&
-      (path.basename(params.recorderSnapshot.fileName) !== params.recorderSnapshot.fileName ||
-        !params.recorderSnapshot.fileName.endsWith(".jsonl"))
-    ) {
-      throw new Error("OpenClaw Crabline recorder snapshot filename is malformed.");
-    }
-    const recorderSnapshotPath = params.recorderSnapshot
-      ? generationArtifactPath(generation, params.recorderSnapshot.fileName)
-      : undefined;
     const publishedManifest = recorderSnapshotPath
       ? { ...params.manifest, recorderPath: recorderSnapshotPath }
       : Object.fromEntries(

@@ -18,7 +18,7 @@
 - Keep fixture-local iMessage target IDs separate from provider-native thread aliases.
 - Case-fold Zalo recorder credential keys and fully redact ambiguous malformed URL authorities.
 - Keep lazy provider watches registered for cleanup after nonterminal iterator throws.
-- Version artifact generations so legacy recorder manifests can migrate while new snapshots retain strict locality and completeness checks.
+- Version artifact generations so legacy recorder manifests can migrate while new snapshots retain explicit presence, locality, identity, and completeness checks.
 - Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
 - Suppress serve readiness output when shutdown begins during ready-file publication.
 - Treat Unicode format characters as continuations when recognizing standalone acknowledgement tokens.

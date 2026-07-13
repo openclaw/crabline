@@ -96,6 +96,7 @@ describe("OpenClaw artifact generation publication", () => {
       const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
       const pointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<string, unknown>;
       delete pointer.providerReadinessArtifactPath;
+      delete pointer.recorderSnapshotPath;
       pointer.version = 1;
       await fs.writeFile(pointerPath, `${JSON.stringify(pointer, null, 2)}\n`);
 
@@ -177,6 +178,7 @@ describe("OpenClaw artifact generation publication", () => {
         generation: result.generation,
         manifestPath: result.manifestPath,
         providerReadinessArtifactPath: result.providerReadinessArtifactPath,
+        recorderSnapshotPath: null,
         smokeArtifactPath: result.providerReadinessArtifactPath,
         version: 2,
       });
@@ -222,6 +224,7 @@ describe("OpenClaw artifact generation publication", () => {
         string,
         unknown
       >;
+      delete legacyPointer.recorderSnapshotPath;
       legacyPointer.version = 1;
       await fs.writeFile(pointerPath, `${JSON.stringify(legacyPointer, null, 2)}\n`);
 
@@ -250,6 +253,30 @@ describe("OpenClaw artifact generation publication", () => {
       await expect(
         fs.readFile(path.join(outputDir, replacement.manifestPath), "utf8"),
       ).resolves.not.toContain("recorderPath");
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("rejects a current pointer downgraded without a legacy manifest shape", async () => {
+    const outputDir = await createTempDir();
+    try {
+      await publishOpenClawCrablineArtifactGeneration(
+        publishParamsWithRecorderSnapshot(outputDir),
+        {
+          createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+        },
+      );
+      const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
+      const pointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<string, unknown>;
+      pointer.version = 1;
+      await fs.writeFile(pointerPath, `${JSON.stringify(pointer, null, 2)}\n`);
+
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParamsWithRecorderSnapshot(outputDir), {
+          createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+        }),
+      ).rejects.toThrow("OpenClaw Crabline artifact pointer is malformed.");
     } finally {
       await disposeTempDir(outputDir);
     }
@@ -285,6 +312,40 @@ describe("OpenClaw artifact generation publication", () => {
       });
       await expect(fs.stat(path.join(outputDir, first.manifestPath))).resolves.toBeDefined();
       await expect(fs.stat(path.join(outputDir, second.manifestPath))).resolves.toBeDefined();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("rejects publication when current recorder references are removed", async () => {
+    const outputDir = await createTempDir();
+    try {
+      const current = await publishOpenClawCrablineArtifactGeneration(
+        publishParamsWithRecorderSnapshot(outputDir),
+        { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
+      );
+      const manifestPath = path.join(outputDir, current.manifestPath);
+      const currentManifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      delete currentManifest.recorderPath;
+      await fs.writeFile(manifestPath, `${JSON.stringify(currentManifest, null, 2)}\n`);
+
+      const readinessPath = path.join(outputDir, current.providerReadinessArtifactPath);
+      const readiness = JSON.parse(await fs.readFile(readinessPath, "utf8")) as {
+        providerReadiness: { result: Record<string, unknown> };
+        smoke: { result: Record<string, unknown> };
+      };
+      delete readiness.providerReadiness.result.recorderPath;
+      delete readiness.smoke.result.recorderPath;
+      await fs.writeFile(readinessPath, `${JSON.stringify(readiness, null, 2)}\n`);
+
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParamsWithRecorderSnapshot(outputDir), {
+          createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+        }),
+      ).rejects.toThrow("OpenClaw Crabline current artifact generation is incomplete.");
     } finally {
       await disposeTempDir(outputDir);
     }
@@ -330,6 +391,32 @@ describe("OpenClaw artifact generation publication", () => {
       await disposeTempDir(outputDir);
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a current generation redirected through a directory symlink",
+    async () => {
+      const outputDir = await createTempDir();
+      const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
+      try {
+        const current = await publishOpenClawCrablineArtifactGeneration(
+          publishParamsWithRecorderSnapshot(outputDir),
+          { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
+        );
+        const generationPath = path.join(storePath, current.generation);
+        const displacedPath = `${generationPath}.displaced`;
+        await fs.rename(generationPath, displacedPath);
+        await fs.symlink(displacedPath, generationPath, "dir");
+
+        await expect(
+          publishOpenClawCrablineArtifactGeneration(publishParamsWithRecorderSnapshot(outputDir), {
+            createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+          }),
+        ).rejects.toThrow("OpenClaw Crabline current artifact generation is incomplete.");
+      } finally {
+        await disposeTempDir(outputDir);
+      }
+    },
+  );
 
   it("preserves a generation when pointer publication fails after the rename", async () => {
     const outputDir = await createTempDir();
