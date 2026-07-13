@@ -135,20 +135,38 @@ async function appendEvent(
 }
 
 function authorized(request: IncomingMessage, token: string): boolean {
-  const [scheme, value] = request.headers.authorization?.trim().split(/\s+/, 2) ?? [];
-  return scheme?.toLowerCase() === "bearer" && value === token;
+  return /^Bearer ([^\s]+)$/iu.exec(request.headers.authorization ?? "")?.[1] === token;
 }
 
-function mattermostError(message: string, status: number): Response {
+function mattermostError(
+  message: string,
+  status: number,
+  options: { id?: string; requestId?: string } = {},
+): Response {
   return jsonResponse(
     {
-      id: `api.context.${status}`,
+      detailed_error: "",
+      id: options.id ?? `api.context.${status}.app_error`,
       message,
-      request_id: "",
+      request_id:
+        options.requestId ??
+        mattermostId(`request-${Date.now()}-${Math.random()}-${message}-${status}`),
       status_code: status,
     },
     status,
   );
+}
+
+function readMattermostString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readMattermostMessage(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
 function decodeMattermostPathSegment(value: string): string | Response {
@@ -321,9 +339,14 @@ function handleAdminInbound(params: {
   body: Record<string, unknown>;
   state: MattermostServerState;
 }): Response {
-  const channelId = readTrimmedString(params.body.channelId ?? params.body.channel_id);
-  const senderId = readTrimmedString(params.body.senderId ?? params.body.user_id);
-  const text = readTrimmedString(params.body.text ?? params.body.message);
+  for (const field of ["senderName", "channelType", "rootId", "root_id"] as const) {
+    if (params.body[field] !== undefined && typeof params.body[field] !== "string") {
+      return jsonResponse({ error: `${field} must be a string`, ok: false }, 400);
+    }
+  }
+  const channelId = readMattermostString(params.body.channelId ?? params.body.channel_id);
+  const senderId = readMattermostString(params.body.senderId ?? params.body.user_id);
+  const text = readMattermostMessage(params.body.text ?? params.body.message);
   if (!channelId || !senderId || !text) {
     return jsonResponse({ error: "channelId, senderId, and text are required", ok: false }, 400);
   }
@@ -336,8 +359,8 @@ function handleAdminInbound(params: {
   const previousUser = params.state.users.get(senderId);
   const previousChannel = params.state.channels.get(channelId);
   const senderName =
-    readTrimmedString(params.body.senderName) ?? previousUser?.username ?? senderId;
-  const channelType = readTrimmedString(params.body.channelType) ?? previousChannel?.type ?? "D";
+    readMattermostString(params.body.senderName) ?? previousUser?.username ?? senderId;
+  const channelType = readMattermostString(params.body.channelType) ?? previousChannel?.type ?? "D";
   const previousNextPost = params.state.nextPost;
   params.state.users.set(senderId, { id: senderId, update_at: Date.now(), username: senderName });
   params.state.channels.set(channelId, {
@@ -349,7 +372,7 @@ function handleAdminInbound(params: {
   const post = createPost({
     channelId,
     message: text,
-    rootId: readTrimmedString(params.body.rootId ?? params.body.root_id),
+    rootId: readMattermostString(params.body.rootId ?? params.body.root_id),
     state: params.state,
     userId: senderId,
   });
@@ -409,7 +432,7 @@ async function handleApi(params: {
     return channel ? jsonResponse(channel) : mattermostError("Channel not found", 404);
   }
   if (method === "POST" && apiPath === "/channels/direct") {
-    const userIds = Array.isArray(body) ? body.map(readTrimmedString) : [];
+    const userIds = Array.isArray(body) ? body.map(readMattermostString) : [];
     if (userIds.length !== 2 || userIds.some((value) => !value)) {
       return mattermostError("Two user IDs are required", 400);
     }
@@ -432,9 +455,12 @@ async function handleApi(params: {
     return mattermostError("Request body must be a JSON object", 400);
   }
   if (method === "POST" && apiPath === "/users/me/typing") {
-    const channelId = readTrimmedString(body.channel_id);
+    const channelId = readMattermostString(body.channel_id);
     if (!channelId) {
       return mattermostError("channel_id is required", 400);
+    }
+    if (body.parent_id !== undefined && typeof body.parent_id !== "string") {
+      return mattermostError("parent_id must be a string", 400);
     }
     if (!state.channels.has(channelId)) {
       return mattermostError("Channel not found", 404);
@@ -448,8 +474,8 @@ async function handleApi(params: {
         }),
         data: {
           channel_id: channelId,
-          ...(readTrimmedString(body.parent_id)
-            ? { parent_id: readTrimmedString(body.parent_id) }
+          ...(readMattermostString(body.parent_id)
+            ? { parent_id: readMattermostString(body.parent_id) }
             : {}),
           user_id: state.botUserId,
         },
@@ -460,16 +486,19 @@ async function handleApi(params: {
     return jsonResponse({ status: "OK" });
   }
   if (method === "POST" && apiPath === "/posts") {
-    const channelId = readTrimmedString(body.channel_id);
-    const message = readTrimmedString(body.message);
+    const channelId = readMattermostString(body.channel_id);
+    const message = readMattermostMessage(body.message);
     if (!channelId || !message) {
       return mattermostError("channel_id and message are required", 400);
+    }
+    const rootId = readMattermostString(body.root_id);
+    if (body.root_id !== undefined && typeof body.root_id !== "string") {
+      return mattermostError("root_id must be a string", 400);
     }
     const channel = state.channels.get(channelId);
     if (!channel) {
       return mattermostError("Channel not found", 404);
     }
-    const rootId = readTrimmedString(body.root_id);
     if (rootId) {
       const rootPost = state.posts.get(rootId);
       if (!rootPost) {
@@ -498,7 +527,11 @@ async function handleApi(params: {
     if (post.user_id !== state.botUserId) {
       return mattermostError("You do not have permission to edit this post", 403);
     }
-    const updated = { ...post, message: readTrimmedString(body.message) ?? post.message };
+    const message = body.message === undefined ? post.message : readMattermostMessage(body.message);
+    if (!message) {
+      return mattermostError("message must be a string", 400);
+    }
+    const updated = { ...post, message };
     state.posts.set(updated.id, updated);
     broadcast(
       state,
@@ -539,6 +572,7 @@ async function handleApi(params: {
 async function handleRequest(request: IncomingMessage, state: MattermostServerState) {
   const url = new URL(request.url ?? "/", "http://localhost");
   const method = request.method ?? "GET";
+  const requestId = mattermostId(`request-${Date.now()}-${Math.random()}`);
   if (url.pathname === "/crabline/mattermost/inbound" && method === "POST") {
     if (!hasAdminToken(request, state.adminToken)) {
       drainRequestBody(request);
@@ -558,12 +592,19 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
     });
     return handleAdminInbound({ body, state });
   }
-  if (!url.pathname.startsWith("/api/v4/")) {
-    return new Response("not found", { status: 404 });
+  if (url.pathname !== "/api/v4" && !url.pathname.startsWith("/api/v4/")) {
+    drainRequestBody(request);
+    return mattermostError("Sorry, we could not find the page.", 404, {
+      id: "api.context.404.app_error",
+      requestId,
+    });
   }
   if (!authorized(request, state.botToken)) {
     drainRequestBody(request);
-    return mattermostError("Invalid or missing token", 401);
+    return mattermostError("Invalid or expired session, please login again.", 401, {
+      id: "api.context.session_expired.app_error",
+      requestId,
+    });
   }
   const body =
     method === "GET" || method === "DELETE" ? {} : await parseUnknownRequestBody(request);

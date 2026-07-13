@@ -87,6 +87,7 @@ type ZaloServerState = {
   nextMessage: number;
   nextUpdateOrder: number;
   onEvent: ServerEventObserver | undefined;
+  pendingInboundAdmissions: number;
   pendingRequest: PendingUpdateRequest | undefined;
   recorderPath: string;
   reservedUpdateOrders: Set<number>;
@@ -199,16 +200,32 @@ function isSensitiveParam(name: string): boolean {
   );
 }
 
+function isUrlParam(name: string): boolean {
+  return /(?:urls?|uris?)$/iu.test(name.normalize("NFKC").replace(/[^A-Za-z0-9]/gu, ""));
+}
+
+function redactParamValue(value: unknown, key: string): unknown {
+  if (isSensitiveParam(key)) {
+    return "<redacted>";
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactParamValue(entry, key));
+  }
+  if (isJsonObject(value)) {
+    return redactParams(value);
+  }
+  if (
+    typeof value === "string" &&
+    (isUrlParam(key) || /^(?:\s*[a-z][a-z0-9+.-]*:)?\/\//iu.test(value))
+  ) {
+    return redactUrlCredentials(value);
+  }
+  return value;
+}
+
 function redactParams(params: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(params).map(([key, value]) => [
-      key,
-      isSensitiveParam(key)
-        ? "<redacted>"
-        : key === "url" && typeof value === "string"
-          ? redactUrlCredentials(value)
-          : value,
-    ]),
+    Object.entries(params).map(([key, value]) => [key, redactParamValue(value, key)]),
   );
 }
 
@@ -655,69 +672,83 @@ async function handleAdminInbound(
     drainRequestBody(request);
     return adminAuthError();
   }
-  const parsedBody = await parseUnknownRequestBody(request);
-  if (!isJsonObject(parsedBody)) {
-    return zaloError("Bad Request: can't parse JSON object", 400);
+  const queued =
+    state.webhook?.url === undefined ? state.updates.length + state.reservedUpdateOrders.size : 0;
+  if (queued + state.pendingInboundAdmissions >= state.maxPendingInboundEvents) {
+    drainRequestBody(request);
+    return zaloError(
+      `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
+      429,
+    );
   }
-  const body = parsedBody;
-  const chatId = requireParam(body, "chatId");
-  const senderId = requireParam(body, "senderId");
-  const text = requireParam(body, "text");
-  if (chatId instanceof Response || senderId instanceof Response || text instanceof Response) {
-    return [chatId, senderId, text].find((value) => value instanceof Response) as Response;
-  }
-  let releaseAdmission!: () => void;
-  const previousAdmission = state.inboundAdmission;
-  state.inboundAdmission = new Promise<void>((resolve) => {
-    releaseAdmission = resolve;
-  });
-  await previousAdmission;
+  state.pendingInboundAdmissions += 1;
   try {
-    if (
-      !state.webhook?.url &&
-      state.updates.length + state.reservedUpdateOrders.size >= state.maxPendingInboundEvents
-    ) {
-      return zaloError(
-        `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
-        429,
-      );
+    const parsedBody = await parseUnknownRequestBody(request);
+    if (!isJsonObject(parsedBody)) {
+      return zaloError("Bad Request: can't parse JSON object", 400);
     }
-    const update: ZaloUpdate = {
-      event_name: "message.text.received",
-      message: {
-        chat: { chat_type: readChatType(body.chatType), id: chatId },
-        date: Date.now(),
-        from: {
-          display_name: readTrimmedString(body.senderName) ?? senderId,
-          id: senderId,
-          is_bot: false,
-        },
-        message_id: messageId(state),
-        text,
-      },
-    };
-    await appendEvent(state, {
-      at: new Date().toISOString(),
-      body,
-      method: request.method ?? "POST",
-      path: url.pathname,
-      query: queryRecord(url),
-      type: "admin",
+    const body = parsedBody;
+    const chatId = requireParam(body, "chatId");
+    const senderId = requireParam(body, "senderId");
+    const text = requireParam(body, "text");
+    if (chatId instanceof Response || senderId instanceof Response || text instanceof Response) {
+      return [chatId, senderId, text].find((value) => value instanceof Response) as Response;
+    }
+    let releaseAdmission!: () => void;
+    const previousAdmission = state.inboundAdmission;
+    state.inboundAdmission = new Promise<void>((resolve) => {
+      releaseAdmission = resolve;
     });
-    if (state.webhook?.url) {
-      const error = await deliverWebhookUpdate(state, state.webhook, update);
-      if (error) {
-        return error;
+    await previousAdmission;
+    try {
+      if (
+        !state.webhook?.url &&
+        state.updates.length + state.reservedUpdateOrders.size >= state.maxPendingInboundEvents
+      ) {
+        return zaloError(
+          `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
+          429,
+        );
       }
-    } else if (!deliverPollingUpdate(state, update)) {
-      return zaloError(
-        `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
-        429,
-      );
+      const update: ZaloUpdate = {
+        event_name: "message.text.received",
+        message: {
+          chat: { chat_type: readChatType(body.chatType), id: chatId },
+          date: Date.now(),
+          from: {
+            display_name: readTrimmedString(body.senderName) ?? senderId,
+            id: senderId,
+            is_bot: false,
+          },
+          message_id: messageId(state),
+          text,
+        },
+      };
+      await appendEvent(state, {
+        at: new Date().toISOString(),
+        body: redactParams(body),
+        method: request.method ?? "POST",
+        path: url.pathname,
+        query: redactParams(queryRecord(url)) as Record<string, string>,
+        type: "admin",
+      });
+      if (state.webhook?.url) {
+        const error = await deliverWebhookUpdate(state, state.webhook, update);
+        if (error) {
+          return error;
+        }
+      } else if (!deliverPollingUpdate(state, update)) {
+        return zaloError(
+          `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
+          429,
+        );
+      }
+      return zaloOk(update);
+    } finally {
+      releaseAdmission();
     }
-    return zaloOk(update);
   } finally {
-    releaseAdmission();
+    state.pendingInboundAdmissions -= 1;
   }
 }
 
@@ -868,6 +899,7 @@ export async function startZaloServer(
     nextMessage: 1,
     nextUpdateOrder: 1,
     onEvent: params.onEvent,
+    pendingInboundAdmissions: 0,
     pendingRequest: undefined,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "zalo.jsonl"),
     reservedUpdateOrders: new Set(),

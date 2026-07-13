@@ -67,6 +67,7 @@ type MatrixServerState = {
   nextFilter: number;
   nextSequence: number;
   onEvent: ServerEventObserver | undefined;
+  profiles: Map<string, { avatar_url?: string; display_name?: string }>;
   recorderPath: string;
   rooms: Map<string, MatrixRoom>;
   serverName: string;
@@ -567,8 +568,8 @@ async function handleAdminInbound(params: {
 }): Promise<Response> {
   const roomId = readTrimmedString(params.body.roomId);
   const sender = readTrimmedString(params.body.sender ?? params.body.senderId);
-  const text = readTrimmedString(params.body.text);
-  if (!roomId || !sender || !text) {
+  const text = typeof params.body.text === "string" ? params.body.text : undefined;
+  if (!roomId || !sender || text === undefined || text.length === 0) {
     return jsonResponse({ error: "roomId, senderId, and text are required", ok: false }, 400);
   }
   const threadId = readTrimmedString(params.body.threadId);
@@ -593,6 +594,14 @@ async function handleAdminInbound(params: {
     });
   params.state.rooms.set(roomId, room);
   const senderName = readTrimmedString(params.body.senderName);
+  if (senderName) {
+    params.state.profiles.set(sender, {
+      ...params.state.profiles.get(sender),
+      display_name: senderName,
+    });
+  } else if (!params.state.profiles.has(sender)) {
+    params.state.profiles.set(sender, {});
+  }
   const existingProfile = room.users.get(sender);
   if (existingProfile === undefined) {
     room.users.set(sender, senderName ? { display_name: senderName } : {});
@@ -678,13 +687,11 @@ async function handleMatrixApi(params: {
   let match = /^\/profile\/([^/]+)$/u.exec(relativePath);
   if (params.method === "GET" && match) {
     const userId = decodeMatrixPathSegment(match[1]!);
-    const member = [...params.state.rooms.values()]
-      .map((room) => room.users.get(userId))
-      .find((profile) => profile !== undefined);
-    return member
+    const profile = params.state.profiles.get(userId);
+    return profile
       ? jsonResponse({
-          ...(member.avatar_url ? { avatar_url: member.avatar_url } : {}),
-          ...(member.display_name ? { displayname: member.display_name } : {}),
+          ...(profile.avatar_url ? { avatar_url: profile.avatar_url } : {}),
+          ...(profile.display_name ? { displayname: profile.display_name } : {}),
         })
       : matrixError("M_NOT_FOUND", "Unknown user", 404);
   }
@@ -908,6 +915,9 @@ export async function startMatrixServer(
     nextFilter: 1,
     nextSequence: 1,
     onEvent: params.onEvent,
+    profiles: new Map([
+      [params.botUserId ?? `@openclaw:${serverName}`, { display_name: "OpenClaw QA" }],
+    ]),
     recorderPath: params.recorderPath ?? path.resolve("artifacts/crabline/matrix.jsonl"),
     rooms: new Map(),
     serverName,

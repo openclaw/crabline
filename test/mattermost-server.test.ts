@@ -122,6 +122,83 @@ describe("Mattermost local provider server", () => {
       message: "Request body is too large",
       status_code: 413,
     });
+
+    for (const body of [
+      { channel_id: 123, message: "numeric channel" },
+      { channel_id: "channel-1", message: 123 },
+      { channel_id: "channel-1", message: "reply", root_id: 123 },
+    ]) {
+      const invalid = await fetch(postsUrl, {
+        body: JSON.stringify(body),
+        headers: {
+          authorization: "Bearer fake",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toMatchObject({
+        request_id: expect.stringMatching(/^[a-z0-9]{26}$/u),
+        status_code: 400,
+      });
+    }
+
+    const invalidDirect = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
+      body: JSON.stringify([server.manifest.botUserId, 123]),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(invalidDirect.status).toBe(400);
+  });
+
+  it("returns native route errors with request IDs and parses Bearer credentials exactly", async () => {
+    const server = await startMattermostServer({ botToken: "fake" });
+    servers.push(server);
+
+    for (const authorization of ["Bearer  fake", "Bearer\tfake", "Basic fake"]) {
+      const response = await fetch(`${server.manifest.endpoints.apiRoot}/users/me`, {
+        headers: { authorization },
+      });
+      expect(response.status).toBe(401);
+      await expect(response.json()).resolves.toMatchObject({
+        detailed_error: "",
+        id: "api.context.session_expired.app_error",
+        message: "Invalid or expired session, please login again.",
+        request_id: expect.stringMatching(/^[a-z0-9]{26}$/u),
+        status_code: 401,
+      });
+    }
+
+    const requestIds: string[] = [];
+    for (const url of [
+      `${server.manifest.endpoints.apiRoot}/missing`,
+      `${server.manifest.baseUrl}/missing`,
+    ]) {
+      const response = await fetch(url, {
+        headers: { authorization: "Bearer fake" },
+      });
+      expect(response.status).toBe(404);
+      const body = (await response.json()) as {
+        id: string;
+        request_id: string;
+        status_code: number;
+      };
+      expect(body).toMatchObject({
+        id: "api.context.404.app_error",
+        status_code: 404,
+      });
+      expect(body.request_id).toMatch(/^[a-z0-9]{26}$/u);
+      requestIds.push(body.request_id);
+    }
+    expect(new Set(requestIds).size).toBe(requestIds.length);
+
+    const accepted = await fetch(`${server.manifest.endpoints.apiRoot}/users/me`, {
+      headers: { authorization: "bEaReR fake" },
+    });
+    expect(accepted.status).toBe(200);
   });
 
   it("serves authenticated REST and delivers admin inbound over the native WebSocket", async () => {

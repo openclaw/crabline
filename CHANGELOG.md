@@ -9,6 +9,7 @@
 - Harden core CLI lifecycle, manifest validation, retry bounds, error reporting, and suite isolation after unsettled provider cancellation.
 - Pin and validate Slack Events API delivery targets across redirects while preserving native retries and installation authorization envelopes.
 - Harden provider recorder durability and replacement recovery, JWT cache expiry refresh, and LocalMock webhook shutdown draining.
+- Harden recorder append durability and provider-native HTTP, identity, profile, authentication, ingress, and redaction fidelity.
 
 ## 0.1.11 - 2026-07-13
 

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import path from "node:path";
 import {
   adminAuthError,
@@ -88,6 +89,7 @@ export type StartedSignalServer = {
 export type StartSignalServerParams = {
   account?: string | undefined;
   adminToken?: string | undefined;
+  allowedHosts?: string[] | undefined;
   host?: string | undefined;
   onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
@@ -384,7 +386,15 @@ async function handleAdminInbound(params: {
       400,
     );
   }
-  const timestamp = readInteger(params.body.timestamp) ?? params.state.nextTimestamp++;
+  const suppliedTimestamp =
+    params.body.timestamp === undefined ? undefined : readInteger(params.body.timestamp);
+  if (
+    params.body.timestamp !== undefined &&
+    (suppliedTimestamp === undefined || suppliedTimestamp < 0)
+  ) {
+    return jsonResponse({ error: "timestamp must be a non-negative safe integer", ok: false }, 400);
+  }
+  const timestamp = suppliedTimestamp ?? params.state.nextTimestamp++;
   const groupId = readTrimmedString(params.body.groupId);
   const payload = {
     envelope: {
@@ -688,6 +698,70 @@ async function handleRequest(params: {
   await writeResponse(params.response, fetchResponse);
 }
 
+function normalizeSignalHost(value: string): string {
+  const normalized = value
+    .trim()
+    .replace(/^\[(.*)\]$/u, "$1")
+    .toLowerCase();
+  if (isIP(normalized) !== 6) {
+    return normalized;
+  }
+  const canonical = new URL(`http://[${normalized}]`).hostname.slice(1, -1);
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/u.exec(canonical);
+  if (!mapped?.[1] || !mapped[2]) {
+    return canonical;
+  }
+  const high = Number.parseInt(mapped[1], 16);
+  const low = Number.parseInt(mapped[2], 16);
+  return `${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`;
+}
+
+function parseSignalHostHeader(value: string): string | undefined {
+  const match = value.startsWith("[")
+    ? /^\[([^\]]+)\](?::(\d{1,5}))?$/u.exec(value)
+    : /^([^:]+)(?::(\d{1,5}))?$/u.exec(value);
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const port = match[2] === undefined ? undefined : Number(match[2]);
+  if (port !== undefined && port > 65_535) {
+    return undefined;
+  }
+  const hostname = normalizeSignalHost(match[1]);
+  if (isIP(hostname) !== 0) {
+    return hostname;
+  }
+  const labels = hostname.split(".");
+  return hostname.length <= 253 &&
+    labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(label))
+    ? hostname
+    : undefined;
+}
+
+function signalRequestHostAllowed(
+  request: IncomingMessage,
+  bindHost: string,
+  allowedHosts: ReadonlySet<string>,
+): boolean {
+  const hostHeader = request.headers.host;
+  if (!hostHeader) {
+    return false;
+  }
+  const requestedHost = parseSignalHostHeader(hostHeader);
+  if (requestedHost === undefined) {
+    return false;
+  }
+  const normalizedBindHost = normalizeSignalHost(bindHost);
+  if (allowedHosts.has(requestedHost)) {
+    return true;
+  }
+  if (normalizedBindHost !== "0.0.0.0" && normalizedBindHost !== "::") {
+    return false;
+  }
+  const localAddress = normalizeSignalHost(request.socket.localAddress ?? "");
+  return isIP(requestedHost) !== 0 && requestedHost === localAddress;
+}
+
 export async function startSignalServer(
   params: StartSignalServerParams = {},
 ): Promise<StartedSignalServer> {
@@ -710,7 +784,20 @@ export async function startSignalServer(
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "signal.jsonl"),
   };
   const host = params.host ?? "127.0.0.1";
+  const normalizedHost = normalizeSignalHost(host);
+  const allowedHosts = new Set([
+    ...(normalizedHost === "0.0.0.0" || normalizedHost === "::" ? [] : [normalizedHost]),
+    ...(params.allowedHosts ?? []).map((allowedHost) => normalizeSignalHost(allowedHost)),
+  ]);
   const server = createServer((request, response) => {
+    if (!signalRequestHostAllowed(request, host, allowedHosts)) {
+      drainRequestBody(request);
+      void writeResponse(
+        response,
+        jsonResponse({ error: "Host header is not allowed", ok: false }, 400),
+      ).catch(() => response.destroy());
+      return;
+    }
     void handleRequest({ request, response, state }).catch(async (error) => {
       if (!response.headersSent) {
         let errorResponse: Response;

@@ -60,6 +60,25 @@ describe("server HTTP body reader", () => {
     await expect(parsed).resolves.toEqual({ ok: true });
   });
 
+  it("accepts structured JSON suffixes without matching arbitrary json substrings", async () => {
+    const structured = createRequest({ "content-type": "application/problem+json; charset=utf-8" });
+    const structuredParsed = parseUnknownRequestBody(structured);
+    structured.end('{"ok":true}');
+    await expect(structuredParsed).resolves.toEqual({ ok: true });
+
+    const extendedRequest = createRequest({
+      "content-type": "application/vnd.acme~event+json",
+    });
+    const extendedParsed = parseUnknownRequestBody(extendedRequest);
+    extendedRequest.end('{"extended":true}');
+    await expect(extendedParsed).resolves.toEqual({ extended: true });
+
+    const arbitrary = createRequest({ "content-type": "text/notjson" });
+    const arbitraryParsed = parseUnknownRequestBody(arbitrary);
+    arbitrary.end("value=%7B%22ok%22%3Atrue%7D");
+    await expect(arbitraryParsed).resolves.toEqual({ value: '{"ok":true}' });
+  });
+
   it("does not expose unexpected exception details", async () => {
     const server = await startHttpJsonServer({
       async handle() {
@@ -98,6 +117,36 @@ describe("server HTTP body reader", () => {
     try {
       const response = await fetch(server.baseUrl);
       expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        error: "internal server error",
+        ok: false,
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("buffers response bodies before staging status and headers", async () => {
+    const server = await startHttpJsonServer({
+      async handle() {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error("response body failed"));
+            },
+          }),
+          { headers: { "x-uncommitted": "true" }, status: 201 },
+        );
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const response = await fetch(server.baseUrl);
+      expect(response.status).toBe(500);
+      expect(response.headers.get("x-uncommitted")).toBeNull();
       await expect(response.json()).resolves.toEqual({
         error: "internal server error",
         ok: false,

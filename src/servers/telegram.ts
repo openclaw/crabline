@@ -10,6 +10,7 @@ import {
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
+  isJsonMediaType,
   isLoopbackHost,
   jsonResponse,
   queryRecord,
@@ -77,6 +78,12 @@ const TELEGRAM_UNSUPPORTED_UPDATE_FIELDS = [
   "removed_chat_boost",
   "shipping_query",
 ] as const;
+const TELEGRAM_NEW_MESSAGE_UPDATE_FIELDS = ["business_message", "channel_post", "message"] as const;
+const TELEGRAM_MESSAGE_REFERENCE_FIELDS = [
+  "edited_business_message",
+  "edited_channel_post",
+  "edited_message",
+] as const;
 
 type TelegramServerEvent = {
   accepted?: boolean | undefined;
@@ -107,7 +114,7 @@ type TelegramServerState = {
   closing: boolean;
   inboundAdmission: Promise<void>;
   maxPendingInboundEvents: number;
-  nextMessageId: number;
+  nextMessageIds: Map<string, number>;
   nextUpdateId: number;
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
@@ -246,7 +253,7 @@ async function parseRequestBody(request: IncomingMessage): Promise<unknown> {
   }
   const contentType = request.headers["content-type"] ?? "";
   const contentTypes = Array.isArray(contentType) ? contentType : [contentType];
-  if (contentTypes.some((entry) => entry.toLowerCase().includes("json"))) {
+  if (contentTypes.some(isJsonMediaType)) {
     try {
       return JSON.parse(body.toString("utf8")) as unknown;
     } catch (error) {
@@ -366,6 +373,26 @@ function createChat(chatId: number | string): TelegramMessage["chat"] {
   };
 }
 
+function telegramChatKey(chatId: number | string): string {
+  return `${typeof chatId}:${chatId}`;
+}
+
+function nextTelegramMessageId(state: TelegramServerState, chatId: number | string): number {
+  return state.nextMessageIds.get(telegramChatKey(chatId)) ?? 1;
+}
+
+function takeNextTelegramMessageId(
+  state: TelegramServerState,
+  chatId: number | string,
+): number | undefined {
+  const messageId = nextTelegramMessageId(state, chatId);
+  if (messageId >= Number.MAX_SAFE_INTEGER) {
+    return undefined;
+  }
+  state.nextMessageIds.set(telegramChatKey(chatId), messageId + 1);
+  return messageId;
+}
+
 function createOutboundMessage(
   state: TelegramServerState,
   body: Record<string, unknown>,
@@ -379,12 +406,16 @@ function createOutboundMessage(
   if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
+  const messageId = takeNextTelegramMessageId(state, chatId);
+  if (messageId === undefined) {
+    return undefined;
+  }
   const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
   return {
     chat: createChat(chatId),
     date: Math.floor(Date.now() / 1000),
     from: createBotUser(state),
-    message_id: state.nextMessageId++,
+    message_id: messageId,
     ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
     text,
   };
@@ -404,15 +435,19 @@ function createOutboundMediaMessage(
   if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
+  const messageId = takeNextTelegramMessageId(state, chatId);
+  if (messageId === undefined) {
+    return undefined;
+  }
   const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
   const caption = toStringValue(body.caption);
   const duration = Math.max(0, toIntegerValue(body.duration) ?? 0);
   const height = Math.max(1, toIntegerValue(body.height) ?? 1);
   const width = Math.max(1, toIntegerValue(body.width) ?? 1);
   const media = {
-    file_id: `crabline-${mediaKind}-${state.nextMessageId}`,
+    file_id: `crabline-${mediaKind}-${messageId}`,
     file_name: fileName,
-    file_unique_id: `crabline-${mediaKind}-unique-${state.nextMessageId}`,
+    file_unique_id: `crabline-${mediaKind}-unique-${messageId}`,
   };
   return {
     chat: createChat(chatId),
@@ -421,7 +456,14 @@ function createOutboundMediaMessage(
     ...(caption ? { caption } : {}),
     [mediaKind]:
       mediaKind === "photo"
-        ? [{ ...media, height: 1, width: 1 }]
+        ? [
+            {
+              file_id: media.file_id,
+              file_unique_id: media.file_unique_id,
+              height: 1,
+              width: 1,
+            },
+          ]
         : {
             ...media,
             ...(mediaKind === "audio"
@@ -431,7 +473,7 @@ function createOutboundMediaMessage(
                 : {}),
             mime_type: "application/octet-stream",
           },
-    message_id: state.nextMessageId++,
+    message_id: messageId,
     ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
   };
 }
@@ -502,7 +544,7 @@ function createInboundUpdate(
         is_bot: false,
         ...(fromUsername ? { username: fromUsername } : {}),
       },
-      message_id: messageId ?? state.nextMessageId,
+      message_id: messageId ?? nextTelegramMessageId(state, chatId),
       ...(entities && entities.length > 0 ? { entities } : {}),
       ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
       text,
@@ -546,6 +588,89 @@ function parseTelegramEntities(
 
 function hasTelegramMedia(value: Record<string, unknown>): boolean {
   return TELEGRAM_MEDIA_FIELDS.some((field) => value[field] !== undefined);
+}
+
+function explicitTelegramId(
+  body: Record<string, unknown>,
+  names: readonly string[],
+  additionalValues: readonly unknown[] = [],
+): { present: false } | { present: true; value: number } | undefined {
+  const values = [
+    ...names.flatMap((name) => (body[name] === undefined ? [] : [body[name]])),
+    ...additionalValues.filter((value) => value !== undefined),
+  ];
+  if (values.length === 0) {
+    return { present: false };
+  }
+  const parsed = values.map(toIntegerValue);
+  if (
+    parsed.some((value) => value === undefined || value < 1 || value >= Number.MAX_SAFE_INTEGER) ||
+    new Set(parsed).size !== 1
+  ) {
+    return undefined;
+  }
+  return { present: true, value: parsed[0]! };
+}
+
+function explicitTelegramMessageIdValues(body: Record<string, unknown>): unknown[] {
+  return TELEGRAM_NEW_MESSAGE_UPDATE_FIELDS.flatMap((field) => {
+    const message = body[field];
+    return isJsonObject(message) ? [message.message_id] : [];
+  });
+}
+
+function referencedTelegramMessageIdValues(body: Record<string, unknown>): unknown[] {
+  const values = TELEGRAM_MESSAGE_REFERENCE_FIELDS.flatMap((field) => {
+    const message = body[field];
+    return isJsonObject(message) ? [message.message_id] : [];
+  });
+  const callbackQuery = isJsonObject(body.callback_query) ? body.callback_query : undefined;
+  const callbackMessage =
+    callbackQuery && isJsonObject(callbackQuery.message) ? callbackQuery.message : undefined;
+  return callbackMessage ? [...values, callbackMessage.message_id] : values;
+}
+
+function explicitTelegramMessageChatId(
+  body: Record<string, unknown>,
+): number | string | undefined | false {
+  const chatIds: Array<number | string> = [];
+  if (body.messageId !== undefined || body.message_id !== undefined) {
+    const chatId = telegramChatId(body.chatId ?? body.chat_id);
+    if (chatId === undefined) {
+      return false;
+    }
+    chatIds.push(chatId);
+  }
+  for (const field of TELEGRAM_NEW_MESSAGE_UPDATE_FIELDS) {
+    const message = body[field];
+    if (!isJsonObject(message) || message.message_id === undefined) {
+      continue;
+    }
+    const chat = isJsonObject(message.chat) ? message.chat : undefined;
+    const chatId = telegramChatId(chat?.id);
+    if (chatId === undefined) {
+      return false;
+    }
+    chatIds.push(chatId);
+  }
+  const callbackQuery = isJsonObject(body.callback_query) ? body.callback_query : undefined;
+  const callbackMessage =
+    callbackQuery && isJsonObject(callbackQuery.message) ? callbackQuery.message : undefined;
+  if (callbackMessage?.message_id !== undefined) {
+    const chat = isJsonObject(callbackMessage.chat) ? callbackMessage.chat : undefined;
+    const chatId = telegramChatId(chat?.id);
+    if (chatId === undefined) {
+      return false;
+    }
+    chatIds.push(chatId);
+  }
+  if (chatIds.length === 0) {
+    return undefined;
+  }
+  const firstChatId = chatIds[0]!;
+  return chatIds.every((chatId) => telegramChatKey(chatId) === telegramChatKey(firstChatId))
+    ? firstChatId
+    : false;
 }
 
 function hasValidExplicitTelegramIdentities(body: Record<string, unknown>): boolean {
@@ -617,13 +742,56 @@ async function handleTelegramAdminInbound(params: {
   });
   await previousAdmission;
   try {
-    const nextMessageId = params.state.nextMessageId;
     const nextUpdateId = params.state.nextUpdateId;
+    const explicitMessageId = explicitTelegramId(
+      params.body,
+      ["messageId", "message_id"],
+      explicitTelegramMessageIdValues(params.body),
+    );
+    const explicitMessageChatId = explicitTelegramMessageChatId(params.body);
+    const explicitUpdateId = explicitTelegramId(params.body, ["updateId", "update_id"]);
+    const referencedMessageId = explicitTelegramId(
+      {},
+      [],
+      referencedTelegramMessageIdValues(params.body),
+    );
+    const topLevelChatId = telegramChatId(params.body.chatId ?? params.body.chat_id);
+    const messageChatId =
+      explicitMessageChatId === false ? undefined : (explicitMessageChatId ?? topLevelChatId);
+    const messageChatKey = messageChatId === undefined ? undefined : telegramChatKey(messageChatId);
+    const previousNextMessageId =
+      messageChatKey === undefined ? undefined : params.state.nextMessageIds.get(messageChatKey);
+    const nextMessageId =
+      messageChatId === undefined ? undefined : nextTelegramMessageId(params.state, messageChatId);
+    if (
+      explicitMessageId === undefined ||
+      explicitMessageChatId === false ||
+      explicitUpdateId === undefined ||
+      referencedMessageId === undefined ||
+      (explicitMessageId.present &&
+        (nextMessageId === undefined || explicitMessageId.value < nextMessageId)) ||
+      (explicitUpdateId.present && explicitUpdateId.value < nextUpdateId)
+    ) {
+      return telegramError("Bad Request: explicit IDs must be positive and monotonic");
+    }
     const update = createInboundUpdate(params.state, params.body);
-    params.state.nextMessageId = nextMessageId;
     params.state.nextUpdateId = nextUpdateId;
+    if (
+      update &&
+      ((!explicitMessageId.present &&
+        (nextMessageId ?? Number.MAX_SAFE_INTEGER) >= Number.MAX_SAFE_INTEGER) ||
+        (!explicitUpdateId.present && nextUpdateId >= Number.MAX_SAFE_INTEGER))
+    ) {
+      return telegramError("Bad Request: generated ID space is exhausted");
+    }
     if (!update) {
       if (isValidIgnoredTelegramUpdate(params.body)) {
+        if (explicitMessageId.present && messageChatKey !== undefined) {
+          params.state.nextMessageIds.set(messageChatKey, explicitMessageId.value + 1);
+        }
+        if (explicitUpdateId.present) {
+          params.state.nextUpdateId = explicitUpdateId.value + 1;
+        }
         return jsonResponse({ ok: true });
       }
       return telegramError("Bad Request: chatId and text are required");
@@ -634,12 +802,13 @@ async function handleTelegramAdminInbound(params: {
         429,
       );
     }
-    params.state.nextMessageId = Math.max(
-      params.state.nextMessageId,
-      update.message.message_id + 1,
+    const updateChatKey = telegramChatKey(update.message.chat.id);
+    params.state.nextMessageIds.set(
+      updateChatKey,
+      Math.max(params.state.nextMessageIds.get(updateChatKey) ?? 1, update.message.message_id + 1),
     );
     params.state.nextUpdateId = Math.max(params.state.nextUpdateId, update.update_id + 1);
-    const reservedNextMessageId = params.state.nextMessageId;
+    const reservedNextMessageId = params.state.nextMessageIds.get(updateChatKey)!;
     const reservedNextUpdateId = params.state.nextUpdateId;
     try {
       await appendEvent(params.state, {
@@ -651,8 +820,12 @@ async function handleTelegramAdminInbound(params: {
         type: "admin",
       });
     } catch (error) {
-      if (params.state.nextMessageId === reservedNextMessageId) {
-        params.state.nextMessageId = nextMessageId;
+      if (params.state.nextMessageIds.get(updateChatKey) === reservedNextMessageId) {
+        if (previousNextMessageId === undefined) {
+          params.state.nextMessageIds.delete(updateChatKey);
+        } else {
+          params.state.nextMessageIds.set(updateChatKey, previousNextMessageId);
+        }
       }
       if (params.state.nextUpdateId === reservedNextUpdateId) {
         params.state.nextUpdateId = nextUpdateId;
@@ -1062,12 +1235,21 @@ async function handleTelegramApi(params: {
         pending_update_count: params.state.updates.length,
         url: params.state.webhook?.url ?? "",
       });
-    case "createforumtopic":
+    case "createforumtopic": {
+      const chatId = telegramChatId(params.body.chat_id);
+      if (chatId === undefined) {
+        return telegramError("Bad Request: chat_id is required");
+      }
+      const messageThreadId = takeNextTelegramMessageId(params.state, chatId);
+      if (messageThreadId === undefined) {
+        return telegramError("Bad Request: generated ID space is exhausted");
+      }
       return telegramOk({
         icon_color: 0x6fb9f0,
-        message_thread_id: params.state.nextMessageId++,
+        message_thread_id: messageThreadId,
         name: toStringValue(params.body.name) ?? "Crabline Topic",
       });
+    }
     case "editmessagetext": {
       const message = createEditedMessage(params.state, params.body);
       return message
@@ -1075,6 +1257,13 @@ async function handleTelegramApi(params: {
         : telegramError("Bad Request: chat_id, message_id, and text are required");
     }
     case "sendmessage": {
+      const chatId = telegramChatId(params.body.chat_id);
+      if (
+        chatId !== undefined &&
+        nextTelegramMessageId(params.state, chatId) >= Number.MAX_SAFE_INTEGER
+      ) {
+        return telegramError("Bad Request: generated ID space is exhausted");
+      }
       const message = createOutboundMessage(params.state, params.body);
       return message
         ? telegramOk(message)
@@ -1091,6 +1280,13 @@ async function handleTelegramApi(params: {
         | "document"
         | "photo"
         | "video";
+      const chatId = telegramChatId(params.body.chat_id);
+      if (
+        chatId !== undefined &&
+        nextTelegramMessageId(params.state, chatId) >= Number.MAX_SAFE_INTEGER
+      ) {
+        return telegramError("Bad Request: generated ID space is exhausted");
+      }
       const message = createOutboundMediaMessage(params.state, params.body, mediaKind);
       return message
         ? telegramOk(message)
@@ -1359,7 +1555,7 @@ export async function startTelegramServer(
     botUsername: params.botUsername ?? "crabline_bot",
     inboundAdmission: Promise.resolve(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
-    nextMessageId: 1,
+    nextMessageIds: new Map(),
     nextUpdateId: 1,
     onEvent: params.onEvent,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "telegram.jsonl"),
