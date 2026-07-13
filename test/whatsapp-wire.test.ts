@@ -506,6 +506,19 @@ describe("WhatsApp signal bundle store", () => {
     );
     expect(store.size).toBe(1);
   });
+
+  it("bounds PN-to-LID associations and evicts the least recently associated entry", () => {
+    const store = new WhatsAppSignalBundleStore(2);
+    store.associateLid("15550000001@s.whatsapp.net", "15550000001@lid");
+    store.associateLid("15550000002@s.whatsapp.net", "15550000002@lid");
+    store.associateLid("15550000001@s.whatsapp.net", "15550000011@lid");
+    store.associateLid("15550000003@s.whatsapp.net", "15550000003@lid");
+
+    expect(store.lidMappingSize).toBe(2);
+    expect(store.resolveAssociatedLid("15550000001:2@s.whatsapp.net")).toBe("15550000011@lid");
+    expect(store.resolveAssociatedLid("15550000002@s.whatsapp.net")).toBeUndefined();
+    expect(store.resolveAssociatedLid("15550000003@s.whatsapp.net")).toBe("15550000003@lid");
+  });
 });
 
 function nestedNode(depth: number): BinaryNode {

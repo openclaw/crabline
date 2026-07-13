@@ -428,7 +428,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       return new Response("not found", { status: 404 });
     }
     if (!hasAdminToken(params.request, params.state.adminToken)) {
-      params.request.resume();
+      drainRequestBody(params.request);
       return adminAuthError();
     }
     const body = await parseUnknownRequestBody(params.request);
@@ -481,7 +481,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
   const phoneNumberPath = `/${params.state.graphVersion}/${params.state.phoneNumberId}`;
   const messagesPath = `${phoneNumberPath}/messages`;
   if (!requireAuth(params.request, params.state)) {
-    params.request.resume();
+    drainRequestBody(params.request);
     return graphAuthError();
   }
   if (url.pathname === phoneNumberPath && params.request.method === "GET") {
@@ -523,6 +523,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       );
     } else if ("status" in body || "message_id" in body) {
       response = handleMessageStatus(body);
+      event.accepted = response.ok;
     } else {
       const prepared = prepareSendMessage({ body, state: params.state });
       if (!(prepared instanceof Response)) {
@@ -533,7 +534,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       }
       response = prepared;
     }
-    event.accepted = false;
+    event.accepted ??= false;
     await appendEvent(params.state, event);
     return response;
   }

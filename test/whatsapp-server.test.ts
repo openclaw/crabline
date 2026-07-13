@@ -724,7 +724,145 @@ describe("whatsapp local provider server", () => {
     ).resolves.toEqual(Buffer.from("second direct message"));
   });
 
-  it("authenticates Graph requests before reading or recording their bodies", async () => {
+  it("commits Signal ratchets and prekey replacement only after accepted evidence persists", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const senderJid = "15550000001@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1);
+    const bundle = receiver.resolveMany([recipientJid])[0]!;
+    const originalPreKey = bundle.preKey;
+    const originalPreKeyId = bundle.preKeyId;
+    const senderIdentity = Curve.generateKeyPair();
+    const senderStorage = createSignalTestStorage(senderIdentity, 2);
+    const senderAddress = new ProtocolAddress("15551234567", 0);
+    await new SessionBuilder(senderStorage, senderAddress).initOutgoing({
+      identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+      preKey: {
+        keyId: bundle.preKeyId,
+        publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+      },
+      registrationId: bundle.registrationId,
+      signedPreKey: {
+        keyId: bundle.signedPreKey.keyId,
+        publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+        signature: bundle.signedPreKey.signature,
+      },
+    });
+    const encrypted = await new SessionCipher(senderStorage, senderAddress).encrypt(
+      Buffer.from("transactional inbound"),
+    );
+    const ciphertext = signalCiphertext(encrypted.body);
+    const ordering: string[] = [];
+
+    await expect(
+      receiver.transactDirectMessage({
+        accept: async (plaintext) => {
+          ordering.push("persist:start");
+          expect(plaintext).toEqual(Buffer.from("transactional inbound"));
+          expect(bundle.preKey).toBe(originalPreKey);
+          expect(bundle.preKeyId).toBe(originalPreKeyId);
+          ordering.push("persist:done");
+          return true;
+        },
+        ciphertext,
+        recipientJid,
+        remoteJid: senderJid,
+        type: "pkmsg",
+      }),
+    ).resolves.toEqual({ status: "accepted", value: true });
+    ordering.push("ack");
+
+    expect(ordering).toEqual(["persist:start", "persist:done", "ack"]);
+    expect(bundle.preKey).not.toBe(originalPreKey);
+    expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
+    expect(receiver.resolveMany([recipientJid])[0]).toMatchObject({
+      preKey: bundle.preKey,
+      preKeyId: originalPreKeyId + 1,
+    });
+    await expect(
+      receiver.transactDirectMessage({
+        accept: async () => true,
+        ciphertext,
+        recipientJid,
+        remoteJid: senderJid,
+        type: "pkmsg",
+      }),
+    ).resolves.toMatchObject({ status: "decrypt-failed" });
+  });
+
+  it("keeps Signal ciphertext retryable when accepted evidence persistence fails", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const senderJid = "15550000001@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1);
+    const bundle = receiver.resolveMany([recipientJid])[0]!;
+    const originalPreKey = bundle.preKey;
+    const originalPreKeyId = bundle.preKeyId;
+    const senderIdentity = Curve.generateKeyPair();
+    const senderStorage = createSignalTestStorage(senderIdentity, 2);
+    const senderAddress = new ProtocolAddress("15551234567", 0);
+    await new SessionBuilder(senderStorage, senderAddress).initOutgoing({
+      identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+      preKey: {
+        keyId: bundle.preKeyId,
+        publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+      },
+      registrationId: bundle.registrationId,
+      signedPreKey: {
+        keyId: bundle.signedPreKey.keyId,
+        publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+        signature: bundle.signedPreKey.signature,
+      },
+    });
+    const encrypted = await new SessionCipher(senderStorage, senderAddress).encrypt(
+      Buffer.from("retry recorder failure"),
+    );
+    const ciphertext = signalCiphertext(encrypted.body);
+    let markPersistenceStarted: () => void = () => undefined;
+    let releasePersistence: () => void = () => undefined;
+    const persistenceStarted = new Promise<void>((resolve) => {
+      markPersistenceStarted = resolve;
+    });
+    const persistenceBlocked = new Promise<void>((resolve) => {
+      releasePersistence = resolve;
+    });
+    const failedAttempt = receiver.transactDirectMessage({
+      accept: async () => {
+        markPersistenceStarted();
+        await persistenceBlocked;
+        throw new Error("simulated recorder failure");
+      },
+      ciphertext,
+      recipientJid,
+      remoteJid: senderJid,
+      type: "pkmsg",
+    });
+    await persistenceStarted;
+    let retryAccepted = false;
+    const retry = receiver.transactDirectMessage({
+      accept: async (plaintext) => {
+        retryAccepted = true;
+        return plaintext.toString("utf8");
+      },
+      ciphertext,
+      recipientJid,
+      remoteJid: senderJid,
+      type: "pkmsg",
+    });
+    await Promise.resolve();
+
+    expect(retryAccepted).toBe(false);
+    expect(bundle.preKey).toBe(originalPreKey);
+    expect(bundle.preKeyId).toBe(originalPreKeyId);
+    releasePersistence();
+    await expect(failedAttempt).rejects.toThrow("simulated recorder failure");
+    await expect(retry).resolves.toEqual({
+      status: "accepted",
+      value: "retry recorder failure",
+    });
+    expect(bundle.preKey).not.toBe(originalPreKey);
+    expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
+  });
+
+  it("drains unauthorized request bodies before reusing the connection", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const observed: unknown[] = [];
@@ -736,6 +874,7 @@ describe("whatsapp local provider server", () => {
       recorderPath: path.join(directory, "whatsapp-auth.jsonl"),
     });
     servers.push(server);
+    const agent = new Agent({ keepAlive: true, maxSockets: 1 });
 
     const unauthenticated = await fetch(server.manifest.endpoints.messagesUrl, {
       body: JSON.stringify({
@@ -748,17 +887,54 @@ describe("whatsapp local provider server", () => {
       method: "POST",
     });
     expect(unauthenticated.status).toBe(401);
-    const unauthorizedOversized = await requestHttp({
-      body: Buffer.alloc(1024 * 1024 + 1, 0x20),
-      headers: {
-        authorization: "Bearer wrong-token",
-        "content-length": String(1024 * 1024 + 1),
-        "content-type": "application/json",
-      },
-      method: "POST",
-      url: server.manifest.endpoints.messagesUrl,
-    });
-    expect(unauthorizedOversized.status).toBe(401);
+    try {
+      const unauthorizedOversized = await requestHttp({
+        agent,
+        body: Buffer.alloc(1024 * 1024 + 1, 0x20),
+        headers: {
+          authorization: "Bearer wrong-token",
+          "content-length": String(1024 * 1024 + 1),
+          "content-type": "application/json",
+        },
+        method: "POST",
+        url: server.manifest.endpoints.messagesUrl,
+      });
+      expect(unauthorizedOversized.status).toBe(401);
+      expect(
+        (
+          await requestHttp({
+            agent,
+            headers: { authorization: "Bearer fake" },
+            method: "GET",
+            url: server.manifest.endpoints.phoneNumberUrl,
+          })
+        ).status,
+      ).toBe(200);
+
+      const unauthorizedAdmin = await requestHttp({
+        agent,
+        body: Buffer.alloc(1024 * 1024 + 1, 0x20),
+        headers: {
+          "content-length": String(1024 * 1024 + 1),
+          "content-type": "application/json",
+        },
+        method: "POST",
+        url: server.manifest.endpoints.adminInboundUrl,
+      });
+      expect(unauthorizedAdmin.status).toBe(401);
+      expect(
+        (
+          await requestHttp({
+            agent,
+            headers: { authorization: "Bearer fake" },
+            method: "GET",
+            url: server.manifest.endpoints.phoneNumberUrl,
+          })
+        ).status,
+      ).toBe(200);
+    } finally {
+      agent.destroy();
+    }
 
     const oversized = await requestHttp({
       body: Buffer.alloc(1024 * 1024 + 1, 0x20),
@@ -790,13 +966,16 @@ describe("whatsapp local provider server", () => {
 
     const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
     expect(recorder).not.toContain("untrusted whatsapp body");
-    expect(observed).toEqual([
-      expect.objectContaining({
-        method: "GET",
-        path: new URL(server.manifest.endpoints.phoneNumberUrl).pathname,
-        type: "api",
-      }),
-    ]);
+    expect(observed).toHaveLength(3);
+    expect(observed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "GET",
+          path: new URL(server.manifest.endpoints.phoneNumberUrl).pathname,
+          type: "api",
+        }),
+      ]),
+    );
   });
 
   it("drains request bodies on early 404 routes", async () => {
@@ -882,7 +1061,7 @@ describe("whatsapp local provider server", () => {
     });
   });
 
-  it("does not mark successful status requests as accepted sends", async () => {
+  it("records successful read-status requests as accepted provider operations", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const observed: Array<{ accepted?: boolean; body?: unknown }> = [];
@@ -913,7 +1092,7 @@ describe("whatsapp local provider server", () => {
     expect(response.status).toBe(200);
     expect(observed).toContainEqual(
       expect.objectContaining({
-        accepted: false,
+        accepted: true,
         body: expect.objectContaining({ message_id: "wamid.status", status: "read" }),
       }),
     );
