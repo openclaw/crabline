@@ -441,14 +441,14 @@ async function appendRecorderAttempt(params: {
   logicalPath: string;
   line: string;
   publicationPath: string;
-}): Promise<"committed" | "retry"> {
+}): Promise<"committed" | "retargeted" | "retry"> {
   const opened = await openRecorderFile(params.publicationPath);
   const { file } = opened;
   let committed = false;
   let operationFailed = false;
   let operationError: unknown;
   let releaseIdentityLock: (() => Promise<void>) | undefined;
-  let result: "committed" | "retry" | undefined;
+  let result: "committed" | "retargeted" | "retry" | undefined;
   try {
     if (opened.created) {
       await file.chmod(0o600);
@@ -460,6 +460,7 @@ async function appendRecorderAttempt(params: {
     } else {
       const lockedIdentity = requireRecorderFileIdentity(stats);
       releaseIdentityLock = await acquireRecorderIdentityLock(lockedIdentity);
+      // The identity lock may have blocked while another alias repaired or appended.
       stats = await file.stat();
       identity = requireRecorderIdentity(stats);
       if (
@@ -467,8 +468,10 @@ async function appendRecorderAttempt(params: {
         !(await recorderPathHasIdentity(params.publicationPath, identity))
       ) {
         result = "retry";
+      } else if ((await resolveRecorderPath(params.logicalPath)) !== params.publicationPath) {
+        result = "retargeted";
       }
-      if (result !== "retry") {
+      if (result === undefined) {
         const needsPathDurability =
           opened.created || durableRecorderIdentities.get(params.publicationPath) !== identity;
         if (stats.size > 0) {
@@ -698,15 +701,17 @@ async function appendResolvedJsonLine(params: {
             return undefined;
           }
           for (let attempt = 0; attempt < RECORDER_ROTATION_ATTEMPTS; attempt++) {
-            if (
-              (await appendRecorderAttempt({
-                createdDirectory,
-                logicalPath,
-                line: params.line,
-                publicationPath: key,
-              })) === "committed"
-            ) {
+            const result = await appendRecorderAttempt({
+              createdDirectory,
+              logicalPath,
+              line: params.line,
+              publicationPath: key,
+            });
+            if (result === "committed") {
               return true;
+            }
+            if (result === "retargeted") {
+              return undefined;
             }
           }
           throw new ServerRecorderRotationError(
