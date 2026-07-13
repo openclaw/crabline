@@ -16,6 +16,45 @@ const MAX_SCRIPT_OUTPUT_BYTES = 1024 * 1024;
 const SCRIPT_WAIT_EXIT_GRACE_MS = 250;
 const CHILD_CLOSE_TIMEOUT_MS = 1_000;
 const WINDOWS_TERMINATION_COMMAND_TIMEOUT_MS = 2_500;
+const WINDOWS_PROCESS_TERMINATOR_SOURCE = [
+  "using System;",
+  "using System.Runtime.InteropServices;",
+  "public static class CrablineProcessTerminator{",
+  "private const uint ProcessTerminate=0x0001;",
+  "private const uint ProcessQueryLimitedInformation=0x1000;",
+  "private const uint Synchronize=0x00100000;",
+  "private const uint WaitObject0=0;",
+  "private const uint WaitTimeout=258;",
+  "private const int ErrorInvalidParameter=87;",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "private static extern IntPtr OpenProcess(uint access,bool inheritHandle,int processId);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "[return:MarshalAs(UnmanagedType.Bool)]",
+  "private static extern bool GetProcessTimes(IntPtr process,out long creationTime,out long exitTime,out long kernelTime,out long userTime);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "[return:MarshalAs(UnmanagedType.Bool)]",
+  "private static extern bool TerminateProcess(IntPtr process,uint exitCode);",
+  '[DllImport("kernel32.dll",SetLastError=true)]',
+  "private static extern uint WaitForSingleObject(IntPtr handle,uint milliseconds);",
+  '[DllImport("kernel32.dll")]',
+  "[return:MarshalAs(UnmanagedType.Bool)]",
+  "private static extern bool CloseHandle(IntPtr handle);",
+  "public static bool TerminateVerified(int processId,long expectedCreationTime){",
+  "IntPtr handle=OpenProcess(ProcessTerminate|ProcessQueryLimitedInformation|Synchronize,false,processId);",
+  "if(handle==IntPtr.Zero){return Marshal.GetLastWin32Error()==ErrorInvalidParameter;}",
+  "try{",
+  "long creationTime,exitTime,kernelTime,userTime;",
+  "if(!GetProcessTimes(handle,out creationTime,out exitTime,out kernelTime,out userTime)){return false;}",
+  "if(creationTime!=expectedCreationTime){return true;}",
+  "uint status=WaitForSingleObject(handle,0);",
+  "if(status==WaitObject0){return true;}",
+  "if(status!=WaitTimeout){return false;}",
+  "if(!TerminateProcess(handle,1)){return WaitForSingleObject(handle,0)==WaitObject0;}",
+  "return WaitForSingleObject(handle,1000)==WaitObject0;",
+  "}finally{CloseHandle(handle);}",
+  "}",
+  "}",
+].join("");
 
 type ScriptWatchIterator = AsyncIterableIterator<InboundEnvelope> & {
   [Symbol.asyncIterator](): ScriptWatchIterator;
@@ -124,6 +163,8 @@ function windowsProcessTreeTermination(
   const rootObservedByMs = Math.max(rootNotBeforeMs, Math.ceil(childObservedAtMs) + 1);
   return [
     "$ErrorActionPreference='Stop'",
+    `$NativeSource='${WINDOWS_PROCESS_TERMINATOR_SOURCE}'`,
+    "Add-Type -TypeDefinition $NativeSource",
     `$RootProcessId=${pid}`,
     `$RootExpectedAlive=$${rootExpectedAlive ? "true" : "false"}`,
     `$RootNotBefore=[DateTimeOffset]::FromUnixTimeMilliseconds(${rootNotBeforeMs}).UtcDateTime`,
@@ -155,24 +196,13 @@ function windowsProcessTreeTermination(
     "$Pending.Enqueue($Process)",
     "}",
     "}",
-    "$TaskkillExitCode=-1",
     "if($KillRoot){",
-    '$Taskkill=Start-Process taskkill.exe -ArgumentList @("/PID","$RootProcessId","/T","/F") -WindowStyle Hidden -PassThru',
-    "if($Taskkill.WaitForExit(1000)){$TaskkillExitCode=$Taskkill.ExitCode}else{$Taskkill.Kill();$TaskkillExitCode=-1}",
-    "}",
-    "if($TaskkillExitCode -ne 0){",
     "$Entries=@($Snapshot)",
     "[array]::Reverse($Entries)",
     "foreach($Entry in $Entries){",
-    '$Current=Get-CimInstance Win32_Process -Filter "ProcessId=$($Entry.ProcessId)" -ErrorAction SilentlyContinue',
-    "if($null -ne $Current -and $Current.CreationDate -eq $Entry.CreationDate){",
-    "Stop-Process -Id ([int]$Entry.ProcessId) -Force -ErrorAction SilentlyContinue",
+    "$CreationTime=([datetime]$Entry.CreationDate).ToFileTimeUtc()",
+    "if(![CrablineProcessTerminator]::TerminateVerified([int]$Entry.ProcessId,$CreationTime)){$CleanupFailed=$true}",
     "}",
-    "}",
-    "}",
-    "foreach($Entry in @($Snapshot)){",
-    '$Current=Get-CimInstance Win32_Process -Filter "ProcessId=$($Entry.ProcessId)" -ErrorAction SilentlyContinue',
-    "if($null -ne $Current -and $Current.CreationDate -eq $Entry.CreationDate){$CleanupFailed=$true}",
     "}",
     "if($CleanupFailed){exit 1}",
   ].join(";");
@@ -208,7 +238,7 @@ async function terminateChild(
     const childRunning = isChildRunning(child);
     if (process.platform === "win32") {
       if (child.pid) {
-        const cleaned = await runTerminationCommand("powershell.exe", [
+        await runTerminationCommand("powershell.exe", [
           "-NoLogo",
           "-NoProfile",
           "-NonInteractive",
@@ -220,9 +250,6 @@ async function terminateChild(
             childRunning,
           ),
         ]);
-        if (!cleaned && isChildRunning(child)) {
-          await runTerminationCommand("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"]);
-        }
       }
     } else if (child.pid) {
       try {
@@ -467,6 +494,15 @@ function snapshotCommandValues(
     const option = /^--?[A-Za-z0-9][A-Za-z0-9_-]*=(.*)$/u.exec(token);
     if (option) {
       const value = option[1] ?? "";
+      if (value.length < 3) {
+        return undefined;
+      }
+      addCommandValueRedactions(substringValues, value);
+      continue;
+    }
+    if (process.platform === "win32" && token.startsWith("/")) {
+      const slashOption = /^\/[A-Za-z0-9][A-Za-z0-9_-]*[:=](.*)$/u.exec(token);
+      const value = slashOption?.[1] ?? "";
       if (value.length < 3) {
         return undefined;
       }
