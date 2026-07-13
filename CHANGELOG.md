@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fail OpenClaw provider readiness when a successful probe produces no recorder evidence.
 - Confine generated local-mock recorder paths by rejecting absolute and parent-traversal provider IDs.
 - Accept native Zalo image callbacks, honor injected webhook auth environments, and bound recursive credential redaction.
 - Use one case-insensitive numeric identity for Telegram username chats across provider sends, OpenClaw inbound injection, and recorder correlation.

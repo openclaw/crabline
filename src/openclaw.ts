@@ -414,14 +414,7 @@ export async function runOpenClawCrablineProviderReadiness(
     if (probeFailed) {
       throw probeFailure;
     }
-    let recorderSnapshotContents = "";
-    try {
-      recorderSnapshotContents = await fs.readFile(recorderPath, "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-    }
+    const recorderSnapshotContents = await fs.readFile(recorderPath, "utf8");
 
     const capabilityReport = {
       result: {
