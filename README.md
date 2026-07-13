@@ -41,6 +41,11 @@ pnpm dev fixtures --config fixtures/examples/crabline.example.yaml
 pnpm dev roundtrip telegram-dm --config fixtures/examples/crabline.example.yaml
 ```
 
+The source checkout does not link its own `crabline` bin into
+`node_modules/.bin`, so use `pnpm dev` there rather than
+`pnpm exec crabline`. An installed package exposes the `crabline` command used
+in the examples below.
+
 ## Quality Gate
 
 ```bash
@@ -137,6 +142,9 @@ them only from sources you trust and review changes before use.
 `serve` starts provider-shaped HTTP APIs for OpenClaw live adapters. This is the
 preferred Smoke CI path because OpenClaw still uses its normal channel adapter,
 but the provider endpoint is local and deterministic.
+
+Commands in this section use the installed-package form. In a source checkout,
+replace `crabline` with `pnpm dev`.
 
 Library callers can pass `onEvent` to `startCrablineServer`, an individual
 provider server, or `startOpenClawCrablineAdapter`. Crabline awaits the callback

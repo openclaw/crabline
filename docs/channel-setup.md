@@ -132,6 +132,9 @@ Treat manifests containing script providers as executable, trusted code.
 Crabline runs their declared commands with the configured environment, so load
 them only from sources you trust and review changes before use.
 
+Crabline does not ship a generic OpenClaw gateway command bridge. Supply and
+version the command implementations with the manifest that uses them:
+
 ```yaml
 providers:
   slack-openclaw:
@@ -143,13 +146,10 @@ providers:
       - OPENCLAW_TOKEN
     script:
       commands:
-        probe: node ./scripts/openclaw-bridge-probe.mjs
-        send: node ./scripts/openclaw-bridge-send.mjs
-        waitForInbound: node ./scripts/openclaw-bridge-wait.mjs
+        probe: node ./bridge/probe.mjs
+        send: node ./bridge/send.mjs
+        waitForInbound: node ./bridge/wait-for-inbound.mjs
 ```
-
-The complete multi-channel script fixture is available in
-`fixtures/examples/openclaw-bridge.yaml`.
 
 Each command receives one JSON document on stdin. Every payload contains the
 parsed `fixture` plus `provider.config`, `provider.id`, and
@@ -181,6 +181,9 @@ Server-backed channels currently include Mattermost, Matrix, Signal, Slack,
 Telegram, WhatsApp, and Zalo. Loopback binds retain stable local credentials for
 fixture compatibility. Non-loopback binds generate fresh provider-shaped
 credentials unless the corresponding token or secret option is supplied.
+
+Commands in this section use the installed-package form. In a source checkout,
+replace `crabline` with `pnpm dev`; `pnpm exec crabline` is not available.
 
 Serve credential flags take precedence over their optional environment
 fallbacks: `--admin-token` over `CRABLINE_ADMIN_TOKEN`, `--access-token` over

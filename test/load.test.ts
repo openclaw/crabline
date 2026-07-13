@@ -78,25 +78,6 @@ describe("config load", () => {
     await expect(loadManifest(configPath)).rejects.toThrow(/JSON parse error/u);
   });
 
-  it("loads the shipped OpenClaw bridge fixture with YAML anchors", async () => {
-    const configPath = path.resolve("fixtures/examples/openclaw-bridge.yaml");
-
-    const loaded = await loadManifest(configPath);
-
-    expect(loaded.manifest.providers["slack-openclaw"]).toMatchObject({
-      adapter: "script",
-      platform: "slack",
-      script: {
-        commands: {
-          probe: "node ./scripts/openclaw-bridge-probe.mjs",
-          send: "node ./scripts/openclaw-bridge-send.mjs",
-          waitForInbound: "node ./scripts/openclaw-bridge-wait.mjs",
-        },
-      },
-    });
-    expect(loaded.manifest).not.toHaveProperty("x-openclaw-bridge");
-  });
-
   it("loads the shipped built-in provider fixture", async () => {
     const loaded = await loadManifest(path.resolve("fixtures/examples/crabline.example.yaml"));
 
