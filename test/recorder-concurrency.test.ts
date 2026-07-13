@@ -304,4 +304,40 @@ describe("recorder append serialization", () => {
       }
     },
   );
+
+  it("reports lock cleanup failure without rejecting a committed provider append", async () => {
+    const recorderPath = path.join(
+      "/tmp",
+      `crabline-provider-recorder-release-${process.pid}-${Date.now()}.jsonl`,
+    );
+    fsMocks.providerDirectory = await realpath(path.dirname(recorderPath));
+    fsMocks.providerWrite.mockResolvedValue(undefined);
+    const releaseError = new Error("simulated lock cleanup failure");
+    fsMocks.lockRelease.mockRejectedValue(releaseError);
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const event = {
+      author: "assistant" as const,
+      id: "committed-release-failure",
+      provider: "slack",
+      sentAt: "2026-07-12T10:00:00.000Z",
+      text: "committed",
+      threadId: "slack:C123",
+    };
+
+    try {
+      await expect(appendRecordedInbound(recorderPath, event)).resolves.toMatchObject({
+        id: event.id,
+      });
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining("Provider recorder append committed but lock cleanup failed"),
+        {
+          code: "CRABLINE_RECORDER_LOCK_CLEANUP",
+          type: "ProviderRecorderWarning",
+        },
+      );
+    } finally {
+      warning.mockRestore();
+      await rm(recorderPath, { force: true });
+    }
+  });
 });

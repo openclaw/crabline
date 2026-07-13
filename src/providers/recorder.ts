@@ -569,6 +569,21 @@ function recorderLockReleaseError(
   );
 }
 
+function reportRecorderLockReleaseFailure(filePath: string, releaseError: unknown): void {
+  const detail = releaseError instanceof Error ? releaseError.message : String(releaseError);
+  try {
+    process.emitWarning(
+      `Provider recorder append committed but lock cleanup failed for "${filePath}": ${detail}`,
+      {
+        code: "CRABLINE_RECORDER_LOCK_CLEANUP",
+        type: "ProviderRecorderWarning",
+      },
+    );
+  } catch {
+    // Cleanup reporting must not change the result of a committed append.
+  }
+}
+
 async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
   const release = await lock(filePath, {
     realpath: false,
@@ -596,7 +611,7 @@ async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>
     if (operationFailed) {
       throw recorderLockReleaseError(filePath, operationError, releaseError);
     }
-    throw releaseError;
+    reportRecorderLockReleaseFailure(filePath, releaseError);
   }
   if (operationFailed) {
     throw operationError;
