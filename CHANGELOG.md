@@ -9,6 +9,7 @@
 - Preserve native Slack rich text and block fallbacks, isolate Feishu replay identities, ignore non-message Google Chat interactions, and fail closed on invalid Zalo adapter inputs.
 - Discover network-specific NAT64 prefixes and safely recycle aborted DNS lookup capacity without accepting stale results.
 - Verify loopback bindings by their listening address, sanitize Fetch response headers, and advertise usable wildcard-bound webhook endpoints.
+- Route local-mock GET hooks through the real server and parse structured JSON media types as JSON.
 - Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
 - Suppress serve readiness output when shutdown begins during ready-file publication.
 - Treat Unicode format characters as continuations when recognizing standalone acknowledgement tokens.
