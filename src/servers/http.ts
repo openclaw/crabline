@@ -130,10 +130,10 @@ export async function parseUnknownRequestBody(
     return {};
   }
   const contentType = request.headers["content-type"] ?? "";
-  const includesJson = Array.isArray(contentType)
-    ? contentType.some((entry) => entry.toLowerCase().includes("json"))
-    : contentType.toLowerCase().includes("json");
-  if (includesJson) {
+  const isJson = Array.isArray(contentType)
+    ? contentType.some(isJsonMediaType)
+    : isJsonMediaType(contentType);
+  if (isJson) {
     try {
       return JSON.parse(body.toString("utf8")) as unknown;
     } catch (error) {
@@ -142,6 +142,14 @@ export async function parseUnknownRequestBody(
   }
   const params = new URLSearchParams(body.toString("utf8"));
   return Object.fromEntries(params.entries());
+}
+
+export function isJsonMediaType(value: string): boolean {
+  const mediaType = value.split(";", 1)[0]?.trim().toLowerCase();
+  return (
+    mediaType === "application/json" ||
+    /^[a-z0-9!#$%&'*+.^_`|~-]+\/[a-z0-9!#$%&'*+.^_`|~-]+\+json$/u.test(mediaType ?? "")
+  );
 }
 
 export async function parseRequestBody(request: IncomingMessage): Promise<Record<string, unknown>> {
@@ -181,6 +189,7 @@ export async function writeResponse(
   response: ServerResponse,
   fetchResponse: Response,
 ): Promise<void> {
+  const body = Buffer.from(await fetchResponse.arrayBuffer());
   response.statusCode = fetchResponse.status;
   for (const [name, value] of fetchResponse.headers) {
     if (name.toLowerCase() === "set-cookie") {
@@ -192,7 +201,6 @@ export async function writeResponse(
   if (setCookies.length > 0) {
     response.setHeader("set-cookie", setCookies);
   }
-  const body = Buffer.from(await fetchResponse.arrayBuffer());
   await new Promise<void>((resolve, reject) => {
     if (
       response.destroyed ||

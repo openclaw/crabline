@@ -91,6 +91,80 @@ describe("signal local provider server", () => {
     expect(new URL(server.manifest.baseUrl).hostname).toBe("[::1]");
     const check = await fetch(`${server.manifest.baseUrl}/api/v1/check`);
     expect(check.status).toBe(200);
+    const expandedHost = await requestHttp({
+      headers: { host: "[0:0:0:0:0:0:0:1]" },
+      method: "GET",
+      url: `${server.manifest.baseUrl}/api/v1/check`,
+    });
+    expect(expandedHost.status).toBe(200);
+  });
+
+  it("allowlists Host headers when bound externally", async () => {
+    const server = await startSignalServer({
+      allowedHosts: ["signal.internal"],
+      host: "0.0.0.0",
+    });
+    servers.push(server);
+    const url = new URL(server.manifest.baseUrl);
+    url.hostname = "127.0.0.1";
+
+    const rejected = await requestHttp({
+      headers: { host: "attacker.invalid" },
+      method: "GET",
+      url: `${url.origin}/api/v1/check`,
+    });
+    expect(rejected.status).toBe(400);
+    expect(JSON.parse(rejected.body)).toEqual({
+      error: "Host header is not allowed",
+      ok: false,
+    });
+
+    const wildcard = await requestHttp({
+      headers: { host: `0.0.0.0:${url.port}` },
+      method: "GET",
+      url: `${url.origin}/api/v1/check`,
+    });
+    expect(wildcard.status).toBe(400);
+
+    const allowedDns = await requestHttp({
+      headers: { host: `signal.internal:${url.port}` },
+      method: "GET",
+      url: `${url.origin}/api/v1/check`,
+    });
+    expect(allowedDns.status).toBe(200);
+
+    for (const host of [
+      "attacker.invalid@signal.internal",
+      "signal.internal/path",
+      "signal.internal?query",
+      "signal.internal#fragment",
+    ]) {
+      const malformed = await requestHttp({
+        headers: { host },
+        method: "GET",
+        url: `${url.origin}/api/v1/check`,
+      });
+      expect(malformed.status).toBe(400);
+    }
+
+    const accepted = await requestHttp({
+      headers: { host: `127.0.0.1:${url.port}` },
+      method: "GET",
+      url: `${url.origin}/api/v1/check`,
+    });
+    expect(accepted.status).toBe(200);
+  });
+
+  it("rejects unlisted Host headers on the default loopback binding", async () => {
+    const server = await startSignalServer();
+    servers.push(server);
+
+    const rejected = await requestHttp({
+      headers: { host: "attacker.invalid" },
+      method: "GET",
+      url: `${server.manifest.baseUrl}/api/v1/check`,
+    });
+    expect(rejected.status).toBe(400);
   });
 
   it("serves native RPC and delivers authenticated inbound messages over SSE", async () => {
@@ -363,6 +437,40 @@ describe("signal local provider server", () => {
     await expect(missingIdentity.json()).resolves.toEqual({
       error: "text and at least one source identity are required",
       ok: false,
+    });
+  });
+
+  it("rejects invalid or negative supplied inbound timestamps", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+
+    for (const timestamp of [-1, 1.5, "not-a-timestamp", "9007199254740992", null]) {
+      const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ sourceNumber: "+15557654321", text: "invalid", timestamp }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: "timestamp must be a non-negative safe integer",
+        ok: false,
+      });
+    }
+
+    const zero = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ sourceNumber: "+15557654321", text: "epoch", timestamp: 0 }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(zero.status).toBe(200);
+    await expect(zero.json()).resolves.toMatchObject({
+      event: { envelope: { timestamp: 0 } },
     });
   });
 

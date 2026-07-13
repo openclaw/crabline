@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ClientEvent, createClient, RoomEvent, SyncState, type MatrixEvent } from "matrix-js-sdk";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { startMatrixServer, type StartedMatrixServer } from "../src/index.js";
 import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
@@ -10,6 +10,7 @@ const servers: StartedMatrixServer[] = [];
 const directories: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
@@ -696,6 +697,53 @@ describe("Matrix local provider server", () => {
     }
   });
 
+  it("preserves whitespace-only message content and keeps global profiles separate", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startMatrixServer({
+      accessToken: "test-token-placeholder",
+      adminToken: "admin",
+      recorderPath: path.join(directory, "matrix-profile.jsonl"),
+    });
+    servers.push(server);
+    const senderId = "@alice:matrix.test";
+
+    for (const [roomId, senderName, text] of [
+      ["!first:matrix.test", "Alice", " \t "],
+      ["!second:matrix.test", "Alicia", "second room"],
+    ] as const) {
+      const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ roomId, senderId, senderName, text }),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: "admin",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        event: { content: { body: text } },
+      });
+    }
+
+    const profile = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/profile/${encodeURIComponent(senderId)}`,
+      { headers: auth("test-token-placeholder") },
+    );
+    await expect(profile.json()).resolves.toEqual({ displayname: "Alicia" });
+
+    for (const [roomId, displayname] of [
+      ["!first:matrix.test", "Alice"],
+      ["!second:matrix.test", "Alicia"],
+    ] as const) {
+      const member = await fetch(
+        `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent(roomId)}/state/m.room.member/${encodeURIComponent(senderId)}`,
+        { headers: auth("test-token-placeholder") },
+      );
+      await expect(member.json()).resolves.toMatchObject({ displayname });
+    }
+  });
+
   it("replays a transaction room error after the room is created", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -1075,8 +1123,17 @@ describe("Matrix local provider server", () => {
   });
 
   it("bounds timelines and retains recently replayed transactions", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const probe = await fs.open(path.join(directory, "sync-probe"), "w");
+    const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+      sync(): Promise<void>;
+    };
+    vi.spyOn(fileHandlePrototype, "sync").mockResolvedValue();
+    await probe.close();
     const server = await startMatrixServer({
       accessToken: "test-token-placeholder",
+      recorderPath: path.join(directory, "matrix-bounded.jsonl"),
       roomId: "!bounded:matrix.test",
     });
     servers.push(server);
@@ -1195,5 +1252,5 @@ describe("Matrix local provider server", () => {
       },
     );
     await expect(untouchedRetry.json()).resolves.toEqual({ event_id: secondEventId });
-  });
+  }, 15_000);
 });

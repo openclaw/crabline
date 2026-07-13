@@ -328,7 +328,10 @@ describe("telegram local provider server", () => {
       body: mediaBody,
       method: "POST",
     });
-    await expect(sendPhoto.json()).resolves.toMatchObject({
+    const sendPhotoBody = (await sendPhoto.json()) as {
+      result: { photo: Array<Record<string, unknown>> };
+    };
+    expect(sendPhotoBody).toMatchObject({
       ok: true,
       result: {
         caption: "hello fake telegram media",
@@ -337,6 +340,7 @@ describe("telegram local provider server", () => {
         photo: [{ height: 1, width: 1 }],
       },
     });
+    expect(sendPhotoBody.result.photo[0]).not.toHaveProperty("file_name");
 
     const boundary = "CrablineBoundary";
     const unicodeCaption = "\u4f60\u597d, Telegram";
@@ -554,10 +558,6 @@ describe("telegram local provider server", () => {
         },
         update_id: 1,
       },
-      ...(["guest_message", "managed_bot"] as const).map((field, index) => ({
-        [field]: {},
-        update_id: index + 10,
-      })),
       {
         message: {
           chat: { id: -1001234567890, type: "supergroup" },
@@ -590,6 +590,10 @@ describe("telegram local provider server", () => {
           update_id: index + 4,
         }),
       ),
+      ...(["guest_message", "managed_bot"] as const).map((field, index) => ({
+        [field]: {},
+        update_id: index + 10,
+      })),
     ]) {
       const response = await injectUpdate(server, body);
       expect(response.status).toBe(200);
@@ -672,7 +676,7 @@ describe("telegram local provider server", () => {
 
     const inbound = injectUpdate(server, { chatId: 42, text: "rejected inbound" });
     await inboundObserved;
-    const firstSend = await fetch(
+    const firstSendPromise = fetch(
       `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
       {
         body: JSON.stringify({ chat_id: 42, text: "first API send" }),
@@ -680,10 +684,11 @@ describe("telegram local provider server", () => {
         method: "POST",
       },
     );
+    releaseInbound();
+    const firstSend = await firstSendPromise;
     const firstBody = (await firstSend.json()) as {
       result: { message_id: number };
     };
-    releaseInbound();
     expect((await inbound).status).toBe(500);
 
     const secondSend = await fetch(
@@ -928,7 +933,7 @@ describe("telegram local provider server", () => {
     }
   });
 
-  it("dequeues the delivered webhook update when pending updates reorder", async () => {
+  it("rejects a lower update ID while webhook delivery is in flight", async () => {
     const delivered: number[] = [];
     let releaseFirst!: () => void;
     const firstBlocked = new Promise<void>((resolve) => {
@@ -987,8 +992,8 @@ describe("telegram local provider server", () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
       releaseFirst();
 
-      expect((await lowerUpdate).status).toBe(200);
-      await expect.poll(() => delivered).toEqual([10, 5]);
+      expect((await lowerUpdate).status).toBe(400);
+      await expect.poll(() => delivered).toEqual([10]);
     } finally {
       releaseFirst();
       await new Promise<void>((resolve, reject) =>
@@ -997,7 +1002,7 @@ describe("telegram local provider server", () => {
     }
   });
 
-  it("resets the retry budget when a lower update becomes head during delivery", async () => {
+  it("does not reset the retry budget for a rejected lower update", async () => {
     const attemptedUpdateIds: number[] = [];
     let releaseFinal!: () => void;
     const finalBlocked = new Promise<void>((resolve) => {
@@ -1056,13 +1061,9 @@ describe("telegram local provider server", () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
       releaseFinal();
 
-      expect((await lowerUpdate).status).toBe(200);
-      await expect
-        .poll(() => attemptedUpdateIds.filter((updateId) => updateId === 5).length, {
-          timeout: 5_000,
-        })
-        .toBe(6);
+      expect((await lowerUpdate).status).toBe(400);
       expect(attemptedUpdateIds.filter((updateId) => updateId === 10)).toHaveLength(6);
+      expect(attemptedUpdateIds.filter((updateId) => updateId === 5)).toHaveLength(0);
     } finally {
       releaseFinal();
       await new Promise<void>((resolve, reject) =>
@@ -1500,6 +1501,233 @@ describe("telegram local provider server", () => {
         update_id: 101,
       },
     });
+  });
+
+  it("requires explicit inbound IDs to stay positive, unique, and monotonic", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    expect(
+      (
+        await injectUpdate(server, {
+          chatId: 123,
+          messageId: 10,
+          text: "explicit",
+          updateId: 20,
+        })
+      ).status,
+    ).toBe(200);
+
+    for (const body of [
+      { chatId: 123, messageId: 10, text: "duplicate message", updateId: 21 },
+      { chatId: 123, messageId: 11, text: "duplicate update", updateId: 20 },
+      { chatId: 123, messageId: 9, text: "decreasing message", updateId: 21 },
+      { chatId: 123, messageId: 11, text: "decreasing update", updateId: 19 },
+      { chatId: 123, messageId: 0, text: "zero message", updateId: 21 },
+      { chatId: 123, messageId: 11, text: "negative update", updateId: -1 },
+      {
+        chatId: 123,
+        messageId: Number.MAX_SAFE_INTEGER,
+        text: "message counter overflow",
+        updateId: 21,
+      },
+      {
+        chatId: 123,
+        messageId: 11,
+        text: "update counter overflow",
+        updateId: Number.MAX_SAFE_INTEGER,
+      },
+      {
+        chatId: 123,
+        messageId: 11,
+        message_id: 12,
+        text: "conflicting aliases",
+        updateId: 21,
+      },
+    ]) {
+      const response = await injectUpdate(server, body);
+      expect(response.status).toBe(400);
+    }
+
+    const generated = await injectUpdate(server, { chatId: 123, text: "generated" });
+    await expect(generated.json()).resolves.toMatchObject({
+      update: { message: { message_id: 11 }, update_id: 21 },
+    });
+
+    const ignored = await injectUpdate(server, {
+      message: {
+        chat: { id: 123 },
+        message_id: 12,
+        photo: [{ file_id: "photo", file_unique_id: "unique", height: 1, width: 1 }],
+      },
+      update_id: 22,
+    });
+    expect(ignored.status).toBe(200);
+
+    const afterIgnored = await injectUpdate(server, { chatId: 123, text: "after ignored" });
+    await expect(afterIgnored.json()).resolves.toMatchObject({
+      update: { message: { message_id: 13 }, update_id: 23 },
+    });
+
+    const channelPost = await injectUpdate(server, {
+      channel_post: {
+        chat: { id: -1001234567890, type: "channel" },
+        message_id: 30,
+        text: "channel post",
+      },
+      update_id: 30,
+    });
+    expect(channelPost.status).toBe(200);
+
+    const afterChannelPost = await injectUpdate(server, {
+      chatId: -1001234567890,
+      text: "after channel post",
+    });
+    await expect(afterChannelPost.json()).resolves.toMatchObject({
+      update: { message: { message_id: 31 }, update_id: 31 },
+    });
+  });
+
+  it("fails cleanly after explicit IDs exhaust generated ID space", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const finalGeneratedId = Number.MAX_SAFE_INTEGER - 1;
+
+    const explicit = await injectUpdate(server, {
+      chatId: 123,
+      messageId: finalGeneratedId,
+      text: "last explicit IDs",
+      updateId: finalGeneratedId,
+    });
+    expect(explicit.status).toBe(200);
+
+    const outbound = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body: JSON.stringify({ chat_id: 123, text: "outbound after exhaustion" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(outbound.status).toBe(400);
+    await expect(outbound.json()).resolves.toMatchObject({
+      description: "Bad Request: generated ID space is exhausted",
+    });
+
+    for (const text of ["first rejected generated IDs", "second rejected generated IDs"]) {
+      const generated = await injectUpdate(server, { chatId: 123, text });
+      expect(generated.status).toBe(400);
+      await expect(generated.json()).resolves.toMatchObject({
+        description: "Bad Request: generated ID space is exhausted",
+      });
+    }
+  });
+
+  it("tracks explicit message IDs independently per chat", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    expect(
+      (
+        await injectUpdate(server, {
+          chatId: 100,
+          messageId: 10,
+          text: "chat A",
+          updateId: 20,
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await injectUpdate(server, {
+          chatId: 200,
+          messageId: 1,
+          text: "chat B",
+          updateId: 21,
+        })
+      ).status,
+    ).toBe(200);
+
+    await expect(
+      (await injectUpdate(server, { chatId: 100, text: "next chat A" })).json(),
+    ).resolves.toMatchObject({
+      update: { message: { message_id: 11 }, update_id: 22 },
+    });
+    await expect(
+      (await injectUpdate(server, { chatId: 200, text: "next chat B" })).json(),
+    ).resolves.toMatchObject({
+      update: { message: { message_id: 2 }, update_id: 23 },
+    });
+  });
+
+  it("accepts edits and callbacks that reference earlier message IDs", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+
+    expect(
+      (
+        await injectUpdate(server, {
+          chatId: 100,
+          messageId: 10,
+          text: "original",
+          updateId: 20,
+        })
+      ).status,
+    ).toBe(200);
+    for (const body of [
+      {
+        edited_message: {
+          chat: { id: 100 },
+          message_id: 10,
+          text: "edited",
+        },
+        update_id: 21,
+      },
+      {
+        callback_query: {
+          id: "callback-1",
+          message: { chat: { id: 100 }, message_id: 10 },
+        },
+        update_id: 22,
+      },
+    ]) {
+      expect((await injectUpdate(server, body)).status).toBe(200);
+    }
+
+    await expect(
+      (await injectUpdate(server, { chatId: 100, text: "next message" })).json(),
+    ).resolves.toMatchObject({
+      update: { message: { message_id: 11 }, update_id: 23 },
+    });
+  });
+
+  it("allocates forum topic roots from the chat message sequence", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
+
+    const first = await fetch(`${apiRoot}/sendMessage`, {
+      body: JSON.stringify({ chat_id: 42, text: "before topic" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(first.json()).resolves.toMatchObject({ result: { message_id: 1 } });
+
+    const topic = await fetch(`${apiRoot}/createForumTopic`, {
+      body: JSON.stringify({ chat_id: 42, name: "topic" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(topic.json()).resolves.toMatchObject({
+      result: { message_thread_id: 2 },
+    });
+
+    const after = await fetch(`${apiRoot}/sendMessage`, {
+      body: JSON.stringify({ chat_id: 42, text: "after topic" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(after.json()).resolves.toMatchObject({ result: { message_id: 3 } });
   });
 
   it("rejects unsafe integer identities without consuming generated IDs", async () => {

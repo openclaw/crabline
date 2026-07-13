@@ -195,6 +195,15 @@ describe("Zalo local provider server", () => {
         `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
         {
           body: JSON.stringify({
+            metadata: {
+              authorization: "placeholder",
+              callbacks: [
+                {
+                  callbackUrl:
+                    "http://fixture-user:placeholder@example.com/hook?api_key=placeholder",
+                },
+              ],
+            },
             secret_token: "test-auth-token",
             url: webhookUrl.href,
           }),
@@ -275,6 +284,10 @@ describe("Zalo local provider server", () => {
       expect(recorder).not.toContain("sample");
       expect(recorder).not.toContain("credential-placeholder");
       expect(recorder).not.toContain("protocol-user");
+      expect(recorder).not.toContain("fixture-user");
+      expect(recorder).toContain(
+        '"callbackUrl":"http://<redacted>@example.com/hook?api_key=<redacted>"',
+      );
       for (const secret of ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]) {
         expect(recorder).not.toContain(secret);
       }
@@ -283,6 +296,54 @@ describe("Zalo local provider server", () => {
         webhook.close((error) => (error ? reject(error) : resolve())),
       );
     }
+  });
+
+  it("bounds inbound admission before parsing request bodies", async () => {
+    let observeFirst!: () => void;
+    let releaseFirst!: () => void;
+    const firstObserved = new Promise<void>((resolve) => {
+      observeFirst = resolve;
+    });
+    const firstReleased = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const server = await startZaloServer({
+      adminToken: "admin",
+      maxPendingInboundEvents: 1,
+      async onEvent(event) {
+        if (event.path === "/crabline/zalo/inbound") {
+          observeFirst();
+          await firstReleased;
+        }
+      },
+    });
+    servers.push(server);
+
+    const first = fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "first" }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    await firstObserved;
+
+    const overloaded = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: "{",
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(overloaded.status).toBe(429);
+    await expect(overloaded.json()).resolves.toMatchObject({
+      description: "Pending inbound queue is full (1 updates)",
+    });
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
   });
 
   it("rejects oversized or header-unsafe webhook secrets", async () => {
