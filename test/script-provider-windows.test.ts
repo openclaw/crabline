@@ -166,6 +166,29 @@ describe("script provider Windows cleanup", () => {
     expect(ensureErrorMessage(failure)).not.toContain('opaque"value');
   });
 
+  it("suppresses diagnostics for quoted Windows command newlines", async () => {
+    const scriptChild = createFakeChild(1145);
+    spawnMock.mockReturnValueOnce(scriptChild);
+    const context = createContext();
+    context.config.script!.commands.send = 'echo "safe\r\nopaque-value"';
+    const provider = new ScriptProviderAdapter(context);
+
+    const failurePromise = provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    scriptChild.stderr.write("opaque-value");
+    scriptChild.emit("close", 7, null);
+    const failure = await failurePromise;
+
+    expect(ensureErrorMessage(failure)).toContain("[script diagnostics redacted]");
+    expect(ensureErrorMessage(failure)).not.toContain("opaque-value");
+  });
+
   it("suppresses parsed diagnostics for a non-cmd ComSpec", async () => {
     const originalComSpec = process.env.ComSpec;
     process.env.ComSpec = String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`;
