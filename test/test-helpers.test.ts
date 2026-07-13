@@ -139,6 +139,43 @@ describe("test helpers", () => {
     }
   });
 
+  it("forwards detached writes after their capture is restored", async () => {
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let releaseDetached!: () => void;
+    let releaseSecond!: () => void;
+    const detachedGate = new Promise<void>((resolve) => {
+      releaseDetached = resolve;
+    });
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    let detachedWrite!: Promise<void>;
+
+    try {
+      const first = await captureWrites(() => {
+        process.stdout.write("first");
+        detachedWrite = detachedGate.then(() => {
+          process.stdout.write("detached");
+        });
+      });
+      const secondPromise = captureWrites(async () => {
+        await secondGate;
+        process.stdout.write("second");
+      });
+
+      releaseDetached();
+      await detachedWrite;
+      releaseSecond();
+      const second = await secondPromise;
+
+      expect(first.stdout).toEqual(["first"]);
+      expect(second.stdout).toEqual(["second"]);
+      expect(stdoutWrite.mock.calls.map(([chunk]) => chunk)).toEqual(["detached"]);
+    } finally {
+      stdoutWrite.mockRestore();
+    }
+  });
+
   it("runs every cleanup operation before reporting failures", async () => {
     const completed: string[] = [];
 
