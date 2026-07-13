@@ -274,9 +274,18 @@ function consumeRecordedChunk(
 }
 
 async function appendJsonLine(filePath: string, line: string): Promise<void> {
-  await serializeAppend(filePath, async (publicationPath, logicalPath) => {
-    await appendCommittedLine(publicationPath, logicalPath, line, true);
-  });
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await serializeAppend(filePath, async (publicationPath, logicalPath) => {
+        await appendCommittedLine(publicationPath, logicalPath, line, true);
+      });
+      return;
+    } catch (error) {
+      if (!(error instanceof RecorderRotatedError) || attempt + 1 >= RECORDER_ROTATION_ATTEMPTS) {
+        throw error;
+      }
+    }
+  }
 }
 
 async function readRecorderFileIdentity(

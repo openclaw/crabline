@@ -2516,13 +2516,16 @@ describe("OpenClaw local provider bridge", () => {
                 ...manifest,
                 recorderPath: params.recorderPath!,
               },
-              probe: async () => ({
-                ok: true,
-                result: {
-                  is_bot: true,
-                  username: "crabline_bot",
-                },
-              }),
+              probe: async () => {
+                await fs.writeFile(params.recorderPath!, '{"event":"probe"}\n');
+                return {
+                  ok: true,
+                  result: {
+                    is_bot: true,
+                    username: "crabline_bot",
+                  },
+                };
+              },
             }) as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>,
         },
       );
@@ -2613,7 +2616,11 @@ describe("OpenClaw local provider bridge", () => {
             proof: "provider-api-probe",
             provider: "telegram",
             ready: true,
-            recorderPath: "artifacts/crabline/telegram-fake-provider.jsonl",
+            recorderPath: path.join(
+              OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
+              result.generation,
+              "telegram-fake-provider.jsonl",
+            ),
             probe: {
               ok: true,
               result: {
@@ -2632,8 +2639,23 @@ describe("OpenClaw local provider bridge", () => {
       });
       const writtenManifest = JSON.parse(
         await fs.readFile(path.join(outputDir, result.manifestPath), "utf8"),
-      ) as { provider?: string };
+      ) as { provider?: string; recorderPath?: string };
       expect(writtenManifest.provider).toBe("telegram");
+      expect(writtenManifest.recorderPath).toBe(
+        path.join(
+          OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
+          result.generation,
+          "telegram-fake-provider.jsonl",
+        ),
+      );
+      await expect(
+        fs.readFile(path.join(outputDir, writtenManifest.recorderPath!), "utf8"),
+      ).resolves.toBe('{"event":"probe"}\n');
+      expect(
+        (await fs.readdir(path.join(outputDir, "artifacts", "crabline"))).filter((entry) =>
+          entry.endsWith(".tmp"),
+        ),
+      ).toEqual([]);
       expect(await fs.readFile(legacyManifestPath, "utf8")).toBe("permissive stale manifest\n");
       const manifestMode = (await fs.stat(path.join(outputDir, result.manifestPath))).mode & 0o777;
       const expectedMode = process.platform === "win32" ? manifestMode : 0o600;
@@ -2653,6 +2675,217 @@ describe("OpenClaw local provider bridge", () => {
       await fs.rm(outputDir, { recursive: true, force: true });
     }
   });
+
+  it("keeps readiness recorder snapshots immutable across later generations", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-snapshots-"));
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    let run = 0;
+    const startAdapter = async (params: Parameters<typeof startOpenClawCrablineAdapter>[0]) => {
+      const currentRun = ++run;
+      await fs.writeFile(params.recorderPath!, `run-${currentRun}\n`);
+      return {
+        close: async () => undefined,
+        manifest: {
+          ...manifest,
+          recorderPath: params.recorderPath!,
+        },
+        probe: async () => ({ currentRun }),
+      } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
+    };
+    try {
+      const first = await runProviderReadinessWithDependencies(
+        { outputDir, selection },
+        { startAdapter },
+      );
+      const firstRecorderPath = (first.providerReadiness as { result: { recorderPath: string } })
+        .result.recorderPath;
+      await expect(fs.readFile(path.join(outputDir, firstRecorderPath), "utf8")).resolves.toBe(
+        "run-1\n",
+      );
+
+      const second = await runProviderReadinessWithDependencies(
+        { outputDir, selection },
+        { startAdapter },
+      );
+      const secondRecorderPath = (second.providerReadiness as { result: { recorderPath: string } })
+        .result.recorderPath;
+
+      expect(secondRecorderPath).not.toBe(firstRecorderPath);
+      await expect(fs.readFile(path.join(outputDir, firstRecorderPath), "utf8")).resolves.toBe(
+        "run-1\n",
+      );
+      await expect(fs.readFile(path.join(outputDir, secondRecorderPath), "utf8")).resolves.toBe(
+        "run-2\n",
+      );
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reclaims only exact stale readiness recorder temporaries", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-recovery-"));
+    const recorderDirectory = path.join(outputDir, "artifacts", "crabline");
+    const staleTelegram = ".telegram-fake-provider.11111111-1111-4111-8111-111111111111.jsonl.tmp";
+    const staleSlack = ".slack-fake-provider.22222222-2222-4222-8222-222222222222.jsonl.tmp";
+    const staleTelegramLock = `${staleTelegram}.lock`;
+    const lookalike = ".telegram-fake-provider.not-a-uuid.jsonl.tmp";
+    const lookalikeLock = `${staleTelegram}.lock.extra`;
+    const unrelatedLock = "unrelated.lock";
+    const lookalikeTombstone = `.${staleTelegramLock}.1234.not-a-uuid.remove`;
+    const matchingDirectory =
+      ".telegram-fake-provider.33333333-3333-4333-8333-333333333333.jsonl.tmp";
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    try {
+      await fs.mkdir(path.join(recorderDirectory, matchingDirectory), { recursive: true });
+      await fs.mkdir(path.join(recorderDirectory, staleTelegramLock), { recursive: true });
+      await fs.mkdir(path.join(recorderDirectory, lookalikeLock), { recursive: true });
+      await fs.mkdir(path.join(recorderDirectory, unrelatedLock), { recursive: true });
+      await fs.mkdir(path.join(recorderDirectory, lookalikeTombstone), { recursive: true });
+      await Promise.all([
+        fs.writeFile(path.join(recorderDirectory, staleTelegram), "stale telegram\n"),
+        fs.writeFile(path.join(recorderDirectory, staleSlack), "stale slack\n"),
+        fs.writeFile(path.join(recorderDirectory, lookalike), "preserve\n"),
+      ]);
+
+      await runProviderReadinessWithDependencies(
+        { outputDir, selection },
+        {
+          startAdapter: async (params) =>
+            ({
+              close: async () => undefined,
+              manifest: { ...manifest, recorderPath: params.recorderPath! },
+              probe: async () => ({ ok: true }),
+            }) as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>,
+        },
+      );
+
+      await expect(fs.stat(path.join(recorderDirectory, staleTelegram))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(fs.stat(path.join(recorderDirectory, staleSlack))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(fs.stat(path.join(recorderDirectory, staleTelegramLock))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(fs.readFile(path.join(recorderDirectory, lookalike), "utf8")).resolves.toBe(
+        "preserve\n",
+      );
+      await expect(fs.stat(path.join(recorderDirectory, lookalikeLock))).resolves.toMatchObject({
+        isDirectory: expect.any(Function),
+      });
+      await expect(fs.stat(path.join(recorderDirectory, unrelatedLock))).resolves.toMatchObject({
+        isDirectory: expect.any(Function),
+      });
+      await expect(
+        fs.stat(path.join(recorderDirectory, lookalikeTombstone)),
+      ).resolves.toMatchObject({
+        isDirectory: expect.any(Function),
+      });
+      await expect(fs.stat(path.join(recorderDirectory, matchingDirectory))).resolves.toMatchObject(
+        {
+          isDirectory: expect.any(Function),
+        },
+      );
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reclaims recorder lock tombstones after interrupted removal", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-lock-retry-"));
+    const recorderDirectory = path.join(outputDir, "artifacts", "crabline");
+    const lockName = ".telegram-fake-provider.55555555-5555-4555-8555-555555555555.jsonl.tmp.lock";
+    const removalFailure = new Error("simulated recorder lock tombstone removal interruption");
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    let rmSpy: ReturnType<typeof vi.spyOn> | undefined;
+    const startAdapter = async (params: Parameters<typeof startOpenClawCrablineAdapter>[0]) =>
+      ({
+        close: async () => undefined,
+        manifest: { ...manifest, recorderPath: params.recorderPath! },
+        probe: async () => ({ ok: true }),
+      }) as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
+    try {
+      await fs.mkdir(path.join(recorderDirectory, lockName), { recursive: true });
+      const originalRm = fs.rm.bind(fs);
+      let interruptRemoval = true;
+      rmSpy = vi.spyOn(fs, "rm").mockImplementation(async (candidatePath, options) => {
+        if (
+          interruptRemoval &&
+          path.basename(String(candidatePath)).includes(".jsonl.tmp.lock.") &&
+          String(candidatePath).endsWith(".remove")
+        ) {
+          interruptRemoval = false;
+          throw removalFailure;
+        }
+        await originalRm(candidatePath, options);
+      });
+
+      await expect(
+        runProviderReadinessWithDependencies({ outputDir, selection }, { startAdapter }),
+      ).rejects.toBe(removalFailure);
+      rmSpy.mockRestore();
+      rmSpy = undefined;
+
+      const retainedTombstones = (await fs.readdir(recorderDirectory)).filter((entry) =>
+        entry.endsWith(".remove"),
+      );
+      expect(retainedTombstones).toHaveLength(1);
+      expect(retainedTombstones[0]).toMatch(
+        /^\.\.telegram-fake-provider\.55555555-5555-4555-8555-555555555555\.jsonl\.tmp\.lock\.\d+\.[0-9a-f-]{36}\.remove$/u,
+      );
+
+      await runProviderReadinessWithDependencies({ outputDir, selection }, { startAdapter });
+
+      expect((await fs.readdir(recorderDirectory)).some((entry) => entry.endsWith(".remove"))).toBe(
+        false,
+      );
+    } finally {
+      rmSpy?.mockRestore();
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "preserves exact recorder temporary lock symlinks without following them",
+    async () => {
+      const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-lock-symlink-"));
+      const recorderDirectory = path.join(outputDir, "artifacts", "crabline");
+      const targetDirectory = path.join(outputDir, "external-lock-target");
+      const lockName =
+        ".telegram-fake-provider.44444444-4444-4444-8444-444444444444.jsonl.tmp.lock";
+      const lockPath = path.join(recorderDirectory, lockName);
+      const tombstoneName = `.${lockName}.1234.66666666-6666-4666-8666-666666666666.remove`;
+      const tombstonePath = path.join(recorderDirectory, tombstoneName);
+      const markerPath = path.join(targetDirectory, "preserve.txt");
+      const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+      try {
+        await fs.mkdir(recorderDirectory, { recursive: true });
+        await fs.mkdir(targetDirectory);
+        await fs.writeFile(markerPath, "preserve\n");
+        await fs.symlink(targetDirectory, lockPath);
+        await fs.symlink(targetDirectory, tombstonePath);
+
+        await runProviderReadinessWithDependencies(
+          { outputDir, selection },
+          {
+            startAdapter: async (params) =>
+              ({
+                close: async () => undefined,
+                manifest: { ...manifest, recorderPath: params.recorderPath! },
+                probe: async () => ({ ok: true }),
+              }) as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>,
+          },
+        );
+
+        expect((await fs.lstat(lockPath)).isSymbolicLink()).toBe(true);
+        expect((await fs.lstat(tombstonePath)).isSymbolicLink()).toBe(true);
+        await expect(fs.readFile(markerPath, "utf8")).resolves.toBe("preserve\n");
+      } finally {
+        await fs.rm(outputDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("owns complete artifact publication and releases only after the generation is installed", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-artifacts-"));

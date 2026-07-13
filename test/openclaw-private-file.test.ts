@@ -10,6 +10,24 @@ import {
 } from "../src/openclaw/private-file.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
+function expectedAncestrySyncPaths(filePath: string, syncThroughPath?: string): string[] {
+  const paths: string[] = [];
+  let currentPath = path.resolve(filePath);
+  const resolvedSyncThroughPath =
+    syncThroughPath === undefined ? undefined : path.resolve(syncThroughPath);
+  for (;;) {
+    paths.push(currentPath);
+    if (currentPath === resolvedSyncThroughPath) {
+      return paths;
+    }
+    const parentPath = path.dirname(currentPath);
+    if (path.dirname(parentPath) === parentPath) {
+      return paths;
+    }
+    currentPath = parentPath;
+  }
+}
+
 describe("OpenClaw private file publication", () => {
   it("replaces permissive POSIX files with mode 0600", async () => {
     const directory = await createTempDir();
@@ -42,6 +60,113 @@ describe("OpenClaw private file publication", () => {
       await disposeTempDir(directory);
     }
   });
+
+  it("resyncs an existing private directory after an interrupted creation", async () => {
+    const directory = await createTempDir();
+    try {
+      const generationPath = path.join(directory, "generation");
+      const syncFailure = new Error("simulated parent sync interruption");
+      const syncParent = vi
+        .fn<(filePath: string, platform?: NodeJS.Platform) => Promise<void>>()
+        .mockRejectedValueOnce(syncFailure)
+        .mockResolvedValueOnce();
+      await fs.mkdir(generationPath, { mode: 0o700 });
+
+      await expect(
+        securePrivateDirectory(generationPath, { platform: "linux", syncParent }),
+      ).rejects.toBe(syncFailure);
+      await expect(fs.stat(generationPath)).resolves.toBeDefined();
+
+      const secured = await securePrivateDirectory(generationPath, {
+        platform: "linux",
+        syncParent,
+      });
+
+      await secured.assertIdentityAt();
+      expect(syncParent.mock.calls).toEqual([
+        [generationPath, "linux"],
+        [generationPath, "linux"],
+      ]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it.each(["EACCES", "EPERM"] as const)(
+    "accepts an existing private directory below a parent that rejects fsync with %s",
+    async (code) => {
+      const directory = await createTempDir();
+      try {
+        const generationPath = path.join(directory, "generation");
+        const syncParent = vi.fn(async () => {
+          throw Object.assign(new Error("inaccessible parent"), { code });
+        });
+        await fs.mkdir(generationPath, { mode: 0o700 });
+
+        const secured = await securePrivateDirectory(generationPath, {
+          platform: "linux",
+          syncParent,
+        });
+
+        await secured.assertIdentityAt();
+        expect(syncParent).toHaveBeenCalledWith(generationPath, "linux");
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it.each(["EACCES", "EPERM"] as const)(
+    "rolls back a newly created private directory when parent fsync fails with %s",
+    async (code) => {
+      const directory = await createTempDir();
+      try {
+        const generationPath = path.join(directory, "generation");
+        const syncFailure = Object.assign(new Error("parent sync denied"), { code });
+
+        await expect(
+          securePrivateDirectory(generationPath, {
+            platform: "linux",
+            syncParent: async () => {
+              throw syncFailure;
+            },
+          }),
+        ).rejects.toBe(syncFailure);
+
+        await expect(fs.stat(generationPath)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.readdir(directory)).resolves.toEqual([]);
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects POSIX private directories not owned by the current user",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const generationPath = path.join(directory, "generation");
+        await fs.mkdir(generationPath, { mode: 0o777 });
+        await fs.chmod(generationPath, 0o777);
+        const currentUserId = process.geteuid?.();
+        if (currentUserId === undefined) {
+          throw new Error("POSIX effective user id is unavailable.");
+        }
+
+        await expect(
+          securePrivateDirectory(generationPath, {
+            currentUserId: currentUserId + 1,
+            platform: "linux",
+          }),
+        ).rejects.toThrow("Private directory must be owned by the current POSIX user.");
+
+        expect((await fs.stat(generationPath)).mode & 0o777).toBe(0o777);
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "rejects a symlinked POSIX directory before changing target permissions",
@@ -338,7 +463,7 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
-  it("syncs the parent directory after atomic publication", async () => {
+  it("stops safely at an inaccessible pre-existing ancestor after publication", async () => {
     const directory = await createTempDir();
     try {
       const filePath = path.join(directory, "manifest.json");
@@ -349,12 +474,149 @@ describe("OpenClaw private file publication", () => {
           events.push("afterRename");
         },
         syncParent: async (publishedPath) => {
-          expect(publishedPath).toBe(filePath);
-          events.push("syncParent");
+          events.push(`sync:${publishedPath}`);
+          if (publishedPath === directory) {
+            throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
+          }
         },
       });
 
-      expect(events).toEqual(["syncParent", "afterRename"]);
+      expect(events).toEqual([`sync:${filePath}`, `sync:${directory}`, "afterRename"]);
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("fails publication when the immediate parent directory cannot be synced", async () => {
+    const directory = await createTempDir();
+    try {
+      const filePath = path.join(directory, "manifest.json");
+      const syncFailure = Object.assign(new Error("publication directory denied"), {
+        code: "EACCES",
+      });
+      const afterRename = vi.fn<() => Promise<void>>();
+
+      await expect(
+        publishPrivateFileAtomically(filePath, "private\n", {
+          afterRename,
+          syncParent: async (publishedPath) => {
+            expect(publishedPath).toBe(filePath);
+            throw syncFailure;
+          },
+        }),
+      ).rejects.toBe(syncFailure);
+
+      expect(afterRename).not.toHaveBeenCalled();
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("fails publication when known newly created ancestry cannot be synced", async () => {
+    const directory = await createTempDir();
+    try {
+      const firstParent = path.join(directory, "first");
+      const finalParent = path.join(firstParent, "nested");
+      const filePath = path.join(finalParent, "manifest.json");
+      const syncFailure = Object.assign(new Error("created ancestry denied"), { code: "EPERM" });
+      const syncedPaths: string[] = [];
+
+      await expect(
+        publishPrivateFileAtomically(filePath, "private\n", {
+          syncParent: async (publishedPath) => {
+            syncedPaths.push(publishedPath);
+            if (publishedPath === firstParent) {
+              throw syncFailure;
+            }
+          },
+        }),
+      ).rejects.toBe(syncFailure);
+
+      expect(syncedPaths).toEqual([filePath, finalParent, firstParent]);
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("syncs newly created ancestry through its existing parent", async () => {
+    const directory = await createTempDir();
+    try {
+      const firstParent = path.join(directory, "first");
+      const secondParent = path.join(firstParent, "second");
+      const filePath = path.join(secondParent, "manifest.json");
+      const syncedPaths: string[] = [];
+
+      await publishPrivateFileAtomically(filePath, "private\n", {
+        syncParent: async (publishedPath) => {
+          syncedPaths.push(publishedPath);
+        },
+      });
+
+      expect(syncedPaths).toEqual(expectedAncestrySyncPaths(filePath, firstParent));
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("publishes through a newly created descendant beginning with two dots", async () => {
+    const directory = await createTempDir();
+    try {
+      const firstParent = path.join(directory, "first");
+      const dottedParent = path.join(firstParent, "..cache");
+      const finalParent = path.join(dottedParent, "nested");
+      const filePath = path.join(finalParent, "manifest.json");
+      const syncedPaths: string[] = [];
+
+      await publishPrivateFileAtomically(filePath, "private\n", {
+        syncParent: async (publishedPath) => {
+          syncedPaths.push(publishedPath);
+        },
+      });
+
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+      await expect(fs.readdir(finalParent)).resolves.toEqual(["manifest.json"]);
+      expect(syncedPaths).toEqual(expectedAncestrySyncPaths(filePath, firstParent));
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("resyncs pre-existing ancestry after an interrupted publication attempt", async () => {
+    const directory = await createTempDir();
+    const ancestrySyncFailure = new Error("simulated ancestry sync interruption");
+    try {
+      const filePath = path.join(directory, "first", "second", "manifest.json");
+      const syncAttempts: string[][] = [[], []];
+      let attempt = 0;
+      const syncParent = async (publishedPath: string) => {
+        syncAttempts[attempt]!.push(publishedPath);
+        if (attempt === 0) {
+          throw ancestrySyncFailure;
+        }
+        if (publishedPath === directory) {
+          throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
+        }
+      };
+
+      await expect(publishPrivateFileAtomically(filePath, "first\n", { syncParent })).rejects.toBe(
+        ancestrySyncFailure,
+      );
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("first\n");
+
+      attempt = 1;
+      await publishPrivateFileAtomically(filePath, "second\n", { syncParent });
+
+      expect(syncAttempts[0]).toEqual([filePath]);
+      expect(syncAttempts[1]).toEqual([
+        filePath,
+        path.dirname(filePath),
+        path.dirname(path.dirname(filePath)),
+        directory,
+      ]);
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
     } finally {
       await disposeTempDir(directory);
     }

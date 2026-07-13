@@ -664,6 +664,80 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("reclaims interrupted artifact removal tombstones", async () => {
+    const outputDir = await createTempDir();
+    const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
+    const tombstoneName =
+      ".generation-22222222-2222-4222-8222-222222222222.4242.33333333-3333-4333-8333-333333333333.remove";
+    try {
+      await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      });
+      await fs.mkdir(path.join(storePath, tombstoneName), { mode: 0o700 });
+      await fs.writeFile(path.join(storePath, tombstoneName, "stale.json"), "{}\n");
+
+      await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "44444444-4444-4444-8444-444444444444",
+      });
+
+      await expect(fs.stat(path.join(storePath, tombstoneName))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect((await fs.readdir(storePath)).some((entry) => entry.endsWith(".remove"))).toBe(false);
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("keeps removal tombstones recognizable when reclamation is interrupted", async () => {
+    const outputDir = await createTempDir();
+    const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
+    const tombstoneBaseName = "generation-22222222-2222-4222-8222-222222222222";
+    const tombstoneName = `.${tombstoneBaseName}.4242.33333333-3333-4333-8333-333333333333.remove`;
+    const removalFailure = new Error("simulated interrupted tombstone removal");
+    let rmSpy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      });
+      await fs.mkdir(path.join(storePath, tombstoneName), { mode: 0o700 });
+      await fs.writeFile(path.join(storePath, tombstoneName, "stale.json"), "{}\n");
+
+      const originalRm = fs.rm.bind(fs);
+      let interruptRemoval = true;
+      rmSpy = vi.spyOn(fs, "rm").mockImplementation(async (candidatePath, options) => {
+        if (interruptRemoval && String(candidatePath).endsWith(".remove")) {
+          interruptRemoval = false;
+          throw removalFailure;
+        }
+        await originalRm(candidatePath, options);
+      });
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+          createGenerationId: () => "44444444-4444-4444-8444-444444444444",
+        }),
+      ).rejects.toBe(removalFailure);
+      rmSpy.mockRestore();
+      rmSpy = undefined;
+
+      const retainedTombstones = (await fs.readdir(storePath)).filter((entry) =>
+        entry.endsWith(".remove"),
+      );
+      expect(retainedTombstones).toHaveLength(1);
+      expect(retainedTombstones[0]).toMatch(
+        new RegExp(`^\\.${tombstoneBaseName}\\.\\d+\\.[0-9a-f-]{36}\\.remove$`, "u"),
+      );
+
+      await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "55555555-5555-4555-8555-555555555555",
+      });
+      expect((await fs.readdir(storePath)).some((entry) => entry.endsWith(".remove"))).toBe(false);
+    } finally {
+      rmSpy?.mockRestore();
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("removes staging when artifact serialization fails", async () => {
     const outputDir = await createTempDir();
     const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);

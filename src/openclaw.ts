@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { BigIntStats } from "node:fs";
 import {
   CRABLINE_SERVER_CHANNELS,
   isCrablineServerChannel,
@@ -39,6 +41,7 @@ import {
 } from "./openclaw/shared.js";
 import { publishOpenClawCrablineArtifactGeneration } from "./openclaw/artifact-generation.js";
 import { isAcceptedOpenClawCrablineOutbound } from "./openclaw/outbound-contract.js";
+import { syncParentDirectory } from "./openclaw/private-file.js";
 import {
   acquireOpenClawCrablineSmokeRunLock,
   releaseOpenClawCrablineSmokeRunLock,
@@ -82,6 +85,108 @@ const OPENCLAW_CRABLINE_PROVIDER_BRIDGES = {
 const OPENCLAW_CRABLINE_PROVIDER_BRIDGE_LIST = Object.values(
   OPENCLAW_CRABLINE_PROVIDER_BRIDGES,
 ) as readonly OpenClawCrablineProviderBridge[];
+const RECORDER_TEMP_NAME_PATTERN =
+  /^\.([a-z]+)-fake-provider\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl\.tmp$/iu;
+const RECORDER_LOCK_REMOVAL_TOMBSTONE_PATTERN =
+  /^\.(.+)\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove$/iu;
+
+function isOpenClawCrablineRecorderTemporary(name: string): boolean {
+  const channel = RECORDER_TEMP_NAME_PATTERN.exec(name)?.[1]?.toLowerCase();
+  return channel !== undefined && isCrablineServerChannel(channel);
+}
+
+function isOpenClawCrablineRecorderTemporaryLock(name: string): boolean {
+  return name.endsWith(".lock") && isOpenClawCrablineRecorderTemporary(name.slice(0, -5));
+}
+
+function openClawCrablineRecorderLockTombstoneBaseName(name: string): string | null {
+  const originalName = RECORDER_LOCK_REMOVAL_TOMBSTONE_PATTERN.exec(name)?.[1];
+  return originalName !== undefined && isOpenClawCrablineRecorderTemporaryLock(originalName)
+    ? originalName
+    : null;
+}
+
+async function reclaimOpenClawCrablineRecorderTemporaryLock(
+  directoryPath: string,
+  name: string,
+  lock: Awaited<ReturnType<typeof acquireOpenClawCrablineSmokeRunLock>>,
+  quarantineBaseName = name,
+): Promise<void> {
+  const lockPath = path.join(directoryPath, name);
+  let identity: BigIntStats;
+  try {
+    identity = await fs.lstat(lockPath, { bigint: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  if (!identity.isDirectory()) {
+    return;
+  }
+  const currentUserId = process.geteuid?.();
+  if (currentUserId !== undefined && identity.uid !== BigInt(currentUserId)) {
+    return;
+  }
+
+  const quarantinePath = path.join(
+    directoryPath,
+    `.${quarantineBaseName}.${process.pid}.${randomUUID()}.remove`,
+  );
+  await lock.assertOwned();
+  try {
+    await fs.rename(lockPath, quarantinePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  const quarantined = await fs.lstat(quarantinePath, { bigint: true });
+  if (
+    !quarantined.isDirectory() ||
+    quarantined.dev !== identity.dev ||
+    quarantined.ino !== identity.ino
+  ) {
+    throw new Error("OpenClaw Crabline recorder lock identity changed during recovery.");
+  }
+  await syncParentDirectory(quarantinePath);
+  await fs.rm(quarantinePath, { force: true, recursive: true });
+  await syncParentDirectory(quarantinePath);
+}
+
+async function reclaimOpenClawCrablineRecorderTemporaries(
+  directoryPath: string,
+  lock: Awaited<ReturnType<typeof acquireOpenClawCrablineSmokeRunLock>>,
+): Promise<void> {
+  for (const entry of await fs.readdir(directoryPath, { withFileTypes: true })) {
+    const tombstoneBaseName = entry.isDirectory()
+      ? openClawCrablineRecorderLockTombstoneBaseName(entry.name)
+      : null;
+    if (isOpenClawCrablineRecorderTemporaryLock(entry.name) || tombstoneBaseName !== null) {
+      if (entry.isDirectory()) {
+        await reclaimOpenClawCrablineRecorderTemporaryLock(
+          directoryPath,
+          entry.name,
+          lock,
+          tombstoneBaseName ?? entry.name,
+        );
+      }
+      continue;
+    }
+    if (
+      !isOpenClawCrablineRecorderTemporary(entry.name) ||
+      (!entry.isFile() && !entry.isSymbolicLink())
+    ) {
+      continue;
+    }
+    await lock.assertOwned();
+    const temporaryPath = path.join(directoryPath, entry.name);
+    await fs.rm(temporaryPath, { force: true });
+    await syncParentDirectory(temporaryPath);
+  }
+}
 
 function createOpenClawCrablineProviderAdapter(
   manifest: CrablineServerManifest,
@@ -248,15 +353,16 @@ export async function runOpenClawCrablineProviderReadiness(
   let outcome:
     | { committed: false; error: unknown }
     | { committed: true; result: OpenClawCrablineProviderReadinessResult };
+  let recorderPath: string | undefined;
 
   try {
-    const recorderPath = path.join(
-      outputDir,
-      "artifacts",
-      "crabline",
-      `${params.selection.channel}-fake-provider.jsonl`,
+    const recorderDirectory = path.join(outputDir, "artifacts", "crabline");
+    await fs.mkdir(recorderDirectory, { recursive: true });
+    await reclaimOpenClawCrablineRecorderTemporaries(recorderDirectory, smokeLock);
+    recorderPath = path.join(
+      recorderDirectory,
+      `.${params.selection.channel}-fake-provider.${randomUUID()}.jsonl.tmp`,
     );
-    await fs.mkdir(path.dirname(recorderPath), { recursive: true });
     const adapter = await (dependencies.startAdapter ?? startOpenClawCrablineAdapter)({
       channel: params.selection.channel,
       openclawConfig: {},
@@ -306,6 +412,14 @@ export async function runOpenClawCrablineProviderReadiness(
     if (probeFailed) {
       throw probeFailure;
     }
+    let recorderSnapshotContents = "";
+    try {
+      recorderSnapshotContents = await fs.readFile(recorderPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
 
     const capabilityReport = {
       result: {
@@ -332,9 +446,21 @@ export async function runOpenClawCrablineProviderReadiness(
       lock: smokeLock,
       manifest: adapter.manifest,
       outputDir,
+      recorderSnapshot: {
+        contents: recorderSnapshotContents,
+        fileName: `${params.selection.channel}-fake-provider.jsonl`,
+      },
       selection: params.selection,
       providerReadiness,
     });
+    let recorderCleanupWarning: string | undefined;
+    try {
+      await fs.rm(recorderPath, { force: true });
+      recorderPath = undefined;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      recorderCleanupWarning = `OpenClaw Crabline recorder snapshot committed but temporary cleanup failed: ${detail}`;
+    }
     outcome = {
       committed: true,
       result: {
@@ -347,11 +473,52 @@ export async function runOpenClawCrablineProviderReadiness(
         providerReadinessArtifactPath: generation.providerReadinessArtifactPath,
         smoke: generation.providerReadiness,
         smokeArtifactPath: generation.providerReadinessArtifactPath,
-        ...(generation.warnings ? { warnings: generation.warnings } : {}),
+        ...(generation.warnings || recorderCleanupWarning
+          ? {
+              warnings: [
+                ...(generation.warnings ?? []),
+                ...(recorderCleanupWarning ? [recorderCleanupWarning] : []),
+              ],
+            }
+          : {}),
       },
     };
   } catch (error) {
-    outcome = { committed: false, error };
+    let primaryError = error;
+    if (recorderPath) {
+      try {
+        await fs.rm(recorderPath, { force: true });
+        recorderPath = undefined;
+      } catch (cleanupError) {
+        if (primaryError instanceof Error) {
+          const existingCause = primaryError.cause;
+          try {
+            Object.defineProperty(primaryError, "cause", {
+              configurable: true,
+              value:
+                existingCause === undefined
+                  ? cleanupError
+                  : new AggregateError(
+                      [existingCause, cleanupError],
+                      "OpenClaw Crabline readiness failure cleanup also failed.",
+                    ),
+            });
+          } catch {
+            // Frozen failures remain authoritative even if temporary cleanup also fails.
+          }
+        } else {
+          const combinedError = new Error(
+            "OpenClaw Crabline readiness and temporary cleanup both failed.",
+            { cause: cleanupError },
+          );
+          Object.defineProperty(combinedError, "errors", {
+            value: [primaryError, cleanupError],
+          });
+          primaryError = combinedError;
+        }
+      }
+    }
+    outcome = { committed: false, error: primaryError };
   }
 
   try {
