@@ -34,6 +34,7 @@ type ZaloChatType = "GROUP" | "PRIVATE";
 
 const DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_MS = 5_000;
 const MAX_ACTIVE_ZALO_WEBHOOK_VALIDATIONS = 8;
+const MAX_ZALO_REDACTION_DEPTH = 32;
 const MAX_WEBHOOK_DELIVERY_TIMEOUT_MS = 30_000;
 const MAX_ZALO_WEBHOOK_SECRET_BYTES = 256;
 
@@ -189,14 +190,15 @@ const SENSITIVE_PARAM_NAMES = new Set([
 ]);
 
 function isSensitiveParam(name: string): boolean {
-  const canonicalName = name
-    .normalize("NFKC")
-    .replace(/[^A-Za-z0-9]/gu, "")
-    .toLowerCase();
+  const normalizedName = name.normalize("NFKC");
+  const canonicalName = normalizedName.replace(/[^A-Za-z0-9]/gu, "").toLowerCase();
   return (
     SENSITIVE_PARAM_NAMES.has(canonicalName) ||
+    /[a-z0-9](?:Credential|Credentials|Key|Password|Passwd|Secret|Signature|Token)s?$/u.test(
+      normalizedName,
+    ) ||
     /(?:^|[_-])(?:access[_-]?token|api[_-]?key|authorization|key|password|secret|signature|token)(?:$|[_-])/iu.test(
-      name,
+      normalizedName,
     )
   );
 }
@@ -205,15 +207,21 @@ function isUrlParam(name: string): boolean {
   return /(?:urls?|uris?)$/iu.test(name.normalize("NFKC").replace(/[^A-Za-z0-9]/gu, ""));
 }
 
-function redactParamValue(value: unknown, key: string): unknown {
+function redactParamValue(value: unknown, key: string, depth: number): unknown {
   if (isSensitiveParam(key)) {
     return "<redacted>";
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => redactParamValue(entry, key));
+    if (depth >= MAX_ZALO_REDACTION_DEPTH) {
+      return "<redacted>";
+    }
+    return value.map((entry) => redactParamValue(entry, key, depth + 1));
   }
   if (isJsonObject(value)) {
-    return redactParams(value);
+    if (depth >= MAX_ZALO_REDACTION_DEPTH) {
+      return "<redacted>";
+    }
+    return redactParams(value, depth + 1);
   }
   if (
     typeof value === "string" &&
@@ -224,9 +232,9 @@ function redactParamValue(value: unknown, key: string): unknown {
   return value;
 }
 
-function redactParams(params: Record<string, unknown>): Record<string, unknown> {
+function redactParams(params: Record<string, unknown>, depth = 0): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(params).map(([key, value]) => [key, redactParamValue(value, key)]),
+    Object.entries(params).map(([key, value]) => [key, redactParamValue(value, key, depth)]),
   );
 }
 

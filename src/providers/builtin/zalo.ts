@@ -14,9 +14,11 @@ import {
   requireNativeInboundId,
 } from "./native-local-mock.js";
 
+type ZaloEnvironment = Partial<Pick<NodeJS.ProcessEnv, "ZALO_BOT_TOKEN" | "ZALO_WEBHOOK_SECRET">>;
+
 export function resolveZaloAdapterConfig(
   config: ProviderConfig,
-  env: NodeJS.ProcessEnv = process.env,
+  env: ZaloEnvironment = process.env,
 ) {
   return {
     botToken: config.zalo?.botToken ?? env.ZALO_BOT_TOKEN ?? "local-mock-zalo-token",
@@ -25,8 +27,9 @@ export function resolveZaloAdapterConfig(
 }
 
 export class ZaloProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
-  constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
-    const resolvedConfig = resolveZaloAdapterConfig(config);
+  constructor(id: string, config: ProviderConfig, _userName: string, runtime?: unknown) {
+    const env = (runtime as { env?: ZaloEnvironment } | undefined)?.env ?? process.env;
+    const resolvedConfig = resolveZaloAdapterConfig(config, env);
     const authenticateWebhook = resolvedConfig.webhookSecret
       ? createSecretVerifier(resolvedConfig.webhookSecret)
       : undefined;
@@ -81,10 +84,23 @@ export function normalizeZaloWebhookPayload(payload: unknown) {
   const chat = message ? optionalRecord(message, "chat") : undefined;
   const senderId = sender ? optionalString(sender, "id") : undefined;
   const chatId = chat ? optionalString(chat, "id") : senderId;
-  const text = message ? optionalString(message, "text") : undefined;
+  const eventName = optionalString(wrapped, "event_name");
+  // Live Zalo Bot image callbacks expose the media URL as photo_url, not photo.
+  const photoUrl =
+    eventName === "message.image.received" && message
+      ? optionalString(message, "photo_url")
+      : undefined;
+  const text =
+    eventName === "message.image.received"
+      ? photoUrl
+        ? optionalString(message ?? {}, "caption") || photoUrl
+        : undefined
+      : message
+        ? optionalString(message, "text")
+        : undefined;
   if (!senderId || !chatId || !text) {
     throw new CrablineError(
-      "Zalo webhook payload requires sender identity, chat identity, and text",
+      "Zalo webhook payload requires sender identity, chat identity, and message content",
       {
         kind: "inbound",
       },
