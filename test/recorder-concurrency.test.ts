@@ -1,6 +1,6 @@
 import path from "node:path";
-import { link, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { userInfo } from "node:os";
+import { chmod, link, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir, userInfo } from "node:os";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendRecordedInbound,
@@ -284,14 +284,24 @@ describe("recorder append serialization", () => {
   });
 
   it.skipIf(process.platform === "win32")(
-    "falls back to a private adjacent lock namespace without an OS account entry",
+    "repairs a UID-scoped adjacent lock namespace without an OS account entry",
     async () => {
-      const recorderPath = path.join(
-        "/tmp",
-        `crabline-provider-recorder-unknown-user-${process.pid}-${Date.now()}.jsonl`,
+      const tempRoot = await mkdtemp(
+        path.join(tmpdir(), "crabline-provider-recorder-unknown-user-"),
       );
-      fsMocks.providerDirectory = await realpath(path.dirname(recorderPath));
+      const recorderPath = path.join(tempRoot, "events.jsonl");
+      fsMocks.providerDirectory = await realpath(tempRoot);
       fsMocks.providerWrite.mockResolvedValue(undefined);
+      const currentUserId = process.geteuid?.();
+      if (currentUserId === undefined) {
+        throw new Error("Expected a current user id on Unix.");
+      }
+      const fallbackRoot = path.join(
+        fsMocks.providerDirectory,
+        `.crabline-provider-recorder-locks-${currentUserId}`,
+      );
+      await mkdir(fallbackRoot, { mode: 0o700 });
+      await chmod(fallbackRoot, 0o500);
       osMocks.userInfo.mockImplementationOnce(() => {
         throw Object.assign(new Error("unknown uid"), { code: "ENOENT" });
       });
@@ -311,11 +321,10 @@ describe("recorder append serialization", () => {
           .map(([lockPath]) => String(lockPath))
           .find((lockPath) => path.basename(lockPath).startsWith("recorder-"));
         expect(identityLockPath).toBeDefined();
-        expect(path.dirname(identityLockPath!)).toBe(
-          path.join(fsMocks.providerDirectory, ".crabline-provider-recorder-locks"),
-        );
+        expect(path.dirname(identityLockPath!)).toBe(fallbackRoot);
+        expect((await stat(fallbackRoot)).mode & 0o777).toBe(0o700);
       } finally {
-        await rm(recorderPath, { force: true });
+        await rm(tempRoot, { force: true, recursive: true });
       }
     },
   );
