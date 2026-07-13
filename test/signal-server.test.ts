@@ -79,6 +79,42 @@ describe("signal local provider server", () => {
     });
   });
 
+  it("rejects non-JSON RPC bodies with the native empty 415 response", async () => {
+    const server = await startSignalServer();
+    servers.push(server);
+    const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+    try {
+      const body = JSON.stringify({
+        id: "wrong-media-type",
+        jsonrpc: "2.0",
+        method: "version",
+      });
+      for (const contentType of [undefined, "application/x-www-form-urlencoded", "text/plain"]) {
+        const rejected = await requestHttp({
+          agent,
+          body,
+          headers: {
+            "content-length": String(Buffer.byteLength(body)),
+            ...(contentType ? { "content-type": contentType } : {}),
+          },
+          method: "POST",
+          url: server.manifest.endpoints.rpcUrl,
+        });
+        expect(rejected.status).toBe(415);
+        expect(rejected.body).toBe("");
+      }
+
+      const check = await requestHttp({
+        agent,
+        method: "GET",
+        url: `${server.manifest.baseUrl}/api/v1/check`,
+      });
+      expect(check.status).toBe(200);
+    } finally {
+      agent.destroy();
+    }
+  });
+
   it("advertises valid URLs when bound to IPv6", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -454,6 +490,102 @@ describe("signal local provider server", () => {
       error: "text and at least one source identity are required",
       ok: false,
     });
+  });
+
+  it("validates and canonicalizes sourceUuid before emitting inbound events", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const controller = new AbortController();
+    const events = await fetch(server.manifest.endpoints.eventsUrl, {
+      signal: controller.signal,
+    });
+    try {
+      const invalid = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          sourceNumber: "+15557654321",
+          sourceUuid: "not-a-uuid",
+          text: "must not emit",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+      expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toEqual({
+        error: "sourceUuid must be a UUID",
+        ok: false,
+      });
+
+      const accepted = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          sourceUuid: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+          text: "canonical UUID",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+      expect(accepted.status).toBe(200);
+      const reader = events.body!.getReader();
+      const chunk = new TextDecoder().decode((await reader.read()).value);
+      expect(chunk).not.toContain("must not emit");
+      expect(chunk).toContain('"sourceUuid":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"');
+    } finally {
+      controller.abort();
+    }
+  });
+
+  it("advances generated timestamps past explicit inbound timestamps", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const explicitTimestamp = Date.now() + 60_000;
+
+    const explicit = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        sourceNumber: "+15557654321",
+        text: "future timestamp",
+        timestamp: explicitTimestamp,
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(explicit.status).toBe(200);
+
+    const rpc = await fetch(server.manifest.endpoints.rpcUrl, {
+      body: JSON.stringify({
+        id: "after-explicit",
+        jsonrpc: "2.0",
+        method: "send",
+        params: { message: "reply", recipient: "+15551234567" },
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    const rpcBody = (await rpc.json()) as { result: { timestamp: number } };
+    expect(rpcBody.result.timestamp).toBeGreaterThan(explicitTimestamp);
+
+    const generated = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        sourceNumber: "+15557654321",
+        text: "generated timestamp",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    const generatedBody = (await generated.json()) as {
+      event: { envelope: { timestamp: number } };
+    };
+    expect(generatedBody.event.envelope.timestamp).toBeGreaterThan(rpcBody.result.timestamp);
   });
 
   it("rejects invalid or negative supplied inbound timestamps", async () => {
