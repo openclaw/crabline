@@ -48,7 +48,7 @@ const fsMocks = vi.hoisted(() => {
         position: number,
       ) => Promise<{ bytesRead: number; buffer: Buffer }>
     >(),
-    stat: vi.fn<() => Promise<{ dev?: number; ino?: number; size: number }>>(),
+    stat: vi.fn<() => Promise<{ dev?: number; ino?: number; nlink?: number; size: number }>>(),
     sync: vi.fn<() => Promise<void>>(),
     truncate: vi.fn<(length: number) => Promise<void>>(),
   };
@@ -80,7 +80,9 @@ const fsMocks = vi.hoisted(() => {
         mode?: number,
       ) => Promise<typeof directory | typeof file>
     >(),
-    stat: vi.fn<(filePath: string) => Promise<{ dev?: number; ino?: number; size: number }>>(),
+    stat: vi.fn<
+      (filePath: string) => Promise<{ dev?: number; ino?: number; nlink?: number; size: number }>
+    >(),
   };
 });
 
@@ -217,7 +219,7 @@ beforeEach(() => {
   fsMocks.file.read.mockReset();
   fsMocks.file.read.mockResolvedValue({ buffer: Buffer.alloc(0), bytesRead: 0 });
   fsMocks.file.stat.mockReset();
-  fsMocks.file.stat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
+  fsMocks.file.stat.mockResolvedValue({ dev: 1, ino: 1, nlink: 1, size: 0 });
   fsMocks.file.sync.mockReset();
   fsMocks.file.sync.mockResolvedValue();
   fsMocks.file.truncate.mockReset();
@@ -241,7 +243,7 @@ beforeEach(() => {
     return typeof flags === "number" || flags === "r" ? fsMocks.directory : fsMocks.file;
   });
   fsMocks.stat.mockReset();
-  fsMocks.stat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
+  fsMocks.stat.mockResolvedValue({ dev: 1, ino: 1, nlink: 1, size: 0 });
 });
 
 afterEach(() => {
@@ -314,8 +316,8 @@ describe("server recorder", () => {
     const observer = vi.fn<(event: ServerRequestEvent) => void>();
     let recorderExists = false;
     fsMocks.mkdir.mockResolvedValueOnce(canonicalFirstParent).mockResolvedValueOnce(undefined);
-    fsMocks.file.stat.mockResolvedValue({ dev: 42, ino: 84, size: 0 });
-    fsMocks.stat.mockResolvedValue({ dev: 42, ino: 84, size: 0 });
+    fsMocks.file.stat.mockResolvedValue({ dev: 42, ino: 84, nlink: 1, size: 0 });
+    fsMocks.stat.mockResolvedValue({ dev: 42, ino: 84, nlink: 1, size: 0 });
     fsMocks.directory.sync.mockRejectedValueOnce(ancestrySyncFailure).mockResolvedValue(undefined);
     fsMocks.open.mockImplementation(async (openedPath, flags) => {
       if (typeof flags === "number") {
@@ -376,8 +378,8 @@ describe("server recorder", () => {
     const syncFailure = Object.assign(new Error("recorder parent denied"), { code: "EACCES" });
     const observer = vi.fn<(event: ServerRequestEvent) => void>();
     let immediateAttempts = 0;
-    fsMocks.file.stat.mockResolvedValue({ dev: 61, ino: 62, size: 0 });
-    fsMocks.stat.mockResolvedValue({ dev: 61, ino: 62, size: 0 });
+    fsMocks.file.stat.mockResolvedValue({ dev: 61, ino: 62, nlink: 1, size: 0 });
+    fsMocks.stat.mockResolvedValue({ dev: 61, ino: 62, nlink: 1, size: 0 });
     fsMocks.open.mockImplementation(async (openedPath, flags) => {
       if (typeof flags === "number") {
         return fsMocks.directory;
@@ -438,8 +440,8 @@ describe("server recorder", () => {
     let recorderExists = false;
     let denyCreatedBoundary = true;
     fsMocks.mkdir.mockResolvedValueOnce(canonicalFirstParent).mockResolvedValueOnce(undefined);
-    fsMocks.file.stat.mockResolvedValue({ dev: 71, ino: 72, size: 0 });
-    fsMocks.stat.mockResolvedValue({ dev: 71, ino: 72, size: 0 });
+    fsMocks.file.stat.mockResolvedValue({ dev: 71, ino: 72, nlink: 1, size: 0 });
+    fsMocks.stat.mockResolvedValue({ dev: 71, ino: 72, nlink: 1, size: 0 });
     fsMocks.open.mockImplementation(async (openedPath, flags) => {
       if (typeof flags === "number") {
         return fsMocks.directory;
@@ -675,9 +677,9 @@ describe("server recorder", () => {
   it("reopens the recorder when rotation happens before append", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-rotated-before.jsonl");
     fsMocks.file.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
-    fsMocks.stat.mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
+    fsMocks.stat.mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
 
     await recordServerEvent({
       event: serverEvent("/after-rotation"),
@@ -705,18 +707,33 @@ describe("server recorder", () => {
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
   });
 
+  it("fails when recorder link count cannot be verified", async () => {
+    fsMocks.file.stat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/link-count-unavailable"),
+        onEvent: undefined,
+        recorderPath: path.join("/tmp", "crabline-server-recorder-no-link-count.jsonl"),
+      }),
+    ).rejects.toThrow("Server recorder file link count is unavailable.");
+
+    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+    expect(fsMocks.file.close).toHaveBeenCalledOnce();
+  });
+
   it("reports a committed append without truncating a rotated inode", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-rotated-after.jsonl");
     fsMocks.file.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
     fsMocks.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
 
     await expect(
       recordServerEvent({
@@ -735,16 +752,16 @@ describe("server recorder", () => {
   it("does not roll back a committed append when rotation happens during ancestry sync", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-rotated-during-sync.jsonl");
     fsMocks.file.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
     fsMocks.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
 
     await expect(
       recordServerEvent({
@@ -766,13 +783,13 @@ describe("server recorder", () => {
   it("preserves committed rotation status when close also fails", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-rotation-retry.jsonl");
     fsMocks.file.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
     fsMocks.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
-      .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
     fsMocks.file.close.mockRejectedValueOnce(new Error("simulated close failure"));
 
     await expect(
@@ -903,8 +920,8 @@ describe("server recorder", () => {
     const torn = '{"type":"api","path":"/torn"';
     const contents = Buffer.from(completed + torn);
     fsMocks.file.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: contents.length })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: contents.length });
     fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
       const source = contents.subarray(position, position + Math.min(length, 3));
       source.copy(buffer, offset);
@@ -955,8 +972,8 @@ describe("server recorder", () => {
     });
     const contents = Buffer.from(completed + legacyEvent);
     fsMocks.file.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: contents.length })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: contents.length });
     fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
       const source = contents.subarray(position, position + length);
       source.copy(buffer, offset);
@@ -986,8 +1003,8 @@ describe("server recorder", () => {
     const tailStart = completedBuffer.length;
     const fileSize = tailStart + validationBudget;
     fsMocks.file.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: fileSize })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: fileSize });
     fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
       const bytesRead = Math.max(0, Math.min(length, fileSize - position));
       if (bytesRead === 0) {
@@ -1038,8 +1055,8 @@ describe("server recorder", () => {
     const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
     const contents = Buffer.from(`${completed}{"payload":"${"x".repeat(4 * 1024 * 1024)}"`);
     fsMocks.file.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: contents.length });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: contents.length })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: contents.length });
     fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
       const source = contents.subarray(position, position + length);
       source.copy(buffer, offset);
@@ -1066,8 +1083,8 @@ describe("server recorder", () => {
     const fileSize = 8 * 1024 * 1024 * 1024;
     const validationBudget = 64 * 1024 * 1024;
     fsMocks.file.stat
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize })
-      .mockResolvedValueOnce({ dev: 1, ino: 1, size: fileSize });
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: fileSize })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: fileSize });
     fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
       if (length === 1 && position === fileSize - 1) {
         buffer[offset] = 0x7d;
