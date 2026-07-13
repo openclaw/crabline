@@ -94,6 +94,11 @@ describe("nonce + matcher", () => {
     expect(matchesReply(`ack ${nonce}`)).toBe(false);
     expect(matchesReply(`ACK ${otherNonce}`)).toBe(false);
     expect(matchesReply(`ACK ${nonce}-suffix`)).toBe(false);
+    expect(matchesReply(`\u0301ACK ${nonce}`)).toBe(false);
+    expect(matchesReply(`ACK\u0301 ${nonce}`)).toBe(false);
+    expect(matchesReply(`\u203fACK ${nonce}`)).toBe(false);
+    expect(matchesReply(`ACK\u203f ${nonce}`)).toBe(false);
+    expect(matchesReply(`ACK\u200c ${nonce}`)).toBe(false);
   });
 
   it("covers exact, regex, and ignore-nonce branches", () => {
