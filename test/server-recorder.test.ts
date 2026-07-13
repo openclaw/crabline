@@ -1239,7 +1239,7 @@ describe("server recorder", () => {
       }),
     ).rejects.toMatchObject({
       cause: expect.objectContaining({
-        message: "Server recorder observers cannot depend on an active observer.",
+        message: "Server recorder observer dependency cycle detected.",
       }),
       committed: true,
       name: "ServerRecorderCommittedError",
@@ -1265,6 +1265,47 @@ describe("server recorder", () => {
 
     expect(nestedObserver).toHaveBeenCalledWith(serverEvent("/nested"));
     expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows acyclic waits on an active observer for another recorder", async () => {
+    const firstPath = path.join("/tmp", "crabline-server-recorder-active-independent.jsonl");
+    const secondPath = path.join("/tmp", "crabline-server-recorder-waiting-independent.jsonl");
+    const nestedObserver = vi.fn<(event: ServerRequestEvent) => void>();
+    let reportFirstActive!: () => void;
+    let releaseFirst!: () => void;
+    const firstActive = new Promise<void>((resolve) => {
+      reportFirstActive = resolve;
+    });
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const first = recordServerEvent({
+      event: serverEvent("/first"),
+      onEvent: async () => {
+        reportFirstActive();
+        await firstBlocked;
+      },
+      recorderPath: firstPath,
+    });
+    await firstActive;
+
+    const second = recordServerEvent({
+      event: serverEvent("/second"),
+      onEvent: async () => {
+        await recordServerEvent({
+          event: serverEvent("/nested-on-first"),
+          onEvent: nestedObserver,
+          recorderPath: firstPath,
+        });
+      },
+      recorderPath: secondPath,
+    });
+    await vi.waitFor(() => expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(3));
+    expect(nestedObserver).not.toHaveBeenCalled();
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(nestedObserver).toHaveBeenCalledWith(serverEvent("/nested-on-first"));
   });
 
   it("rejects cross-recorder observer dependency cycles", async () => {

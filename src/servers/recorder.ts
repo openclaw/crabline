@@ -30,14 +30,23 @@ export class ServerRecorderCommittedError extends AggregateError {
 
 class ServerRecorderRotationError extends Error {}
 
+type ObserverTask = {
+  completion: Promise<void> | undefined;
+  dependencies: Set<ObserverTask>;
+};
+
+type ObserverPlan = {
+  task: ObserverTask;
+  waitingTask: ObserverTask | undefined;
+};
+
 const pendingAppends = new Map<string, Promise<void>>();
 const pendingAdmissions = new Map<string, Promise<void>>();
-const pendingLogicalObservers = new Map<string, Promise<void>>();
-const pendingPublicationObservers = new Map<string, Promise<void>>();
-const activeLogicalObservers = new Set<string>();
-const activePublicationObservers = new Set<string>();
+const pendingLogicalObservers = new Map<string, ObserverTask>();
+const pendingPublicationObservers = new Map<string, ObserverTask>();
 const observerContext = new AsyncLocalStorage<{
   active: boolean;
+  task: ObserverTask;
 }>();
 const durableRecorderIdentities = new Map<string, string>();
 const MAX_DURABLE_RECORDER_IDENTITIES = 128;
@@ -466,52 +475,107 @@ async function resolveRecorderPath(filePath: string): Promise<string> {
   return path.join(await resolveRecorderPath(path.dirname(filePath)), path.basename(filePath));
 }
 
-function enqueueObserver(params: {
+function observerTaskDependsOn(
+  task: ObserverTask,
+  target: ObserverTask,
+  visited = new Set<ObserverTask>(),
+): boolean {
+  if (task === target) {
+    return true;
+  }
+  if (visited.has(task)) {
+    return false;
+  }
+  visited.add(task);
+  for (const dependency of task.dependencies) {
+    if (observerTaskDependsOn(dependency, target, visited)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function planObserver(params: {
+  key: string;
+  logicalPath: string;
+  onEvent: ServerEventObserver | undefined;
+}): ObserverPlan | undefined {
+  if (params.onEvent === undefined) {
+    return undefined;
+  }
+  const dependencies = new Set<ObserverTask>();
+  const previousLogical = pendingLogicalObservers.get(params.logicalPath);
+  const previousPublication = pendingPublicationObservers.get(params.key);
+  if (previousLogical !== undefined) {
+    dependencies.add(previousLogical);
+  }
+  if (previousPublication !== undefined) {
+    dependencies.add(previousPublication);
+  }
+  const task: ObserverTask = {
+    completion: undefined,
+    dependencies,
+  };
+  const context = observerContext.getStore();
+  const waitingTask = context?.active === true ? context.task : undefined;
+  if (waitingTask !== undefined) {
+    if (observerTaskDependsOn(task, waitingTask)) {
+      throw new Error("Server recorder observer dependency cycle detected.");
+    }
+    waitingTask.dependencies.add(task);
+  }
+  return { task, waitingTask };
+}
+
+function cancelObserverPlan(plan: ObserverPlan | undefined): void {
+  plan?.waitingTask?.dependencies.delete(plan.task);
+}
+
+function activateObserver(params: {
   event: ServerRequestEvent;
   key: string;
   logicalPath: string;
   onEvent: ServerEventObserver | undefined;
+  plan: ObserverPlan | undefined;
 }): Promise<void> {
-  if (params.onEvent === undefined) {
+  if (params.onEvent === undefined || params.plan === undefined) {
     return Promise.resolve();
   }
-  const previousLogical = pendingLogicalObservers.get(params.logicalPath) ?? Promise.resolve();
-  const previousPublication = pendingPublicationObservers.get(params.key) ?? Promise.resolve();
-  const current = Promise.all([
-    previousLogical.catch(() => {}),
-    previousPublication.catch(() => {}),
-  ]).then(async () => {
+  const { task, waitingTask } = params.plan;
+  const current = Promise.all(
+    [...task.dependencies].map((dependency) => dependency.completion?.catch(() => {})),
+  ).then(async () => {
     const context = {
       active: true,
+      task,
     };
-    activeLogicalObservers.add(params.logicalPath);
-    activePublicationObservers.add(params.key);
     try {
       await observerContext.run(context, async () => await params.onEvent?.(params.event));
     } catch (error) {
       throw new ServerRecorderCommittedError(params.logicalPath, error);
     } finally {
       context.active = false;
-      activeLogicalObservers.delete(params.logicalPath);
-      activePublicationObservers.delete(params.key);
     }
   });
-  pendingLogicalObservers.set(params.logicalPath, current);
-  pendingPublicationObservers.set(params.key, current);
+  task.completion = current;
+  pendingLogicalObservers.set(params.logicalPath, task);
+  pendingPublicationObservers.set(params.key, task);
   void current.then(
     () => {
-      if (pendingLogicalObservers.get(params.logicalPath) === current) {
+      waitingTask?.dependencies.delete(task);
+      if (pendingLogicalObservers.get(params.logicalPath) === task) {
         pendingLogicalObservers.delete(params.logicalPath);
       }
-      if (pendingPublicationObservers.get(params.key) === current) {
+      if (pendingPublicationObservers.get(params.key) === task) {
         pendingPublicationObservers.delete(params.key);
       }
     },
     () => {
-      if (pendingLogicalObservers.get(params.logicalPath) === current) {
+      waitingTask?.dependencies.delete(task);
+      if (pendingLogicalObservers.get(params.logicalPath) === task) {
         pendingLogicalObservers.delete(params.logicalPath);
       }
-      if (pendingPublicationObservers.get(params.key) === current) {
+      if (pendingPublicationObservers.get(params.key) === task) {
         pendingPublicationObservers.delete(params.key);
       }
     },
@@ -531,54 +595,61 @@ async function appendResolvedJsonLine(params: {
 }): Promise<RecorderAppendResult | undefined> {
   const { logicalPath } = params;
   const key = await resolveRecorderPath(logicalPath);
-  if (
-    observerContext.getStore()?.active === true &&
-    params.onEvent !== undefined &&
-    (activeLogicalObservers.has(logicalPath) || activePublicationObservers.has(key))
-  ) {
-    throw new Error("Server recorder observers cannot depend on an active observer.");
-  }
   const previous = pendingAppends.get(key) ?? Promise.resolve();
   const current = previous
     .catch(() => {})
     .then(async () => {
-      const directory = path.dirname(key);
-      const createdDirectory = await mkdir(directory, { mode: 0o700, recursive: true });
-      if (createdDirectory !== undefined || isManagedRecorderDirectory(directory)) {
-        await chmod(directory, 0o700);
-      }
-      // Keep the cross-process lock through append verification.
-      const committed = await withRecorderLock(key, logicalPath, async () => {
-        if ((await resolveRecorderPath(logicalPath)) !== key) {
+      const observerPlan = planObserver({
+        key,
+        logicalPath,
+        onEvent: params.onEvent,
+      });
+      let observerActivated = false;
+      try {
+        const directory = path.dirname(key);
+        const createdDirectory = await mkdir(directory, { mode: 0o700, recursive: true });
+        if (createdDirectory !== undefined || isManagedRecorderDirectory(directory)) {
+          await chmod(directory, 0o700);
+        }
+        // Keep the cross-process lock through append verification.
+        const committed = await withRecorderLock(key, logicalPath, async () => {
+          if ((await resolveRecorderPath(logicalPath)) !== key) {
+            return undefined;
+          }
+          for (let attempt = 0; attempt < RECORDER_ROTATION_ATTEMPTS; attempt++) {
+            if (
+              (await appendRecorderAttempt({
+                createdDirectory,
+                logicalPath,
+                line: params.line,
+                publicationPath: key,
+              })) === "committed"
+            ) {
+              return true;
+            }
+          }
+          throw new ServerRecorderRotationError(
+            `Server recorder rotation retries exhausted for "${logicalPath}".`,
+          );
+        });
+        if (committed !== true) {
           return undefined;
         }
-        for (let attempt = 0; attempt < RECORDER_ROTATION_ATTEMPTS; attempt++) {
-          if (
-            (await appendRecorderAttempt({
-              createdDirectory,
-              logicalPath,
-              line: params.line,
-              publicationPath: key,
-            })) === "committed"
-          ) {
-            return true;
-          }
+        observerActivated = true;
+        return {
+          observation: activateObserver({
+            event: params.event,
+            key,
+            logicalPath,
+            onEvent: params.onEvent,
+            plan: observerPlan,
+          }),
+        };
+      } finally {
+        if (!observerActivated) {
+          cancelObserverPlan(observerPlan);
         }
-        throw new ServerRecorderRotationError(
-          `Server recorder rotation retries exhausted for "${logicalPath}".`,
-        );
-      });
-      if (committed !== true) {
-        return undefined;
       }
-      return {
-        observation: enqueueObserver({
-          event: params.event,
-          key,
-          logicalPath,
-          onEvent: params.onEvent,
-        }),
-      };
     });
   const tail = current.then(
     () => undefined,
