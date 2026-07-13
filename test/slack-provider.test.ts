@@ -350,6 +350,61 @@ describe("slack provider", () => {
     });
   });
 
+  it("extracts table and task-card block-only text", async () => {
+    const config = await createSlackConfig(0);
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+    const context = createContext(config);
+    context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
+    const endpoint = endpointFromDetails((await provider.probe(context)).details);
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "table-cell",
+      since: new Date(Date.now() - 1_000).toISOString(),
+      timeoutMs: 500,
+    });
+
+    const response = await fetch(endpoint, {
+      body: JSON.stringify({
+        event: {
+          blocks: [
+            {
+              rows: [
+                [
+                  {
+                    elements: [{ text: "table-cell", type: "text" }],
+                    type: "rich_text",
+                  },
+                ],
+              ],
+              type: "table",
+            },
+            {
+              details: "task details",
+              output: "task output",
+              tasks: [{ title: "nested task" }],
+              title: "task title",
+              type: "task_card",
+            },
+          ],
+          channel: "C1234567890",
+          ts: "1700000001.000201",
+          type: "message",
+          user: "U1234567890",
+        },
+        type: "event_callback",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(waiting).resolves.toMatchObject({
+      id: "1700000001.000201",
+      text: "table-cell\ntask title\ntask details\ntask output\nnested task",
+    });
+  });
+
   it("verifies Slack request signatures before parsing", async () => {
     const signingSecret = "test-token-placeholder";
     const config = await createSlackConfig(0, signingSecret);
