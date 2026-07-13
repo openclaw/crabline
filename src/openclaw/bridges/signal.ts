@@ -54,8 +54,8 @@ function signalOutboundTargets(params: Record<string, unknown>, account: string)
     ...signalRecipientValues(params.groupIds).map((id) => `group:${id}`),
     ...signalDirectRecipientValues(params.recipient),
     ...signalDirectRecipientValues(params.recipients),
-    ...signalRecipientValues(params.username),
-    ...signalRecipientValues(params.usernames),
+    ...signalDirectRecipientValues(params.username),
+    ...signalDirectRecipientValues(params.usernames),
     ...(params.noteToSelf === true ? [signalDirectIdentity(account).recipient] : []),
   ];
   return [...new Set(targets)];
