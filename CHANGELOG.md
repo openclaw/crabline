@@ -13,7 +13,7 @@
 - Reject unsupported Zalo thread targets during normalization, matching OpenClaw bridge execution.
 - Enforce Discord uint64 snowflakes and Telegram safe-integer chat and topic identifiers.
 - Bound shared JSON ingress, reject non-object payloads precisely, and strictly normalize loopback IP addresses.
-- Commit Signal sends only after recorder publication.
+- Commit Signal sends only after recorder publication and emit canonical native source numbers.
 - Harden WhatsApp send evidence, direct-JID correlation, cursor and cleanup races, and cleartext listener exposure.
 - Revalidate npm package version, integrity, and provenance after every release publication outcome.
 - Authenticate Feishu signatures before encrypted callback decryption and bound callback ciphertext work.
