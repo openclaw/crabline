@@ -566,6 +566,73 @@ describe("local mock provider", () => {
     expect((await readFile(recorderPath, "utf8")).trim().split("\n")).toHaveLength(2);
   });
 
+  it("drains webhook handlers admitted before cleanup", async () => {
+    let handleRequest: ((request: Request) => Promise<Response>) | undefined;
+    let releaseHandler!: () => void;
+    const handlerReleased = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    let reportAdmission!: () => void;
+    const admitted = new Promise<void>((resolve) => {
+      reportAdmission = resolve;
+    });
+    const close = vi.fn(async () => undefined);
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handleRequest = params.handle;
+      return {
+        close,
+        endpointUrl: "http://127.0.0.1:43210/slack/events",
+      };
+    });
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        async handleWebhookPayload() {
+          reportAdmission();
+          await handlerReleased;
+          return new Response("accepted", { status: 202 });
+        },
+        platform: "slack",
+      },
+    });
+    providers.push(provider);
+    await provider.probe(createContext(config));
+
+    const handling = handleRequest!(
+      new Request("http://127.0.0.1:43210/slack/events", {
+        body: "{}",
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+    await admitted;
+    let cleanupResolved = false;
+    const cleanup = provider.cleanup().then(() => {
+      cleanupResolved = true;
+    });
+
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(cleanupResolved).toBe(false);
+    await expect(
+      handleRequest!(
+        new Request("http://127.0.0.1:43210/slack/events", {
+          body: "{}",
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      ),
+    ).resolves.toMatchObject({ status: 503 });
+
+    releaseHandler();
+    await expect(handling).resolves.toMatchObject({ status: 202 });
+    await expect(cleanup).resolves.toBeUndefined();
+  });
+
   it("does not watch events from another provider sharing its recorder", async () => {
     const directory = await createTempDir();
     directories.push(directory);
