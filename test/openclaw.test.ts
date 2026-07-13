@@ -618,6 +618,23 @@ describe("OpenClaw local provider bridge", () => {
       },
       providerTargetKey: "group-1",
     });
+    expect(() =>
+      createOpenClawCrablineAgentDelivery({
+        manifest: zaloManifest,
+        target: "thread:group-1/message-1",
+      }),
+    ).toThrow("Zalo does not support thread targets.");
+    expect(() =>
+      createOpenClawCrablineInbound({
+        input: {
+          conversation: { id: "group-1", kind: "group" },
+          senderId: "user-1",
+          text: "hello",
+          threadId: "message-1",
+        },
+        manifest: zaloManifest,
+      }),
+    ).toThrow("Zalo does not support thread targets.");
 
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({

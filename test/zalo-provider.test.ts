@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { normalizeZaloWebhookPayload, ZaloProviderAdapter } from "../src/providers/builtin/zalo.js";
 import {
+  normalizeBuiltinTarget,
+  ZALO_UNSUPPORTED_THREAD_TARGET_ERROR,
+} from "../src/providers/target-normalizers.js";
+import {
   createLocalMockConfig,
   createProviderContext,
   runLocalMockProviderContract,
@@ -59,6 +63,16 @@ describe("Zalo webhook normalizer", () => {
     } finally {
       await provider.cleanup();
     }
+  });
+
+  it("rejects unsupported thread targets during normalization", () => {
+    expect(() =>
+      normalizeBuiltinTarget("zalo", {
+        id: "user-1",
+        metadata: {},
+        threadId: "message-1",
+      }),
+    ).toThrow(ZALO_UNSUPPORTED_THREAD_TARGET_ERROR);
   });
 
   it("preserves generic fallback thread payloads", () => {

@@ -11,6 +11,7 @@ import { createRegistry } from "../src/providers/registry.js";
 import {
   normalizeBuiltinTarget,
   type BuiltinProviderAdapterId,
+  ZALO_UNSUPPORTED_THREAD_TARGET_ERROR,
 } from "../src/providers/target-normalizers.js";
 import type { ProviderContext, SendContext, WaitContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
@@ -231,7 +232,6 @@ describe("registry", () => {
         channelId: "user-1",
         id: "user-1",
         metadata: {},
-        threadId: "group-1",
       },
     ],
   ] satisfies Array<
@@ -262,6 +262,41 @@ describe("registry", () => {
 
     expect(registry.resolve(adapter, fixture.id).normalizeTarget(target)).toEqual(
       normalizeBuiltinTarget(adapter, target),
+    );
+  });
+
+  it("rejects unsupported Zalo thread targets through lazy adapters", () => {
+    const target = {
+      channelId: "user-1",
+      id: "user-1",
+      metadata: {},
+      threadId: "message-1",
+    };
+    const fixture = {
+      ...manifest.fixtures[0]!,
+      id: "zalo-thread-target",
+      provider: "zalo",
+      target,
+    };
+    const registry = createRegistry(
+      {
+        ...manifest,
+        fixtures: [fixture],
+        providers: {
+          zalo: {
+            adapter: "zalo",
+            capabilities: ["probe"],
+            env: [],
+            platform: "zalo",
+            status: "active",
+          },
+        },
+      },
+      "/tmp/crabline.yaml",
+    );
+
+    expect(() => registry.resolve("zalo", fixture.id).normalizeTarget(target)).toThrow(
+      ZALO_UNSUPPORTED_THREAD_TARGET_ERROR,
     );
   });
 

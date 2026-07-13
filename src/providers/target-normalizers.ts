@@ -180,6 +180,8 @@ export const ZALO_ID_RULE: NativeIdRule = {
   pattern: /^\S+$/u,
 };
 
+export const ZALO_UNSUPPORTED_THREAD_TARGET_ERROR = "Zalo does not support thread targets.";
+
 function requireNativeId(value: string, rule: NativeIdRule, label: string): string {
   if (!rule.pattern.test(value)) {
     throw new CrablineError(`${label} must be a native ${rule.name} such as ${rule.example}.`, {
@@ -430,6 +432,24 @@ const MATRIX_TARGET_CODEC: LocalMockTargetCodec = {
   },
 };
 
+const ZALO_BASE_TARGET_CODEC = createNativeTargetCodec({
+  channel: ZALO_ID_RULE,
+  channelLabel: "Zalo user_id or oa_id",
+});
+
+const ZALO_TARGET_CODEC: LocalMockTargetCodec = {
+  normalize(target) {
+    if (target.threadId) {
+      throw new CrablineError(ZALO_UNSUPPORTED_THREAD_TARGET_ERROR, { kind: "config" });
+    }
+    return ZALO_BASE_TARGET_CODEC.normalize(target);
+  },
+  resolveThreadId(target) {
+    const normalized = this.normalize(target);
+    return normalized.channelId ?? normalized.id;
+  },
+};
+
 const BUILTIN_TARGET_CODECS = {
   discord: createNativeTargetCodec({
     channel: DISCORD_SNOWFLAKE_RULE,
@@ -464,10 +484,7 @@ const BUILTIN_TARGET_CODECS = {
     channel: WHATSAPP_WA_ID_RULE,
     channelLabel: "WhatsApp wa_id",
   }),
-  zalo: createNativeTargetCodec({
-    channel: ZALO_ID_RULE,
-    channelLabel: "Zalo user_id or oa_id",
-  }),
+  zalo: ZALO_TARGET_CODEC,
 } satisfies Record<BuiltinProviderAdapterId, LocalMockTargetCodec>;
 
 export function getBuiltinTargetCodec(adapter: BuiltinProviderAdapterId): LocalMockTargetCodec {
