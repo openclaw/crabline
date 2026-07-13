@@ -236,6 +236,29 @@ describe("script provider Windows cleanup", () => {
     });
   });
 
+  it("terminates a watch child when cancellation fires during spawn handoff", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("watch cancelled");
+    const scriptChild = createFakeChild(1112);
+    spawnMock
+      .mockImplementationOnce(() => {
+        controller.abort(cancellation);
+        return scriptChild;
+      })
+      .mockImplementationOnce(() => createCleanupChild(0));
+    const context = createContext();
+    context.signal = controller.signal;
+    const provider = new ScriptProviderAdapter(context);
+
+    const iterator = provider.watch(context);
+    await expect(iterator.next()).rejects.toBe(cancellation);
+
+    expect(spawnMock.mock.calls[1]?.[0]).toBe("powershell.exe");
+    expect(scriptChild.stdin.destroyed).toBe(true);
+    expect(scriptChild.stdout.destroyed).toBe(true);
+    expect(scriptChild.stderr.destroyed).toBe(true);
+  });
+
   it.each([":", "="])(
     "redacts diagnostics for Windows slash options using %s",
     async (separator) => {

@@ -469,7 +469,12 @@ async function spawnScriptChild(
       stdio: ["pipe", "pipe", "pipe"],
     });
   }
-  return { child, observedAtMs: Date.now(), startedAtMs };
+  const observedAtMs = Date.now();
+  if (signal?.aborted) {
+    await terminateChild(child, startedAtMs, observedAtMs);
+    throw signal.reason ?? new Error("Script command aborted.");
+  }
+  return { child, observedAtMs, startedAtMs };
 }
 
 type ScriptWatchIterator = AsyncIterableIterator<InboundEnvelope> & {
