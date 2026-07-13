@@ -344,7 +344,9 @@ async function appendRecorderAttempt(params: {
   let operationError: unknown;
   let result: "committed" | "retry" | undefined;
   try {
-    await file.chmod(0o600);
+    if (opened.created) {
+      await file.chmod(0o600);
+    }
     let stats = await file.stat();
     let identity = requireRecorderIdentity(stats);
     if (!(await recorderPathHasIdentity(params.publicationPath, identity))) {
