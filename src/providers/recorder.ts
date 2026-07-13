@@ -28,6 +28,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 const pendingAppends = new Map<string, Promise<void>>();
 const recordIdentityIndexes = new Map<string, RecordIdentityIndex>();
+const durableRecorderIdentities = new Map<string, string>();
+const MAX_DURABLE_RECORDER_IDENTITIES = 128;
 const MAX_RECORD_IDENTITY_INDEXES = 128;
 const MAX_RECENT_RECORD_KEYS = 4096;
 const RECORDER_BATCH_VERSION = 1;
@@ -315,6 +317,18 @@ function sameRecorderFileIdentity(
   return left?.dev === right?.dev && left?.ino === right?.ino;
 }
 
+function recorderFileIdentityKey(identity: RecorderFileIdentity): string {
+  return `${identity.dev}:${identity.ino}`;
+}
+
+function rememberDurableRecorderIdentity(filePath: string, identity: RecorderFileIdentity): void {
+  durableRecorderIdentities.delete(filePath);
+  durableRecorderIdentities.set(filePath, recorderFileIdentityKey(identity));
+  if (durableRecorderIdentities.size > MAX_DURABLE_RECORDER_IDENTITIES) {
+    durableRecorderIdentities.delete(durableRecorderIdentities.keys().next().value!);
+  }
+}
+
 async function resolveRecorderPublicationPath(filePath: string): Promise<string> {
   try {
     return await realpath(filePath);
@@ -336,6 +350,37 @@ async function resolveRecorderPublicationPath(filePath: string): Promise<string>
     }
   }
   return path.join(await realpath(path.dirname(filePath)), path.basename(filePath));
+}
+
+async function openRecorderForAppend(
+  filePath: string,
+): Promise<{ created: boolean; handle: Awaited<ReturnType<typeof open>> }> {
+  try {
+    return {
+      created: true,
+      handle: await open(filePath, "ax+", 0o600),
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw error;
+    }
+    return {
+      created: false,
+      handle: await open(filePath, "a+", 0o600),
+    };
+  }
+}
+
+async function syncParentDirectory(filePath: string): Promise<void> {
+  if (process.platform === "win32") {
+    return;
+  }
+  const directory = await open(path.dirname(filePath), "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
 }
 
 async function prepareRecorderTailForAppend(
@@ -363,7 +408,7 @@ async function prepareRecorderTailForAppend(
   const tailStart = stats.size - windowSize + lastNewline + 1;
   const tail = tailWindow.subarray(lastNewline + 1).toString("utf8");
   try {
-    JSON.parse(tail);
+    parseRecordedLine(tail);
     await handle.writeFile("\n", "utf8");
     return true;
   } catch (error) {
@@ -379,8 +424,9 @@ async function prepareRecorderPathForAppend(
   publicationPath: string,
   logicalPath: string,
   durable: boolean,
-): Promise<RecorderFileIdentity> {
-  const handle = await open(publicationPath, "a+");
+): Promise<{ created: boolean; identity: RecorderFileIdentity }> {
+  const opened = await openRecorderForAppend(publicationPath);
+  const { handle } = opened;
   const identity = await handle.stat({ bigint: true });
   const recorderIdentity = { dev: identity.dev, ino: identity.ino };
   try {
@@ -400,7 +446,7 @@ async function prepareRecorderPathForAppend(
   ) {
     throw new RecorderRotatedError("Recorder rotated while preparing a committed line.");
   }
-  return recorderIdentity;
+  return { created: opened.created, identity: recorderIdentity };
 }
 
 async function appendCommittedLine(
@@ -409,10 +455,16 @@ async function appendCommittedLine(
   line: string,
   durable: boolean,
   expectedIdentity?: RecorderFileIdentity,
+  syncCreatedParent = false,
 ): Promise<void> {
-  const handle = await open(publicationPath, "a+");
+  const opened = await openRecorderForAppend(publicationPath);
+  const { handle } = opened;
   const identity = await handle.stat({ bigint: true });
   const recorderIdentity = { dev: identity.dev, ino: identity.ino };
+  const needsParentSync =
+    opened.created ||
+    syncCreatedParent ||
+    durableRecorderIdentities.get(publicationPath) !== recorderFileIdentityKey(recorderIdentity);
   try {
     if (
       expectedIdentity !== undefined &&
@@ -424,6 +476,10 @@ async function appendCommittedLine(
     await handle.writeFile(line, "utf8");
     if (durable) {
       await handle.sync();
+    }
+    if (durable && needsParentSync) {
+      await syncParentDirectory(publicationPath);
+      rememberDurableRecorderIdentity(publicationPath, recorderIdentity);
     }
   } finally {
     await handle.close();
@@ -636,11 +692,18 @@ export async function appendRecordedInboundBatch(
               `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
             );
           }
-          await appendCommittedLine(publicationPath, logicalPath, line, true, generation);
+          await appendCommittedLine(
+            publicationPath,
+            logicalPath,
+            line,
+            true,
+            generation.identity,
+            generation.created,
+          );
           await syncRecordIdentityIndex(publicationPath);
         } else if (
           !sameRecorderFileIdentity(
-            generation,
+            generation.identity,
             await readRecorderFileIdentity(await resolveRecorderPublicationPath(logicalPath)),
           )
         ) {
@@ -680,6 +743,11 @@ async function syncRecordIdentityIndex(filePath: string): Promise<Set<string>> {
     if (index.readState.generation !== generation) {
       index.seen.clear();
       generation = index.readState.generation;
+      index.readState.caughtUp = false;
+      index.readState.continuity = Buffer.alloc(0);
+      index.readState.offset = 0;
+      index.readState.pending = Buffer.alloc(0);
+      continue;
     }
     for (const event of appended) {
       rememberRecentRecord(index.seen, event);

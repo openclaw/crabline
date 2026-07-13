@@ -1,5 +1,5 @@
 import path from "node:path";
-import { rm } from "node:fs/promises";
+import { realpath, rm } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { appendRecordedInbound } from "../src/providers/recorder.js";
 import { recordServerEvent } from "../src/servers/recorder.js";
@@ -7,6 +7,9 @@ import { recordServerEvent } from "../src/servers/recorder.js";
 const fsMocks = vi.hoisted(() => ({
   lock: vi.fn<() => Promise<() => Promise<void>>>(),
   lockRelease: vi.fn<() => Promise<void>>(),
+  providerDirectory: "",
+  providerDirectorySync: vi.fn<(directoryPath: string) => Promise<void>>(),
+  providerOpen: vi.fn<(filePath: string, flags: string, mode?: number | string) => void>(),
   providerSync: vi.fn<(filePath: string) => Promise<void>>(),
   providerWrite: vi.fn<(filePath: string, data: string) => Promise<void>>(),
   serverDirectory: "",
@@ -37,6 +40,12 @@ vi.mock("node:fs/promises", async (importOriginal) => {
           sync: async () => await fsMocks.serverDirectorySync(filePath),
         } as unknown as Awaited<ReturnType<typeof actual.open>>;
       }
+      if (args[1] === "r" && filePath === fsMocks.providerDirectory) {
+        return {
+          close: async () => {},
+          sync: async () => await fsMocks.providerDirectorySync(filePath),
+        } as unknown as Awaited<ReturnType<typeof actual.open>>;
+      }
       if (
         (args[1] === "a+" || args[1] === "ax+") &&
         filePath.includes("crabline-server-recorder")
@@ -56,13 +65,22 @@ vi.mock("node:fs/promises", async (importOriginal) => {
           truncate: async () => {},
         } as unknown as Awaited<ReturnType<typeof actual.open>>;
       }
+      if (
+        (args[1] === "a+" || args[1] === "ax+") &&
+        filePath.includes("crabline-provider-recorder")
+      ) {
+        fsMocks.providerOpen(filePath, args[1], args[2]);
+      }
       const handle = await actual.open(...args);
-      if (args[1] === "a+" && String(args[0]).includes("crabline-provider-recorder")) {
+      if (
+        (args[1] === "a+" || args[1] === "ax+") &&
+        filePath.includes("crabline-provider-recorder")
+      ) {
         handle.sync = async () => {
-          await fsMocks.providerSync(String(args[0]));
+          await fsMocks.providerSync(filePath);
         };
         handle.writeFile = async (data) => {
-          await fsMocks.providerWrite(String(args[0]), String(data));
+          await fsMocks.providerWrite(filePath, String(data));
         };
       }
       return handle;
@@ -103,6 +121,10 @@ beforeEach(() => {
   fsMocks.lockRelease.mockResolvedValue();
   fsMocks.lock.mockReset();
   fsMocks.lock.mockResolvedValue(fsMocks.lockRelease);
+  fsMocks.providerDirectory = "";
+  fsMocks.providerDirectorySync.mockReset();
+  fsMocks.providerDirectorySync.mockResolvedValue(undefined);
+  fsMocks.providerOpen.mockReset();
   fsMocks.providerSync.mockReset();
   fsMocks.providerSync.mockResolvedValue(undefined);
   fsMocks.providerWrite.mockReset();
@@ -191,6 +213,7 @@ describe("recorder append serialization", () => {
       "/tmp",
       `crabline-provider-recorder-${process.pid}-${Date.now()}.jsonl`,
     );
+    fsMocks.providerDirectory = await realpath(path.dirname(recorderPath));
     const firstEvent = {
       author: "assistant" as const,
       id: "first",
@@ -216,8 +239,50 @@ describe("recorder append serialization", () => {
         expect.objectContaining({ id: "second" }),
       ]);
       expect(fsMocks.providerSync).toHaveBeenCalledTimes(2);
+      expect(fsMocks.providerDirectorySync).toHaveBeenCalledTimes(
+        process.platform === "win32" ? 0 : 1,
+      );
+      expect(fsMocks.providerOpen.mock.calls.map(([, flags, mode]) => [flags, mode])).toEqual([
+        ["ax+", 0o600],
+        ["ax+", 0o600],
+        ["a+", 0o600],
+      ]);
     } finally {
       await rm(recorderPath, { force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "retries parent durability for a newly created provider recorder",
+    async () => {
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-provider-recorder-durability-${process.pid}-${Date.now()}.jsonl`,
+      );
+      fsMocks.providerDirectory = await realpath(path.dirname(recorderPath));
+      const parentSyncFailure = new Error("simulated recorder parent sync failure");
+      fsMocks.providerWrite.mockResolvedValue(undefined);
+      fsMocks.providerDirectorySync
+        .mockRejectedValueOnce(parentSyncFailure)
+        .mockResolvedValue(undefined);
+      const event = {
+        author: "assistant" as const,
+        id: "durable",
+        provider: "slack",
+        sentAt: "2026-07-12T10:00:00.000Z",
+        text: "durable",
+        threadId: "slack:C123",
+      };
+
+      try {
+        await expect(appendRecordedInbound(recorderPath, event)).rejects.toBe(parentSyncFailure);
+        await expect(
+          appendRecordedInbound(recorderPath, { ...event, id: "retry" }),
+        ).resolves.toMatchObject({ id: "retry" });
+        expect(fsMocks.providerDirectorySync).toHaveBeenCalledTimes(2);
+      } finally {
+        await rm(recorderPath, { force: true });
+      }
+    },
+  );
 });
