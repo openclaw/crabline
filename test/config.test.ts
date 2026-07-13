@@ -1,6 +1,58 @@
 import { describe, expect, it } from "vitest";
 import { ManifestSchema } from "../src/config/schema.js";
 
+const TIMER_MAX_ERROR = "timer duration must be at most 2147483647ms";
+const TIMER_CONFIG_CASES = [
+  {
+    field: "discord.gatewayDurationMs",
+    path: ["providers", "timer", "discord", "gatewayDurationMs"],
+    provider: (value: number) => ({
+      adapter: "discord",
+      discord: { gatewayDurationMs: value },
+    }),
+  },
+  {
+    field: "imessage.gatewayDurationMs",
+    path: ["providers", "timer", "imessage", "gatewayDurationMs"],
+    provider: (value: number) => ({
+      adapter: "imessage",
+      imessage: { gatewayDurationMs: value },
+    }),
+  },
+  {
+    field: "msteams.dialogOpenTimeoutMs",
+    path: ["providers", "timer", "msteams", "dialogOpenTimeoutMs"],
+    provider: (value: number) => ({
+      adapter: "msteams",
+      msteams: { dialogOpenTimeoutMs: value },
+    }),
+  },
+  {
+    field: "telegram.longPolling.retryDelayMs",
+    path: ["providers", "timer", "telegram", "longPolling", "retryDelayMs"],
+    provider: (value: number) => ({
+      adapter: "telegram",
+      telegram: { longPolling: { retryDelayMs: value } },
+    }),
+  },
+  {
+    field: "mattermost.websocket.maxReconnectDelayMs",
+    path: ["providers", "timer", "mattermost", "websocket", "maxReconnectDelayMs"],
+    provider: (value: number) => ({
+      adapter: "mattermost",
+      mattermost: { websocket: { maxReconnectDelayMs: value } },
+    }),
+  },
+  {
+    field: "mattermost.websocket.reconnectDelayMs",
+    path: ["providers", "timer", "mattermost", "websocket", "reconnectDelayMs"],
+    provider: (value: number) => ({
+      adapter: "mattermost",
+      mattermost: { websocket: { reconnectDelayMs: value } },
+    }),
+  },
+] as const;
+
 describe("manifest schema", () => {
   it("rejects regex syntax unsupported by the linear-time matcher", () => {
     for (const pattern of [String.raw`^(a)\1$`, "(?=a)a"]) {
@@ -341,7 +393,39 @@ describe("manifest schema", () => {
           },
         },
       }),
-    ).toThrow(/2147483647/u);
+    ).toThrow(TIMER_MAX_ERROR);
+  });
+
+  it.each(TIMER_CONFIG_CASES)(
+    "rejects $field beyond the Node timer ceiling",
+    ({ path, provider }) => {
+      const result = ManifestSchema.safeParse({
+        configVersion: 1,
+        fixtures: [],
+        providers: { timer: provider(2_147_483_648) },
+      });
+
+      expect(result.success).toBe(false);
+      if (result.success) {
+        throw new Error("expected timer validation to fail");
+      }
+      expect(result.error.issues).toEqual([
+        expect.objectContaining({
+          message: TIMER_MAX_ERROR,
+          path,
+        }),
+      ]);
+    },
+  );
+
+  it.each(TIMER_CONFIG_CASES)("accepts $field at the Node timer ceiling", ({ provider }) => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: { timer: provider(2_147_483_647) },
+      }),
+    ).not.toThrow();
   });
 
   it("rejects fixture ids that cannot be embedded in nonces", () => {
@@ -485,7 +569,7 @@ describe("manifest schema", () => {
         ],
         providers: { local: { adapter: "loopback" } },
       }),
-    ).toThrow(/2147483647/u);
+    ).toThrow(TIMER_MAX_ERROR);
   });
 
   it("rejects unknown keys throughout user-authored config", () => {
