@@ -1,8 +1,10 @@
+import { validateHeaderValue } from "node:http";
 import { z } from "zod";
 import { inboundRegexSafetyError } from "../core/safe-regex.js";
 
 export const FIXTURE_MODES = ["probe", "send", "roundtrip", "agent"] as const;
 const FIXTURE_ID_PATTERN = /^[a-z0-9-]+$/i;
+const MAX_FIXTURE_RETRIES = 10;
 const MAX_TIMER_MS = 2_147_483_647;
 export const INBOUND_AUTHORS = ["assistant", "user", "system", "any"] as const;
 export const INBOUND_STRATEGIES = ["contains", "exact", "regex"] as const;
@@ -62,6 +64,42 @@ const HttpUrlSchema = z
       return false;
     }
   }, "URL must use http or https");
+
+const HttpsUrlSchema = HttpUrlSchema.refine((value) => {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}, "URL must use https");
+
+const HeaderValueSchema = z
+  .string()
+  .min(1)
+  .refine((value) => {
+    try {
+      validateHeaderValue("x-crabline-secret", value);
+      return true;
+    } catch {
+      return false;
+    }
+  }, "secret must be a valid HTTP header value");
+
+const WebhookPathSchema = z.string().min(1).startsWith("/", "webhook path must start with /");
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host
+    .trim()
+    .replace(/^\[(.*)\]$/u, "$1")
+    .toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized === "::1" ||
+    normalized.startsWith("::ffff:127.") ||
+    /^127(?:\.\d{1,3}){3}$/u.test(normalized)
+  );
+}
 
 function inferProviderPlatform(adapter: BuiltinAdapterName): ProviderPlatformName | undefined {
   if (adapter === "script") {
@@ -145,7 +183,7 @@ const SlackRecorderSchema = z.strictObject({
 
 const SlackWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
-  path: z.string().min(1).default("/slack/events"),
+  path: WebhookPathSchema.default("/slack/events"),
   port: z.number().int().min(0).max(65_535).default(8787),
   publicUrl: HttpUrlSchema.optional(),
 });
@@ -166,7 +204,7 @@ const DiscordRecorderSchema = z.strictObject({
 
 const DiscordWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
-  path: z.string().min(1).default("/discord/interactions"),
+  path: WebhookPathSchema.default("/discord/interactions"),
   port: z.number().int().min(0).max(65_535).default(8788),
   publicUrl: HttpUrlSchema.optional(),
 });
@@ -191,7 +229,7 @@ const WhatsAppRecorderSchema = z.strictObject({
 
 const WhatsAppWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
-  path: z.string().min(1).default("/whatsapp/webhook"),
+  path: WebhookPathSchema.default("/whatsapp/webhook"),
   port: z.number().int().min(0).max(65_535).default(8789),
   publicUrl: HttpUrlSchema.optional(),
 });
@@ -223,9 +261,9 @@ const MsTeamsRecorderSchema = z.strictObject({
 
 const MsTeamsWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
-  path: z.string().min(1).default("/msteams/webhook"),
+  path: WebhookPathSchema.default("/msteams/webhook"),
   port: z.number().int().min(0).max(65_535).default(8791),
-  publicUrl: HttpUrlSchema.optional(),
+  publicUrl: HttpsUrlSchema.optional(),
 });
 
 const MsTeamsConfigSchema = z.strictObject({
@@ -259,30 +297,44 @@ const GoogleChatRecorderSchema = z.strictObject({
 
 const GoogleChatWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
-  path: z.string().min(1).default("/googlechat/webhook"),
+  path: WebhookPathSchema.default("/googlechat/webhook"),
   port: z.number().int().min(0).max(65_535).default(8792),
   publicUrl: HttpUrlSchema.optional(),
 });
 
-const GoogleChatConfigSchema = z.strictObject({
-  apiUrl: HttpUrlSchema.optional(),
-  credentials: GoogleChatCredentialsSchema.optional(),
-  disableSignatureVerification: z.boolean().optional(),
-  endpointUrl: HttpUrlSchema.optional(),
-  googleChatProjectNumber: z.string().min(1).optional(),
-  impersonateUser: z.string().min(1).optional(),
-  pubsubAudience: z.string().min(1).optional(),
-  pubsubServiceAccountEmail: z.string().min(1).optional(),
-  pubsubTopic: z.string().min(1).optional(),
-  recorder: GoogleChatRecorderSchema.default({}),
-  useApplicationDefaultCredentials: z.boolean().optional(),
-  userName: z.string().min(1).optional(),
-  webhook: GoogleChatWebhookSchema.default({
-    host: "127.0.0.1",
-    path: "/googlechat/webhook",
-    port: 8792,
-  }),
-});
+const GoogleChatConfigSchema = z
+  .strictObject({
+    apiUrl: HttpUrlSchema.optional(),
+    credentials: GoogleChatCredentialsSchema.optional(),
+    disableSignatureVerification: z.boolean().optional(),
+    endpointUrl: HttpUrlSchema.optional(),
+    googleChatProjectNumber: z.string().min(1).optional(),
+    impersonateUser: z.string().min(1).optional(),
+    pubsubAudience: z.string().min(1).optional(),
+    pubsubServiceAccountEmail: z.string().min(1).optional(),
+    pubsubTopic: z.string().min(1).optional(),
+    recorder: GoogleChatRecorderSchema.default({}),
+    useApplicationDefaultCredentials: z.boolean().optional(),
+    userName: z.string().min(1).optional(),
+    webhook: GoogleChatWebhookSchema.default({
+      host: "127.0.0.1",
+      path: "/googlechat/webhook",
+      port: 8792,
+    }),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.pubsubAudience &&
+      !value.pubsubServiceAccountEmail &&
+      !value.credentials?.client_email
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "pubsubAudience requires a Pub/Sub service-account identity",
+        path: ["pubsubAudience"],
+      });
+    }
+  });
 
 const TelegramLongPollingSchema = z.strictObject({
   allowedUpdates: z.array(z.string().min(1)).optional(),
@@ -299,7 +351,7 @@ const TelegramRecorderSchema = z.strictObject({
 
 const TelegramWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
-  path: z.string().min(1).default("/telegram/webhook"),
+  path: WebhookPathSchema.default("/telegram/webhook"),
   port: z.number().int().min(0).max(65_535).default(8790),
   publicUrl: HttpUrlSchema.optional(),
 });
@@ -329,7 +381,7 @@ const FeishuConfigSchema = z.strictObject({
   webhook: z
     .strictObject({
       host: z.string().min(1).default("127.0.0.1"),
-      path: z.string().min(1).default("/feishu/webhook"),
+      path: WebhookPathSchema.default("/feishu/webhook"),
       port: z.number().int().min(0).max(65_535).default(8795),
       publicUrl: HttpUrlSchema.optional(),
     })
@@ -346,7 +398,7 @@ const MattermostRecorderSchema = z.strictObject({
 
 const MattermostWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
-  path: z.string().min(1).default("/mattermost/webhook"),
+  path: WebhookPathSchema.default("/mattermost/webhook"),
   port: z.number().int().min(0).max(65_535).default(8793),
   publicUrl: HttpUrlSchema.optional(),
 });
@@ -377,13 +429,13 @@ const ZaloRecorderSchema = z.strictObject({
 
 const ZaloWebhookSchema = z.strictObject({
   host: z.string().min(1).default("127.0.0.1"),
-  path: z.string().min(1).default("/zalo/webhook"),
+  path: WebhookPathSchema.default("/zalo/webhook"),
   port: z.number().int().min(0).max(65_535).default(8794),
   publicUrl: HttpUrlSchema.optional(),
 });
 
 const ZaloConfigSchema = z.strictObject({
-  botToken: z.string().min(1).optional(),
+  botToken: HeaderValueSchema.optional(),
   recorder: ZaloRecorderSchema.default({}),
   userName: z.string().min(1).optional(),
   webhook: ZaloWebhookSchema.default({
@@ -391,7 +443,7 @@ const ZaloConfigSchema = z.strictObject({
     path: "/zalo/webhook",
     port: 8794,
   }),
-  webhookSecret: z.string().min(1).optional(),
+  webhookSecret: HeaderValueSchema.optional(),
 });
 
 const MatrixAccessTokenAuthSchema = z.strictObject({
@@ -417,7 +469,7 @@ const MatrixConfigSchema = z.strictObject({
   webhook: z
     .strictObject({
       host: z.string().min(1).default("127.0.0.1"),
-      path: z.string().min(1).default("/matrix/webhook"),
+      path: WebhookPathSchema.default("/matrix/webhook"),
       port: z.number().int().min(0).max(65_535).default(8797),
       publicUrl: HttpUrlSchema.optional(),
     })
@@ -437,7 +489,7 @@ const IMessageConfigSchema = z.strictObject({
   webhook: z
     .strictObject({
       host: z.string().min(1).default("127.0.0.1"),
-      path: z.string().min(1).default("/imessage/webhook"),
+      path: WebhookPathSchema.default("/imessage/webhook"),
       port: z.number().int().min(0).max(65_535).default(8796),
       publicUrl: HttpUrlSchema.optional(),
     })
@@ -645,7 +697,7 @@ export const FixtureSchema = z.strictObject({
   mode: z.enum(FIXTURE_MODES),
   notes: z.string().optional(),
   provider: z.string().min(1),
-  retries: z.number().int().min(0).default(0),
+  retries: z.number().int().min(0).max(MAX_FIXTURE_RETRIES).default(0),
   tags: z.array(z.string().min(1)).default([]),
   target: TargetSchema,
   timeoutMs: z.number().int().min(100).max(MAX_TIMER_MS).default(30_000),
@@ -671,6 +723,24 @@ const StrictManifestSchema = z
     userName: z.string().min(1).default("crabline"),
   })
   .superRefine((manifest, ctx) => {
+    for (const [providerId, provider] of Object.entries(manifest.providers)) {
+      if (
+        provider.adapter !== "matrix" &&
+        provider.adapter !== "mattermost" &&
+        provider.adapter !== "imessage"
+      ) {
+        continue;
+      }
+      const webhook = provider[provider.adapter]?.webhook;
+      if (webhook?.publicUrl || (webhook && !isLoopbackHost(webhook.host))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${provider.adapter} provider ${providerId} does not support external webhook ingress`,
+          path: ["providers", providerId, provider.adapter, "webhook"],
+        });
+      }
+    }
+
     const seenFixtureIds = new Set<string>();
     for (const [index, fixture] of manifest.fixtures.entries()) {
       if (seenFixtureIds.has(fixture.id)) {

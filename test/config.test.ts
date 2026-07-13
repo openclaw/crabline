@@ -91,6 +91,137 @@ describe("manifest schema", () => {
     }
   });
 
+  it("requires slash-prefixed webhook paths", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          slack: {
+            adapter: "slack",
+            slack: { webhook: { path: "slack/events" } },
+          },
+        },
+      }),
+    ).toThrow(/webhook path must start with \//u);
+  });
+
+  it("requires HTTPS for public Microsoft Teams webhooks", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          msteams: {
+            adapter: "msteams",
+            msteams: {
+              appId: "teams-app",
+              webhook: { publicUrl: "http://teams.example.test/webhook" },
+            },
+          },
+        },
+      }),
+    ).toThrow(/URL must use https/u);
+  });
+
+  it("rejects unsupported external ingress in strict manifests", () => {
+    for (const adapter of ["matrix", "mattermost", "imessage"] as const) {
+      for (const webhook of [
+        { host: "0.0.0.0" },
+        { publicUrl: `https://${adapter}.example.test/webhook` },
+      ]) {
+        expect(() =>
+          ManifestSchema.parse({
+            configVersion: 1,
+            fixtures: [],
+            providers: {
+              provider: {
+                adapter,
+                [adapter]: {
+                  webhook,
+                },
+              },
+            },
+          }),
+        ).toThrow(/does not support external webhook ingress/u);
+      }
+    }
+  });
+
+  it("rejects header-invalid Zalo secrets", () => {
+    for (const [field, value] of [
+      ["botToken", "token\r\nx-injected: yes"],
+      ["webhookSecret", `secret${String.fromCharCode(0)}`],
+    ] as const) {
+      expect(() =>
+        ManifestSchema.parse({
+          configVersion: 1,
+          fixtures: [],
+          providers: {
+            zalo: {
+              adapter: "zalo",
+              zalo: { [field]: value },
+            },
+          },
+        }),
+      ).toThrow(/valid HTTP header value/u);
+    }
+  });
+
+  it("caps fixture retries", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [
+          {
+            id: "too-many-retries",
+            mode: "send",
+            provider: "local",
+            retries: 11,
+            target: { id: "sink" },
+          },
+        ],
+        providers: { local: { adapter: "loopback" } },
+      }),
+    ).toThrow(/<=10/u);
+  });
+
+  it("requires a service-account identity for Google Chat Pub/Sub audiences", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          googlechat: {
+            adapter: "googlechat",
+            googlechat: {
+              pubsubAudience: "https://chat.example.test/webhook",
+            },
+          },
+        },
+      }),
+    ).toThrow(/requires a Pub\/Sub service-account identity/u);
+
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          googlechat: {
+            adapter: "googlechat",
+            googlechat: {
+              credentials: {
+                client_email: "push@example.iam.gserviceaccount.com",
+                private_key: "secret",
+              },
+              pubsubAudience: "https://chat.example.test/webhook",
+            },
+          },
+        },
+      }),
+    ).not.toThrow();
+  });
+
   it("accepts the documented thread target shape", () => {
     expect(() =>
       ManifestSchema.parse({
