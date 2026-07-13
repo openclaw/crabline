@@ -2,7 +2,8 @@ import { extractNonces } from "./nonces.js";
 import { compileInboundRegex } from "./safe-regex.js";
 import type { InboundEnvelope, InboundMatchConfig } from "../providers/types.js";
 
-const EXACT_ACK_TOKEN = /(?<![\p{L}\p{N}_])ACK(?![\p{L}\p{N}_])/u;
+const EXACT_ACK_TOKEN =
+  /(?<![\p{L}\p{M}\p{N}\p{Pc}\u200c\u200d])ACK(?![\p{L}\p{M}\p{N}\p{Pc}\u200c\u200d])/u;
 
 export function matchesInbound(
   envelope: InboundEnvelope,

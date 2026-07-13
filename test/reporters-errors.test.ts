@@ -20,13 +20,29 @@ describe("errors and reporters", () => {
     const numericMessage = new Error("hidden");
     Object.defineProperty(numericMessage, "message", { value: 42 });
     expect(ensureErrorMessage(numericMessage)).toBe("42");
+    let changingMessageReads = 0;
+    const changingMessage = new Error("hidden");
+    Object.defineProperty(changingMessage, "message", {
+      get() {
+        changingMessageReads += 1;
+        if (changingMessageReads > 1) {
+          throw new Error("message getter read twice");
+        }
+        return 42;
+      },
+    });
+    expect(ensureErrorMessage(changingMessage)).toBe("42");
+    expect(changingMessageReads).toBe(1);
+    let throwingMessageReads = 0;
     const throwingMessage = new Error("hidden");
     Object.defineProperty(throwingMessage, "message", {
       get() {
+        throwingMessageReads += 1;
         throw new Error("message getter exploded");
       },
     });
     expect(ensureErrorMessage(throwingMessage)).toBe("Unknown error");
+    expect(throwingMessageReads).toBe(1);
   });
 
   it("formats single and suite results", () => {
