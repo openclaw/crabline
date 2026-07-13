@@ -34,12 +34,6 @@ class ServerRecorderRotationError extends Error {}
 type RecorderFileIdentity = {
   dev: bigint;
   ino: bigint;
-  nlink: bigint;
-};
-
-type RecorderIdentityLock = {
-  hardlinkSafe: boolean;
-  release: () => Promise<void>;
 };
 
 type ObserverTask = {
@@ -200,7 +194,6 @@ function recorderIdentity(stats: {
 function requireRecorderFileIdentity(stats: {
   dev?: bigint | number;
   ino?: bigint | number;
-  nlink?: bigint | number;
 }): RecorderFileIdentity {
   if (stats.dev === undefined || stats.ino === undefined) {
     throw new Error("Server recorder file identity is unavailable.");
@@ -208,7 +201,6 @@ function requireRecorderFileIdentity(stats: {
   return {
     dev: BigInt(stats.dev),
     ino: BigInt(stats.ino),
-    nlink: stats.nlink === undefined ? 1n : BigInt(stats.nlink),
   };
 }
 
@@ -322,37 +314,9 @@ function recorderIdentityLockPath(root: string, identity: RecorderFileIdentity):
   return path.join(root, `recorder-${identity.dev}-${identity.ino}`);
 }
 
-function recorderLockRootUnavailable(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException).code;
-  return (
-    code === "EACCES" ||
-    code === "EDQUOT" ||
-    code === "ENOSPC" ||
-    code === "EPERM" ||
-    code === "EROFS"
-  );
-}
-
-function adjacentRecorderLockRoot(filePath: string, currentUserId: number | undefined): string {
-  return path.join(
-    path.dirname(filePath),
-    currentUserId === undefined
-      ? ".crabline-server-recorder-locks"
-      : `.crabline-server-recorder-locks-${currentUserId}`,
-  );
-}
-
-async function recorderIdentityLockTargets(
-  filePath: string,
-  identity: RecorderFileIdentity,
-): Promise<{
-  fallbackRoot?: string;
-  preferred: string;
-  preferredHardlinkSafe: boolean;
-  userId: number | undefined;
-}> {
+async function recorderIdentityLockTarget(identity: RecorderFileIdentity): Promise<string> {
   const currentUserId = process.platform === "win32" ? undefined : process.geteuid?.();
-  let sharedRoot: string | undefined;
+  let sharedRoot: string;
   try {
     const account = userInfo();
     sharedRoot =
@@ -360,39 +324,12 @@ async function recorderIdentityLockTargets(
         ? path.join(account.homedir, "AppData", "Local", "Crabline", "locks", "server-recorder")
         : path.join(account.homedir, ".cache", "crabline", "locks", "server-recorder");
   } catch {
-    // Arbitrary container UIDs may not have an OS account entry.
+    throw new Error("Server recorder identity locking requires an OS account directory.");
   }
-  if (sharedRoot) {
-    try {
-      return {
-        ...(identity.nlink === 1n
-          ? { fallbackRoot: adjacentRecorderLockRoot(filePath, currentUserId) }
-          : {}),
-        preferred: recorderIdentityLockPath(
-          await secureRecorderLockRoot(sharedRoot, currentUserId),
-          identity,
-        ),
-        preferredHardlinkSafe: true,
-        userId: currentUserId,
-      };
-    } catch (error) {
-      if (!recorderLockRootUnavailable(error)) {
-        throw error;
-      }
-    }
-  }
-  if (identity.nlink > 1n) {
-    throw new Error("Server recorder hardlinks require a writable shared per-user lock directory.");
-  }
-  const adjacentRoot = await secureRecorderLockRoot(
-    adjacentRecorderLockRoot(filePath, currentUserId),
-    currentUserId,
+  return recorderIdentityLockPath(
+    await secureRecorderLockRoot(sharedRoot, currentUserId),
+    identity,
   );
-  return {
-    preferred: recorderIdentityLockPath(adjacentRoot, identity),
-    preferredHardlinkSafe: false,
-    userId: currentUserId,
-  };
 }
 
 async function acquireRecorderLock(filePath: string): Promise<() => Promise<void>> {
@@ -421,25 +358,9 @@ async function acquireRecorderLock(filePath: string): Promise<() => Promise<void
 }
 
 async function acquireRecorderIdentityLock(
-  filePath: string,
   identity: RecorderFileIdentity,
-): Promise<RecorderIdentityLock> {
-  const targets = await recorderIdentityLockTargets(filePath, identity);
-  try {
-    return {
-      hardlinkSafe: targets.preferredHardlinkSafe,
-      release: await acquireRecorderLock(targets.preferred),
-    };
-  } catch (error) {
-    if (!targets.fallbackRoot || !recorderLockRootUnavailable(error)) {
-      throw error;
-    }
-    const fallbackRoot = await secureRecorderLockRoot(targets.fallbackRoot, targets.userId);
-    return {
-      hardlinkSafe: false,
-      release: await acquireRecorderLock(recorderIdentityLockPath(fallbackRoot, identity)),
-    };
-  }
+): Promise<() => Promise<void>> {
+  return await acquireRecorderLock(await recorderIdentityLockTarget(identity));
 }
 
 async function withRecorderLock(
@@ -538,17 +459,11 @@ async function appendRecorderAttempt(params: {
       result = "retry";
     } else {
       const lockedIdentity = requireRecorderFileIdentity(stats);
-      const identityLock = await acquireRecorderIdentityLock(
-        params.publicationPath,
-        lockedIdentity,
-      );
-      releaseIdentityLock = identityLock.release;
+      releaseIdentityLock = await acquireRecorderIdentityLock(lockedIdentity);
       stats = await file.stat();
-      const refreshedIdentity = requireRecorderFileIdentity(stats);
       identity = requireRecorderIdentity(stats);
       if (
         identity !== `${lockedIdentity.dev}:${lockedIdentity.ino}` ||
-        (!identityLock.hardlinkSafe && refreshedIdentity.nlink > 1n) ||
         !(await recorderPathHasIdentity(params.publicationPath, identity))
       ) {
         result = "retry";
