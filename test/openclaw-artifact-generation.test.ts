@@ -241,6 +241,47 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("rejects recorder references redirected outside the current generation", async () => {
+    const outputDir = await createTempDir();
+    try {
+      const first = await publishOpenClawCrablineArtifactGeneration(
+        publishParamsWithRecorderSnapshot(outputDir),
+        { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
+      );
+      const second = await publishOpenClawCrablineArtifactGeneration(
+        publishParamsWithRecorderSnapshot(outputDir),
+        { createGenerationId: () => "22222222-2222-4222-8222-222222222222" },
+      );
+      const firstManifest = JSON.parse(
+        await fs.readFile(path.join(outputDir, first.manifestPath), "utf8"),
+      ) as { recorderPath: string };
+      const secondManifestPath = path.join(outputDir, second.manifestPath);
+      const secondManifest = JSON.parse(await fs.readFile(secondManifestPath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      secondManifest.recorderPath = firstManifest.recorderPath;
+      await fs.writeFile(secondManifestPath, `${JSON.stringify(secondManifest)}\n`);
+
+      const readinessPath = path.join(outputDir, second.providerReadinessArtifactPath);
+      const readiness = JSON.parse(await fs.readFile(readinessPath, "utf8")) as {
+        providerReadiness: { result: { recorderPath: string } };
+        smoke: { result: { recorderPath: string } };
+      };
+      readiness.providerReadiness.result.recorderPath = firstManifest.recorderPath;
+      readiness.smoke.result.recorderPath = firstManifest.recorderPath;
+      await fs.writeFile(readinessPath, `${JSON.stringify(readiness)}\n`);
+
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParamsWithRecorderSnapshot(outputDir), {
+          createGenerationId: () => "33333333-3333-4333-8333-333333333333",
+        }),
+      ).rejects.toThrow("OpenClaw Crabline current artifact generation is incomplete.");
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("preserves a generation when pointer publication fails after the rename", async () => {
     const outputDir = await createTempDir();
     const lock = createLock();
