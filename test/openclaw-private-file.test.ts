@@ -39,37 +39,43 @@ function expectedAncestrySyncPaths(filePath: string, syncThroughPath?: string): 
 }
 
 describe("OpenClaw private file publication", () => {
-  it("replaces permissive POSIX files with mode 0600", async () => {
-    const directory = await createTempDir();
-    try {
-      const filePath = path.join(directory, "manifest.json");
-      await fs.writeFile(filePath, "stale\n", { mode: 0o666 });
-      await fs.chmod(filePath, 0o666);
+  it.skipIf(process.platform === "win32")(
+    "replaces permissive POSIX files with mode 0600",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const filePath = path.join(directory, "manifest.json");
+        await fs.writeFile(filePath, "stale\n", { mode: 0o666 });
+        await fs.chmod(filePath, 0o666);
 
-      await publishPrivateFileAtomically(filePath, "private\n", { platform: "linux" });
+        await publishPrivateFileAtomically(filePath, "private\n", { platform: "linux" });
 
-      expect(await fs.readFile(filePath, "utf8")).toBe("private\n");
-      expect((await fs.stat(filePath)).mode & 0o777).toBe(0o600);
-    } finally {
-      await disposeTempDir(directory);
-    }
-  });
+        expect(await fs.readFile(filePath, "utf8")).toBe("private\n");
+        expect((await fs.stat(filePath)).mode & 0o777).toBe(0o600);
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
-  it("secures POSIX generation directories with mode 0700", async () => {
-    const directory = await createTempDir();
-    try {
-      const generationPath = path.join(directory, "generation");
-      await fs.mkdir(generationPath, { mode: 0o777 });
-      await fs.chmod(generationPath, 0o777);
+  it.skipIf(process.platform === "win32")(
+    "secures POSIX generation directories with mode 0700",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const generationPath = path.join(directory, "generation");
+        await fs.mkdir(generationPath, { mode: 0o777 });
+        await fs.chmod(generationPath, 0o777);
 
-      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+        const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
 
-      await secured.assertIdentityAt();
-      expect((await fs.stat(generationPath)).mode & 0o777).toBe(0o700);
-    } finally {
-      await disposeTempDir(directory);
-    }
-  });
+        await secured.assertIdentityAt();
+        expect((await fs.stat(generationPath)).mode & 0o777).toBe(0o700);
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "creates every POSIX publication ancestor with mode 0700 under a permissive umask",
@@ -124,7 +130,7 @@ describe("OpenClaw private file publication", () => {
         await fs.mkdir(publicationParent, { recursive: true, mode: 0o700 });
         await fs.chmod(sharedParent, 0o777);
         await fs.chmod(privateParent, 0o700);
-        await fs.chmod(publicationParent, 0o700);
+        await fs.chmod(publicationParent, 0o755);
 
         await expect(
           publishPrivateFileAtomically(path.join(publicationParent, "manifest.json"), "private\n"),
@@ -133,6 +139,7 @@ describe("OpenClaw private file publication", () => {
         await expect(fs.stat(path.join(publicationParent, "manifest.json"))).rejects.toMatchObject({
           code: "ENOENT",
         });
+        expect((await fs.stat(publicationParent)).mode & 0o777).toBe(0o755);
       } finally {
         await disposeTempDir(directory);
       }
@@ -163,63 +170,69 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
-  it("syncs a POSIX directory handle after persisting mode 0700", async () => {
-    const directory = await createTempDir();
-    try {
-      const generationPath = path.join(directory, "generation");
-      const events: string[] = [];
-      await fs.mkdir(generationPath, { mode: 0o777 });
-      await fs.chmod(generationPath, 0o777);
+  it.skipIf(process.platform === "win32")(
+    "syncs a POSIX directory handle after persisting mode 0700",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const generationPath = path.join(directory, "generation");
+        const events: string[] = [];
+        await fs.mkdir(generationPath, { mode: 0o777 });
+        await fs.chmod(generationPath, 0o777);
 
-      await securePrivateDirectory(generationPath, {
-        platform: "linux",
-        syncDirectory: async () => {
-          events.push("directory");
-          expect((await fs.stat(generationPath)).mode & 0o777).toBe(0o700);
-        },
-        syncParent: async () => {
-          events.push("parent");
-        },
-      });
+        await securePrivateDirectory(generationPath, {
+          platform: "linux",
+          syncDirectory: async () => {
+            events.push("directory");
+            expect((await fs.stat(generationPath)).mode & 0o777).toBe(0o700);
+          },
+          syncParent: async () => {
+            events.push("parent");
+          },
+        });
 
-      expect(events).toEqual(["directory", "parent"]);
-    } finally {
-      await disposeTempDir(directory);
-    }
-  });
+        expect(events).toEqual(["directory", "parent"]);
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
-  it("resyncs an existing private directory after an interrupted creation", async () => {
-    const directory = await createTempDir();
-    try {
-      const generationPath = path.join(directory, "generation");
-      const syncFailure = new Error("simulated parent sync interruption");
-      const syncParent = vi
-        .fn<(filePath: string, platform?: NodeJS.Platform) => Promise<void>>()
-        .mockRejectedValueOnce(syncFailure)
-        .mockResolvedValueOnce();
-      await fs.mkdir(generationPath, { mode: 0o700 });
+  it.skipIf(process.platform === "win32")(
+    "resyncs an existing private directory after an interrupted creation",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const generationPath = path.join(directory, "generation");
+        const syncFailure = new Error("simulated parent sync interruption");
+        const syncParent = vi
+          .fn<(filePath: string, platform?: NodeJS.Platform) => Promise<void>>()
+          .mockRejectedValueOnce(syncFailure)
+          .mockResolvedValueOnce();
+        await fs.mkdir(generationPath, { mode: 0o700 });
 
-      await expect(
-        securePrivateDirectory(generationPath, { platform: "linux", syncParent }),
-      ).rejects.toBe(syncFailure);
-      await expect(fs.stat(generationPath)).resolves.toBeDefined();
+        await expect(
+          securePrivateDirectory(generationPath, { platform: "linux", syncParent }),
+        ).rejects.toBe(syncFailure);
+        await expect(fs.stat(generationPath)).resolves.toBeDefined();
 
-      const secured = await securePrivateDirectory(generationPath, {
-        platform: "linux",
-        syncParent,
-      });
+        const secured = await securePrivateDirectory(generationPath, {
+          platform: "linux",
+          syncParent,
+        });
 
-      await secured.assertIdentityAt();
-      expect(syncParent.mock.calls).toEqual([
-        [generationPath, "linux"],
-        [generationPath, "linux"],
-      ]);
-    } finally {
-      await disposeTempDir(directory);
-    }
-  });
+        await secured.assertIdentityAt();
+        expect(syncParent.mock.calls).toEqual([
+          [generationPath, "linux"],
+          [generationPath, "linux"],
+        ]);
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
-  it.each(["EACCES", "EPERM"] as const)(
+  it.skipIf(process.platform === "win32").each(["EACCES", "EPERM"] as const)(
     "accepts an existing private directory below a parent that rejects fsync with %s",
     async (code) => {
       const directory = await createTempDir();
@@ -243,7 +256,7 @@ describe("OpenClaw private file publication", () => {
     },
   );
 
-  it.each(["EACCES", "EPERM"] as const)(
+  it.skipIf(process.platform === "win32").each(["EACCES", "EPERM"] as const)(
     "rolls back a newly created private directory when parent fsync fails with %s",
     async (code) => {
       const directory = await createTempDir();
@@ -1010,47 +1023,50 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
-  it("serializes recursive removal across an owned legacy 0755 descendant", async () => {
-    const directory = await createTempDir();
-    let releaseCommit!: () => void;
-    const commitReleased = new Promise<void>((resolve) => {
-      releaseCommit = resolve;
-    });
-    let commitReached!: () => void;
-    const reachedCommit = new Promise<void>((resolve) => {
-      commitReached = resolve;
-    });
-    let publication: Promise<void> | undefined;
-    try {
-      const generationPath = path.join(directory, "generation");
-      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
-      const legacyPath = path.join(generationPath, "legacy");
-      await fs.mkdir(legacyPath, { mode: 0o755 });
-      await fs.chmod(legacyPath, 0o755);
-      const filePath = path.join(legacyPath, "nested", "manifest.json");
-      publication = publishPrivateFileAtomically(filePath, "private\n", {
-        beforeCommitRename: async () => {
-          commitReached();
-          await commitReleased;
-        },
+  it.skipIf(process.platform === "win32")(
+    "serializes recursive removal across an owned legacy 0755 descendant",
+    async () => {
+      const directory = await createTempDir();
+      let releaseCommit!: () => void;
+      const commitReleased = new Promise<void>((resolve) => {
+        releaseCommit = resolve;
       });
-      await reachedCommit;
+      let commitReached!: () => void;
+      const reachedCommit = new Promise<void>((resolve) => {
+        commitReached = resolve;
+      });
+      let publication: Promise<void> | undefined;
+      try {
+        const generationPath = path.join(directory, "generation");
+        const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+        const legacyPath = path.join(generationPath, "legacy");
+        await fs.mkdir(legacyPath, { mode: 0o755 });
+        await fs.chmod(legacyPath, 0o755);
+        const filePath = path.join(legacyPath, "nested", "manifest.json");
+        publication = publishPrivateFileAtomically(filePath, "private\n", {
+          beforeCommitRename: async () => {
+            commitReached();
+            await commitReleased;
+          },
+        });
+        await reachedCommit;
 
-      await expect(
-        removeSecuredPrivateDirectory(secured, undefined, undefined, {
-          platform: "linux",
-        }),
-      ).rejects.toThrow("Private path mutation is already claimed.");
+        await expect(
+          removeSecuredPrivateDirectory(secured, undefined, undefined, {
+            platform: "linux",
+          }),
+        ).rejects.toThrow("Private path mutation is already claimed.");
 
-      releaseCommit();
-      await publication;
-      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
-    } finally {
-      releaseCommit();
-      await publication?.catch(() => undefined);
-      await disposeTempDir(directory);
-    }
-  });
+        releaseCommit();
+        await publication;
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+      } finally {
+        releaseCommit();
+        await publication?.catch(() => undefined);
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it("retries when an active claim disappears before its metadata is opened", async () => {
     const directory = await createTempDir();
@@ -1690,167 +1706,182 @@ describe("OpenClaw private file publication", () => {
     },
   );
 
-  it("removes a secured directory whose basename uses the reserved claim prefix", async () => {
-    const directory = await createTempDir();
-    try {
-      const generationPath = path.join(directory, ".crabline-private-mutation.data");
-      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
-      await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+  it.skipIf(process.platform === "win32")(
+    "removes a secured directory whose basename uses the reserved claim prefix",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const generationPath = path.join(directory, ".crabline-private-mutation.data");
+        const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+        await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
 
-      await removeSecuredPrivateDirectory(secured, undefined, undefined, {
-        platform: "linux",
-      });
-
-      await expect(fs.stat(generationPath)).rejects.toMatchObject({ code: "ENOENT" });
-    } finally {
-      await disposeTempDir(directory);
-    }
-  });
-
-  it("closes the leaf claim handle before recursively deleting its container", async () => {
-    const directory = await createTempDir();
-    const actualOpen = fs.open.bind(fs);
-    let claimHandleClosed = false;
-    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (filePath, flags, mode) => {
-      const handle =
-        mode === undefined
-          ? await actualOpen(filePath, flags)
-          : await actualOpen(filePath, flags, mode);
-      if (
-        typeof filePath === "string" &&
-        filePath.includes(".crabline-private-mutation.claim.") &&
-        filePath.endsWith(".candidate")
-      ) {
-        const actualClose = handle.close.bind(handle);
-        vi.spyOn(handle, "close").mockImplementation(async () => {
-          claimHandleClosed = true;
-          await actualClose();
+        await removeSecuredPrivateDirectory(secured, undefined, undefined, {
+          platform: "linux",
         });
+
+        await expect(fs.stat(generationPath)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await disposeTempDir(directory);
       }
-      return handle;
-    });
-    try {
-      const generationPath = path.join(directory, "generation");
-      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
-      await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+    },
+  );
 
-      await removeSecuredPrivateDirectory(secured, undefined, undefined, {
-        platform: "linux",
-        removeDirectory: async (quarantinePath) => {
-          expect(claimHandleClosed).toBe(true);
-          await fs.rm(quarantinePath, { force: true, recursive: true });
-        },
-      });
-    } finally {
-      openSpy.mockRestore();
-      await disposeTempDir(directory);
-    }
-  });
-
-  it("retries ancestor claim release after the removed container is gone", async () => {
-    const directory = await createTempDir();
-    const actualRename = fs.rename.bind(fs);
-    let ancestorReleaseAttempts = 0;
-    try {
-      await securePrivateDirectory(directory, { platform: "linux" });
-      const generationPath = path.join(directory, "generation");
-      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
-      await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
-      const ancestorClaimPath = path.join(directory, ".crabline-private-mutation.claim");
-      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (oldPath, newPath) => {
+  it.skipIf(process.platform === "win32")(
+    "closes the leaf claim handle before recursively deleting its container",
+    async () => {
+      const directory = await createTempDir();
+      const actualOpen = fs.open.bind(fs);
+      let claimHandleClosed = false;
+      const openSpy = vi.spyOn(fs, "open").mockImplementation(async (filePath, flags, mode) => {
+        const handle =
+          mode === undefined
+            ? await actualOpen(filePath, flags)
+            : await actualOpen(filePath, flags, mode);
         if (
-          oldPath === ancestorClaimPath &&
-          typeof newPath === "string" &&
-          newPath.endsWith(".release")
+          typeof filePath === "string" &&
+          filePath.includes(".crabline-private-mutation.claim.") &&
+          filePath.endsWith(".candidate")
         ) {
-          ancestorReleaseAttempts += 1;
-          if (ancestorReleaseAttempts === 1) {
-            throw new Error("injected ancestor release failure");
-          }
+          const actualClose = handle.close.bind(handle);
+          vi.spyOn(handle, "close").mockImplementation(async () => {
+            claimHandleClosed = true;
+            await actualClose();
+          });
         }
-        await actualRename(oldPath, newPath);
+        return handle;
       });
       try {
+        const generationPath = path.join(directory, "generation");
+        const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+        await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+
+        await removeSecuredPrivateDirectory(secured, undefined, undefined, {
+          platform: "linux",
+          removeDirectory: async (quarantinePath) => {
+            expect(claimHandleClosed).toBe(true);
+            await fs.rm(quarantinePath, { force: true, recursive: true });
+          },
+        });
+      } finally {
+        openSpy.mockRestore();
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "retries ancestor claim release after the removed container is gone",
+    async () => {
+      const directory = await createTempDir();
+      const actualRename = fs.rename.bind(fs);
+      let ancestorReleaseAttempts = 0;
+      try {
+        await securePrivateDirectory(directory, { platform: "linux" });
+        const generationPath = path.join(directory, "generation");
+        const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+        await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+        const ancestorClaimPath = path.join(directory, ".crabline-private-mutation.claim");
+        const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (oldPath, newPath) => {
+          if (
+            oldPath === ancestorClaimPath &&
+            typeof newPath === "string" &&
+            newPath.endsWith(".release")
+          ) {
+            ancestorReleaseAttempts += 1;
+            if (ancestorReleaseAttempts === 1) {
+              throw new Error("injected ancestor release failure");
+            }
+          }
+          await actualRename(oldPath, newPath);
+        });
+        try {
+          await expect(
+            removeSecuredPrivateDirectory(secured, undefined, undefined, {
+              platform: "linux",
+            }),
+          ).rejects.toThrow("injected ancestor release failure");
+        } finally {
+          renameSpy.mockRestore();
+        }
+
+        expect(ancestorReleaseAttempts).toBe(2);
+        await expect(fs.stat(ancestorClaimPath)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "releases the leaf claim when recursive removal leaves its container in place",
+    async () => {
+      const directory = await createTempDir();
+      let quarantinePath: string | undefined;
+      try {
+        const generationPath = path.join(directory, "generation");
+        const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+        await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+
         await expect(
           removeSecuredPrivateDirectory(secured, undefined, undefined, {
             platform: "linux",
+            removeDirectory: async (candidatePath) => {
+              quarantinePath = candidatePath;
+            },
           }),
-        ).rejects.toThrow("injected ancestor release failure");
+        ).rejects.toThrow("Private directory path still exists after recursive removal.");
+
+        expect(quarantinePath).toBeDefined();
+        await expect(fs.readdir(quarantinePath!)).resolves.toEqual(["private.json"]);
+        expect(
+          (await fs.readdir(directory)).filter((entry) =>
+            entry.startsWith(".crabline-private-mutation"),
+          ),
+        ).toEqual([]);
       } finally {
-        renameSpy.mockRestore();
+        await disposeTempDir(directory);
       }
+    },
+  );
 
-      expect(ancestorReleaseAttempts).toBe(2);
-      await expect(fs.stat(ancestorClaimPath)).rejects.toMatchObject({ code: "ENOENT" });
-    } finally {
-      await disposeTempDir(directory);
-    }
-  });
+  it.skipIf(process.platform === "win32")(
+    "preserves a substituted quarantine directory at the recursive removal boundary",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const generationPath = path.join(directory, "generation");
+        const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
+        await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
+        let originalQuarantinePath: string | undefined;
+        let substitutePath: string | undefined;
 
-  it("releases the leaf claim when recursive removal leaves its container in place", async () => {
-    const directory = await createTempDir();
-    let quarantinePath: string | undefined;
-    try {
-      const generationPath = path.join(directory, "generation");
-      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
-      await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
-
-      await expect(
-        removeSecuredPrivateDirectory(secured, undefined, undefined, {
-          platform: "linux",
-          removeDirectory: async (candidatePath) => {
-            quarantinePath = candidatePath;
+        const removalError = await removeSecuredPrivateDirectory(secured, undefined, undefined, {
+          beforeRecursiveRemove: async (quarantinePath) => {
+            originalQuarantinePath = `${quarantinePath}.original`;
+            substitutePath = quarantinePath;
+            await fs.rename(quarantinePath, originalQuarantinePath);
+            await fs.mkdir(quarantinePath);
+            await fs.writeFile(path.join(quarantinePath, "substitute.json"), "substitute\n");
           },
-        }),
-      ).rejects.toThrow("Private directory path still exists after recursive removal.");
+          platform: "linux",
+        }).catch((error: unknown) => error);
 
-      expect(quarantinePath).toBeDefined();
-      await expect(fs.readdir(quarantinePath!)).resolves.toEqual(["private.json"]);
-      expect(
-        (await fs.readdir(directory)).filter((entry) =>
-          entry.startsWith(".crabline-private-mutation"),
-        ),
-      ).toEqual([]);
-    } finally {
-      await disposeTempDir(directory);
-    }
-  });
+        expect(removalError).toBeInstanceOf(AggregateError);
+        expect((removalError as AggregateError).cause).toMatchObject({
+          message: "Private directory path identity changed during publication.",
+        });
 
-  it("preserves a substituted quarantine directory at the recursive removal boundary", async () => {
-    const directory = await createTempDir();
-    try {
-      const generationPath = path.join(directory, "generation");
-      const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
-      await fs.writeFile(path.join(generationPath, "private.json"), "private\n");
-      let originalQuarantinePath: string | undefined;
-      let substitutePath: string | undefined;
-
-      const removalError = await removeSecuredPrivateDirectory(secured, undefined, undefined, {
-        beforeRecursiveRemove: async (quarantinePath) => {
-          originalQuarantinePath = `${quarantinePath}.original`;
-          substitutePath = quarantinePath;
-          await fs.rename(quarantinePath, originalQuarantinePath);
-          await fs.mkdir(quarantinePath);
-          await fs.writeFile(path.join(quarantinePath, "substitute.json"), "substitute\n");
-        },
-        platform: "linux",
-      }).catch((error: unknown) => error);
-
-      expect(removalError).toBeInstanceOf(AggregateError);
-      expect((removalError as AggregateError).cause).toMatchObject({
-        message: "Private directory path identity changed during publication.",
-      });
-
-      await expect(
-        fs.readFile(path.join(originalQuarantinePath!, "private.json"), "utf8"),
-      ).resolves.toBe("private\n");
-      await expect(
-        fs.readFile(path.join(substitutePath!, "substitute.json"), "utf8"),
-      ).resolves.toBe("substitute\n");
-    } finally {
-      await disposeTempDir(directory);
-    }
-  });
+        await expect(
+          fs.readFile(path.join(originalQuarantinePath!, "private.json"), "utf8"),
+        ).resolves.toBe("private\n");
+        await expect(
+          fs.readFile(path.join(substitutePath!, "substitute.json"), "utf8"),
+        ).resolves.toBe("substitute\n");
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it("stops safely at an inaccessible pre-existing ancestor after publication", async () => {
     const directory = await createTempDir();
@@ -2226,6 +2257,9 @@ describe("OpenClaw private file publication", () => {
 
     const script = calls[0]![1].at(-1);
     expect(script).toContain("DeleteSubdirectoriesAndFiles");
+    expect(script).toContain("ChangePermissions");
+    expect(script).toContain("TakeOwnership");
+    expect(script).toContain("$ancestorReplacementMask");
     expect(script).toContain("$genericAll = [uint32]0x10000000");
     expect(script).toContain("$appliesToDirectory");
     expect(script).not.toContain("Set-Acl");
