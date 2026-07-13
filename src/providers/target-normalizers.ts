@@ -156,38 +156,33 @@ export function createGenericLocalMockTargetCodec(
   platform: ProviderPlatform,
 ): LocalMockTargetCodec {
   const prefix = `${platform}:`;
-  const encode = (value: string) => (value.startsWith(prefix) ? value : `${prefix}${value}`);
+  const encodeComponent = (value: string, label: string) => {
+    try {
+      return encodeURIComponent(value);
+    } catch (error) {
+      throw new CrablineError(`${platform} ${label} cannot be encoded.`, {
+        cause: error,
+        kind: "config",
+      });
+    }
+  };
+  const encodeChannel = (value: string) => `${prefix}${encodeComponent(value, "channelId")}`;
   return {
     normalize(target): NormalizedTarget {
+      const channelId = encodeChannel(target.channelId ?? target.id);
       const normalized: NormalizedTarget = {
+        channelId,
         id: target.id,
         metadata: target.metadata,
       };
-      if (target.channelId) {
-        normalized.channelId = encode(target.channelId);
-      } else if (!target.threadId) {
-        normalized.channelId = encode(target.id);
-      }
       if (target.threadId) {
-        normalized.channelId ??= encode(target.id);
-        if (
-          target.threadId.startsWith(prefix) &&
-          !target.threadId.startsWith(`${normalized.channelId}:`)
-        ) {
-          throw new CrablineError(
-            `${platform} canonical thread parent must match the target channel.`,
-            { kind: "config" },
-          );
-        }
-        normalized.threadId = target.threadId.startsWith(prefix)
-          ? target.threadId
-          : `${normalized.channelId}:${target.threadId}`;
+        normalized.threadId = `${channelId}:${encodeComponent(target.threadId, "threadId")}`;
       }
       return normalized;
     },
     resolveThreadId(target) {
       const normalized = this.normalize(target);
-      return normalized.threadId ?? normalized.channelId ?? encode(normalized.id);
+      return normalized.threadId ?? normalized.channelId ?? encodeChannel(normalized.id);
     },
   };
 }
