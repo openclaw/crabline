@@ -89,7 +89,7 @@ it.skipIf(process.platform === "win32")(
 );
 
 it.skipIf(process.platform === "win32")(
-  "preserves observer order when a recorder symlink is retargeted",
+  "preserves observer start order when a recorder symlink is retargeted",
   async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -140,11 +140,11 @@ it.skipIf(process.platform === "win32")(
     await expect
       .poll(async () => await readFile(secondTarget, "utf8"))
       .toContain('"path":"/second"');
-    expect(order).toEqual(["first:start"]);
+    await expect.poll(() => [...order]).toEqual(["first:start", "second"]);
 
     releaseFirst?.();
     await Promise.all([first, second]);
-    expect(order).toEqual(["first:start", "first:end", "second"]);
+    expect(order).toEqual(["first:start", "second", "first:end"]);
   },
 );
 

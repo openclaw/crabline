@@ -504,9 +504,10 @@ describe("server recorder", () => {
 
   it("snapshots events before waiting for recorder admission", async () => {
     const event = serverEvent("/original");
+    const observer = vi.fn<(event: ServerRequestEvent) => void>();
     const recording = recordServerEvent({
       event,
-      onEvent: undefined,
+      onEvent: observer,
       recorderPath: path.join("/tmp", "crabline-server-recorder-snapshot.jsonl"),
     });
     event.path = "/mutated";
@@ -514,6 +515,7 @@ describe("server recorder", () => {
     await recording;
 
     expect(JSON.parse(fsMocks.file.appendFile.mock.calls[0]![0]).path).toBe("/original");
+    expect(observer).toHaveBeenCalledWith(serverEvent("/original"));
   });
 
   it("recovers serialization after an append failure", async () => {
@@ -1169,7 +1171,7 @@ describe("server recorder", () => {
     expect(observer).toHaveBeenCalledWith(event);
   });
 
-  it("runs observers in durable append order", async () => {
+  it("starts observers in durable append order without waiting for completion", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-observer-order.jsonl");
     const order: string[] = [];
     let releaseFirst: (() => void) | undefined;
@@ -1196,11 +1198,39 @@ describe("server recorder", () => {
       recorderPath,
     });
     await vi.waitFor(() => expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2));
-    expect(order).toEqual(["first:start"]);
+    await vi.waitFor(() => expect(order).toEqual(["first:start", "second"]));
 
     releaseFirst?.();
     await Promise.all([first, second]);
-    expect(order).toEqual(["first:start", "first:end", "second"]);
+    expect(order).toEqual(["first:start", "second", "first:end"]);
+  });
+
+  it("does not deadlock when an observer waits for a later externally registered event", async () => {
+    const recorderPath = path.join("/tmp", "crabline-server-recorder-external-wait.jsonl");
+    let allowFirstToWait!: () => void;
+    const secondRegistered = new Promise<void>((resolve) => {
+      allowFirstToWait = resolve;
+    });
+    let second!: Promise<void>;
+    const first = recordServerEvent({
+      event: serverEvent("/first"),
+      onEvent: async () => {
+        await secondRegistered;
+        await second;
+      },
+      recorderPath,
+    });
+    await vi.waitFor(() => expect(fsMocks.file.appendFile).toHaveBeenCalledOnce());
+
+    second = recordServerEvent({
+      event: serverEvent("/second"),
+      onEvent: () => undefined,
+      recorderPath,
+    });
+    allowFirstToWait();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
   });
 
   it("allows observers to append reentrantly to the same recorder", async () => {
@@ -1222,30 +1252,24 @@ describe("server recorder", () => {
     expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects nested observer registration before appending the nested event", async () => {
+  it("allows nested observer registration on the same recorder", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-nested-observer.jsonl");
+    const nestedObserver = vi.fn<(event: ServerRequestEvent) => void>();
 
-    await expect(
-      recordServerEvent({
-        event: serverEvent("/outer"),
-        onEvent: async () => {
-          await recordServerEvent({
-            event: serverEvent("/nested"),
-            onEvent: () => undefined,
-            recorderPath,
-          });
-        },
-        recorderPath,
-      }),
-    ).rejects.toMatchObject({
-      cause: expect.objectContaining({
-        message: "Server recorder observer dependency cycle detected.",
-      }),
-      committed: true,
-      name: "ServerRecorderCommittedError",
+    await recordServerEvent({
+      event: serverEvent("/outer"),
+      onEvent: async () => {
+        await recordServerEvent({
+          event: serverEvent("/nested"),
+          onEvent: nestedObserver,
+          recorderPath,
+        });
+      },
+      recorderPath,
     });
 
-    expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    expect(nestedObserver).toHaveBeenCalledWith(serverEvent("/nested"));
+    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
   });
 
   it("allows nested observers for independent recorder paths", async () => {
@@ -1267,7 +1291,7 @@ describe("server recorder", () => {
     expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
   });
 
-  it("allows acyclic waits on an active observer for another recorder", async () => {
+  it("starts nested observers after prior invocation without waiting for completion", async () => {
     const firstPath = path.join("/tmp", "crabline-server-recorder-active-independent.jsonl");
     const secondPath = path.join("/tmp", "crabline-server-recorder-waiting-independent.jsonl");
     const nestedObserver = vi.fn<(event: ServerRequestEvent) => void>();
@@ -1301,14 +1325,15 @@ describe("server recorder", () => {
       recorderPath: secondPath,
     });
     await vi.waitFor(() => expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(3));
-    expect(nestedObserver).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(nestedObserver).toHaveBeenCalledWith(serverEvent("/nested-on-first")),
+    );
 
     releaseFirst();
     await Promise.all([first, second]);
-    expect(nestedObserver).toHaveBeenCalledWith(serverEvent("/nested-on-first"));
   });
 
-  it("rejects cross-recorder observer dependency cycles", async () => {
+  it("allows active observers to append across recorder paths without deadlocking", async () => {
     const firstPath = path.join("/tmp", "crabline-server-recorder-cycle-first.jsonl");
     const secondPath = path.join("/tmp", "crabline-server-recorder-cycle-second.jsonl");
     let activeObservers = 0;
@@ -1349,9 +1374,8 @@ describe("server recorder", () => {
       recorderPath: secondPath,
     });
 
-    const results = await Promise.allSettled([first, second]);
-    expect(results.some((result) => result.status === "rejected")).toBe(true);
-    expect(fsMocks.file.appendFile.mock.calls.length).toBeLessThanOrEqual(3);
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(4);
   });
 
   it("keeps later appends available after an observer failure", async () => {

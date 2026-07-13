@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { chmod, lstat, mkdir, open, readlink, realpath, stat as statPath } from "node:fs/promises";
 import path from "node:path";
 import { lock } from "proper-lockfile";
@@ -31,23 +30,19 @@ export class ServerRecorderCommittedError extends AggregateError {
 class ServerRecorderRotationError extends Error {}
 
 type ObserverTask = {
-  completion: Promise<void> | undefined;
-  dependencies: Set<ObserverTask>;
+  markStarted: () => void;
+  started: Promise<void>;
 };
 
 type ObserverPlan = {
+  dependencies: Set<ObserverTask>;
   task: ObserverTask;
-  waitingTask: ObserverTask | undefined;
 };
 
 const pendingAppends = new Map<string, Promise<void>>();
 const pendingAdmissions = new Map<string, Promise<void>>();
 const pendingLogicalObservers = new Map<string, ObserverTask>();
 const pendingPublicationObservers = new Map<string, ObserverTask>();
-const observerContext = new AsyncLocalStorage<{
-  active: boolean;
-  task: ObserverTask;
-}>();
 const durableRecorderIdentities = new Map<string, string>();
 const MAX_DURABLE_RECORDER_IDENTITIES = 128;
 const MAX_RECOVERY_VALIDATION_BYTES = 64 * 1024 * 1024;
@@ -475,26 +470,6 @@ async function resolveRecorderPath(filePath: string): Promise<string> {
   return path.join(await resolveRecorderPath(path.dirname(filePath)), path.basename(filePath));
 }
 
-function observerTaskDependsOn(
-  task: ObserverTask,
-  target: ObserverTask,
-  visited = new Set<ObserverTask>(),
-): boolean {
-  if (task === target) {
-    return true;
-  }
-  if (visited.has(task)) {
-    return false;
-  }
-  visited.add(task);
-  for (const dependency of task.dependencies) {
-    if (observerTaskDependsOn(dependency, target, visited)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function planObserver(params: {
   key: string;
   logicalPath: string;
@@ -512,23 +487,15 @@ function planObserver(params: {
   if (previousPublication !== undefined) {
     dependencies.add(previousPublication);
   }
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
   const task: ObserverTask = {
-    completion: undefined,
-    dependencies,
+    markStarted,
+    started,
   };
-  const context = observerContext.getStore();
-  const waitingTask = context?.active === true ? context.task : undefined;
-  if (waitingTask !== undefined) {
-    if (observerTaskDependsOn(task, waitingTask)) {
-      throw new Error("Server recorder observer dependency cycle detected.");
-    }
-    waitingTask.dependencies.add(task);
-  }
-  return { task, waitingTask };
-}
-
-function cancelObserverPlan(plan: ObserverPlan | undefined): void {
-  plan?.waitingTask?.dependencies.delete(plan.task);
+  return { dependencies, task };
 }
 
 function activateObserver(params: {
@@ -541,28 +508,23 @@ function activateObserver(params: {
   if (params.onEvent === undefined || params.plan === undefined) {
     return Promise.resolve();
   }
-  const { task, waitingTask } = params.plan;
+  const { dependencies, task } = params.plan;
   const current = Promise.all(
-    [...task.dependencies].map((dependency) => dependency.completion?.catch(() => {})),
+    [...dependencies].map((dependency) => dependency.started.catch(() => {})),
   ).then(async () => {
-    const context = {
-      active: true,
-      task,
-    };
     try {
-      await observerContext.run(context, async () => await params.onEvent?.(params.event));
+      const observation = params.onEvent?.(params.event);
+      task.markStarted();
+      await observation;
     } catch (error) {
+      task.markStarted();
       throw new ServerRecorderCommittedError(params.logicalPath, error);
-    } finally {
-      context.active = false;
     }
   });
-  task.completion = current;
   pendingLogicalObservers.set(params.logicalPath, task);
   pendingPublicationObservers.set(params.key, task);
   void current.then(
     () => {
-      waitingTask?.dependencies.delete(task);
       if (pendingLogicalObservers.get(params.logicalPath) === task) {
         pendingLogicalObservers.delete(params.logicalPath);
       }
@@ -571,7 +533,6 @@ function activateObserver(params: {
       }
     },
     () => {
-      waitingTask?.dependencies.delete(task);
       if (pendingLogicalObservers.get(params.logicalPath) === task) {
         pendingLogicalObservers.delete(params.logicalPath);
       }
@@ -647,7 +608,7 @@ async function appendResolvedJsonLine(params: {
         };
       } finally {
         if (!observerActivated) {
-          cancelObserverPlan(observerPlan);
+          observerPlan?.task.markStarted();
         }
       }
     });
@@ -714,9 +675,13 @@ export async function recordServerEvent(params: {
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
 }): Promise<void> {
+  const serialized = JSON.stringify(params.event);
+  const event = JSON.parse(serialized) as ServerRequestEvent;
   await appendJsonLine({
-    ...params,
-    line: `${JSON.stringify(params.event)}\n`,
+    event,
+    line: `${serialized}\n`,
+    onEvent: params.onEvent,
+    recorderPath: params.recorderPath,
   });
 }
 
@@ -725,10 +690,14 @@ export async function recordCommittedServerEvent(params: {
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
 }): Promise<void> {
+  const serialized = JSON.stringify(params.event);
+  const event = JSON.parse(serialized) as ServerRequestEvent;
   try {
     await appendJsonLine({
-      ...params,
-      line: `${JSON.stringify(params.event)}\n`,
+      event,
+      line: `${serialized}\n`,
+      onEvent: params.onEvent,
+      recorderPath: params.recorderPath,
     });
   } catch {
     // The provider mutation already committed, so telemetry failure cannot change its response.
