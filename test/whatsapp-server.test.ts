@@ -965,6 +965,19 @@ describe("whatsapp local provider server", () => {
     });
     expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
     receiver.markMessageAcknowledged("15557654321@s.whatsapp.net", "retry-ack");
+
+    await expect(
+      persistAcceptedBaileysMessage({
+        appendEvent: async (event) => {
+          events.push(event);
+        },
+        node,
+        path: "/ws/chat",
+        remoteJid: senderJid,
+        signalBundles: receiver,
+      }),
+    ).resolves.toBe(true);
+    expect(events).toHaveLength(1);
   });
 
   it("preserves unresolved acknowledgements when their safety limit is reached", async () => {
