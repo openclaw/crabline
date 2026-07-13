@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
 - Preserve committed provider recorder errors during final identity confirmation and strictly parse quoted JWT cache lifetimes.
 - Lint repository tooling in the type-aware verification gate.
 - Preserve WhatsApp acknowledgement races without stale pending state or false deduplication.

@@ -88,6 +88,19 @@ describe("WhatsApp X25519 agreement", () => {
     );
   });
 
+  it("creates randomized XEdDSA signatures that retain the WhatsApp wire format", () => {
+    const identityKeyPair = generateSignalKeyPair();
+    const message = Buffer.from("signed pre-key");
+    const firstSignature = Curve.sign(identityKeyPair.private, message);
+    const secondSignature = Curve.sign(identityKeyPair.private, message);
+
+    expect(firstSignature).toHaveLength(64);
+    expect(secondSignature).toHaveLength(64);
+    expect(firstSignature).not.toEqual(secondSignature);
+    expect(BaileysCurve.verify(identityKeyPair.public, message, firstSignature)).toBe(true);
+    expect(BaileysCurve.verify(identityKeyPair.public, message, secondSignature)).toBe(true);
+  });
+
   it("rejects invalid peer key lengths", () => {
     expect(() => Curve.sharedKey(RFC_7748_ALICE_PRIVATE, Buffer.alloc(31))).toThrow(
       "Invalid Signal public key length: 31.",

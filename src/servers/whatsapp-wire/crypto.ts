@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url);
 type Curve25519Module = {
   generateKeyPair(seed: Uint8Array): { private: Uint8Array; public: Uint8Array };
   sharedKey(privateKey: Uint8Array, publicKey: Uint8Array): Uint8Array;
-  sign(privateKey: Uint8Array, message: Uint8Array): Uint8Array;
+  sign(privateKey: Uint8Array, message: Uint8Array, random: Uint8Array): Uint8Array;
 };
 
 const curve25519 = require("curve25519-js") as Curve25519Module;
@@ -135,7 +135,9 @@ export function createCurve(nativeBackend: NativeCurveBackend = nativeCurveBacke
     },
 
     sign(privateKey: Uint8Array, message: Uint8Array): Buffer {
-      return Buffer.from(curve25519.sign(Buffer.from(privateKey), Buffer.from(message)));
+      return Buffer.from(
+        curve25519.sign(Buffer.from(privateKey), Buffer.from(message), randomBytes(64)),
+      );
     },
   };
 }
