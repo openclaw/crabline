@@ -63,7 +63,7 @@ export const OPENCLAW_SUPPORT_CATALOG = [
     supports: COMMON_BRIDGE_SUPPORT,
   },
   {
-    notes: "Built-in local Mattermost mock.",
+    notes: "Built-in local Mattermost mock with authenticated outgoing webhook ingress.",
     platform: "mattermost",
     status: "ready",
     supports: COMMON_BRIDGE_SUPPORT,

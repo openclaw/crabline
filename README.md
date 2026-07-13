@@ -197,6 +197,7 @@ The JSON manifest contains:
 
 - `baseUrl`: OpenClaw `channels.mattermost.baseUrl` / `MATTERMOST_URL`
 - `botToken`: OpenClaw `channels.mattermost.botToken` / `MATTERMOST_BOT_TOKEN`
+- `webhookToken` / `MATTERMOST_TOKEN`: verifies native outgoing webhook posts
 - `endpoints.websocketUrl`: native Mattermost WebSocket endpoint
 - `adminToken`: send this as the `X-Crabline-Admin-Token` header when posting
   test user messages

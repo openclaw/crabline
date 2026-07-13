@@ -25,8 +25,15 @@ describe("Mattermost webhook normalizer", () => {
     expect(
       resolveMattermostAdapterConfig(config, {
         MATTERMOST_BASE_URL: "https://legacy.example.test",
+        MATTERMOST_TOKEN: "sample",
       }),
-    ).toMatchObject({ baseUrl: "https://legacy.example.test" });
+    ).toMatchObject({
+      baseUrl: "https://legacy.example.test",
+      webhookToken: "sample",
+    });
+    expect(() => resolveMattermostAdapterConfig(config, { MATTERMOST_TOKEN: " \t" })).toThrow(
+      "MATTERMOST_TOKEN must not be empty or whitespace-only.",
+    );
   });
 
   it("rejects bearer credentials over non-loopback cleartext transport", async () => {
@@ -60,6 +67,76 @@ describe("Mattermost webhook normalizer", () => {
 
   it("accepts provider-native form-encoded outgoing webhooks", async () => {
     const config = await createLocalMockConfig("mattermost", "/mattermost/webhook");
+    config.mattermost!.webhookToken = "sample";
+    const provider = new MattermostProviderAdapter("mattermost", config, "crabline");
+    const context = createProviderContext("mattermost", config, {
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      metadata: {},
+    });
+    context.fixture.inboundMatch = {
+      author: "user",
+      nonce: "contains",
+      strategy: "contains",
+    };
+    try {
+      const probe = await provider.probe(context);
+      const endpoint = probe.details
+        .find((detail) => detail.includes("webhook endpoint"))!
+        .replace(/^.*?(https?:\/\/\S+)$/u, "$1");
+      const since = new Date(Date.now() - 1_000).toISOString();
+      for (const token of [undefined, "wrong-token"]) {
+        const rejected = await fetch(endpoint, {
+          body: new URLSearchParams({
+            channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+            post_id: "cccccccccccccccccccccccccc",
+            root_id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+            text: "rejected form webhook",
+            ...(token ? { token } : {}),
+          }),
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          method: "POST",
+        });
+        expect(rejected.status).toBe(401);
+      }
+      const response = await fetch(endpoint, {
+        body: new URLSearchParams({
+          channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+          post_id: "cccccccccccccccccccccccccc",
+          root_id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+          text: "form webhook nonce",
+          token: "sample",
+        }),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      await expect(
+        provider.waitForInbound({
+          ...context,
+          nonce: "form webhook nonce",
+          since,
+          threadId: "aaaaaaaaaaaaaaaaaaaaaaaaaa:thread:bbbbbbbbbbbbbbbbbbbbbbbbbb",
+          timeoutMs: 500,
+        }),
+      ).resolves.toMatchObject({
+        author: "user",
+        id: "cccccccccccccccccccccccccc",
+        raw: {
+          channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+          post_id: "cccccccccccccccccccccccccc",
+          root_id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+          text: "form webhook nonce",
+        },
+        text: "form webhook nonce",
+      });
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
+  it("authenticates provider-native JSON outgoing webhooks", async () => {
+    const config = await createLocalMockConfig("mattermost", "/mattermost/webhook");
+    config.mattermost!.webhookToken = "sample";
     const provider = new MattermostProviderAdapter("mattermost", config, "crabline");
     const context = createProviderContext("mattermost", config, {
       id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -77,46 +154,68 @@ describe("Mattermost webhook normalizer", () => {
         .replace(/^.*?(https?:\/\/\S+)$/u, "$1");
       const since = new Date(Date.now() - 1_000).toISOString();
       const response = await fetch(endpoint, {
-        body: new URLSearchParams({
+        body: JSON.stringify({
           channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
           post_id: "cccccccccccccccccccccccccc",
-          root_id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
-          text: "form webhook nonce",
+          text: "json webhook nonce",
+          token: "sample",
         }),
-        headers: { "content-type": "application/x-www-form-urlencoded" },
+        headers: { "content-type": "application/json" },
         method: "POST",
       });
       expect(response.status).toBe(200);
       await expect(
         provider.waitForInbound({
           ...context,
-          nonce: "form webhook nonce",
+          nonce: "json webhook nonce",
           since,
-          threadId: "aaaaaaaaaaaaaaaaaaaaaaaaaa:thread:bbbbbbbbbbbbbbbbbbbbbbbbbb",
+          threadId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
           timeoutMs: 500,
         }),
       ).resolves.toMatchObject({
-        author: "user",
-        id: "cccccccccccccccccccccccccc",
-        text: "form webhook nonce",
+        raw: {
+          channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+          post_id: "cccccccccccccccccccccccccc",
+          text: "json webhook nonce",
+        },
       });
     } finally {
       await provider.cleanup();
     }
   });
 
-  it("rejects externally reachable webhooks without provider-native authentication", async () => {
+  it("requires provider-native authentication for externally reachable webhooks", async () => {
     const config = await createLocalMockConfig("mattermost", "/mattermost/webhook");
     config.mattermost!.webhook.host = "0.0.0.0";
     expect(() => new MattermostProviderAdapter("mattermost", config, "crabline")).toThrow(
-      /provider-native authenticated ingress mode/u,
+      /webhookToken or MATTERMOST_TOKEN/u,
     );
 
     config.mattermost!.webhook.host = "127.0.0.1";
     config.mattermost!.webhook.publicUrl = "https://mattermost.example.test/webhook";
     expect(() => new MattermostProviderAdapter("mattermost", config, "crabline")).toThrow(
-      /provider-native authenticated ingress mode/u,
+      /webhookToken or MATTERMOST_TOKEN/u,
     );
+
+    config.mattermost!.webhookToken = "sample";
+    expect(() => new MattermostProviderAdapter("mattermost", config, "crabline")).not.toThrow();
+  });
+
+  it("redacts outgoing webhook tokens from normalized evidence", () => {
+    expect(
+      normalizeMattermostWebhookPayload({
+        channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        post_id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+        text: "authenticated webhook",
+        token: "sample",
+      }),
+    ).toMatchObject({
+      raw: {
+        channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        post_id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+        text: "authenticated webhook",
+      },
+    });
   });
 
   it("preserves the channel when normalizing thread replies", () => {

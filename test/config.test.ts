@@ -999,6 +999,7 @@ describe("manifest schema", () => {
           adapter: "mattermost",
           mattermost: {
             baseUrl: "https://mattermost.example.com",
+            webhookToken: "sample",
           },
         },
         msteams: {
@@ -1037,6 +1038,7 @@ describe("manifest schema", () => {
     expect(manifest.providers["googlechat"]?.googlechat?.webhook.port).toBe(8792);
     expect(manifest.providers["googlechat"]?.platform).toBe("googlechat");
     expect(manifest.providers["mattermost"]?.mattermost?.webhook.path).toBe("/mattermost/webhook");
+    expect(manifest.providers["mattermost"]?.mattermost?.webhookToken).toBe("sample");
     expect(manifest.providers["mattermost"]?.platform).toBe("mattermost");
     expect(manifest.providers["msteams"]?.msteams?.webhook.path).toBe("/msteams/webhook");
     expect(manifest.providers["msteams"]?.platform).toBe("msteams");
