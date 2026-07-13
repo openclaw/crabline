@@ -262,6 +262,27 @@ function readStructuredArray(value: unknown, error: string): unknown[] | Respons
   return Array.isArray(parsed) ? parsed : slackError(error);
 }
 
+function readSlackMetadata(value: unknown): Record<string, unknown> | Response | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value) as unknown;
+    } catch {
+      return slackError("invalid_metadata_format");
+    }
+  }
+  if (!isJsonObject(parsed)) {
+    return slackError("invalid_metadata_format");
+  }
+  if (!readTrimmedString(parsed.event_type) || !isJsonObject(parsed.event_payload)) {
+    return slackError("invalid_metadata_schema");
+  }
+  return parsed;
+}
+
 function hasStructuredMessageContent(value: unknown): boolean {
   if (Array.isArray(value)) {
     return value.length > 0;
@@ -724,7 +745,10 @@ async function handleSlackApi(params: {
       if (blocks instanceof Response) {
         return blocks;
       }
-      const metadata = readStructuredValue(params.body.metadata);
+      const metadata = readSlackMetadata(params.body.metadata);
+      if (metadata instanceof Response) {
+        return metadata;
+      }
       if (
         !text &&
         !hasStructuredMessageContent(blocks) &&

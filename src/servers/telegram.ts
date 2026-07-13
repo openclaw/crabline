@@ -375,10 +375,11 @@ function createOutboundMessage(
   if (chatId === undefined || !text) {
     return undefined;
   }
-  const threadId = toIntegerValue(body.message_thread_id);
-  if (body.message_thread_id !== undefined && threadId === undefined) {
+  const parsedThreadId = toIntegerValue(body.message_thread_id);
+  if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
+  const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
   return {
     chat: createChat(chatId),
     date: Math.floor(Date.now() / 1000),
@@ -399,10 +400,11 @@ function createOutboundMediaMessage(
   if (chatId === undefined || !fileName) {
     return undefined;
   }
-  const threadId = toIntegerValue(body.message_thread_id);
-  if (body.message_thread_id !== undefined && threadId === undefined) {
+  const parsedThreadId = toIntegerValue(body.message_thread_id);
+  if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
+  const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
   const caption = toStringValue(body.caption);
   const duration = Math.max(0, toIntegerValue(body.duration) ?? 0);
   const height = Math.max(1, toIntegerValue(body.height) ?? 1);
@@ -444,10 +446,11 @@ function createEditedMessage(
   if (chatId === undefined || !text || messageId === undefined) {
     return undefined;
   }
-  const threadId = toIntegerValue(body.message_thread_id);
-  if (body.message_thread_id !== undefined && threadId === undefined) {
+  const parsedThreadId = toIntegerValue(body.message_thread_id);
+  if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
+  const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
   return {
     chat: createChat(chatId),
     date: Math.floor(Date.now() / 1000),
@@ -472,13 +475,14 @@ function createInboundUpdate(
   const messageIdValue = body.messageId ?? body.message_id;
   const updateIdValue = body.updateId ?? body.update_id;
   const fromId = toIntegerValue(fromIdValue);
-  const threadId = toIntegerValue(threadIdValue);
+  const parsedThreadId = toIntegerValue(threadIdValue);
+  const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
   const fromUsername = toStringValue(body.fromUsername ?? body.from_username);
   const messageId = toIntegerValue(messageIdValue);
   const updateId = toIntegerValue(updateIdValue);
   if (
     (fromIdValue !== undefined && fromId === undefined) ||
-    (threadIdValue !== undefined && threadId === undefined) ||
+    (threadIdValue !== undefined && parsedThreadId === undefined) ||
     (messageIdValue !== undefined && messageId === undefined) ||
     (updateIdValue !== undefined && updateId === undefined)
   ) {

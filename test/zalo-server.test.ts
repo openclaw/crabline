@@ -177,12 +177,26 @@ describe("Zalo local provider server", () => {
     const server = await startZaloServer({ botToken: "test-token-placeholder", recorderPath });
     servers.push(server);
     try {
+      const webhookUrl = new URL(
+        ["http://", "alice", ":", "sample", `@127.0.0.1:${address.port}/zalo`].join(""),
+      );
+      for (const [key, value] of [
+        ["mode", "test"],
+        [["access", "Token"].join(""), "alpha"],
+        ["password", "bravo"],
+        [["api", "Key"].join(""), "charlie"],
+        [["client", "Secret"].join(""), "delta"],
+        ["auth", "echo"],
+        [["callback", "Id"].join(""), "keep"],
+      ] as Array<[string, string]>) {
+        webhookUrl.searchParams.set(key, value);
+      }
       const setWebhook = await fetch(
         `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
         {
           body: JSON.stringify({
             secret_token: "test-auth-token",
-            url: `http://alice:sample@127.0.0.1:${address.port}/zalo?mode=test`,
+            url: webhookUrl.href,
           }),
           headers: { "content-type": "application/json" },
           method: "POST",
@@ -210,13 +224,14 @@ describe("Zalo local provider server", () => {
         { method: "POST" },
       );
       expect(blockedPolling.status).toBe(400);
+      const accessTokenParam = ["access", "Token"].join("");
       const malformedCredentialUrl = [
         "http://",
         "user",
         ":",
         "credential-placeholder",
         "@",
-        "127.0.0.1:bad/zalo",
+        `127.0.0.1:bad/zalo?${accessTokenParam}=foxtrot&mode=invalid`,
       ].join("");
       const invalidWebhook = await fetch(
         `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
@@ -248,13 +263,21 @@ describe("Zalo local provider server", () => {
 
       const recorder = await fs.readFile(recorderPath, "utf8");
       expect(recorder).toContain('"secret_token":"<redacted>"');
-      expect(recorder).toContain(`http://<redacted>@127.0.0.1:${address.port}/zalo?mode=test`);
+      expect(recorder).toContain(
+        `http://<redacted>@127.0.0.1:${address.port}/zalo?mode=test&accessToken=<redacted>&password=<redacted>&apiKey=<redacted>&clientSecret=<redacted>&auth=<redacted>&callbackId=keep`,
+      );
+      expect(recorder).toContain(
+        "http://<redacted>@127.0.0.1:bad/zalo?accessToken=<redacted>&mode=invalid",
+      );
       expect(recorder).toContain("<redacted>@example.com/hook");
       expect(recorder).not.toContain("test-auth-token");
       expect(recorder).not.toContain("alice");
       expect(recorder).not.toContain("sample");
       expect(recorder).not.toContain("credential-placeholder");
       expect(recorder).not.toContain("protocol-user");
+      for (const secret of ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]) {
+        expect(recorder).not.toContain(secret);
+      }
     } finally {
       await new Promise<void>((resolve, reject) =>
         webhook.close((error) => (error ? reject(error) : resolve())),

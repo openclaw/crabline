@@ -157,11 +157,53 @@ function requestParams(url: URL, body: Record<string, unknown>): Record<string, 
   return { ...Object.fromEntries(url.searchParams.entries()), ...body };
 }
 
+const SENSITIVE_PARAM_NAMES = new Set([
+  "accesskey",
+  "accesstoken",
+  "apikey",
+  "auth",
+  "authorization",
+  "authtoken",
+  "bearertoken",
+  "clientsecret",
+  "consumersecret",
+  "credential",
+  "credentials",
+  "idtoken",
+  "key",
+  "oauthtoken",
+  "password",
+  "passwd",
+  "privatekey",
+  "refreshtoken",
+  "secret",
+  "secretkey",
+  "secrettoken",
+  "sessiontoken",
+  "signature",
+  "signingsecret",
+  "token",
+  "webhooksecret",
+]);
+
+function isSensitiveParam(name: string): boolean {
+  const canonicalName = name
+    .normalize("NFKC")
+    .replace(/[^A-Za-z0-9]/gu, "")
+    .toLowerCase();
+  return (
+    SENSITIVE_PARAM_NAMES.has(canonicalName) ||
+    /(?:^|[_-])(?:access[_-]?token|api[_-]?key|authorization|key|password|secret|signature|token)(?:$|[_-])/iu.test(
+      name,
+    )
+  );
+}
+
 function redactParams(params: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(params).map(([key, value]) => [
       key,
-      key === "secret_token"
+      isSensitiveParam(key)
         ? "<redacted>"
         : key === "url" && typeof value === "string"
           ? redactUrlCredentials(value)
@@ -170,17 +212,50 @@ function redactParams(params: Record<string, unknown>): Record<string, unknown> 
   );
 }
 
+function redactSensitiveSearchParams(searchParams: URLSearchParams): boolean {
+  let redacted = false;
+  for (const key of searchParams.keys()) {
+    if (isSensitiveParam(key)) {
+      searchParams.set(key, "<redacted>");
+      redacted = true;
+    }
+  }
+  return redacted;
+}
+
+function redactMalformedUrlCredentials(value: string): string {
+  const credentialRedacted = value.replace(
+    /^(\s*)((?:[a-z][a-z0-9+.-]*:)?\/\/)[^/?#]*@/iu,
+    "$1$2<redacted>@",
+  );
+  const queryStart = credentialRedacted.indexOf("?");
+  const fragmentStart = credentialRedacted.indexOf("#", queryStart + 1);
+  if (queryStart < 0 || (fragmentStart >= 0 && fragmentStart < queryStart)) {
+    return credentialRedacted;
+  }
+  const queryEnd = fragmentStart >= 0 ? fragmentStart : credentialRedacted.length;
+  const searchParams = new URLSearchParams(credentialRedacted.slice(queryStart + 1, queryEnd));
+  if (!redactSensitiveSearchParams(searchParams)) {
+    return credentialRedacted;
+  }
+  const search = searchParams.toString().replaceAll("%3Credacted%3E", "<redacted>");
+  return `${credentialRedacted.slice(0, queryStart)}?${search}${credentialRedacted.slice(queryEnd)}`;
+}
+
 function redactUrlCredentials(value: string): string {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    return value.replace(/^(\s*)((?:[a-z][a-z0-9+.-]*:)?\/\/)[^/?#]*@/iu, "$1$2<redacted>@");
+    return redactMalformedUrlCredentials(value);
   }
-  if (!url.username && !url.password) {
+  const hasCredentials = Boolean(url.username || url.password);
+  const redactedQuery = redactSensitiveSearchParams(url.searchParams);
+  if (!hasCredentials && !redactedQuery) {
     return value;
   }
-  return `${url.protocol}//<redacted>@${url.host}${url.pathname}${url.search}${url.hash}`;
+  const search = url.search.replaceAll("%3Credacted%3E", "<redacted>");
+  return `${url.protocol}//${hasCredentials ? "<redacted>@" : ""}${url.host}${url.pathname}${search}${url.hash}`;
 }
 
 function requireParam(body: Record<string, unknown>, name: string): string | Response {

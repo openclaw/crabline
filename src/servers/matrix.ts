@@ -236,8 +236,8 @@ async function appendEvent(
 }
 
 function authorized(request: IncomingMessage, token: string): boolean {
-  const [scheme, value] = request.headers.authorization?.trim().split(/\s+/, 2) ?? [];
-  return scheme?.toLowerCase() === "bearer" && value === token;
+  const match = /^Bearer\s+(\S+)$/iu.exec(request.headers.authorization ?? "");
+  return match?.[1] === token;
 }
 
 function matrixError(errcode: string, error: string, status: number): Response {

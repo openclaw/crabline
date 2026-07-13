@@ -510,7 +510,7 @@ describe("Mattermost local provider server", () => {
     }
   });
 
-  it("validates post roots and restricts mutations to bot-owned posts", async () => {
+  it("uses root_id for post threading and restricts mutations to bot-owned posts", async () => {
     const server = await startMattermostServer({ adminToken: "admin", botToken: "fake" });
     servers.push(server);
     const inboundPosts: Array<{ channel_id: string; id: string }> = [];
@@ -534,12 +534,27 @@ describe("Mattermost local provider server", () => {
       { channel_id: string; id: string },
     ];
 
+    const ignoredPostId = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+      body: JSON.stringify({
+        channel_id: root.channel_id,
+        message: "top-level bot post",
+        post_id: root.id,
+        root_id: "",
+      }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(ignoredPostId.status).toBe(201);
+    await expect(ignoredPostId.json()).resolves.toMatchObject({ root_id: "" });
+
     const reply = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
       body: JSON.stringify({
         channel_id: root.channel_id,
         message: "bot reply",
-        post_id: root.id,
-        root_id: "",
+        root_id: root.id,
       }),
       headers: {
         authorization: "Bearer fake",
@@ -716,7 +731,7 @@ describe("Mattermost local provider server", () => {
     });
   });
 
-  it("disconnects slow WebSocket clients and queues undelivered events", async () => {
+  it("distinguishes oversized inbound events from a full disconnected queue", async () => {
     const server = await startMattermostServer({
       adminToken: "admin",
       botToken: "fake",
@@ -735,7 +750,6 @@ describe("Mattermost local provider server", () => {
       }),
     );
     await authenticated;
-    const closed = waitForSocketClose(socket);
     const sendInbound = (text: string) =>
       fetch(server.manifest.endpoints.adminInboundUrl, {
         body: JSON.stringify({ channelId: "channel-1", senderId: "user-1", text }),
@@ -746,14 +760,28 @@ describe("Mattermost local provider server", () => {
         method: "POST",
       });
 
-    expect((await sendInbound("x".repeat(2_000))).status).toBe(503);
-    await expect(closed).resolves.toEqual({ code: 1013, reason: "client too slow" });
+    const noOversizedEvent = expectNoSocketMessage(socket);
+    const oversized = await sendInbound("x".repeat(2_000));
+    expect(oversized.status).toBe(413);
+    await expect(oversized.json()).resolves.toEqual({
+      error: "Inbound event is too large",
+      ok: false,
+    });
+    await noOversizedEvent;
     for (const apiPath of ["/users/user-1", "/channels/channel-1"]) {
       const response = await fetch(`${server.manifest.endpoints.apiRoot}${apiPath}`, {
         headers: { authorization: "Bearer fake" },
       });
       expect(response.status).toBe(404);
     }
+
+    const delivered = nextMessage(socket);
+    expect((await sendInbound("delivered after oversized event")).status).toBe(200);
+    await expect(delivered).resolves.toMatchObject({ event: "posted" });
+    const closed = waitForSocketClose(socket);
+    socket.close();
+    await closed;
+
     expect((await sendInbound("queued after oversized event")).status).toBe(200);
     expect((await sendInbound("queue is full")).status).toBe(503);
   });

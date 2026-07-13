@@ -150,6 +150,9 @@ function removeSignalClient(
   if (destroy) {
     client.destroy();
   }
+  if (state.pendingEvents.length > 0 && state.clients.size > 0) {
+    queueMicrotask(() => flushPendingSignalEvents(state));
+  }
 }
 
 function evictSignalClient(state: SignalServerState, client: ServerResponse): void {
@@ -174,7 +177,7 @@ function scheduleSignalDrain(state: SignalServerState, client: ServerResponse): 
       flushSignalClientEvents(state, client);
       const remaining = state.clientBuffers.get(client);
       if (remaining && remaining.events.length === 0 && !client.writableNeedDrain) {
-        flushPendingSignalEvents(state, client);
+        flushPendingSignalEvents(state);
       }
     }
   });
@@ -332,17 +335,22 @@ function flushSignalClientEvents(state: SignalServerState, client: ServerRespons
   }
 }
 
-function flushPendingSignalEvents(state: SignalServerState, client: ServerResponse): void {
-  while (state.pendingEvents.length > 0) {
-    const result = writeSignalSse(state, client, state.pendingEvents[0]!);
-    if (result === "accepted" || result === "queued") {
-      const event = state.pendingEvents.shift()!;
-      state.pendingEventBytes -= Buffer.byteLength(event.data);
-      if (result === "accepted") {
-        continue;
+function flushPendingSignalEvents(state: SignalServerState): void {
+  while (state.pendingEvents.length > 0 && state.clients.size > 0) {
+    const event = state.pendingEvents[0]!;
+    for (const client of [...state.clients]) {
+      if (!event.recipients?.has(client)) {
+        writeSignalSse(state, client, event);
       }
     }
-    break;
+    if (
+      state.clients.size === 0 ||
+      [...state.clients].some((client) => !event.recipients?.has(client))
+    ) {
+      break;
+    }
+    state.pendingEvents.shift();
+    state.pendingEventBytes -= Buffer.byteLength(event.data);
   }
 }
 
@@ -615,7 +623,7 @@ async function handleRequest(params: {
     });
     replayExclusiveSignalEvents(params.state, params.response);
     if (params.state.clients.has(params.response)) {
-      flushPendingSignalEvents(params.state, params.response);
+      flushPendingSignalEvents(params.state);
     }
     return;
   }
