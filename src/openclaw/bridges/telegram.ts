@@ -15,7 +15,7 @@ const TELEGRAM_SYMBOLIC_GROUP_ID_BASE = 1_000_000_000_000n;
 const TELEGRAM_SYMBOLIC_GROUP_ID_RANGE = 10_000_000_000n;
 const TELEGRAM_OUTBOUND_METHOD_RE =
   /\/(sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/iu;
-const TELEGRAM_USERNAME_RE = /^@[A-Za-z][A-Za-z0-9_]{4,31}$/u;
+const TELEGRAM_USERNAME_RE = /^@[A-Za-z][A-Za-z0-9_]{3,31}$/u;
 
 function normalizeTelegramChatId(
   kind: "direct" | "group",
@@ -41,7 +41,7 @@ function normalizeTelegramChatId(
   }
   if (value.startsWith("@")) {
     if (!TELEGRAM_USERNAME_RE.test(value)) {
-      throw new Error("Telegram usernames must contain 5-32 letters, digits, or underscores.");
+      throw new Error("Telegram usernames must contain 4-32 letters, digits, or underscores.");
     }
     const username = value.toLowerCase();
     if (kind === "group" && options.preserveGroupUsername) {
