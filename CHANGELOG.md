@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Protect pnpm install-script policy and enforce immutable action pins across reusable workflows and composite actions.
 - Stop shipping a non-runnable OpenClaw script fixture and clarify source-checkout CLI invocation.
 - Bind npm and GitHub release mutations to the revalidated tag commit and fail closed on release lookup errors.
 - Harden provider adapter authentication, target identity, credential redaction, and webhook lifecycle behavior.

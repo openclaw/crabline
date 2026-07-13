@@ -8,3 +8,4 @@
 /SECURITY.md @openclaw/openclaw-secops
 /package.json @openclaw/openclaw-secops
 /pnpm-lock.yaml @openclaw/openclaw-secops
+/pnpm-workspace.yaml @openclaw/openclaw-secops
