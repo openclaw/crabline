@@ -639,6 +639,45 @@ function slackTargetRetryReason(error: WebhookTargetError): SlackRetryReason {
   return error === "https-required" ? "ssl_error" : "connection_failed";
 }
 
+/** @internal */
+export async function postSlackEventToAddresses(params: {
+  addresses?: ReadonlyArray<WebhookAddress> | undefined;
+  body: string;
+  headerEntries: ReadonlyArray<readonly [string, string]>;
+  request?: typeof postWebhookRequestWithResponse;
+  signal: AbortSignal;
+  timeoutAt: number;
+  url: URL;
+}): Promise<WebhookResponse> {
+  const addresses: Array<WebhookAddress | undefined> =
+    params.addresses && params.addresses.length > 0 ? [...params.addresses] : [undefined];
+  const request = params.request ?? postWebhookRequestWithResponse;
+  let lastError: unknown;
+  for (const [index, address] of addresses.entries()) {
+    const remainingMs = params.timeoutAt - Date.now();
+    if (remainingMs <= 0) {
+      throw new DOMException("Slack Events API delivery timed out", "TimeoutError");
+    }
+    const attemptsRemaining = addresses.length - index;
+    try {
+      return await request({
+        address,
+        body: params.body,
+        headerEntries: params.headerEntries,
+        signal: params.signal,
+        timeoutMs: Math.max(1, Math.floor(remainingMs / attemptsRemaining)),
+        url: params.url,
+      });
+    } catch (error) {
+      lastError = error;
+      if (params.signal.aborted) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function postSlackEventRequest(params: {
   body: string;
   headerEntries: ReadonlyArray<readonly [string, string]>;
@@ -657,31 +696,14 @@ async function postSlackEventRequest(params: {
     throw new SlackEventTargetError(slackTargetRetryReason(target.error), target.error);
   }
 
-  const addresses: Array<WebhookAddress | undefined> =
-    target.addresses && target.addresses.length > 0 ? target.addresses : [undefined];
-  let lastError: unknown;
-  for (const address of addresses) {
-    const remainingMs = params.timeoutAt - Date.now();
-    if (remainingMs <= 0) {
-      throw new DOMException("Slack Events API delivery timed out", "TimeoutError");
-    }
-    try {
-      return await postWebhookRequestWithResponse({
-        address,
-        body: params.body,
-        headerEntries: params.headerEntries,
-        signal: params.signal,
-        timeoutMs: Math.max(1, Math.floor(remainingMs)),
-        url: params.url,
-      });
-    } catch (error) {
-      lastError = error;
-      if (params.signal.aborted) {
-        throw error;
-      }
-    }
-  }
-  throw lastError;
+  return await postSlackEventToAddresses({
+    addresses: target.addresses,
+    body: params.body,
+    headerEntries: params.headerEntries,
+    signal: params.signal,
+    timeoutAt: params.timeoutAt,
+    url: params.url,
+  });
 }
 
 async function waitForSlackRetry(delayMs: number, signal: AbortSignal): Promise<boolean> {
