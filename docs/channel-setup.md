@@ -193,6 +193,8 @@ Server-backed channels currently include Mattermost, Matrix, Signal, Slack,
 Telegram, WhatsApp, and Zalo. Loopback binds retain stable local credentials for
 fixture compatibility. Non-loopback binds generate fresh provider-shaped
 credentials unless the corresponding token or secret option is supplied.
+WhatsApp is loopback-only because its HTTP and WebSocket endpoints carry bearer
+credentials over cleartext and the built-in server does not terminate TLS.
 
 Commands in this section use the installed-package form. In a source checkout,
 replace `crabline` with `pnpm dev`; `pnpm exec crabline` is not available.

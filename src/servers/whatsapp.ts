@@ -546,6 +546,11 @@ export async function startWhatsAppServer(
   params: StartWhatsAppServerParams = {},
 ): Promise<StartedWhatsAppServer> {
   const host = params.host ?? "127.0.0.1";
+  if (!isLoopbackHost(host)) {
+    throw new Error(
+      "WhatsApp server requires a loopback host because its HTTP and WebSocket endpoints carry credentials over cleartext.",
+    );
+  }
   if (
     params.accessToken !== undefined &&
     (!params.accessToken.trim() || params.accessToken !== params.accessToken.trim())
