@@ -475,6 +475,52 @@ if (
 }
 `;
 
+const WINDOWS_VERIFY_SAFE_DIRECTORY_ENTRY_PARENT_SCRIPT = String.raw`
+$ErrorActionPreference = "Stop"
+$directoryPath = $env:CRABLINE_PRIVATE_DIRECTORY_PATH
+if ([string]::IsNullOrWhiteSpace($directoryPath)) {
+  throw "CRABLINE_PRIVATE_DIRECTORY_PATH is required."
+}
+
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$sid = $identity.User
+if ($null -eq $sid) {
+  throw "Could not resolve the current Windows user SID."
+}
+
+$trustedSids = @(
+  $sid.Value,
+  "S-1-5-18",
+  "S-1-5-32-544"
+)
+$deleteChildMask = [uint32][int32][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles
+$genericAll = [uint32]0x10000000
+$inheritOnly = [System.Security.AccessControl.PropagationFlags]::InheritOnly
+
+$actual = Get-Acl -LiteralPath $directoryPath
+$ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
+if ($trustedSids -notcontains $ownerSid.Value) {
+  throw "Directory owner is not trusted for private mutation ancestry."
+}
+$rules = @($actual.GetAccessRules(
+  $true,
+  $true,
+  [System.Security.Principal.SecurityIdentifier]
+))
+foreach ($rule in $rules) {
+  $ruleAccessMask = [uint32][int32]$rule.FileSystemRights
+  $appliesToDirectory = ($rule.PropagationFlags -band $inheritOnly) -eq 0
+  if (
+    $appliesToDirectory -and
+    $rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+    $trustedSids -notcontains $rule.IdentityReference.Value -and
+    ($ruleAccessMask -band ($deleteChildMask -bor $genericAll)) -ne 0
+  ) {
+    throw "Directory grants child-deletion rights to an untrusted principal."
+  }
+}
+`;
+
 const WINDOWS_VERIFY_SAFE_DIRECTORY_MUTATION_BOUNDARY_SCRIPT = String.raw`
 $ErrorActionPreference = "Stop"
 $directoryPath = $env:CRABLINE_PRIVATE_DIRECTORY_PATH
@@ -717,6 +763,37 @@ export async function verifyOwnerOnlyWindowsFileAcl(
     );
   } catch (error) {
     throw new Error("Private mutation claim must have an owner-only protected Windows ACL.", {
+      cause: error,
+    });
+  }
+}
+
+export async function verifySafeWindowsDirectoryEntryParent(
+  directoryPath: string,
+  run: WindowsAclRunner = runWindowsAclCommand,
+  systemRoot: string | null | undefined = process.env.SystemRoot,
+): Promise<void> {
+  try {
+    const powershellPath = resolveWindowsPowerShellPath(systemRoot);
+    await run(
+      powershellPath,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        WINDOWS_VERIFY_SAFE_DIRECTORY_ENTRY_PARENT_SCRIPT,
+      ],
+      {
+        env: {
+          ...process.env,
+          CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
+        },
+        windowsHide: true,
+      },
+    );
+  } catch (error) {
+    throw new Error("Private mutation boundary has a replaceable Windows ancestor.", {
       cause: error,
     });
   }
@@ -1018,7 +1095,7 @@ async function assertDarwinCreatedAncestryHasNoExtendedAcl(
   }
 }
 
-async function captureSafePrivateMutationBoundary(
+async function captureSingleSafePrivateMutationBoundary(
   directoryPath: string,
   platform: NodeJS.Platform,
   stickyTargetOwnedByCurrentUser: boolean,
@@ -1048,6 +1125,54 @@ async function captureSafePrivateMutationBoundary(
   }
   await assertDarwinDirectoryHasNoExtendedAcl(directoryPath);
   return await captureDirectoryIdentity(directoryPath);
+}
+
+async function captureSafePrivateMutationBoundary(
+  directoryPath: string,
+  platform: NodeJS.Platform,
+  stickyTargetOwnedByCurrentUser: boolean,
+): Promise<SecuredPrivateDirectory> {
+  const resolvedBoundaryPath = path.resolve(directoryPath);
+  const boundary = await captureSingleSafePrivateMutationBoundary(
+    resolvedBoundaryPath,
+    platform,
+    stickyTargetOwnedByCurrentUser,
+  );
+  const ancestors: SecuredPrivateDirectory[] = [];
+  let childPath = await fs.realpath(resolvedBoundaryPath);
+  for (;;) {
+    const parentPath = path.dirname(childPath);
+    if (parentPath === childPath) {
+      break;
+    }
+    if (platform === "win32" && process.platform === "win32") {
+      await verifySafeWindowsDirectoryEntryParent(parentPath);
+      ancestors.push(await captureDirectoryIdentity(parentPath));
+    } else {
+      const childStats = await fs.lstat(childPath, { bigint: true });
+      const currentUserId = process.geteuid?.();
+      const childOwnedByTrustedPrincipal =
+        currentUserId !== undefined &&
+        (childStats.uid === BigInt(currentUserId) || childStats.uid === 0n);
+      ancestors.push(
+        await captureSingleSafePrivateMutationBoundary(
+          parentPath,
+          platform,
+          childOwnedByTrustedPrincipal,
+        ),
+      );
+    }
+    childPath = parentPath;
+  }
+  return {
+    async assertIdentityAt(currentPath = resolvedBoundaryPath) {
+      for (const ancestor of [...ancestors].reverse()) {
+        await ancestor.assertIdentityAt();
+      }
+      await boundary.assertIdentityAt(currentPath);
+    },
+    directoryPath: resolvedBoundaryPath,
+  };
 }
 
 async function captureSafePrivateDirectoryMutationParent(
