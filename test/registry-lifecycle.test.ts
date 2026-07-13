@@ -442,10 +442,12 @@ describe("lazy provider lifecycle", () => {
         context.fixture.id,
       );
       const probing = provider.probe(context);
+      provider.beginCleanup?.();
       const cleanup = provider.cleanup?.();
 
       await Promise.resolve();
       expect(events).toEqual([]);
+      await expect(provider.probe(context)).rejects.toThrow(/has been cleaned up/u);
 
       releaseImport?.();
       await expect(probing).resolves.toEqual({ details: [], healthy: true });
@@ -458,6 +460,48 @@ describe("lazy provider lifecycle", () => {
       telegramLifecycle.onProbe = undefined;
       await disposeTempDir(directory);
     }
+  });
+
+  it("deduplicates concurrent cleanup after the synchronous fence", async () => {
+    const beginCleanup = vi.fn();
+    const cleanup = vi.fn(async () => undefined);
+    const concrete: ProviderAdapter = {
+      id: "test",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      async waitForInbound() {
+        return null;
+      },
+      beginCleanup,
+      cleanup,
+    };
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory: async () => concrete,
+      id: "test",
+      normalizeTarget: concrete.normalizeTarget.bind(concrete),
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe"],
+    });
+    const { context } = createTelegramManifest("/tmp/unused.jsonl");
+    await provider.probe(context);
+
+    provider.beginCleanup();
+    await Promise.all([provider.cleanup(), provider.cleanup()]);
+
+    expect(beginCleanup).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 
   it("drains an operation admitted before provider materialization", async () => {

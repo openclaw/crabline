@@ -393,6 +393,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       ) {
         this.#waitCursors.delete(cursorKey);
       }
+      pruneInactiveWaitCursors(this.#waitCursors);
     }
   }
 
@@ -426,6 +427,10 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     this.#cleanupBegun = true;
     this.#cleanupController.abort(this.#cleanedUpError());
     this.#waitCursors.clear();
+  }
+
+  beginCleanup(): void {
+    this.#beginCleanup();
   }
 
   async cleanup(): Promise<void> {

@@ -224,6 +224,7 @@ describe("local mock provider", () => {
     providers.push(provider);
     const probe = provider.probe(createContext(config));
     await vi.waitFor(() => expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1));
+    provider.beginCleanup();
     const cleanup = provider.cleanup();
 
     resolveStart?.({
@@ -1046,7 +1047,7 @@ describe("local mock provider", () => {
     await expect(provider.waitForInbound(contexts.at(-1)!)).resolves.toBeNull();
   });
 
-  it("does not evict active wait cursors when concurrency exceeds the retained limit", async () => {
+  it("prunes an overflow wait cursor as soon as it becomes inactive", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const recorderPath = path.join(directory, "active-waits.jsonl");
@@ -1074,31 +1075,31 @@ describe("local mock provider", () => {
         timeoutMs: 1_000,
       };
     });
-    const waits = contexts.map((context) => provider.waitForInbound(context));
+    const controllers = contexts.map(() => new AbortController());
+    const waits = contexts.map((context, index) =>
+      provider.waitForInbound({ ...context, signal: controllers[index]!.signal }),
+    );
     await new Promise((resolve) => setTimeout(resolve, 50));
-    for (const [index, context] of contexts.entries()) {
-      await appendRecordedInbound(recorderPath, {
-        author: "assistant",
-        id: `first-${index}`,
-        provider: "provider-a",
-        sentAt: new Date().toISOString(),
-        text: `first ${index}`,
-        threadId: context.threadId,
-      });
-    }
-    await expect(Promise.all(waits)).resolves.toHaveLength(65);
-
     await appendRecordedInbound(recorderPath, {
       author: "assistant",
-      id: "second-0",
+      id: "first-0",
       provider: "provider-a",
       sentAt: new Date().toISOString(),
-      text: "second 0",
+      text: "first 0",
       threadId: contexts[0]!.threadId,
     });
+    await expect(waits[0]).resolves.toMatchObject({ id: "first-0" });
+
     await expect(provider.waitForInbound(contexts[0]!)).resolves.toMatchObject({
-      id: "second-0",
+      id: "first-0",
     });
+
+    for (const controller of controllers.slice(1)) {
+      controller.abort();
+    }
+    await expect(Promise.all(waits.slice(1))).resolves.toEqual(
+      Array.from({ length: 64 }, () => null),
+    );
   });
 
   it("keeps concurrent same-key waits on independent cursors", async () => {
