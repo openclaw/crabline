@@ -969,10 +969,11 @@ describe("cli", () => {
     await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("keeps the server live until shutdown-time publication settles", async () => {
+  it("does not announce readiness when shutdown starts during publication", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, "server.json");
+    const lifecycle: string[] = [];
     let releasePublish: (() => void) | undefined;
     let markPublishStarted: (() => void) | undefined;
     const publishStarted = new Promise<void>((resolve) => {
@@ -981,10 +982,17 @@ describe("cli", () => {
     const publishBlocked = new Promise<void>((resolve) => {
       releasePublish = resolve;
     });
-    const close = vi.fn(async () => undefined);
-    const removeReadyFileMock = vi.fn(async () => undefined);
+    const close = vi.fn(async () => {
+      lifecycle.push("close");
+    });
+    const releaseReadyLease = vi.fn(async () => {
+      lifecycle.push("release");
+    });
+    const removeReadyFileMock = vi.fn(async () => {
+      lifecycle.push("remove");
+    });
     const program = createProgram(() => undefined, {
-      acquireReadyFileLease: async () => async () => undefined,
+      acquireReadyFileLease: async () => releaseReadyLease,
       publishReadyFile: async () => {
         markPublishStarted?.();
         await publishBlocked;
@@ -1016,25 +1024,30 @@ describe("cli", () => {
         },
       }),
     });
-    const running = program.parseAsync([
-      "node",
-      "crabline",
-      "--json",
-      "serve",
-      "telegram",
-      "--ready-file",
-      readyFile,
-    ]);
-    await publishStarted;
+    const captured = await captureWrites(async () => {
+      const running = program.parseAsync([
+        "node",
+        "crabline",
+        "--json",
+        "serve",
+        "telegram",
+        "--ready-file",
+        readyFile,
+      ]);
+      await publishStarted;
 
-    process.emit("SIGTERM", "SIGTERM");
-    await Promise.resolve();
-    expect(close).not.toHaveBeenCalled();
-    releasePublish?.();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
-    await running;
+      process.emit("SIGTERM", "SIGTERM");
+      await Promise.resolve();
+      expect(close).not.toHaveBeenCalled();
+      releasePublish?.();
+      await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+      await running;
+    });
 
+    expect(captured.stdout).toEqual([]);
     expect(removeReadyFileMock).toHaveBeenCalledTimes(1);
+    expect(releaseReadyLease).toHaveBeenCalledTimes(1);
+    expect(lifecycle).toEqual(["remove", "close", "release"]);
   });
 
   it("uses one heartbeat lease policy for ready-file ownership", async () => {

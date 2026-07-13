@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
+- Suppress serve readiness output when shutdown begins during ready-file publication.
 - Treat Unicode format characters as continuations when recognizing standalone acknowledgement tokens.
 - Preserve committed provider recorder errors during final identity confirmation and strictly parse quoted JWT cache lifetimes.
 - Lint repository tooling in the type-aware verification gate.
