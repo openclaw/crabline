@@ -192,6 +192,25 @@ describe("WhatsApp provider lifecycle", () => {
     expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1);
   });
 
+  it("rechecks cleanup after awaiting an existing listener", async () => {
+    const close = vi.fn(async () => undefined);
+    webhookMocks.startWebhookServer.mockResolvedValueOnce({
+      close,
+      endpointUrl: "http://127.0.0.1:43210/whatsapp/webhook",
+    });
+    const config = createConfig();
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createContext(config);
+
+    await expect(provider.probe(context)).resolves.toMatchObject({ healthy: true });
+    const racingProbe = provider.probe(context);
+    const cleanup = provider.cleanup();
+
+    await expect(racingProbe).rejects.toThrow(/has been cleaned up/u);
+    await cleanup;
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects sends after cleanup without mutating the recorder", async () => {
     const directory = await createTempDir();
     const recorderPath = path.join(directory, "whatsapp.jsonl");

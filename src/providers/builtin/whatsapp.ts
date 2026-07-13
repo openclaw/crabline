@@ -153,8 +153,9 @@ export function resolveWhatsAppAdapterConfig(
   return {
     accessToken: config.whatsapp?.accessToken ?? env.WHATSAPP_ACCESS_TOKEN ?? "local-mock-token",
     appSecret,
-    phoneNumberId:
-      config.whatsapp?.phoneNumberId ?? env.WHATSAPP_PHONE_NUMBER_ID ?? "local-mock-phone",
+    ...((config.whatsapp?.phoneNumberId ?? env.WHATSAPP_PHONE_NUMBER_ID)
+      ? { phoneNumberId: config.whatsapp?.phoneNumberId ?? env.WHATSAPP_PHONE_NUMBER_ID! }
+      : {}),
     verifyToken,
   };
 }
@@ -220,6 +221,9 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   override async probe(context: ProviderContext): Promise<ProbeResult> {
     context.signal?.throwIfAborted();
     const server = await this.#ensureWebhookServer();
+    if (this.#cleanupBegun || this.#cleanedUp) {
+      throw this.#cleanedUpError();
+    }
     context.signal?.throwIfAborted();
     const target = this.normalizeTarget(context.fixture.target);
     const details = [
@@ -284,7 +288,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
         signal: this.#operationSignal(context.signal),
         timeoutMs: context.timeoutMs,
       });
-      if (event && this.#waitCursors.get(cursorKey) === cursorState) {
+      if (this.#waitCursors.get(cursorKey) === cursorState) {
         cursorState.cursor = cursor;
       }
       return event;

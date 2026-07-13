@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   normalizeWhatsAppWebhookPayload,
+  resolveWhatsAppAdapterConfig,
   WhatsAppProviderAdapter,
 } from "../src/providers/builtin/whatsapp.js";
 import { appendRecordedInbound, readRecordedInbound } from "../src/providers/recorder.js";
@@ -71,6 +72,39 @@ describe("WhatsApp webhook normalizer", () => {
 
     expect(normalized.map((message) => message.raw)).toEqual([first, second]);
     expect(normalized.every((message) => message.raw !== payload)).toBe(true);
+  });
+
+  it("does not filter inbound messages when phoneNumberId is omitted", () => {
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                metadata: { phone_number_id: "phone-b" },
+                messages: [
+                  {
+                    from: "15551234567",
+                    id: "wamid.unfiltered",
+                    text: { body: "accepted without configured filter" },
+                    type: "text",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(normalizeWhatsAppWebhookPayload(payload)).toHaveLength(1);
+    expect(normalizeWhatsAppWebhookPayload(payload, "phone-a")).toEqual([]);
+  });
+
+  it("leaves phoneNumberId unset when no inbound filter is configured", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+
+    expect(resolveWhatsAppAdapterConfig(config, {})).not.toHaveProperty("phoneNumberId");
   });
 
   it.each([
