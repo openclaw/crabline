@@ -8,6 +8,10 @@ import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedMattermostServer[] = [];
 const directories: string[] = [];
+const CHANNEL_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+const OTHER_CHANNEL_ID = "cccccccccccccccccccccccccc";
+const USER_ID = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
+const OTHER_USER_ID = "dddddddddddddddddddddddddd";
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
@@ -125,8 +129,8 @@ describe("Mattermost local provider server", () => {
 
     for (const body of [
       { channel_id: 123, message: "numeric channel" },
-      { channel_id: "channel-1", message: 123 },
-      { channel_id: "channel-1", message: "reply", root_id: 123 },
+      { channel_id: CHANNEL_ID, message: 123 },
+      { channel_id: CHANNEL_ID, message: "reply", root_id: 123 },
     ]) {
       const invalid = await fetch(postsUrl, {
         body: JSON.stringify(body),
@@ -152,6 +156,49 @@ describe("Mattermost local provider server", () => {
       method: "POST",
     });
     expect(invalidDirect.status).toBe(400);
+
+    for (const contentType of [undefined, "application/x-www-form-urlencoded"]) {
+      const nonJson = await fetch(postsUrl, {
+        body: JSON.stringify({ channel_id: CHANNEL_ID, message: "not JSON media" }),
+        headers: {
+          authorization: "Bearer fake",
+          ...(contentType ? { "content-type": contentType } : {}),
+        },
+        method: "POST",
+      });
+      expect(nonJson.status).toBe(415);
+      await expect(nonJson.json()).resolves.toMatchObject({
+        id: "api.context.unsupported_content_type.app_error",
+        message: "Content-Type must be application/json.",
+        status_code: 415,
+      });
+    }
+  });
+
+  it("requires native Mattermost IDs on admin ingress", async () => {
+    const server = await startMattermostServer({ adminToken: "admin" });
+    servers.push(server);
+
+    for (const body of [
+      { channelId: "short", senderId: USER_ID, text: "invalid channel" },
+      { channelId: "A".repeat(26), senderId: USER_ID, text: "invalid channel alphabet" },
+      { channelId: CHANNEL_ID, senderId: "short", text: "invalid sender" },
+      { channelId: CHANNEL_ID, rootId: "short", senderId: USER_ID, text: "invalid root" },
+    ]) {
+      const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify(body),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: expect.stringContaining("26-character Mattermost ID"),
+        ok: false,
+      });
+    }
   });
 
   it("returns native route errors with request IDs and parses Bearer credentials exactly", async () => {
@@ -269,9 +316,11 @@ describe("Mattermost local provider server", () => {
     const inboundMessage = nextMessage(socket);
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
-        channelId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        channelDisplayName: "Town Square",
+        channelId: CHANNEL_ID,
+        channelName: "town-square",
         channelType: "O",
-        senderId: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+        senderId: USER_ID,
         senderName: "alice",
         text: "user nonce-1",
       }),
@@ -284,12 +333,17 @@ describe("Mattermost local provider server", () => {
     expect(inbound.status).toBe(200);
     await expect(inboundMessage).resolves.toMatchObject({
       event: "posted",
-      data: { channel_type: "O", sender_name: "alice" },
+      data: {
+        channel_display_name: "Town Square",
+        channel_name: "town-square",
+        channel_type: "O",
+        sender_name: "alice",
+      },
       broadcast: {
-        channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        channel_id: CHANNEL_ID,
         omit_users: null,
         team_id: "",
-        user_id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+        user_id: "",
       },
       seq: 1,
     });
@@ -297,7 +351,7 @@ describe("Mattermost local provider server", () => {
     const outboundEvent = nextMessage(socket);
     const send = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
       body: JSON.stringify({
-        channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        channel_id: CHANNEL_ID,
         message: "assistant nonce-1",
       }),
       headers: {
@@ -309,18 +363,23 @@ describe("Mattermost local provider server", () => {
     expect(send.status).toBe(201);
     const sentPost = (await send.json()) as Record<string, unknown>;
     expect(sentPost).toMatchObject({
-      channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      channel_id: CHANNEL_ID,
       message: "assistant nonce-1",
       user_id: server.manifest.botUserId,
     });
     await expect(outboundEvent).resolves.toMatchObject({
       event: "posted",
-      data: { channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa", sender_name: "crabline_bot" },
+      data: {
+        channel_display_name: "Town Square",
+        channel_name: "town-square",
+        sender_name: "crabline_bot",
+      },
+      broadcast: { channel_id: CHANNEL_ID, user_id: "" },
       seq: 2,
     });
 
     const direct = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
-      body: JSON.stringify([server.manifest.botUserId, "bbbbbbbbbbbbbbbbbbbbbbbbbb"]),
+      body: JSON.stringify([server.manifest.botUserId, USER_ID]),
       headers: {
         authorization: "bearer fake",
         "content-type": "application/json",
@@ -342,7 +401,11 @@ describe("Mattermost local provider server", () => {
       method: "PUT",
     });
     expect(edited.status).toBe(200);
-    await expect(editedEvent).resolves.toMatchObject({ event: "post_edited", seq: 3 });
+    await expect(editedEvent).resolves.toMatchObject({
+      broadcast: { channel_id: CHANNEL_ID, user_id: "" },
+      event: "post_edited",
+      seq: 3,
+    });
 
     const deletedEvent = nextMessage(socket);
     const deleted = await fetch(`${server.manifest.endpoints.apiRoot}/posts/${postId}`, {
@@ -351,7 +414,11 @@ describe("Mattermost local provider server", () => {
     });
     expect(deleted.status).toBe(200);
     await expect(deleted.json()).resolves.toEqual({ status: "OK" });
-    await expect(deletedEvent).resolves.toMatchObject({ event: "post_deleted", seq: 4 });
+    await expect(deletedEvent).resolves.toMatchObject({
+      broadcast: { channel_id: CHANNEL_ID, user_id: "" },
+      event: "post_deleted",
+      seq: 4,
+    });
     socket.close();
 
     const recorded = await fs.readFile(recorderPath, "utf8");
@@ -377,8 +444,8 @@ describe("Mattermost local provider server", () => {
     servers.push(server);
     const registered = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
-        channelId: "seed-channel",
-        senderId: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+        channelId: CHANNEL_ID,
+        senderId: USER_ID,
         text: "register user",
       }),
       headers: {
@@ -390,7 +457,7 @@ describe("Mattermost local provider server", () => {
     expect(registered.status).toBe(200);
 
     const direct = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
-      body: JSON.stringify([server.manifest.botUserId, "bbbbbbbbbbbbbbbbbbbbbbbbbb"]),
+      body: JSON.stringify([server.manifest.botUserId, USER_ID]),
       headers: {
         authorization: "Bearer fake",
         "content-type": "application/json",
@@ -464,7 +531,7 @@ describe("Mattermost local provider server", () => {
     servers.push(server);
     const sendInbound = (text: string) =>
       fetch(server.manifest.endpoints.adminInboundUrl, {
-        body: JSON.stringify({ channelId: "channel-1", senderId: "user-1", text }),
+        body: JSON.stringify({ channelId: CHANNEL_ID, senderId: USER_ID, text }),
         headers: {
           "content-type": "application/json",
           "x-crabline-admin-token": "admin",
@@ -489,7 +556,7 @@ describe("Mattermost local provider server", () => {
     });
     servers.push(server);
     const registered = await fetch(server.manifest.endpoints.adminInboundUrl, {
-      body: JSON.stringify({ channelId: "channel-1", senderId: "user-1", text: "register user" }),
+      body: JSON.stringify({ channelId: CHANNEL_ID, senderId: USER_ID, text: "register user" }),
       headers: {
         "content-type": "application/json",
         "x-crabline-admin-token": "admin",
@@ -498,7 +565,7 @@ describe("Mattermost local provider server", () => {
     });
     expect(registered.status).toBe(200);
     const direct = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
-      body: JSON.stringify([server.manifest.botUserId, "user-1"]),
+      body: JSON.stringify([server.manifest.botUserId, USER_ID]),
       headers: {
         authorization: "Bearer fake",
         "content-type": "application/json",
@@ -520,7 +587,7 @@ describe("Mattermost local provider server", () => {
     }
 
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
-      body: JSON.stringify({ channelId: channel.id, senderId: "user-1", text: "queued inbound" }),
+      body: JSON.stringify({ channelId: channel.id, senderId: USER_ID, text: "queued inbound" }),
       headers: {
         "content-type": "application/json",
         "x-crabline-admin-token": "admin",
@@ -556,9 +623,9 @@ describe("Mattermost local provider server", () => {
   it("requires distinct known users for direct channels", async () => {
     const server = await startMattermostServer({ adminToken: "admin", botToken: "fake" });
     servers.push(server);
-    for (const senderId of ["user-1", "user-2"]) {
+    for (const senderId of [USER_ID, OTHER_USER_ID]) {
       const registered = await fetch(server.manifest.endpoints.adminInboundUrl, {
-        body: JSON.stringify({ channelId: "channel-1", senderId, text: "register" }),
+        body: JSON.stringify({ channelId: CHANNEL_ID, senderId, text: "register" }),
         headers: {
           "content-type": "application/json",
           "x-crabline-admin-token": "admin",
@@ -569,10 +636,10 @@ describe("Mattermost local provider server", () => {
     }
 
     for (const [userIds, status, message] of [
-      [["user-1", "user-1"], 400, "Direct channel users must be distinct"],
+      [[USER_ID, USER_ID], 400, "Direct channel users must be distinct"],
       [[server.manifest.botUserId, "missing"], 404, "User not found"],
-      [["user-1", "user-2"], 403, "Authenticated user must belong to the direct channel"],
-      [[server.manifest.botUserId, "user-1"], 201, undefined],
+      [[USER_ID, OTHER_USER_ID], 403, "Authenticated user must belong to the direct channel"],
+      [[server.manifest.botUserId, USER_ID], 201, undefined],
     ] as const) {
       const response = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
         body: JSON.stringify(userIds),
@@ -592,11 +659,11 @@ describe("Mattermost local provider server", () => {
     servers.push(server);
     const inboundPosts: Array<{ channel_id: string; id: string }> = [];
     for (const [channelId, text] of [
-      ["channel-a", "user root"],
-      ["channel-b", "other root"],
+      [CHANNEL_ID, "user root"],
+      [OTHER_CHANNEL_ID, "other root"],
     ]) {
       const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
-        body: JSON.stringify({ channelId, senderId: "user-1", text }),
+        body: JSON.stringify({ channelId, senderId: USER_ID, text }),
         headers: {
           "content-type": "application/json",
           "x-crabline-admin-token": "admin",
@@ -696,7 +763,7 @@ describe("Mattermost local provider server", () => {
 
     const posted = nextMessage(socket);
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
-      body: JSON.stringify({ channelId: "channel-1", senderId: "user-1", text: "register" }),
+      body: JSON.stringify({ channelId: CHANNEL_ID, senderId: USER_ID, text: "register" }),
       headers: {
         "content-type": "application/json",
         "x-crabline-admin-token": "admin",
@@ -708,7 +775,7 @@ describe("Mattermost local provider server", () => {
 
     const noRestTypingEvent = expectNoSocketMessage(socket);
     const restTyping = await fetch(`${server.manifest.endpoints.apiRoot}/users/me/typing`, {
-      body: JSON.stringify({ channel_id: "channel-1" }),
+      body: JSON.stringify({ channel_id: CHANNEL_ID }),
       headers: {
         authorization: "Bearer fake",
         "content-type": "application/json",
@@ -723,7 +790,7 @@ describe("Mattermost local provider server", () => {
     socket.send(
       JSON.stringify({
         action: "user_typing",
-        data: { channel_id: "channel-1", parent_id: "root-1" },
+        data: { channel_id: CHANNEL_ID, parent_id: "root-1" },
         seq: 2,
       }),
     );
@@ -766,13 +833,13 @@ describe("Mattermost local provider server", () => {
     servers.push(server);
     for (const body of [
       {
-        channelId: "channel-1",
+        channelId: CHANNEL_ID,
         channelType: "O",
-        senderId: "user-1",
+        senderId: USER_ID,
         senderName: "Alice",
         text: "first",
       },
-      { channelId: "channel-1", senderId: "user-1", text: "second" },
+      { channelId: CHANNEL_ID, senderId: USER_ID, text: "second" },
     ]) {
       const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
         body: JSON.stringify(body),
@@ -785,11 +852,11 @@ describe("Mattermost local provider server", () => {
       expect(response.status).toBe(200);
     }
 
-    const user = await fetch(`${server.manifest.endpoints.apiRoot}/users/user-1`, {
+    const user = await fetch(`${server.manifest.endpoints.apiRoot}/users/${USER_ID}`, {
       headers: { authorization: "Bearer fake" },
     });
     await expect(user.json()).resolves.toMatchObject({ username: "Alice" });
-    const channel = await fetch(`${server.manifest.endpoints.apiRoot}/channels/channel-1`, {
+    const channel = await fetch(`${server.manifest.endpoints.apiRoot}/channels/${CHANNEL_ID}`, {
       headers: { authorization: "Bearer fake" },
     });
     await expect(channel.json()).resolves.toMatchObject({ type: "O" });
@@ -813,7 +880,7 @@ describe("Mattermost local provider server", () => {
       adminToken: "admin",
       botToken: "fake",
       maxPendingInboundEvents: 1,
-      maxWebSocketBufferedBytes: 512,
+      maxWebSocketBufferedBytes: 1024,
     });
     servers.push(server);
     const socket = new WebSocket(server.manifest.endpoints.websocketUrl);
@@ -829,7 +896,7 @@ describe("Mattermost local provider server", () => {
     await authenticated;
     const sendInbound = (text: string) =>
       fetch(server.manifest.endpoints.adminInboundUrl, {
-        body: JSON.stringify({ channelId: "channel-1", senderId: "user-1", text }),
+        body: JSON.stringify({ channelId: CHANNEL_ID, senderId: USER_ID, text }),
         headers: {
           "content-type": "application/json",
           "x-crabline-admin-token": "admin",
@@ -845,7 +912,7 @@ describe("Mattermost local provider server", () => {
       ok: false,
     });
     await noOversizedEvent;
-    for (const apiPath of ["/users/user-1", "/channels/channel-1"]) {
+    for (const apiPath of [`/users/${USER_ID}`, `/channels/${CHANNEL_ID}`]) {
       const response = await fetch(`${server.manifest.endpoints.apiRoot}${apiPath}`, {
         headers: { authorization: "Bearer fake" },
       });
@@ -916,6 +983,43 @@ describe("Mattermost local provider server", () => {
     await expect(startMattermostServer({ maxUnauthenticatedWebSocketClients: 0 })).rejects.toThrow(
       "maxUnauthenticatedWebSocketClients must be a positive safe integer.",
     );
+  });
+
+  it("drains authorized GET and DELETE request bodies", async () => {
+    const server = await startMattermostServer({ botToken: "fake" });
+    servers.push(server);
+    const body = JSON.stringify({ ignored: true });
+
+    for (const [method, url, status] of [
+      ["GET", `${server.manifest.endpoints.apiRoot}/users/me`, 200],
+      ["DELETE", `${server.manifest.endpoints.apiRoot}/posts/${"z".repeat(26)}`, 404],
+    ] as const) {
+      const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+      try {
+        const response = await requestHttp({
+          agent,
+          body,
+          headers: {
+            authorization: "Bearer fake",
+            "content-length": String(Buffer.byteLength(body)),
+            "content-type": "application/json",
+          },
+          method,
+          url,
+        });
+        expect(response.status).toBe(status);
+
+        const reused = await requestHttp({
+          agent,
+          headers: { authorization: "Bearer fake" },
+          method: "GET",
+          url: `${server.manifest.endpoints.apiRoot}/users/me`,
+        });
+        expect(reused.status).toBe(200);
+      } finally {
+        agent.destroy();
+      }
+    }
   });
 
   it("drains request bodies rejected by REST and admin authentication", async () => {
