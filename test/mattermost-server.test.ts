@@ -4,6 +4,7 @@ import { Agent } from "node:http";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { startMattermostServer, type StartedMattermostServer } from "../src/index.js";
+import { mattermostId } from "../src/servers/mattermost.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedMattermostServer[] = [];
@@ -12,6 +13,7 @@ const CHANNEL_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER_CHANNEL_ID = "cccccccccccccccccccccccccc";
 const USER_ID = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
 const OTHER_USER_ID = "dddddddddddddddddddddddddd";
+const ROOT_ID = "eeeeeeeeeeeeeeeeeeeeeeeeee";
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
@@ -770,6 +772,58 @@ describe("Mattermost local provider server", () => {
     }
   });
 
+  it("materializes missing roots for admin-injected thread replies", async () => {
+    const server = await startMattermostServer({ adminToken: "admin", botToken: "fake" });
+    servers.push(server);
+
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        channelId: CHANNEL_ID,
+        rootId: ROOT_ID,
+        senderId: USER_ID,
+        text: "user thread reply",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(inbound.status).toBe(200);
+    await expect(inbound.json()).resolves.toMatchObject({
+      post: { channel_id: CHANNEL_ID, root_id: ROOT_ID, user_id: USER_ID },
+    });
+
+    const reply = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+      body: JSON.stringify({
+        channel_id: CHANNEL_ID,
+        message: "bot thread reply",
+        root_id: ROOT_ID,
+      }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(reply.status).toBe(201);
+    await expect(reply.json()).resolves.toMatchObject({
+      channel_id: CHANNEL_ID,
+      root_id: ROOT_ID,
+      user_id: server.manifest.botUserId,
+    });
+
+    const rootMutation = await fetch(`${server.manifest.endpoints.apiRoot}/posts/${ROOT_ID}`, {
+      body: JSON.stringify({ message: "forbidden root edit" }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "PUT",
+    });
+    expect(rootMutation.status).toBe(403);
+  });
+
   it("keeps typing channel-scoped, omitted from the sender, and ephemeral", async () => {
     const server = await startMattermostServer({ adminToken: "admin", botToken: "fake" });
     servers.push(server);
@@ -952,6 +1006,87 @@ describe("Mattermost local provider server", () => {
 
     expect((await sendInbound("queued after oversized event")).status).toBe(200);
     expect((await sendInbound("queue is full")).status).toBe(503);
+  });
+
+  it("rejects oversized REST events atomically without disconnecting other clients", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "fake",
+      maxWebSocketBufferedBytes: 1024,
+    });
+    servers.push(server);
+    const registered = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ channelId: CHANNEL_ID, senderId: USER_ID, text: "register" }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(registered.status).toBe(200);
+
+    const first = new WebSocket(server.manifest.endpoints.websocketUrl);
+    await waitForSocketOpen(first);
+    const firstAuthenticated = nextMessages(first, 3);
+    first.send(
+      JSON.stringify({
+        action: "authentication_challenge",
+        data: { token: "fake" },
+        seq: 1,
+      }),
+    );
+    await firstAuthenticated;
+
+    const second = new WebSocket(server.manifest.endpoints.websocketUrl);
+    await waitForSocketOpen(second);
+    const secondAuthenticated = nextMessages(second, 2);
+    second.send(
+      JSON.stringify({
+        action: "authentication_challenge",
+        data: { token: "fake" },
+        seq: 1,
+      }),
+    );
+    await secondAuthenticated;
+
+    const firstQuiet = expectNoSocketMessage(first);
+    const secondQuiet = expectNoSocketMessage(second);
+    const oversized = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+      body: JSON.stringify({ channel_id: CHANNEL_ID, message: "x".repeat(2_000) }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(oversized.status).toBe(413);
+    await expect(oversized.json()).resolves.toMatchObject({
+      message: "WebSocket event is too large",
+      status_code: 413,
+    });
+    await Promise.all([firstQuiet, secondQuiet]);
+    expect(first.readyState).toBe(WebSocket.OPEN);
+    expect(second.readyState).toBe(WebSocket.OPEN);
+
+    const firstDelivered = nextMessage(first);
+    const secondDelivered = nextMessage(second);
+    const accepted = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+      body: JSON.stringify({ channel_id: CHANNEL_ID, message: "accepted after rejection" }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(accepted.status).toBe(201);
+    await expect(accepted.json()).resolves.toMatchObject({
+      id: mattermostId("post-2"),
+      message: "accepted after rejection",
+    });
+    await expect(firstDelivered).resolves.toMatchObject({ event: "posted" });
+    await expect(secondDelivered).resolves.toMatchObject({ event: "posted" });
+    first.close();
+    second.close();
   });
 
   it("bounds unauthenticated clients and inbound WebSocket messages", async () => {

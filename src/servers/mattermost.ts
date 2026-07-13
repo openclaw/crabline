@@ -239,7 +239,7 @@ function postEvent(
 }
 
 function webSocketEventBytes(event: MattermostWebSocketEvent): number {
-  return Buffer.byteLength(JSON.stringify({ ...event, seq: 0 }), "utf8");
+  return Buffer.byteLength(JSON.stringify({ ...event, seq: Number.MAX_SAFE_INTEGER }), "utf8");
 }
 
 function sendEvent(
@@ -253,10 +253,11 @@ function sendEvent(
     return false;
   }
   const payload = JSON.stringify({ ...event, seq });
-  if (
-    client.bufferedAmount + Buffer.byteLength(payload, "utf8") >
-    state.maxWebSocketBufferedBytes
-  ) {
+  const payloadBytes = Buffer.byteLength(payload, "utf8");
+  if (payloadBytes > state.maxWebSocketBufferedBytes) {
+    return false;
+  }
+  if (client.bufferedAmount + payloadBytes > state.maxWebSocketBufferedBytes) {
     state.websocketClients.delete(client);
     client.close(1013, "client too slow");
     return false;
@@ -309,10 +310,6 @@ function broadcast(
     return true;
   }
   if (webSocketEventBytes(event) > state.maxWebSocketBufferedBytes) {
-    for (const client of state.websocketClients.keys()) {
-      state.websocketClients.delete(client);
-      client.close(1013, "client too slow");
-    }
     return false;
   }
   let delivered = false;
@@ -342,25 +339,47 @@ function pendingQueueFullResponse(state: MattermostServerState): Response {
   );
 }
 
-function createPost(params: {
+function buildPost(params: {
   channelId: string;
+  id: string;
   message: string;
   rootId?: string | undefined;
-  state: MattermostServerState;
   userId: string;
 }): MattermostPost {
-  const id = mattermostId(`post-${params.state.nextPost++}`);
-  const post = {
+  return {
     channel_id: params.channelId,
     create_at: Date.now(),
-    id,
+    id: params.id,
     message: params.message,
     root_id: params.rootId ?? "",
     type: "",
     user_id: params.userId,
   };
-  params.state.posts.set(id, post);
-  return post;
+}
+
+function buildNextPost(
+  state: MattermostServerState,
+  params: Omit<Parameters<typeof buildPost>[0], "id">,
+  reservedId?: string,
+): { nextPost: number; post: MattermostPost } {
+  let nextPost = state.nextPost;
+  let id: string;
+  do {
+    id = mattermostId(`post-${nextPost++}`);
+  } while (id === reservedId || state.posts.has(id));
+  return { nextPost, post: buildPost({ ...params, id }) };
+}
+
+function commitNextPost(
+  state: MattermostServerState,
+  pending: ReturnType<typeof buildNextPost>,
+): void {
+  state.nextPost = pending.nextPost;
+  state.posts.set(pending.post.id, pending.post);
+}
+
+function webSocketEventTooLargeResponse(): Response {
+  return mattermostError("WebSocket event is too large", 413);
 }
 
 function handleAdminInbound(params: {
@@ -420,24 +439,52 @@ function handleAdminInbound(params: {
     readMattermostString(params.body.channelDisplayName ?? params.body.channel_display_name) ??
     previousChannel?.display_name ??
     channelName;
-  const previousNextPost = params.state.nextPost;
-  params.state.users.set(senderId, { id: senderId, update_at: Date.now(), username: senderName });
-  params.state.channels.set(channelId, {
+  const channel = {
     display_name: channelDisplayName,
     id: channelId,
     name: channelName,
     type: channelType,
-  });
-  const channel = params.state.channels.get(channelId)!;
-  const post = createPost({
-    channelId,
-    message: text,
-    rootId,
-    state: params.state,
-    userId: senderId,
-  });
+  };
+  const existingRoot = rootId ? params.state.posts.get(rootId) : undefined;
+  if (existingRoot && existingRoot.channel_id !== channelId) {
+    return jsonResponse({ error: "Root post belongs to another channel", ok: false }, 400);
+  }
+  const rootPost =
+    rootId && !existingRoot
+      ? buildPost({
+          channelId,
+          id: rootId,
+          message: "",
+          userId: senderId,
+        })
+      : undefined;
+  const pendingPost = buildNextPost(
+    params.state,
+    {
+      channelId,
+      message: text,
+      rootId,
+      userId: senderId,
+    },
+    rootPost?.id,
+  );
+  const { post } = pendingPost;
+  const event = postEvent("posted", post, senderName, channel);
+  if (webSocketEventBytes(event) > params.state.maxWebSocketBufferedBytes) {
+    return jsonResponse({ error: "Inbound event is too large", ok: false }, 413);
+  }
+  const previousNextPost = params.state.nextPost;
+  params.state.users.set(senderId, { id: senderId, update_at: Date.now(), username: senderName });
+  params.state.channels.set(channelId, channel);
+  if (rootPost) {
+    params.state.posts.set(rootPost.id, rootPost);
+  }
+  commitNextPost(params.state, pendingPost);
   const rollback = () => {
     params.state.posts.delete(post.id);
+    if (rootPost) {
+      params.state.posts.delete(rootPost.id);
+    }
     params.state.nextPost = previousNextPost;
     if (previousUser) {
       params.state.users.set(senderId, previousUser);
@@ -450,11 +497,6 @@ function handleAdminInbound(params: {
       params.state.channels.delete(channelId);
     }
   };
-  const event = postEvent("posted", post, senderName, channel);
-  if (webSocketEventBytes(event) > params.state.maxWebSocketBufferedBytes) {
-    rollback();
-    return jsonResponse({ error: "Inbound event is too large", ok: false }, 413);
-  }
   if (!broadcast(params.state, event)) {
     rollback();
     return pendingQueueFullResponse(params.state);
@@ -568,14 +610,19 @@ async function handleApi(params: {
         return mattermostError("Root post belongs to another channel", 400);
       }
     }
-    const post = createPost({
+    const pendingPost = buildNextPost(state, {
       channelId,
       message,
       rootId,
-      state,
       userId: state.botUserId,
     });
-    broadcast(state, postEvent("posted", post, state.botUsername, channel), false);
+    const { post } = pendingPost;
+    const event = postEvent("posted", post, state.botUsername, channel);
+    if (webSocketEventBytes(event) > state.maxWebSocketBufferedBytes) {
+      return webSocketEventTooLargeResponse();
+    }
+    commitNextPost(state, pendingPost);
+    broadcast(state, event, false);
     return jsonResponse(post, 201);
   }
   const postMatch = /^\/posts\/([^/]+)$/u.exec(apiPath);
@@ -592,12 +639,17 @@ async function handleApi(params: {
       return mattermostError("message must be a string", 400);
     }
     const updated = { ...post, message };
-    state.posts.set(updated.id, updated);
-    broadcast(
-      state,
-      postEvent("post_edited", updated, state.botUsername, state.channels.get(updated.channel_id)!),
-      false,
+    const event = postEvent(
+      "post_edited",
+      updated,
+      state.botUsername,
+      state.channels.get(updated.channel_id)!,
     );
+    if (webSocketEventBytes(event) > state.maxWebSocketBufferedBytes) {
+      return webSocketEventTooLargeResponse();
+    }
+    state.posts.set(updated.id, updated);
+    broadcast(state, event, false);
     return jsonResponse(updated);
   }
   if (postMatch?.[1] && method === "DELETE") {
