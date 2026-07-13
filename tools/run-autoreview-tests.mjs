@@ -29,6 +29,7 @@ const python = candidates.find(([command, launcherArgs]) => {
 });
 
 if (!python) {
+  // oxlint-disable-next-line no-console -- This CLI failure must be visible on stderr.
   console.error("Python 3.10 or newer is required to run the autoreview tests.");
   process.exit(127);
 }
