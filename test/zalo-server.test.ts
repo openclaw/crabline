@@ -431,6 +431,102 @@ describe("Zalo local provider server", () => {
     }
   });
 
+  it("records an accepted webhook before mutating webhook state", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "zalo-webhook-order.jsonl");
+    let failSetWebhookEvidence = true;
+    const server = await startZaloServer({
+      botToken: "test-token-placeholder",
+      onEvent(event) {
+        if (event.path === "/bot<redacted>/setWebhook" && failSetWebhookEvidence) {
+          failSetWebhookEvidence = false;
+          throw new Error("setWebhook evidence failed");
+        }
+      },
+      recorderPath,
+    });
+    servers.push(server);
+
+    const configured = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
+      {
+        body: JSON.stringify({
+          secret_token: "secret-token",
+          url: "http://127.0.0.1:65534/zalo",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(configured.status).toBe(500);
+
+    const info = await fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/getWebhookInfo`);
+    await expect(info.json()).resolves.toEqual({ ok: true, result: { url: "" } });
+    expect(await fs.readFile(recorderPath, "utf8")).toContain('"path":"/bot<redacted>/setWebhook"');
+  });
+
+  it("blocks polling while accepted webhook evidence is pending", async () => {
+    let observeEvidence!: () => void;
+    let observePoll!: () => void;
+    let releaseEvidence!: () => void;
+    const evidenceObserved = new Promise<void>((resolve) => {
+      observeEvidence = resolve;
+    });
+    const pollObserved = new Promise<void>((resolve) => {
+      observePoll = resolve;
+    });
+    const evidenceReleased = new Promise<void>((resolve) => {
+      releaseEvidence = resolve;
+    });
+    const server = await startZaloServer({
+      botToken: "test-token-placeholder",
+      async onEvent(event) {
+        if (event.path === "/bot<redacted>/setWebhook") {
+          observeEvidence();
+          await evidenceReleased;
+        } else if (event.path === "/bot<redacted>/getUpdates") {
+          setImmediate(observePoll);
+        }
+      },
+    });
+    servers.push(server);
+
+    const existingPoll = fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/getUpdates?timeout=30`,
+    );
+    await pollObserved;
+    const configuring = fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`, {
+      body: JSON.stringify({
+        secret_token: "secret-token",
+        url: "http://127.0.0.1:65534/zalo",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await evidenceObserved;
+    const polling = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/getUpdates?timeout=0`,
+    );
+    expect(polling.status).toBe(400);
+    await expect(polling.json()).resolves.toMatchObject({
+      description: "Webhook is configured; delete it before using getUpdates",
+    });
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "blocked" }),
+      headers: adminHeaders(server),
+      method: "POST",
+    });
+    expect(inbound.status).toBe(409);
+    await expect(inbound.json()).resolves.toMatchObject({
+      description: "Webhook configuration is in progress",
+    });
+
+    releaseEvidence();
+    expect((await configuring).status).toBe(200);
+    expect((await existingPoll).status).toBe(409);
+  });
+
   it("records producer-owned acceptance for Zalo sends", async () => {
     const observed: Array<{ accepted?: boolean; path?: string }> = [];
     const server = await startZaloServer({

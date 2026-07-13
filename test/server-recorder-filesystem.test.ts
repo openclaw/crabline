@@ -10,7 +10,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
-it("preserves later writers when rolling back a rotated inode", async () => {
+it("never truncates a rotated inode after a later writer appends", async () => {
   const directory = await createTempDir();
   directories.push(directory);
   const recorderPath = path.join(directory, "server.jsonl");
@@ -52,12 +52,16 @@ it("preserves later writers when rolling back a rotated inode", async () => {
     await writeFile(recorderPath, "", "utf8");
     await appendFile(rotatedPath, '{"path":"/later"}\n', "utf8");
     release();
-    await recording;
+    await expect(recording).rejects.toMatchObject({
+      committed: true,
+      name: "ServerRecorderCommittedError",
+    });
   } finally {
     release();
     prototype.appendFile = originalAppendFile;
   }
 
-  expect(await readFile(rotatedPath, "utf8")).toBe('{"path":"/later"}\n');
-  expect(await readFile(recorderPath, "utf8")).toContain('"path":"/owned"');
+  expect(await readFile(rotatedPath, "utf8")).toContain('"path":"/owned"');
+  expect(await readFile(rotatedPath, "utf8")).toContain('"path":"/later"');
+  expect(await readFile(recorderPath, "utf8")).toBe("");
 });
