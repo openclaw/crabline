@@ -1649,6 +1649,33 @@ describe("telegram local provider server", () => {
     await expect(callback.json()).resolves.toEqual({ ok: true });
   });
 
+  it("keeps generated media file identities unique across chats", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
+
+    const media = await Promise.all(
+      [100, 200].map(async (chatId) => {
+        const response = await fetch(`${apiRoot}/sendPhoto`, {
+          body: JSON.stringify({ chat_id: chatId, photo: "fixture.png" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+        expect(response.status).toBe(200);
+        return (await response.json()) as {
+          result: {
+            message_id: number;
+            photo: Array<{ file_id: string; file_unique_id: string }>;
+          };
+        };
+      }),
+    );
+
+    expect(media.map((entry) => entry.result.message_id)).toEqual([1, 1]);
+    expect(new Set(media.map((entry) => entry.result.photo[0]?.file_id)).size).toBe(2);
+    expect(new Set(media.map((entry) => entry.result.photo[0]?.file_unique_id)).size).toBe(2);
+  });
+
   it("tracks explicit message IDs independently per chat", async () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
