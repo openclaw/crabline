@@ -1,9 +1,24 @@
-import { chmod, mkdir, open } from "node:fs/promises";
+import { chmod, mkdir, open, stat as statPath } from "node:fs/promises";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import type { ServerRequestEvent } from "./http.js";
 
 export type ServerEventObserver = (event: ServerRequestEvent) => void | Promise<void>;
+
+export class ServerRecorderCommittedError extends AggregateError {
+  readonly committed = true;
+
+  constructor(filePath: string, operationError: unknown, relatedErrors: unknown[] = []) {
+    super(
+      [operationError, ...relatedErrors],
+      `Server recorder append committed for "${filePath}", but subsequent work failed.`,
+      { cause: operationError },
+    );
+    this.name = "ServerRecorderCommittedError";
+  }
+}
+
+class ServerRecorderRotationError extends Error {}
 
 const pendingAppends = new Map<string, Promise<void>>();
 const durableRecorderIdentities = new Map<string, string>();
@@ -144,6 +159,28 @@ function recorderIdentity(stats: {
   return `${stats.dev}:${stats.ino}`;
 }
 
+async function recorderPathHasIdentity(
+  filePath: string,
+  expectedIdentity: string,
+): Promise<boolean> {
+  try {
+    return recorderIdentity(await statPath(filePath)) === expectedIdentity;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function requireRecorderIdentity(stats: { dev?: bigint | number; ino?: bigint | number }): string {
+  const identity = recorderIdentity(stats);
+  if (identity === undefined) {
+    throw new Error("Server recorder file identity is unavailable.");
+  }
+  return identity;
+}
+
 function rememberDurableRecorderIdentity(filePath: string, identity: string): void {
   durableRecorderIdentities.delete(filePath);
   durableRecorderIdentities.set(filePath, identity);
@@ -218,7 +255,158 @@ async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>
   return result as T;
 }
 
-async function appendJsonLine(filePath: string, line: string, durable: boolean): Promise<void> {
+async function rollbackRecorderAppend(
+  filePath: string,
+  file: Awaited<ReturnType<typeof open>>,
+  appendStart: number,
+  operationError: unknown,
+): Promise<void> {
+  try {
+    await file.truncate(appendStart);
+    await file.sync();
+  } catch (rollbackError) {
+    throw new ServerRecorderCommittedError(filePath, operationError, [rollbackError]);
+  }
+}
+
+async function closeRecorderAttempt(params: {
+  committed: boolean;
+  file: Awaited<ReturnType<typeof open>>;
+  filePath: string;
+  operationFailed: boolean;
+  operationError: unknown;
+}): Promise<void> {
+  let closeFailed = false;
+  let closeError: unknown;
+  try {
+    await params.file.close();
+  } catch (error) {
+    closeFailed = true;
+    closeError = error;
+  }
+  if (closeFailed) {
+    if (params.operationFailed) {
+      if (params.operationError instanceof ServerRecorderCommittedError) {
+        throw new ServerRecorderCommittedError(params.filePath, params.operationError, [
+          closeError,
+        ]);
+      }
+      throw new AggregateError(
+        [params.operationError, closeError],
+        "Server recorder operation and file close both failed.",
+        { cause: closeError },
+      );
+    }
+    if (params.committed) {
+      throw new ServerRecorderCommittedError(params.filePath, closeError);
+    }
+    throw closeError;
+  }
+  if (params.operationFailed) {
+    throw params.operationError;
+  }
+}
+
+async function appendRecorderAttempt(params: {
+  createdDirectory: string | undefined;
+  filePath: string;
+  line: string;
+}): Promise<"committed" | "retry"> {
+  const opened = await openRecorderFile(params.filePath);
+  const { file } = opened;
+  let committed = false;
+  let operationFailed = false;
+  let operationError: unknown;
+  let result: "committed" | "retry" | undefined;
+  try {
+    await file.chmod(0o600);
+    let stats = await file.stat();
+    let identity = requireRecorderIdentity(stats);
+    if (!(await recorderPathHasIdentity(params.filePath, identity))) {
+      result = "retry";
+    } else {
+      const needsPathDurability =
+        opened.created || durableRecorderIdentities.get(path.resolve(params.filePath)) !== identity;
+      if (stats.size > 0) {
+        const finalByte = await readBufferAt(file, 1, stats.size - 1);
+        if (finalByte[0] !== 0x0a) {
+          const tailStart = await findIncompleteTailStart(file, stats.size);
+          const tailLength = stats.size - tailStart;
+          if (tailLength > MAX_RECOVERY_VALIDATION_BYTES) {
+            throw recoveryValidationLimitError();
+          }
+          const tail = await readBufferAt(file, tailLength, tailStart);
+          if (tail.length !== tailLength) {
+            throw new Error("Server recorder changed while repairing its final record.");
+          }
+          try {
+            JSON.parse(tail.toString("utf8"));
+            await file.appendFile("\n", { encoding: "utf8" });
+          } catch (error) {
+            if (!(error instanceof SyntaxError)) {
+              throw error;
+            }
+            await file.truncate(tailStart);
+          }
+        }
+      }
+      stats = await file.stat();
+      identity = requireRecorderIdentity(stats);
+      if (!(await recorderPathHasIdentity(params.filePath, identity))) {
+        result = "retry";
+      } else {
+        const appendStart = stats.size;
+        try {
+          await file.appendFile(params.line, { encoding: "utf8" });
+          await file.sync();
+          if (!(await recorderPathHasIdentity(params.filePath, identity))) {
+            await rollbackRecorderAppend(
+              params.filePath,
+              file,
+              appendStart,
+              new ServerRecorderRotationError("Server recorder rotated during append."),
+            );
+            result = "retry";
+          } else {
+            if (needsPathDurability) {
+              const firstCreatedPath =
+                params.createdDirectory ??
+                (opened.created ? path.resolve(params.filePath) : undefined);
+              await syncRecorderPathAncestry(params.filePath, firstCreatedPath);
+            }
+            rememberDurableRecorderIdentity(path.resolve(params.filePath), identity);
+            committed = true;
+            result = "committed";
+          }
+        } catch (error) {
+          if (
+            error instanceof ServerRecorderCommittedError &&
+            error.cause instanceof ServerRecorderRotationError
+          ) {
+            await rollbackRecorderAppend(params.filePath, file, appendStart, error);
+            result = "retry";
+          } else if (result !== "retry") {
+            await rollbackRecorderAppend(params.filePath, file, appendStart, error);
+            throw error;
+          }
+        }
+      }
+    }
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+  await closeRecorderAttempt({
+    committed,
+    file,
+    filePath: params.filePath,
+    operationError,
+    operationFailed,
+  });
+  return result ?? "retry";
+}
+
+async function appendJsonLine(filePath: string, line: string): Promise<void> {
   const key = path.resolve(filePath);
   const previous = pendingAppends.get(key) ?? Promise.resolve();
   const current = previous
@@ -229,56 +417,16 @@ async function appendJsonLine(filePath: string, line: string, durable: boolean):
       if (createdDirectory !== undefined || isManagedRecorderDirectory(path.resolve(directory))) {
         await chmod(directory, 0o700);
       }
+      // Keep the cross-process lock through append verification and any rollback.
       await withRecorderLock(key, async () => {
-        const opened = await openRecorderFile(filePath);
-        const { file } = opened;
-        try {
-          await file.chmod(0o600);
-          const stats = await file.stat();
-          const identity = recorderIdentity(stats);
-          const needsPathDurability =
-            opened.created ||
-            identity === undefined ||
-            durableRecorderIdentities.get(key) !== identity;
-          if (stats.size > 0) {
-            const finalByte = await readBufferAt(file, 1, stats.size - 1);
-            if (finalByte[0] !== 0x0a) {
-              const tailStart = await findIncompleteTailStart(file, stats.size);
-              const tailLength = stats.size - tailStart;
-              if (tailLength > MAX_RECOVERY_VALIDATION_BYTES) {
-                throw recoveryValidationLimitError();
-              }
-              const tail = await readBufferAt(file, tailLength, tailStart);
-              if (tail.length !== tailLength) {
-                throw new Error("Server recorder changed while repairing its final record.");
-              }
-              try {
-                JSON.parse(tail.toString("utf8"));
-                await file.appendFile("\n", { encoding: "utf8" });
-              } catch (error) {
-                if (!(error instanceof SyntaxError)) {
-                  throw error;
-                }
-                await file.truncate(tailStart);
-              }
-            }
-          }
-          await file.appendFile(line, { encoding: "utf8" });
-          if (durable || needsPathDurability) {
-            await file.sync();
-          }
-          if (needsPathDurability) {
-            const firstCreatedPath =
-              createdDirectory ?? (opened.created ? path.resolve(filePath) : undefined);
-            await syncRecorderPathAncestry(filePath, firstCreatedPath);
-            if (identity === undefined) {
-              durableRecorderIdentities.delete(key);
-            } else {
-              rememberDurableRecorderIdentity(key, identity);
-            }
-          }
-        } finally {
-          await file.close();
+        while (
+          (await appendRecorderAttempt({
+            createdDirectory,
+            filePath,
+            line,
+          })) === "retry"
+        ) {
+          // Reopen until the descriptor matches the current recorder path.
         }
       });
     });
@@ -298,13 +446,12 @@ export async function recordServerEvent(params: {
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
 }): Promise<void> {
-  // Observers only see events after the recorder append is durable.
-  await appendJsonLine(
-    params.recorderPath,
-    `${JSON.stringify(params.event)}\n`,
-    params.onEvent !== undefined,
-  );
-  await params.onEvent?.(params.event);
+  await appendJsonLine(params.recorderPath, `${JSON.stringify(params.event)}\n`);
+  try {
+    await params.onEvent?.(params.event);
+  } catch (error) {
+    throw new ServerRecorderCommittedError(params.recorderPath, error);
+  }
 }
 
 export async function recordCommittedServerEvent(params: {
@@ -313,7 +460,8 @@ export async function recordCommittedServerEvent(params: {
   recorderPath: string;
 }): Promise<void> {
   try {
-    await recordServerEvent(params);
+    await appendJsonLine(params.recorderPath, `${JSON.stringify(params.event)}\n`);
+    await params.onEvent?.(params.event);
   } catch {
     // The provider mutation already committed, so telemetry failure cannot change its response.
   }

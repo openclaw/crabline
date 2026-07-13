@@ -16,6 +16,7 @@ const fsMocks = vi.hoisted(() => ({
   serverDirectorySync: vi.fn<(directoryPath: string) => Promise<void>>(),
   serverFileExists: false,
   serverOpen: vi.fn<(filePath: string, flags: string) => void>(),
+  serverStat: vi.fn<(filePath: string) => Promise<{ dev: number; ino: number; size: number }>>(),
   serverSync: vi.fn<(filePath: string) => Promise<void>>(),
   serverWrite: vi.fn<(filePath: string, data: string) => Promise<void>>(),
 }));
@@ -85,6 +86,12 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       }
       return handle;
     },
+    stat: async (filePath: Parameters<typeof actual.stat>[0]) => {
+      if (String(filePath).includes("crabline-server-recorder")) {
+        return await fsMocks.serverStat(String(filePath));
+      }
+      return await actual.stat(filePath);
+    },
   };
 });
 
@@ -133,6 +140,8 @@ beforeEach(() => {
   fsMocks.serverDirectorySync.mockResolvedValue(undefined);
   fsMocks.serverFileExists = false;
   fsMocks.serverOpen.mockReset();
+  fsMocks.serverStat.mockReset();
+  fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
   fsMocks.serverSync.mockReset();
   fsMocks.serverSync.mockResolvedValue(undefined);
   fsMocks.serverWrite.mockReset();
