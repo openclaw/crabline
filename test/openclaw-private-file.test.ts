@@ -15,6 +15,8 @@ import {
 } from "../src/openclaw/private-file.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
+const currentEffectiveUserId = process.geteuid?.();
+
 function expectedAncestrySyncPaths(filePath: string, syncThroughPath?: string): string[] {
   const paths: string[] = [];
   let currentPath = path.resolve(filePath);
@@ -107,6 +109,30 @@ describe("OpenClaw private file publication", () => {
       }
     },
   );
+
+  it.skipIf(
+    process.platform === "win32" ||
+      currentEffectiveUserId === undefined ||
+      currentEffectiveUserId === 0,
+  )("rejects recursive removal beneath a directory owned by another user", async () => {
+    const directory = await createTempDir();
+    const targetPath = path.join(directory, "generation");
+    await fs.mkdir(targetPath, { mode: 0o700 });
+    const secured = await securePrivateDirectory(targetPath);
+    const geteuidSpy = vi
+      .spyOn(process, "geteuid")
+      .mockReturnValue((currentEffectiveUserId ?? 0) + 1);
+    try {
+      await expect(removeSecuredPrivateDirectory(secured)).rejects.toThrow(
+        "Private mutation boundary is not owned by the current POSIX user or root.",
+      );
+
+      await expect(fs.stat(targetPath)).resolves.toBeDefined();
+    } finally {
+      geteuidSpy.mockRestore();
+      await disposeTempDir(directory);
+    }
+  });
 
   it("syncs a POSIX directory handle after persisting mode 0700", async () => {
     const directory = await createTempDir();
