@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { connect } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { startWebhookServer } from "../src/providers/webhook-server.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -165,6 +165,92 @@ describe("webhook server", () => {
     expect(observedErrors).toEqual([expect.objectContaining({ message: "response body failed" })]);
   });
 
+  it("streams response chunks before the provider body completes", async () => {
+    let releaseBody!: () => void;
+    const bodyReleased = new Promise<void>((resolve) => {
+      releaseBody = resolve;
+    });
+    const server = await startWebhookServer({
+      handle: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(Buffer.from("first"));
+            },
+            async pull(controller) {
+              await bodyReleased;
+              controller.enqueue(Buffer.from("-second"));
+              controller.close();
+            },
+          }),
+        ),
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+
+    const response = await fetch(server.endpointUrl, { method: "POST" });
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+
+    expect(Buffer.from(first.value ?? []).toString()).toBe("first");
+    expect(first.done).toBe(false);
+
+    releaseBody();
+    const second = await reader.read();
+    expect(Buffer.from(second.value ?? []).toString()).toBe("-second");
+    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("applies response backpressure and cancels the body when the client disconnects", async () => {
+    const totalChunks = 512;
+    let pulls = 0;
+    let reportCancellation!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      reportCancellation = resolve;
+    });
+    const server = await startWebhookServer({
+      handle: async () =>
+        new Response(
+          new ReadableStream({
+            cancel() {
+              reportCancellation();
+            },
+            pull(controller) {
+              pulls += 1;
+              controller.enqueue(new Uint8Array(64 * 1024));
+              if (pulls === totalChunks) {
+                controller.close();
+              }
+            },
+          }),
+        ),
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+    const endpoint = new URL(server.endpointUrl);
+    const socket = connect(Number(endpoint.port), endpoint.hostname);
+    socket.on("error", () => {});
+    socket.pause();
+    await once(socket, "connect");
+    socket.write("POST /slack/events HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n");
+
+    await vi.waitFor(() => expect(pulls).toBeGreaterThan(0));
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    expect(pulls).toBeLessThan(totalChunks);
+
+    socket.destroy();
+    await expect(
+      Promise.race([
+        cancelled.then(() => "cancelled"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 500)),
+      ]),
+    ).resolves.toBe("cancelled");
+  });
+
   it("returns 413 for oversized request bodies without invoking the handler", async () => {
     let handlerInvoked = false;
     const server = await startWebhookServer({
@@ -309,6 +395,49 @@ describe("webhook server", () => {
     expect(response.status).toBe(202);
     await expect(response.text()).resolves.toBe("admitted response");
     await expect(closing).resolves.toBeUndefined();
+  });
+
+  it("cancels an unfinished response body after the shutdown grace period", async () => {
+    let reportCancellation!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      reportCancellation = resolve;
+    });
+    const server = await startWebhookServer({
+      handle: async () =>
+        new Response(
+          new ReadableStream({
+            cancel() {
+              reportCancellation();
+            },
+            start(controller) {
+              controller.enqueue(Buffer.from("started"));
+            },
+          }),
+        ),
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+      shutdownGraceMs: 30,
+    });
+    const endpoint = new URL(server.endpointUrl);
+    const socket = connect(Number(endpoint.port), endpoint.hostname);
+    socket.on("error", () => {});
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      response += chunk;
+    });
+    await once(socket, "connect");
+    socket.write("POST /slack/events HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n");
+    await vi.waitFor(() => expect(response).toContain("started"));
+
+    await expect(
+      Promise.race([
+        server.close().then(() => "closed"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 500)),
+      ]),
+    ).resolves.toBe("closed");
+    await expect(cancelled).resolves.toBeUndefined();
   });
 
   it("survives clients aborting incomplete request bodies", async () => {
