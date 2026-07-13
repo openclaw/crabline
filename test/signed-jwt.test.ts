@@ -244,6 +244,26 @@ describe("signed JWT remote key cache", () => {
     }
   });
 
+  it("fails closed on unterminated Cache-Control quotes and dangling escapes", () => {
+    const now = 1_700_000_000_000;
+    const expires = new Date(now + 60 * 60 * 1_000).toUTCString();
+
+    for (const cacheControl of ['private="unterminated, max-age=0', 'private="dangling\\']) {
+      expect(
+        resolveHttpCacheExpiry(
+          new Response(null, { headers: { "cache-control": cacheControl } }),
+          now,
+        ),
+      ).toBe(now);
+      expect(
+        resolveHttpCacheExpiry(
+          new Response(null, { headers: { "cache-control": cacheControl, expires } }),
+          now,
+        ),
+      ).toBe(now);
+    }
+  });
+
   it("distinguishes absent Expires from invalid or stale values", () => {
     const now = 1_700_000_000_000;
 
