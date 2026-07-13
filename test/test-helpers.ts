@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -104,12 +105,18 @@ export async function settleCleanup(operations: Promise<unknown>[]): Promise<voi
 }
 
 type WriteCapture = {
-  active: boolean;
   stderr: string[];
   stdout: string[];
 };
 
-const writeCaptures: WriteCapture[] = [];
+type CaptureWrite = (
+  chunk: string | Uint8Array,
+  encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+  callback?: (error?: Error | null) => void,
+) => boolean;
+
+const writeCaptureStorage = new AsyncLocalStorage<WriteCapture>();
+let activeWriteCaptureCount = 0;
 let originalStdoutWrite: typeof process.stdout.write | undefined;
 let originalStderrWrite: typeof process.stderr.write | undefined;
 
@@ -120,9 +127,16 @@ const createCaptureWriter =
     encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
     callback?: (error?: Error | null) => void,
   ) => {
-    const capture = writeCaptures.findLast((entry) => entry.active);
+    const capture = writeCaptureStorage.getStore();
+    if (!capture) {
+      const target = stream === "stdout" ? process.stdout : process.stderr;
+      const originalWrite = (
+        stream === "stdout" ? originalStdoutWrite : originalStderrWrite
+      ) as CaptureWrite;
+      return originalWrite.call(target, chunk, encodingOrCallback, callback);
+    }
     const encoding = typeof encodingOrCallback === "string" ? encodingOrCallback : undefined;
-    capture?.[stream].push(
+    capture[stream].push(
       typeof chunk === "string" ? chunk : Buffer.from(chunk).toString(encoding ?? "utf8"),
     );
     const completion = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
@@ -132,37 +146,60 @@ const createCaptureWriter =
     return true;
   };
 
-export const captureWrites = (): {
+export const createWriteCapture = (): {
   restore: () => void;
+  run: <T>(operation: () => Promise<T> | T) => Promise<T>;
   stderr: string[];
   stdout: string[];
 } => {
-  const capture: WriteCapture = { active: true, stderr: [], stdout: [] };
-  if (writeCaptures.length === 0) {
+  const capture: WriteCapture = { stderr: [], stdout: [] };
+  let active = true;
+  if (activeWriteCaptureCount === 0) {
     originalStdoutWrite = process.stdout.write;
     originalStderrWrite = process.stderr.write;
     process.stdout.write = createCaptureWriter("stdout") as typeof process.stdout.write;
     process.stderr.write = createCaptureWriter("stderr") as typeof process.stderr.write;
   }
-  writeCaptures.push(capture);
+  activeWriteCaptureCount += 1;
 
   return {
     restore() {
-      if (!capture.active) {
+      if (!active) {
         return;
       }
-      capture.active = false;
-      while (writeCaptures.at(-1)?.active === false) {
-        writeCaptures.pop();
-      }
-      if (writeCaptures.length === 0) {
+      active = false;
+      activeWriteCaptureCount -= 1;
+      if (activeWriteCaptureCount === 0) {
         process.stdout.write = originalStdoutWrite!;
         process.stderr.write = originalStderrWrite!;
         originalStdoutWrite = undefined;
         originalStderrWrite = undefined;
       }
     },
+    async run<T>(operation: () => Promise<T> | T): Promise<T> {
+      if (!active) {
+        throw new Error("Cannot run a restored output capture.");
+      }
+      return await writeCaptureStorage.run(capture, operation);
+    },
     stderr: capture.stderr,
     stdout: capture.stdout,
   };
+};
+
+export const captureWrites = async <T>(
+  operation: () => Promise<T> | T,
+): Promise<{
+  result: T;
+  stderr: string[];
+  stdout: string[];
+}> => {
+  const capture = createWriteCapture();
+
+  try {
+    const result = await capture.run(operation);
+    return { result, stderr: capture.stderr, stdout: capture.stdout };
+  } finally {
+    capture.restore();
+  }
 };
