@@ -96,11 +96,13 @@ describe("OpenClaw artifact generation publication", () => {
       const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
       const pointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<string, unknown>;
       delete pointer.providerReadinessArtifactPath;
+      pointer.version = 1;
       await fs.writeFile(pointerPath, `${JSON.stringify(pointer, null, 2)}\n`);
 
       await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toMatchObject({
         providerReadinessArtifactPath: result.providerReadinessArtifactPath,
         smokeArtifactPath: result.smokeArtifactPath,
+        version: 1,
       });
     } finally {
       await disposeTempDir(outputDir);
@@ -176,7 +178,7 @@ describe("OpenClaw artifact generation publication", () => {
         manifestPath: result.manifestPath,
         providerReadinessArtifactPath: result.providerReadinessArtifactPath,
         smokeArtifactPath: result.providerReadinessArtifactPath,
-        version: 1,
+        version: 2,
       });
       for (const artifactPath of [
         result.manifestPath,
@@ -204,6 +206,50 @@ describe("OpenClaw artifact generation publication", () => {
           "generation-11111111-1111-4111-8111-111111111111",
         ),
       );
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("replaces a legacy generation with an external recorder path", async () => {
+    const outputDir = await createTempDir();
+    try {
+      const first = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      });
+      const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
+      const legacyPointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      legacyPointer.version = 1;
+      await fs.writeFile(pointerPath, `${JSON.stringify(legacyPointer, null, 2)}\n`);
+
+      const legacyManifestPath = path.join(outputDir, first.manifestPath);
+      const legacyManifest = JSON.parse(await fs.readFile(legacyManifestPath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      legacyManifest.recorderPath = "/tmp/crabline/legacy-telegram.jsonl";
+      await fs.writeFile(legacyManifestPath, `${JSON.stringify(legacyManifest, null, 2)}\n`);
+
+      const replacement = await publishOpenClawCrablineArtifactGeneration(
+        publishParams(outputDir),
+        { createGenerationId: () => "22222222-2222-4222-8222-222222222222" },
+      );
+
+      expect(replacement).toMatchObject({
+        previousGeneration: first.generation,
+        version: 2,
+      });
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toMatchObject({
+        generation: replacement.generation,
+        previousGeneration: first.generation,
+        version: 2,
+      });
+      await expect(
+        fs.readFile(path.join(outputDir, replacement.manifestPath), "utf8"),
+      ).resolves.not.toContain("recorderPath");
     } finally {
       await disposeTempDir(outputDir);
     }
