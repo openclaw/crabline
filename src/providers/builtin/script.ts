@@ -133,7 +133,36 @@ function isSensitiveEnvironmentName(name: string): boolean {
   );
 }
 
+function redactCredentialSyntax(detail: string): string {
+  let redacted = detail.replace(
+    /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s@]+)@/giu,
+    "$1[redacted credentials]@",
+  );
+  redacted = redacted.replace(
+    /(\bauthorization\b["']?\s*[:=]\s*["']?\s*)(?:(basic|bearer)\s+)?([^\s"',;}]+)/giu,
+    (_match, prefix: string, scheme: string | undefined) =>
+      `${prefix}${scheme ? `${scheme} ` : ""}[redacted credential]`,
+  );
+  redacted = redacted.replace(
+    /\b([A-Za-z_][A-Za-z0-9_-]*)\s*(\+?=|:)\s*("[^"]*"|'[^']*'|[^\s,;}\]]+)/gu,
+    (match, name: string, operator: string) =>
+      name.toLowerCase() !== "authorization" && isSensitiveEnvironmentName(name)
+        ? `${name}${operator}[redacted credential]`
+        : match,
+  );
+  return redacted.replace(
+    /--([A-Za-z0-9][A-Za-z0-9_-]*)(=|\s+)("[^"]*"|'[^']*'|[^\s,;]+)/gu,
+    (match, name: string, separator: string) =>
+      isSensitiveEnvironmentName(name.replaceAll("-", "_"))
+        ? `--${name}${separator}[redacted credential]`
+        : match,
+  );
+}
+
 function commandContainsSensitiveValue(command: string): boolean {
+  if (redactCredentialSyntax(command) !== command) {
+    return true;
+  }
   const assignments = [
     ...command.matchAll(/(?:^|[\s;&|])["']?([A-Za-z_][A-Za-z0-9_]*)\s*\+?=/gu),
     ...command.matchAll(/\$env:([A-Za-z_][A-Za-z0-9_]*)\s*\+?=/giu),
@@ -251,6 +280,7 @@ function formatScriptError(
     redactSensitiveEnvironmentValues(detail, diagnostics.sensitiveEnvironmentValues),
     diagnostics.sensitivePayloadValues,
   );
+  redacted = redactCredentialSyntax(redacted);
   for (const configuredCommand of diagnostics.configuredCommands) {
     redacted = redacted.split(configuredCommand).join("[configured script command]");
   }
