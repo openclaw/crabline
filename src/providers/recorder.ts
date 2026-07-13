@@ -724,16 +724,21 @@ async function withRecorderLock<T>(
       if (!identity) {
         continue;
       }
-      const releaseIdentityLock = await acquireRecorderLock(
-        await recorderIdentityLockTarget(identity),
-      );
+      const releaseIdentityLock =
+        identity.nlink > 1n
+          ? await acquireRecorderLock(await recorderIdentityLockTarget(identity))
+          : undefined;
       const currentIdentity = await readRecorderFileIdentity(filePath);
       if (sameRecorderFileIdentity(identity, currentIdentity)) {
-        releases.push(releaseIdentityLock);
+        if (releaseIdentityLock) {
+          releases.push(releaseIdentityLock);
+        }
         lockedIdentity = identity;
         break;
       }
-      const releaseErrors = await releaseRecorderLocks([releaseIdentityLock]);
+      const releaseErrors = releaseIdentityLock
+        ? await releaseRecorderLocks([releaseIdentityLock])
+        : [];
       if (releaseErrors.length > 0) {
         throw recorderLockReleaseError(
           filePath,
