@@ -15,9 +15,13 @@ const TELEGRAM_SYMBOLIC_GROUP_ID_BASE = 1_000_000_000_000n;
 const TELEGRAM_SYMBOLIC_GROUP_ID_RANGE = 10_000_000_000n;
 const TELEGRAM_OUTBOUND_METHOD_RE =
   /\/(sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/iu;
-const TELEGRAM_USERNAME_RE = /^@[A-Za-z][A-Za-z0-9_]{3,31}$/u;
+const TELEGRAM_USERNAME_RE = /^@[A-Za-z][A-Za-z0-9_]{4,31}$/u;
 
-function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
+function normalizeTelegramChatId(
+  kind: "direct" | "group",
+  id: string,
+  options: { preserveGroupUsername: boolean },
+): string {
   const value = id.trim();
   if (!value) {
     throw new Error("Telegram target is required.");
@@ -35,11 +39,13 @@ function normalizeTelegramChatId(kind: "direct" | "group", id: string): string {
     }
     return numericId.toString();
   }
-  if (kind === "group" && TELEGRAM_USERNAME_RE.test(value)) {
-    return value;
-  }
   if (value.startsWith("@")) {
-    throw new Error("Telegram usernames must contain 4-32 letters, digits, or underscores.");
+    if (!TELEGRAM_USERNAME_RE.test(value)) {
+      throw new Error("Telegram usernames must contain 5-32 letters, digits, or underscores.");
+    }
+    if (kind === "group" && options.preserveGroupUsername) {
+      return value;
+    }
   }
   const hash = createHash("sha256").update(`${kind}:${value}`).digest().readBigUInt64BE();
   if (kind === "group") {
@@ -202,7 +208,9 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           (/^-\d+$/u.test(parsed.id.trim()) || TELEGRAM_USERNAME_RE.test(parsed.id.trim()))
             ? "group"
             : parsed.kind;
-        const chatId = normalizeTelegramChatId(kind, parsed.id);
+        const chatId = normalizeTelegramChatId(kind, parsed.id, {
+          preserveGroupUsername: true,
+        });
         const threadId = parseTelegramThreadTargetId(parsed.threadId);
         const to = telegramTargetKey(chatId, threadId);
         return {
@@ -214,13 +222,23 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
       },
       createInbound(input) {
         const kind = input.conversation.kind === "direct" ? "direct" : "group";
-        const chatId = normalizeTelegramChatId(kind, input.conversation.id);
+        const chatId = normalizeTelegramChatId(kind, input.conversation.id, {
+          preserveGroupUsername: false,
+        });
+        const senderId = normalizeTelegramChatId("direct", input.senderId, {
+          preserveGroupUsername: false,
+        });
+        if (kind === "direct" && chatId !== senderId) {
+          throw new Error(
+            "Telegram direct conversation and sender must normalize to the same identity.",
+          );
+        }
         const threadId = parseTelegramThreadTargetId(input.threadId);
         return {
           ...createAdminInboundRequest(telegram),
           providerBody: {
             chatId,
-            fromId: Number(normalizeTelegramChatId("direct", input.senderId)),
+            fromId: Number(senderId),
             fromName: input.senderName ?? input.senderId,
             ...(threadId !== undefined ? { messageThreadId: threadId } : {}),
             ...(input.nativeCommand

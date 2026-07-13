@@ -159,7 +159,7 @@ export const MSTEAMS_CONVERSATION_ID_RULE: NativeIdRule = {
 export const TELEGRAM_CHAT_ID_RULE: NativeIdRule = {
   example: "-1001234567890 or @channelusername",
   name: "Telegram chat id",
-  pattern: /^(?:-?[1-9]\d*|@[A-Za-z][A-Za-z0-9_]{3,31})$/u,
+  pattern: /^(?:-?[1-9]\d*|@[A-Za-z][A-Za-z0-9_]{4,31})$/u,
 };
 
 export const TELEGRAM_MESSAGE_THREAD_ID_RULE: NativeIdRule = {
