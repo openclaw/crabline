@@ -1,6 +1,5 @@
 import { constants as fsConstants } from "node:fs";
 import { chmod, lstat, mkdir, open, readlink, realpath, stat as statPath } from "node:fs/promises";
-import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import type { ServerRequestEvent } from "./http.js";
@@ -34,6 +33,7 @@ class ServerRecorderRotationError extends Error {}
 type RecorderFileIdentity = {
   dev: bigint;
   ino: bigint;
+  nlink: bigint;
 };
 
 type ObserverTask = {
@@ -58,6 +58,7 @@ const RECORDER_LOCK_RETRY_MS = 100;
 const RECORDER_LOCK_STALE_MS = 30_000;
 const RECORDER_LOCK_UPDATE_MS = 10_000;
 const RECORDER_LOCK_WAIT_MARGIN_MS = 5_000;
+const RECORDER_LOCK_DIRECTORY_ENV = "CRABLINE_RECORDER_LOCK_DIR";
 const RECORDER_PATH_ATTEMPTS = 3;
 const RECORDER_ROTATION_ATTEMPTS = 3;
 const TAIL_SCAN_CHUNK_BYTES = 64 * 1024;
@@ -194,6 +195,7 @@ function recorderIdentity(stats: {
 function requireRecorderFileIdentity(stats: {
   dev?: bigint | number;
   ino?: bigint | number;
+  nlink?: bigint | number;
 }): RecorderFileIdentity {
   if (stats.dev === undefined || stats.ino === undefined) {
     throw new Error("Server recorder file identity is unavailable.");
@@ -201,6 +203,7 @@ function requireRecorderFileIdentity(stats: {
   return {
     dev: BigInt(stats.dev),
     ino: BigInt(stats.ino),
+    nlink: BigInt(stats.nlink ?? 1),
   };
 }
 
@@ -265,10 +268,7 @@ function isRecorderLockContention(error: unknown): boolean {
   );
 }
 
-async function secureRecorderLockRoot(
-  root: string,
-  currentUserId: number | undefined,
-): Promise<string> {
+async function secureRecorderLockRoot(root: string): Promise<string> {
   await mkdir(root, { mode: 0o700, recursive: true });
   if (process.platform === "win32") {
     const identity = await lstat(root);
@@ -276,9 +276,6 @@ async function secureRecorderLockRoot(
       throw new Error("Server recorder lock directory is not a private directory.");
     }
     return root;
-  }
-  if (currentUserId === undefined) {
-    throw new Error("Server recorder identity locking requires a current user id.");
   }
   const handle = await open(
     root,
@@ -291,18 +288,9 @@ async function secureRecorderLockRoot(
       !identity.isDirectory() ||
       !current.isDirectory() ||
       identity.dev !== current.dev ||
-      identity.ino !== current.ino ||
-      identity.uid !== BigInt(currentUserId) ||
-      current.uid !== BigInt(currentUserId)
+      identity.ino !== current.ino
     ) {
-      throw new Error("Server recorder lock directory is not privately owned.");
-    }
-    if ((identity.mode & 0o777n) !== 0o700n) {
-      await handle.chmod(0o700);
-      const secured = await handle.stat({ bigint: true });
-      if ((secured.mode & 0o777n) !== 0o700n) {
-        throw new Error("Server recorder lock directory permissions are not private.");
-      }
+      throw new Error("Server recorder lock directory changed while opening it.");
     }
   } finally {
     await handle.close();
@@ -311,25 +299,26 @@ async function secureRecorderLockRoot(
 }
 
 function recorderIdentityLockPath(root: string, identity: RecorderFileIdentity): string {
-  return path.join(root, `recorder-${identity.dev}-${identity.ino}`);
+  return path.join(root, `recorder-${identity.ino}`);
 }
 
-async function recorderIdentityLockTarget(identity: RecorderFileIdentity): Promise<string> {
-  const currentUserId = process.platform === "win32" ? undefined : process.geteuid?.();
-  let sharedRoot: string;
-  try {
-    const account = userInfo();
-    sharedRoot =
-      process.platform === "win32"
-        ? path.join(account.homedir, "AppData", "Local", "Crabline", "locks", "server-recorder")
-        : path.join(account.homedir, ".cache", "crabline", "locks", "server-recorder");
-  } catch {
-    throw new Error("Server recorder identity locking requires an OS account directory.");
+async function recorderIdentityLockTarget(
+  identity: RecorderFileIdentity,
+): Promise<string | undefined> {
+  const configuredRoot = process.env[RECORDER_LOCK_DIRECTORY_ENV]?.trim();
+  if (!configuredRoot) {
+    if (identity.nlink > 1n) {
+      throw new Error(
+        `Server recorder hardlinks require ${RECORDER_LOCK_DIRECTORY_ENV} to name one shared writable lock directory for every writer.`,
+      );
+    }
+    return undefined;
   }
-  return recorderIdentityLockPath(
-    await secureRecorderLockRoot(sharedRoot, currentUserId),
-    identity,
-  );
+  if (!path.isAbsolute(configuredRoot)) {
+    throw new Error(`${RECORDER_LOCK_DIRECTORY_ENV} must be an absolute path.`);
+  }
+  const sharedRoot = await secureRecorderLockRoot(configuredRoot);
+  return recorderIdentityLockPath(sharedRoot, identity);
 }
 
 async function acquireRecorderLock(filePath: string): Promise<() => Promise<void>> {
@@ -359,8 +348,9 @@ async function acquireRecorderLock(filePath: string): Promise<() => Promise<void
 
 async function acquireRecorderIdentityLock(
   identity: RecorderFileIdentity,
-): Promise<() => Promise<void>> {
-  return await acquireRecorderLock(await recorderIdentityLockTarget(identity));
+): Promise<(() => Promise<void>) | undefined> {
+  const target = await recorderIdentityLockTarget(identity);
+  return target === undefined ? undefined : await acquireRecorderLock(target);
 }
 
 async function withRecorderLock(
@@ -453,15 +443,15 @@ async function appendRecorderAttempt(params: {
     if (opened.created) {
       await file.chmod(0o600);
     }
-    let stats = await file.stat();
-    let identity = requireRecorderIdentity(stats);
+    const openedStats = await file.stat();
+    let identity = requireRecorderIdentity(openedStats);
     if (!(await recorderPathHasIdentity(params.publicationPath, identity))) {
       result = "retry";
     } else {
-      const lockedIdentity = requireRecorderFileIdentity(stats);
+      const lockedIdentity = requireRecorderFileIdentity(openedStats);
       releaseIdentityLock = await acquireRecorderIdentityLock(lockedIdentity);
-      // The identity lock may have blocked while another alias repaired or appended.
-      stats = await file.stat();
+      // Lock acquisition may have blocked while another writer repaired or appended.
+      let stats = await file.stat();
       identity = requireRecorderIdentity(stats);
       if (
         identity !== `${lockedIdentity.dev}:${lockedIdentity.ino}` ||

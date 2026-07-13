@@ -177,6 +177,13 @@ provider server, or `startOpenClawCrablineAdapter`. Crabline awaits the callback
 after appending each API/admin event to `recorderPath`, so callers can react in
 process while retaining the JSONL artifact as durable evidence.
 
+Recorder files should normally have one filesystem name. If multiple processes
+write through hardlinks to the same recorder inode, set
+`CRABLINE_RECORDER_LOCK_DIR` to the same absolute writable directory for every
+writer. Pre-create that directory with the ownership, group, or ACLs required
+by those writers. Crabline refuses hardlinked server-recorder writes without
+this shared lock namespace.
+
 Mattermost:
 
 ```bash

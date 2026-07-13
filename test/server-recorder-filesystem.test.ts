@@ -11,16 +11,16 @@ import {
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
-import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { recordServerEvent } from "../src/servers/recorder.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const directories: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
@@ -102,18 +102,13 @@ it.skipIf(process.platform === "win32")(
     await writeFile(secondTarget, "", "utf8");
     await symlink(firstTarget, recorderPath, "file");
     const identity = await stat(firstTarget, { bigint: true });
-    const lockRoot = path.join(
-      userInfo().homedir,
-      ".cache",
-      "crabline",
-      "locks",
-      "server-recorder",
-    );
+    const lockRoot = path.join(directory, "shared-locks");
     await mkdir(lockRoot, { mode: 0o700, recursive: true });
     await chmod(lockRoot, 0o700);
+    vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", lockRoot);
 
     let releaseIdentity: (() => Promise<void>) | undefined = await lock(
-      path.join(lockRoot, `recorder-${identity.dev}-${identity.ino}`),
+      path.join(lockRoot, `recorder-${identity.ino}`),
       { realpath: false },
     );
     const recording = recordServerEvent({
