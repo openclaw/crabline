@@ -556,6 +556,31 @@ describe("server recorder", () => {
     expect(fsMocks.file.close).toHaveBeenCalledTimes(2);
   });
 
+  it("rolls back and reopens when rotation happens during ancestry sync", async () => {
+    const recorderPath = path.join("/tmp", "crabline-server-recorder-rotated-during-sync.jsonl");
+    fsMocks.file.stat
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
+      .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+    fsMocks.stat
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
+      .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
+      .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+
+    await recordServerEvent({
+      event: serverEvent("/after-sync-rotation"),
+      onEvent: undefined,
+      recorderPath,
+    });
+
+    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+    expect(fsMocks.file.truncate).toHaveBeenCalledWith(0);
+    expect(fsMocks.file.sync).toHaveBeenCalledTimes(3);
+    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(4);
+    expect(fsMocks.file.close).toHaveBeenCalledTimes(2);
+  });
+
   it("retries rotation after a second rollback succeeds", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-rotation-retry.jsonl");
     fsMocks.file.stat
