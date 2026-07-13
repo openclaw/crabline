@@ -59,6 +59,25 @@ function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {
     ? optionalString(message, "threadId")
     : optionalString(payload, "threadId");
   const canonicalTopic = threadId ? parseCanonicalTelegramTopic(threadId) : undefined;
+  const channelIds = [
+    optionalString(payload, "channelId"),
+    ...(message ? [optionalString(message, "channelId")] : []),
+  ].filter((value): value is string => value !== undefined);
+  if (canonicalTopic) {
+    for (const channelId of channelIds) {
+      if (
+        requireNativeInboundId(channelId, TELEGRAM_CHAT_ID_RULE, "Telegram channelId") !==
+        canonicalTopic.chatId
+      ) {
+        throw new CrablineError(
+          "Telegram canonical topic chat_id must match the inbound channelId.",
+          {
+            kind: "inbound",
+          },
+        );
+      }
+    }
+  }
   const genericPayload = canonicalTopic
     ? message
       ? {

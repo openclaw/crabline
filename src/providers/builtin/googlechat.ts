@@ -114,7 +114,10 @@ export function createGoogleChatWebhookAuthenticator(
       try {
         payload = JSON.parse(rawBody) as unknown;
       } catch {
-        return undefined;
+        return new Response("unauthorized", {
+          headers: { "www-authenticate": "Bearer" },
+          status: 401,
+        });
       }
       const isPubsub =
         isRecord(payload) &&

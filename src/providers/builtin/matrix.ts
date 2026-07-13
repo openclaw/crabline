@@ -5,6 +5,8 @@ import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
 import {
   getBuiltinTargetCodec,
+  isMatrixEventId,
+  isMatrixRoomId,
   MATRIX_EVENT_ID_RULE,
   MATRIX_ROOM_ID_RULE,
 } from "../target-normalizers.js";
@@ -18,16 +20,21 @@ import {
 } from "./native-local-mock.js";
 import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
+const DEFAULT_MATRIX_ACCESS = "local-mock-matrix-token";
+
 export function resolveMatrixAdapterConfig(
   config: ProviderConfig,
   userName: string,
   env: NodeJS.ProcessEnv = process.env,
 ) {
+  const fallbackUserId = env.MATRIX_USER_ID?.trim() || `@${userName}:matrix.local`;
   return {
-    auth: config.matrix?.auth ?? {
-      accessToken: env.MATRIX_ACCESS_TOKEN ?? "local-mock-matrix-token",
-      type: "accessToken" as const,
-      userID: env.MATRIX_USER_ID?.trim() || `@${userName}:matrix.local`,
+    auth: {
+      ...(config.matrix?.auth ?? {
+        accessToken: env.MATRIX_ACCESS_TOKEN ?? DEFAULT_MATRIX_ACCESS,
+        type: "accessToken" as const,
+      }),
+      userID: config.matrix?.auth?.userID?.trim() || fallbackUserId,
     },
     baseURL: config.matrix?.baseURL ?? env.MATRIX_BASE_URL ?? "http://matrix.local",
     commandPrefix: config.matrix?.commandPrefix,
@@ -79,14 +86,13 @@ export function matchesMatrixThread(
     return true;
   }
   const scopedExpected =
-    target.channelId && MATRIX_EVENT_ID_RULE.pattern.test(expectedThreadId)
+    target.channelId && isMatrixEventId(expectedThreadId)
       ? matrixThreadKey(target.channelId, expectedThreadId)
       : expectedThreadId;
   return (
     candidateThreadId === expectedThreadId ||
     candidateThreadId === scopedExpected ||
-    (MATRIX_ROOM_ID_RULE.pattern.test(scopedExpected) &&
-      candidateThreadId.startsWith(`${scopedExpected}:thread:`))
+    (isMatrixRoomId(scopedExpected) && candidateThreadId.startsWith(`${scopedExpected}:thread:`))
   );
 }
 
