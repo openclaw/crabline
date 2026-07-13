@@ -355,6 +355,9 @@ describe("recorder", () => {
     };
     await probeHandle.close();
     const originalWriteFile = fileHandlePrototype.writeFile;
+    const partialAppendError = Object.assign(new Error("simulated partial append"), {
+      code: "ENOSPC",
+    });
     let failNextWrite = true;
     let releasePartialWrite!: () => void;
     let reportPartialWrite!: () => void;
@@ -374,7 +377,7 @@ describe("recorder", () => {
         await originalWriteFile.call(this, data.slice(0, Math.ceil(data.length / 2)), encoding);
         reportPartialWrite();
         await partialWriteReleased;
-        throw Object.assign(new Error("simulated partial append"), { code: "ENOSPC" });
+        throw partialAppendError;
       }
       await originalWriteFile.call(this, data, encoding);
     };
@@ -387,7 +390,12 @@ describe("recorder", () => {
         expect.objectContaining({ id: "existing" }),
       ]);
       releasePartialWrite();
-      await expect(failedAppend).rejects.toThrow("simulated partial append");
+      await expect(failedAppend).rejects.toMatchObject({
+        cause: partialAppendError,
+        committed: true,
+        indeterminate: true,
+        name: "ProviderRecorderCommittedError",
+      });
     } finally {
       releasePartialWrite();
       fileHandlePrototype.writeFile = originalWriteFile;

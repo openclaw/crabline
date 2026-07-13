@@ -501,8 +501,8 @@ async function appendCommittedLine(
       throw new RecorderRotatedError("Recorder rotated before appending a committed line.");
     }
     await prepareRecorderTailForAppend(handle);
-    await handle.writeFile(line, "utf8");
     published = true;
+    await handle.writeFile(line, "utf8");
     if (durable) {
       await handle.sync();
     }
