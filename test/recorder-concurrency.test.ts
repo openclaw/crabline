@@ -1,5 +1,5 @@
 import path from "node:path";
-import { realpath, rm, stat } from "node:fs/promises";
+import { link, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendRecordedInbound,
@@ -259,15 +259,55 @@ describe("recorder append serialization", () => {
         ["ax+", 0o600],
         ["a+", 0o600],
       ]);
-      const identityLockPath = fsMocks.lock.mock.calls
-        .map(([lockPath]) => String(lockPath))
-        .find((lockPath) => path.basename(lockPath).startsWith("recorder-"));
-      expect(identityLockPath).toBeDefined();
-      expect((await stat(path.dirname(identityLockPath!))).mode & 0o777).toBe(0o700);
+      expect(
+        fsMocks.lock.mock.calls.some(([lockPath]) =>
+          path.basename(String(lockPath)).startsWith("recorder-"),
+        ),
+      ).toBe(false);
     } finally {
       await rm(recorderPath, { force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "uses one private UID-scoped lock namespace for hardlinked provider recorders",
+    async () => {
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-provider-recorder-hardlink-${process.pid}-${Date.now()}.jsonl`,
+      );
+      const aliasPath = `${recorderPath}.alias`;
+      fsMocks.providerDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.providerWrite.mockResolvedValue(undefined);
+      await writeFile(recorderPath, "", { mode: 0o600 });
+      await link(recorderPath, aliasPath);
+      const event = {
+        author: "assistant" as const,
+        id: "hardlink-lock-root",
+        provider: "slack",
+        sentAt: "2026-07-12T10:00:00.000Z",
+        text: "hardlinked",
+        threadId: "slack:C123",
+      };
+
+      try {
+        await expect(appendRecordedInbound(aliasPath, event)).resolves.toMatchObject({
+          id: event.id,
+        });
+        const identityLockPath = fsMocks.lock.mock.calls
+          .map(([lockPath]) => String(lockPath))
+          .find((lockPath) => path.basename(lockPath).startsWith("recorder-"));
+        expect(identityLockPath).toBeDefined();
+        expect(path.dirname(identityLockPath!)).toBe(
+          path.join("/tmp", `.crabline-provider-recorder-${process.geteuid!()}`),
+        );
+        expect((await stat(path.dirname(identityLockPath!))).mode & 0o777).toBe(0o700);
+      } finally {
+        await rm(aliasPath, { force: true });
+        await rm(recorderPath, { force: true });
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "retries parent durability for a newly created provider recorder",
