@@ -58,6 +58,7 @@ describe("loopback chat adapter", () => {
     "loopback+v2:user::",
     "loopback+v2:%75ser",
     "loopback+v2:user%2f",
+    "loopback+v2:\uD800",
   ])("classifies malformed v2 thread addresses: %s", (threadId) => {
     adapter = new LoopbackChatAdapter("crabline");
 

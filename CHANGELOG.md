@@ -13,7 +13,7 @@
 - Bound Matrix and Mattermost committed state, authenticate and redact native Mattermost outgoing webhooks, enforce native transport, post lifecycle, and direct-channel identity semantics, and serialize Signal timestamps, SSE cleanup, JSON-RPC strings, and username identity.
 - Enforce Telegram native identity and UTF-16 entity boundaries without synthetic chat collisions, while accepting four-character collectible chat usernames and scheduled zero message IDs.
 - Randomize WhatsApp server credentials, canonicalize direct delivery JIDs, restrict read receipts to accepted inbound messages, and bound queued, session, and binary-node resources without evicting live Signal sessions.
-- Reject malformed or non-canonical loopback v2 addresses instead of aliasing thread identities.
+- Reject malformed, unencodable, or non-canonical loopback v2 addresses instead of aliasing thread identities.
 - Encode generic local-mock target components without channel or thread identity collisions.
 - Keep fixture-local iMessage target IDs separate from provider-native thread aliases.
 - Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
