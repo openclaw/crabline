@@ -279,6 +279,11 @@ describe("whatsapp local provider server", () => {
     const server = await startWhatsAppServer({ port });
     servers.push(server);
     expect(new URL(server.manifest.baseUrl).port).toBe(String(port));
+    const second = await startWhatsAppServer();
+    servers.push(second);
+    expect(server.manifest.accessToken).toMatch(/^EAA[A-Za-z0-9_-]+$/u);
+    expect(second.manifest.accessToken).not.toBe(server.manifest.accessToken);
+    expect(server.manifest.accessToken).not.toBe("crabline-whatsapp-access-token");
   });
 
   it("releases the HTTP listener when WebSocket attachment fails", async () => {
@@ -422,7 +427,8 @@ describe("whatsapp local provider server", () => {
       },
       method: "POST",
     });
-    await expect(sent.json()).resolves.toMatchObject({
+    const sentPayload = (await sent.json()) as { messages: Array<{ id: string }> };
+    expect(sentPayload).toMatchObject({
       contacts: [{ input: "15551234567", wa_id: "15551234567" }],
       messages: [{ id: expect.stringMatching(/^wamid\.FAKE/u) }],
       messaging_product: "whatsapp",
@@ -517,9 +523,9 @@ describe("whatsapp local provider server", () => {
       },
     });
 
-    const status = await fetch(server.manifest.endpoints.statusUrl, {
+    const outboundStatus = await fetch(server.manifest.endpoints.statusUrl, {
       body: JSON.stringify({
-        message_id: "wamid.FAKE00000001",
+        message_id: sentPayload.messages[0]!.id,
         messaging_product: "whatsapp",
         status: "read",
       }),
@@ -529,7 +535,23 @@ describe("whatsapp local provider server", () => {
       },
       method: "POST",
     });
-    await expect(status.json()).resolves.toEqual({ success: true });
+    expect(outboundStatus.status).toBe(400);
+    await expect(outboundStatus.json()).resolves.toMatchObject({
+      error: { message: "(#100) Invalid parameter: message_id" },
+    });
+    const unknownStatus = await fetch(server.manifest.endpoints.statusUrl, {
+      body: JSON.stringify({
+        message_id: "wamid.UNKNOWN",
+        messaging_product: "whatsapp",
+        status: "read",
+      }),
+      headers: {
+        authorization: "Bearer fake-whatsapp-token",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(unknownStatus.status).toBe(400);
 
     const unauthenticatedInbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
@@ -556,7 +578,10 @@ describe("whatsapp local provider server", () => {
       },
       method: "POST",
     });
-    await expect(inbound.json()).resolves.toMatchObject({
+    const inboundPayload = (await inbound.json()) as {
+      message: { key: { id: string } };
+    };
+    expect(inboundPayload).toMatchObject({
       message: {
         key: {
           fromMe: false,
@@ -593,6 +618,19 @@ describe("whatsapp local provider server", () => {
         object: "whatsapp_business_account",
       },
     });
+    const status = await fetch(server.manifest.endpoints.statusUrl, {
+      body: JSON.stringify({
+        message_id: inboundPayload.message.key.id,
+        messaging_product: "whatsapp",
+        status: "read",
+      }),
+      headers: {
+        authorization: "Bearer fake-whatsapp-token",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    await expect(status.json()).resolves.toEqual({ success: true });
     const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
     expect(recorder).not.toContain("forged user nonce");
     expect(recorder).toContain('"path":"/_crabline/admin/whatsapp/inbound"');
@@ -656,7 +694,7 @@ describe("whatsapp local provider server", () => {
     expect(mismatchedLidSender.status).toBe(400);
 
     const direct = await sendInbound({
-      chatJid: "15551234567@c.us",
+      chatJid: "15551234567:4@c.us",
       senderJid: "15551234567:2@s.whatsapp.net",
     });
     expect(direct.status).toBe(200);
@@ -700,6 +738,85 @@ describe("whatsapp local provider server", () => {
     expect(store.resolveMany(["15551234567:0@c.us"])[0]).toBe(phoneNumber);
     expect(store.resolveMany(["15551234567:3@lid"])[0]).toBe(lid);
     expect(store.size).toBe(2);
+  });
+
+  it("bounds Signal sessions per bundle and commits eviction only after acceptance", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1, undefined, undefined, undefined, undefined, {
+      maxSessionsPerBundle: 1,
+    });
+    const bundle = receiver.resolveMany([recipientJid])[0]!;
+    const createSender = async (senderJid: string, registrationId: number, message: string) => {
+      const identity = Curve.generateKeyPair();
+      const storage = createSignalTestStorage(identity, registrationId);
+      const address = new ProtocolAddress("15551234567", 0);
+      await new SessionBuilder(storage, address).initOutgoing({
+        identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+        preKey: {
+          keyId: bundle.preKeyId,
+          publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+        },
+        registrationId: bundle.registrationId,
+        signedPreKey: {
+          keyId: bundle.signedPreKey.keyId,
+          publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+          signature: bundle.signedPreKey.signature,
+        },
+      });
+      const cipher = new SessionCipher(storage, address);
+      const encrypted = await cipher.encrypt(Buffer.from(message));
+      return { cipher, ciphertext: signalCiphertext(encrypted.body), senderJid };
+    };
+    const accept = async (plaintext: Buffer) => plaintext;
+
+    const first = await createSender("15550000001@s.whatsapp.net", 2, "first sender");
+    await expect(
+      receiver.transactDirectMessage({
+        accept,
+        ciphertext: first.ciphertext,
+        recipientJid,
+        remoteJid: first.senderJid,
+        type: "pkmsg",
+      }),
+    ).resolves.toEqual({ status: "accepted", value: Buffer.from("first sender") });
+    expect(receiver.sessionCount).toBe(1);
+
+    const second = await createSender("15550000002@s.whatsapp.net", 3, "second sender");
+    await expect(
+      receiver.transactDirectMessage({
+        accept: async () => undefined,
+        ciphertext: second.ciphertext,
+        recipientJid,
+        remoteJid: second.senderJid,
+        type: "pkmsg",
+      }),
+    ).resolves.toEqual({ status: "rejected" });
+    expect(receiver.sessionCount).toBe(1);
+
+    await expect(
+      receiver.transactDirectMessage({
+        accept,
+        ciphertext: second.ciphertext,
+        recipientJid,
+        remoteJid: second.senderJid,
+        type: "pkmsg",
+      }),
+    ).resolves.toEqual({ status: "accepted", value: Buffer.from("second sender") });
+    expect(receiver.sessionCount).toBe(1);
+
+    const followUp = await second.cipher.encrypt(Buffer.from("second sender follow-up"));
+    await expect(
+      receiver.transactDirectMessage({
+        accept,
+        ciphertext: signalCiphertext(followUp.body),
+        recipientJid,
+        remoteJid: second.senderJid,
+        type: followUp.type === 3 ? "pkmsg" : "msg",
+      }),
+    ).resolves.toEqual({
+      status: "accepted",
+      value: Buffer.from("second sender follow-up"),
+    });
   });
 
   it("does not commit failed Signal candidate ratchet mutations", async () => {
@@ -1008,6 +1125,33 @@ describe("whatsapp local provider server", () => {
     await expect(
       receiver.acceptMessageOnce("15557654321@s.whatsapp.net\0next", async () => true),
     ).resolves.toBe(true);
+  });
+
+  it("bounds aggregate acceptance work without blocking unrelated message keys", async () => {
+    const receiver = new WhatsAppSignalBundleStore(1, 2);
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    let releaseFirst!: (accepted: boolean) => void;
+    const firstBlocked = new Promise<boolean>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const first = receiver.acceptMessageOnce("peer\0first", () => {
+      markFirstStarted();
+      return firstBlocked;
+    });
+    await firstStarted;
+
+    const secondOperation = vi.fn(async () => true);
+    await expect(receiver.acceptMessageOnce("peer\0second", secondOperation)).resolves.toBe(true);
+    expect(secondOperation).toHaveBeenCalledOnce();
+    await expect(receiver.acceptMessageOnce("peer\0overflow", async () => true)).rejects.toThrow(
+      "pending acknowledgement limit exceeded (2)",
+    );
+
+    releaseFirst(true);
+    await expect(first).resolves.toBe(true);
   });
 
   it("shares a pending false acceptance with concurrent duplicates", async () => {
@@ -1584,6 +1728,21 @@ describe("whatsapp local provider server", () => {
       recorderPath: path.join(directory, "whatsapp-status-evidence.jsonl"),
     });
     servers.push(server);
+
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        chatJid: "15551234567@s.whatsapp.net",
+        messageId: "wamid.status",
+        senderJid: "15551234567@s.whatsapp.net",
+        text: "read me",
+      }),
+      headers: {
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(inbound.status).toBe(200);
 
     const response = await fetch(server.manifest.endpoints.messagesUrl, {
       body: JSON.stringify({

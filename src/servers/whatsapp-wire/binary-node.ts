@@ -13,7 +13,7 @@ export const WHATSAPP_BINARY_NODE_MAX_DEPTH = 128;
 export const WHATSAPP_BINARY_NODE_MAX_NODES = 32_768;
 export const WHATSAPP_BINARY_NODE_MAX_LIST_ITEMS = 131_072;
 
-type DecodeBudget = {
+type BinaryNodeBudget = {
   listItems: number;
   nodes: number;
 };
@@ -158,7 +158,12 @@ export async function decodeBinaryNode(frame: Buffer): Promise<BinaryNode> {
 }
 
 export function encodeBinaryNode(node: BinaryNode): Buffer {
-  return Buffer.from(encodeBinaryNodeInner(node, [0], 1));
+  return Buffer.from(
+    encodeBinaryNodeInner(node, [0], 1, {
+      listItems: 0,
+      nodes: 0,
+    }),
+  );
 }
 
 async function decompressIfRequired(buffer: Buffer): Promise<Buffer> {
@@ -201,7 +206,7 @@ function decodeDecompressedBinaryNode(
   buffer: Buffer,
   indexRef: { index: number },
   depth: number,
-  budget: DecodeBudget,
+  budget: BinaryNodeBudget,
 ): BinaryNode {
   if (depth > WHATSAPP_BINARY_NODE_MAX_DEPTH) {
     throw new Error(`WhatsApp binary node nesting exceeds ${WHATSAPP_BINARY_NODE_MAX_DEPTH}.`);
@@ -437,9 +442,18 @@ function decodeDecompressedBinaryNode(
   return content === undefined ? { attrs, tag } : { attrs, content, tag };
 }
 
-function encodeBinaryNodeInner(node: BinaryNode, buffer: number[], depth: number): number[] {
+function encodeBinaryNodeInner(
+  node: BinaryNode,
+  buffer: number[],
+  depth: number,
+  budget: BinaryNodeBudget,
+): number[] {
   if (depth > WHATSAPP_BINARY_NODE_MAX_DEPTH) {
     throw new Error(`WhatsApp binary node nesting exceeds ${WHATSAPP_BINARY_NODE_MAX_DEPTH}.`);
+  }
+  budget.nodes += 1;
+  if (budget.nodes > WHATSAPP_BINARY_NODE_MAX_NODES) {
+    throw new Error(`WhatsApp binary node count exceeds ${WHATSAPP_BINARY_NODE_MAX_NODES}.`);
   }
   if (!node.tag) {
     throw new Error("Invalid WhatsApp binary node: tag is required.");
@@ -448,7 +462,11 @@ function encodeBinaryNodeInner(node: BinaryNode, buffer: number[], depth: number
     const value = node.attrs[key];
     return value !== undefined && value !== null;
   });
-  writeListStart(buffer, 2 * validAttributes.length + 1 + (node.content !== undefined ? 1 : 0));
+  writeBudgetedListStart(
+    buffer,
+    2 * validAttributes.length + 1 + (node.content !== undefined ? 1 : 0),
+    budget,
+  );
   writeString(buffer, node.tag);
   for (const key of validAttributes) {
     writeString(buffer, key);
@@ -460,14 +478,24 @@ function encodeBinaryNodeInner(node: BinaryNode, buffer: number[], depth: number
     writeByteLength(buffer, node.content.length);
     pushBytes(buffer, node.content);
   } else if (Array.isArray(node.content)) {
-    writeListStart(buffer, node.content.length);
+    writeBudgetedListStart(buffer, node.content.length, budget);
     for (const child of node.content) {
-      encodeBinaryNodeInner(child, buffer, depth + 1);
+      encodeBinaryNodeInner(child, buffer, depth + 1, budget);
     }
   } else if (node.content !== undefined) {
     throw new Error(`Invalid WhatsApp binary node content for <${node.tag}>.`);
   }
   return buffer;
+}
+
+function writeBudgetedListStart(buffer: number[], size: number, budget: BinaryNodeBudget): void {
+  budget.listItems += size;
+  if (budget.listItems > WHATSAPP_BINARY_NODE_MAX_LIST_ITEMS) {
+    throw new Error(
+      `WhatsApp binary node list items exceed ${WHATSAPP_BINARY_NODE_MAX_LIST_ITEMS}.`,
+    );
+  }
+  writeListStart(buffer, size);
 }
 
 function pushByte(buffer: number[], value: number): void {
