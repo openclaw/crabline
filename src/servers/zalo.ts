@@ -682,8 +682,14 @@ async function handleAdminInbound(
     );
   }
   state.pendingInboundAdmissions += 1;
+  let releaseAdmission!: () => void;
+  const previousAdmission = state.inboundAdmission;
+  state.inboundAdmission = new Promise<void>((resolve) => {
+    releaseAdmission = resolve;
+  });
   try {
     const parsedBody = await parseUnknownRequestBody(request);
+    await previousAdmission;
     if (!isJsonObject(parsedBody)) {
       return zaloError("Bad Request: can't parse JSON object", 400);
     }
@@ -694,60 +700,52 @@ async function handleAdminInbound(
     if (chatId instanceof Response || senderId instanceof Response || text instanceof Response) {
       return [chatId, senderId, text].find((value) => value instanceof Response) as Response;
     }
-    let releaseAdmission!: () => void;
-    const previousAdmission = state.inboundAdmission;
-    state.inboundAdmission = new Promise<void>((resolve) => {
-      releaseAdmission = resolve;
-    });
-    await previousAdmission;
-    try {
-      if (
-        !state.webhook?.url &&
-        state.updates.length + state.reservedUpdateOrders.size >= state.maxPendingInboundEvents
-      ) {
-        return zaloError(
-          `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
-          429,
-        );
-      }
-      const update: ZaloUpdate = {
-        event_name: "message.text.received",
-        message: {
-          chat: { chat_type: readChatType(body.chatType), id: chatId },
-          date: Date.now(),
-          from: {
-            display_name: readTrimmedString(body.senderName) ?? senderId,
-            id: senderId,
-            is_bot: false,
-          },
-          message_id: messageId(state),
-          text,
-        },
-      };
-      await appendEvent(state, {
-        at: new Date().toISOString(),
-        body: redactParams(body),
-        method: request.method ?? "POST",
-        path: url.pathname,
-        query: redactParams(queryRecord(url)) as Record<string, string>,
-        type: "admin",
-      });
-      if (state.webhook?.url) {
-        const error = await deliverWebhookUpdate(state, state.webhook, update);
-        if (error) {
-          return error;
-        }
-      } else if (!deliverPollingUpdate(state, update)) {
-        return zaloError(
-          `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
-          429,
-        );
-      }
-      return zaloOk(update);
-    } finally {
-      releaseAdmission();
+    if (
+      !state.webhook?.url &&
+      state.updates.length + state.reservedUpdateOrders.size >= state.maxPendingInboundEvents
+    ) {
+      return zaloError(
+        `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
+        429,
+      );
     }
+    const update: ZaloUpdate = {
+      event_name: "message.text.received",
+      message: {
+        chat: { chat_type: readChatType(body.chatType), id: chatId },
+        date: Date.now(),
+        from: {
+          display_name: readTrimmedString(body.senderName) ?? senderId,
+          id: senderId,
+          is_bot: false,
+        },
+        message_id: messageId(state),
+        text,
+      },
+    };
+    await appendEvent(state, {
+      at: new Date().toISOString(),
+      body: redactParams(body),
+      method: request.method ?? "POST",
+      path: url.pathname,
+      query: redactParams(queryRecord(url)) as Record<string, string>,
+      type: "admin",
+    });
+    if (state.webhook?.url) {
+      const error = await deliverWebhookUpdate(state, state.webhook, update);
+      if (error) {
+        return error;
+      }
+    } else if (!deliverPollingUpdate(state, update)) {
+      return zaloError(
+        `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
+        429,
+      );
+    }
+    return zaloOk(update);
   } finally {
+    await previousAdmission;
+    releaseAdmission();
     state.pendingInboundAdmissions -= 1;
   }
 }
