@@ -630,6 +630,39 @@ describe("server recorder", () => {
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
   });
 
+  it("resyncs the recorder parent for every durable append", async () => {
+    const recorderPath = path.join("/tmp", "crabline-server-recorder-parent-sync.jsonl");
+    const canonicalPath = path.join(await realpath("/tmp"), path.basename(recorderPath));
+    const canonicalParent = path.dirname(canonicalPath);
+    fsMocks.open.mockImplementation(async (openedPath, flags) => {
+      if (flags === "ax+") {
+        throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
+      }
+      if (flags === "r" && openedPath !== canonicalParent) {
+        throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
+      }
+      return typeof flags === "number" || flags === "r" ? fsMocks.directory : fsMocks.file;
+    });
+
+    await recordServerEvent({
+      event: serverEvent("/first-parent-sync"),
+      onEvent: undefined,
+      recorderPath,
+    });
+    await recordServerEvent({
+      event: serverEvent("/second-parent-sync"),
+      onEvent: undefined,
+      recorderPath,
+    });
+
+    expect(
+      fsMocks.open.mock.calls.filter(
+        ([openedPath, flags]) => openedPath === canonicalParent && flags === "r",
+      ),
+    ).toHaveLength(2);
+    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(2);
+  });
+
   it("waits beyond the stale threshold before reclaiming an orphaned lock", async () => {
     vi.useFakeTimers();
     const staleAt = performance.now() + 30_000;

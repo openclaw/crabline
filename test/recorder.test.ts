@@ -2,6 +2,7 @@ import {
   appendFile,
   chmod,
   link,
+  mkdir,
   open,
   readFile,
   rename,
@@ -19,6 +20,7 @@ import {
   cloneRecordedInboundCursor,
   createRecordedInboundCursor,
   readRecordedInbound,
+  secureProviderRecorderLockRoot,
   waitForRecordedInbound,
   watchRecordedInbound,
 } from "../src/providers/recorder.js";
@@ -95,6 +97,40 @@ describe("recorder", () => {
       expect((await stat(filePath)).mode & 0o777).toBe(0o640);
     },
   );
+
+  it("secures Windows recorder lock roots before use", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const lockRoot = path.join(directory, "locks");
+    const secured: string[] = [];
+
+    await expect(
+      secureProviderRecorderLockRoot(lockRoot, undefined, {
+        platform: "win32",
+        secureWindowsDirectory: async (directoryPath) => {
+          secured.push(directoryPath);
+        },
+      }),
+    ).resolves.toBe(lockRoot);
+
+    expect(secured).toEqual([lockRoot]);
+  });
+
+  it("rejects Windows recorder lock roots replaced during ACL hardening", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const lockRoot = path.join(directory, "locks");
+
+    await expect(
+      secureProviderRecorderLockRoot(lockRoot, undefined, {
+        platform: "win32",
+        secureWindowsDirectory: async (directoryPath) => {
+          await rename(directoryPath, `${directoryPath}.replaced`);
+          await mkdir(directoryPath);
+        },
+      }),
+    ).rejects.toThrow("Provider recorder lock directory changed while securing it.");
+  });
 
   it("round-trips empty message text", async () => {
     const filePath = await createRecorderPath();
