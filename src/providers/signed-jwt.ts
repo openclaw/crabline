@@ -99,6 +99,10 @@ function splitCacheControlDirectives(value: string): string[] {
   return directives;
 }
 
+function cacheControlDirectiveName(value: string): string | undefined {
+  return /^[ \t]*([!#$%&'*+\-.^_`|~0-9A-Za-z]+)/u.exec(value)?.[1]?.toLowerCase();
+}
+
 export function resolveHttpCacheExpiry(response: Response, now: number): number {
   const cacheControl = response.headers.get("cache-control");
   if (/(?:^|,)\s*(?:no-cache|no-store)(?:\s*(?:=|,|$))/iu.test(cacheControl ?? "")) {
@@ -106,8 +110,8 @@ export function resolveHttpCacheExpiry(response: Response, now: number): number 
   }
   const ageHeader = response.headers.get("age");
   const ageSeconds = ageHeader && /^\d+$/u.test(ageHeader) ? Number.parseInt(ageHeader, 10) : 0;
-  const maxAgeDirectives = splitCacheControlDirectives(cacheControl ?? "").filter((directive) =>
-    /^[ \t]*max-age\b/iu.test(directive),
+  const maxAgeDirectives = splitCacheControlDirectives(cacheControl ?? "").filter(
+    (directive) => cacheControlDirectiveName(directive) === "max-age",
   );
   if (maxAgeDirectives.length > 0) {
     if (maxAgeDirectives.length !== 1) {
