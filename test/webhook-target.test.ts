@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   postWebhookRequest,
   postWebhookRequestWithResponse,
@@ -202,6 +202,39 @@ describe("webhook target validation", () => {
         url: new URL("https://[2001:4860:4860::8888]/webhook"),
       }),
     ).resolves.toEqual({ error: "private-address" });
+  });
+
+  it("fails closed when NAT64 discovery does not return the complete reserved pair", async () => {
+    const dnsLookupPool = new WebhookDnsLookupPool(1, async (hostname) =>
+      hostname === "ipv4only.arpa"
+        ? [{ address: rfc6052Address(96, "192.0.0.170"), family: 6 }]
+        : [],
+    );
+
+    await expect(
+      validateWebhookTarget({
+        allowLoopbackHttp: false,
+        dnsLookupPool,
+        restrictPrivateAddresses: true,
+        url: new URL("https://[2001:4860:4860::8888]/webhook"),
+      }),
+    ).resolves.toEqual({ error: "private-address" });
+  });
+
+  it("skips address resolution when private-target restriction is disabled", async () => {
+    const resolve = vi.fn(async () => {
+      throw new Error("resolution should not run");
+    });
+
+    await expect(
+      validateWebhookTarget({
+        allowLoopbackHttp: false,
+        dnsLookupPool: { resolve },
+        restrictPrivateAddresses: false,
+        url: new URL("https://[2001:4860:4860::8888]/webhook"),
+      }),
+    ).resolves.toEqual({ addresses: undefined });
+    expect(resolve).not.toHaveBeenCalled();
   });
 
   it("bounds DNS lookup concurrency and cancels queued registrations", async () => {
