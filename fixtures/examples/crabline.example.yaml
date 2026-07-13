@@ -184,7 +184,7 @@ fixtures:
     provider: mattermost
     mode: roundtrip
     target:
-      id: channel-id
+      id: aaaaaaaaaaaaaaaaaaaaaaaaaa
 
   - id: zalo-chat
     provider: zalo

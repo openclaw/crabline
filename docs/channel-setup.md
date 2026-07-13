@@ -236,14 +236,16 @@ and credential. Because the server is loopback HTTP, trusted QA configuration
 must also set `channels.mattermost.network.dangerouslyAllowPrivateNetwork` to
 `true`. The OpenClaw bridge does this automatically.
 
-Admin inbound accepts 26-character lowercase Mattermost `channelId` and
-`senderId` values, `text`, optional `senderName`, `channelType`, `rootId`,
-`channelName`, and `channelDisplayName`. It emits the message through
-Mattermost's native `/api/v4/websocket` channel-scoped `posted` event, including
-the configured channel names. Text sends through `POST /api/v4/posts` require a
-JSON media type and are written to the manifest's recorder. QA agent delivery
-currently supports DM and channel targets; thread targets require the later
-OpenClaw QA wiring step.
+Admin inbound accepts 26-character lowercase alphanumeric Mattermost
+`channelId` and `senderId` values, `text`, optional `senderName`, `channelType`,
+`rootId`, `channelName`, and `channelDisplayName`; `rootId`, when present, uses
+the same strict 26-character format. It emits the message through Mattermost's
+native `/api/v4/websocket` channel-scoped `posted` event, including the
+configured channel names. Text sends through `POST /api/v4/posts` require a
+JSON media type and are written to the manifest's recorder. Fixture and QA
+channel/user targets must use provider-native Mattermost IDs rather than local
+labels. QA agent delivery currently supports DM and channel targets; thread
+targets require the later OpenClaw QA wiring step.
 
 The server itself is provider-shaped and has no OpenClaw runtime dependency. It
 implements Mattermost REST error/status behavior plus WebSocket authentication,
@@ -266,10 +268,14 @@ because the server is loopback HTTP, enable
 applies those settings automatically.
 
 Admin inbound accepts native `roomId`, `senderId`, and `text` fields plus
-optional `senderName` and `threadId`. It queues a native `m.room.message` event
-for delivery through Matrix `/sync`. Outbound room sends through
-`PUT /_matrix/client/v3/rooms/:roomId/send/:eventType/:txnId` are written to the
-manifest recorder.
+optional `senderName`, `roomName`, `direct`, and `threadId`. `roomName` names a
+newly created room, while `direct: true` marks membership as direct and
+publishes the room through `m.direct` account data. `threadId` is the raw Matrix
+root event ID, such as `$eventid:matrix.org`; Crabline emits it as both the
+`m.thread` relation target and `m.in_reply_to` root. The resulting native
+`m.room.message` event is delivered through Matrix `/sync`. Outbound room sends
+through `PUT /_matrix/client/v3/rooms/:roomId/send/:eventType/:txnId` are
+written to the manifest recorder.
 
 The provider server implements the unencrypted Client-Server API subset needed
 by the normal Matrix SDK: versions, `whoami`, filters, push rules, joined rooms
@@ -323,7 +329,10 @@ The admin ingress accepts JSON like:
 ```
 
 OpenClaw consumes that message through Slack Events API shape; outbound adapter
-sends are recorded through Slack `chat.postMessage`.
+sends are recorded through Slack `chat.postMessage`. Outbound direct sends may
+use native user IDs beginning with `U` or `W`; Crabline opens the corresponding
+DM conversation before posting. Admin inbound still requires a conversation ID
+beginning with `C`, `D`, or `G` plus a sender user ID beginning with `U` or `W`.
 
 Signal:
 
@@ -472,6 +481,10 @@ Set trusted `ZALO_API_URL` to `endpoints.apiRoot` and configure the emitted
 does this mapping without adding provider-server-specific behavior to the Zalo
 adapter.
 
+For admin ingress, POST to the manifest's `endpoints.adminInboundUrl`
+(`/crabline/zalo/inbound`) and send the manifest's `adminToken` in
+`X-Crabline-Admin-Token`. `Authorization: Bearer <adminToken>` is also accepted.
+
 The server accepts the provider-native `/bot<TOKEN>/<METHOD>` API shape over
 GET or POST. It implements bot identity, single-update long polling, text and
 photo sends, chat actions, and webhook lifecycle calls. A configured webhook
@@ -537,6 +550,8 @@ Targets use native channel identifiers. Crabline does not add local prefixes suc
 as `telegram:`, `discord:`, or `slack:`.
 
 - Slack conversations: `C1234567890`, `G1234567890`, or `D1234567890`
+- Slack direct sends may also target user IDs such as `U1234567890` or
+  `W1234567890`
 - Slack threads: `1700000000.000100`
 - Telegram chats: `-1001234567890` or `@channelusername`
 - Telegram topics: `42`
@@ -549,8 +564,16 @@ as `telegram:`, `discord:`, or `slack:`.
   `123456789012345678`
 - Google Chat spaces: `spaces/AAAABbbbCCC`
 - Google Chat threads: `spaces/AAAABbbbCCC/threads/BBBBccccDDD`
+- iMessage recipients: E.164 phone numbers such as `+15551234567`, email
+  addresses such as `user@example.com`, or chat GUIDs such as
+  `iMessage;-;chat-guid` and `SMS;+;chat-guid`
 - Matrix rooms: scoped ids such as `!abcdef:matrix.org` or Matrix v12
   domainless room ids
+- Matrix threads: raw root event ids such as `$eventid:matrix.org`
+- Mattermost channels, users, and root posts: exactly 26 lowercase alphanumeric
+  characters, such as `abcdefghijklmnopqrstuvwx12`
+- Microsoft Teams: non-empty opaque Bot Connector `conversation.id` values such
+  as `a:opaque-conversation-id` or `19:conversation@thread.v2`
 - Zalo users, OAs, and chats: provider-native non-whitespace string ids such as
   `user-1` or `group-1`
 
