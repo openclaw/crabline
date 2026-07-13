@@ -4,13 +4,28 @@ import { WhatsAppProviderAdapter } from "../src/providers/builtin/whatsapp.js";
 import { appendRecordedInbound } from "../src/providers/recorder.js";
 import { createLocalMockConfig, createProviderContext } from "./local-mock-provider-helpers.js";
 
+type WaitForRecordedInbound = typeof import("../src/providers/recorder.js").waitForRecordedInbound;
+
 const webhookMocks = vi.hoisted(() => ({
   startWebhookServer: vi.fn(),
+}));
+const recorderMocks = vi.hoisted(() => ({
+  actualWaitForRecordedInbound: undefined as WaitForRecordedInbound | undefined,
+  waitForRecordedInbound: vi.fn<WaitForRecordedInbound>(),
 }));
 
 vi.mock("../src/providers/webhook-server.js", () => ({
   startWebhookServer: webhookMocks.startWebhookServer,
 }));
+vi.mock("../src/providers/recorder.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/providers/recorder.js")>();
+  recorderMocks.actualWaitForRecordedInbound = actual.waitForRecordedInbound;
+  recorderMocks.waitForRecordedInbound.mockImplementation(actual.waitForRecordedInbound);
+  return {
+    ...actual,
+    waitForRecordedInbound: recorderMocks.waitForRecordedInbound,
+  };
+});
 
 const providers: WhatsAppProviderAdapter[] = [];
 
@@ -20,6 +35,10 @@ beforeEach(() => {
     async close() {},
     endpointUrl: "http://127.0.0.1:0/whatsapp/webhook",
   });
+  recorderMocks.waitForRecordedInbound.mockReset();
+  recorderMocks.waitForRecordedInbound.mockImplementation(
+    recorderMocks.actualWaitForRecordedInbound!,
+  );
 });
 
 afterEach(async () => {
@@ -27,6 +46,50 @@ afterEach(async () => {
 });
 
 describe("WhatsApp provider recorder cursors", () => {
+  it("commits concurrent cursor progress monotonically", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    providers.push(provider);
+    const context = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
+    const waitContext = {
+      ...context,
+      nonce: "monotonic-cursor",
+      since: new Date(0).toISOString(),
+      threadId: "15551234567",
+      timeoutMs: 100,
+    };
+    let releaseOlder!: () => void;
+    const olderBlocked = new Promise<void>((resolve) => {
+      releaseOlder = resolve;
+    });
+    const startingOffsets: number[] = [];
+    let call = 0;
+    recorderMocks.waitForRecordedInbound.mockImplementation(async ({ cursor }) => {
+      const activeCursor = cursor!;
+      startingOffsets.push(activeCursor.readState.offset);
+      call += 1;
+      activeCursor.readState.generation = 1;
+      activeCursor.readState.offset = call === 1 ? 10 : 20;
+      if (call === 1) {
+        await olderBlocked;
+      }
+      return null;
+    });
+
+    const older = provider.waitForInbound(waitContext);
+    await vi.waitFor(() => expect(recorderMocks.waitForRecordedInbound).toHaveBeenCalledTimes(1));
+    const newer = provider.waitForInbound(waitContext);
+    await expect(newer).resolves.toBeNull();
+    releaseOlder();
+    await expect(older).resolves.toBeNull();
+    await expect(provider.waitForInbound(waitContext)).resolves.toBeNull();
+
+    expect(startingOffsets).toEqual([0, 0, 20]);
+  });
+
   it("advances sequential waits and excludes outbound records", async () => {
     const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
     const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");

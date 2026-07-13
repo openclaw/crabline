@@ -166,6 +166,22 @@ type WaitCursorState = {
   cursor?: RecordedInboundCursor | undefined;
 };
 
+function cursorHasAdvanced(
+  candidate: RecordedInboundCursor,
+  current: RecordedInboundCursor | undefined,
+): boolean {
+  if (!current) {
+    return true;
+  }
+  if (candidate.readState.generation !== current.readState.generation) {
+    return candidate.readState.generation > current.readState.generation;
+  }
+  if (candidate.readState.offset !== current.readState.offset) {
+    return candidate.readState.offset > current.readState.offset;
+  }
+  return candidate.buffered.length < current.buffered.length;
+}
+
 function pruneInactiveWaitCursors(cursors: Map<string, WaitCursorState>): void {
   for (const [key, state] of cursors) {
     if (cursors.size <= MAX_WAIT_CURSORS) {
@@ -258,6 +274,9 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   override async waitForInbound(context: WaitContext): Promise<InboundEnvelope | null> {
+    if (context.signal?.aborted) {
+      return null;
+    }
     await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
     const channelId = context.threadId ?? target.threadId ?? target.channelId ?? target.id;
@@ -288,7 +307,10 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
         signal: this.#operationSignal(context.signal),
         timeoutMs: context.timeoutMs,
       });
-      if (this.#waitCursors.get(cursorKey) === cursorState) {
+      if (
+        this.#waitCursors.get(cursorKey) === cursorState &&
+        cursorHasAdvanced(cursor, cursorState.cursor)
+      ) {
         cursorState.cursor = cursor;
       }
       return event;
@@ -305,6 +327,9 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   override async *watch(context: WatchContext): AsyncIterable<InboundEnvelope> {
+    if (context.signal?.aborted) {
+      return;
+    }
     await this.#ensureWebhookServer();
     const target = this.normalizeTarget(context.fixture.target);
     for await (const event of watchRecordedInbound({
