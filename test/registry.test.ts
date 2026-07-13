@@ -134,6 +134,54 @@ describe("registry", () => {
     }
   });
 
+  it("enforces Discord snowflake uint64 bounds", () => {
+    expect(
+      normalizeBuiltinTarget("discord", {
+        id: "18446744073709551615",
+        metadata: {},
+      }),
+    ).toMatchObject({ channelId: "18446744073709551615" });
+    for (const id of ["18446744073709551616", "99999999999999999999", "012345678901234567"]) {
+      expect(() => normalizeBuiltinTarget("discord", { id, metadata: {} })).toThrow(
+        /native Discord snowflake id/u,
+      );
+    }
+  });
+
+  it("enforces Telegram safe-integer and topic bounds", () => {
+    const maxSafeInteger = String(Number.MAX_SAFE_INTEGER);
+    expect(
+      normalizeBuiltinTarget("telegram", {
+        id: `-${maxSafeInteger}`,
+        metadata: {},
+        threadId: maxSafeInteger,
+      }),
+    ).toMatchObject({
+      channelId: `-${maxSafeInteger}`,
+      threadId: `-${maxSafeInteger}:${maxSafeInteger}`,
+    });
+
+    for (const id of ["9007199254740992", "-9007199254740992"]) {
+      expect(() => normalizeBuiltinTarget("telegram", { id, metadata: {} })).toThrow(
+        /native Telegram chat id/u,
+      );
+    }
+    expect(() =>
+      normalizeBuiltinTarget("telegram", {
+        id: "-100123",
+        metadata: {},
+        threadId: "9007199254740992",
+      }),
+    ).toThrow(/native Telegram message_thread_id/u);
+    expect(() =>
+      normalizeBuiltinTarget("telegram", {
+        id: "123",
+        metadata: {},
+        threadId: "123:42",
+      }),
+    ).toThrow(/native Telegram message_thread_id/u);
+  });
+
   it.each([
     [
       "discord",

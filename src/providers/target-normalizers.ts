@@ -2,7 +2,7 @@ import { isIP } from "node:net";
 import type { BuiltinAdapterId, FixtureDefinition, ProviderPlatform } from "../config/schema.js";
 import { CrablineError } from "../core/errors.js";
 import type { LocalMockTargetCodec } from "./local-mock.js";
-import type { NativeIdRule } from "./native-ids.js";
+import { matchesNativeId, type NativeIdRule } from "./native-ids.js";
 import { slackTargetKey, SLACK_SEND_TARGET_ID_RULE, SLACK_TS_RULE } from "./slack-ids.js";
 import type { NormalizedTarget } from "./types.js";
 
@@ -11,7 +11,8 @@ export type BuiltinProviderAdapterId = Exclude<BuiltinAdapterId, "script">;
 export const DISCORD_SNOWFLAKE_RULE: NativeIdRule = {
   example: "123456789012345678",
   name: "Discord snowflake id",
-  pattern: /^\d{17,20}$/u,
+  pattern: /^[1-9]\d{16,19}$/u,
+  validate: (value) => BigInt(value) <= 18_446_744_073_709_551_615n,
 };
 
 export const FEISHU_CHAT_ID_RULE: NativeIdRule = {
@@ -160,12 +161,15 @@ export const TELEGRAM_CHAT_ID_RULE: NativeIdRule = {
   example: "-1001234567890 or @channelusername",
   name: "Telegram chat id",
   pattern: /^(?:-?[1-9]\d*|@[A-Za-z][A-Za-z0-9_]{3,31})$/u,
+  validate: (value) =>
+    value.startsWith("@") || BigInt(value.replace(/^-/u, "")) <= BigInt(Number.MAX_SAFE_INTEGER),
 };
 
 export const TELEGRAM_MESSAGE_THREAD_ID_RULE: NativeIdRule = {
   example: "42",
   name: "Telegram message_thread_id",
   pattern: /^[1-9]\d*$/u,
+  validate: (value) => BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER),
 };
 
 export const WHATSAPP_WA_ID_RULE: NativeIdRule = {
@@ -183,7 +187,7 @@ export const ZALO_ID_RULE: NativeIdRule = {
 export const ZALO_UNSUPPORTED_THREAD_TARGET_ERROR = "Zalo does not support thread targets.";
 
 function requireNativeId(value: string, rule: NativeIdRule, label: string): string {
-  if (!rule.pattern.test(value)) {
+  if (!matchesNativeId(value, rule)) {
     throw new CrablineError(`${label} must be a native ${rule.name} such as ${rule.example}.`, {
       kind: "config",
     });
@@ -321,8 +325,9 @@ export function parseCanonicalTelegramTopic(
   const chatId = value.slice(0, separator);
   const topicId = value.slice(separator + 1);
   if (
-    !TELEGRAM_CHAT_ID_RULE.pattern.test(chatId) ||
-    !TELEGRAM_MESSAGE_THREAD_ID_RULE.pattern.test(topicId)
+    !matchesNativeId(chatId, TELEGRAM_CHAT_ID_RULE) ||
+    !matchesNativeId(topicId, TELEGRAM_MESSAGE_THREAD_ID_RULE) ||
+    (!chatId.startsWith("@") && !chatId.startsWith("-"))
   ) {
     return undefined;
   }

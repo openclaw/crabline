@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { CrablineError } from "../../core/errors.js";
-import { numericNativeId, type NativeIdRule } from "../native-ids.js";
+import { matchesNativeId, numericNativeId, type NativeIdRule } from "../native-ids.js";
 import type { InboundEnvelope } from "../types.js";
 
 export type { NativeIdRule } from "../native-ids.js";
@@ -48,7 +48,7 @@ export function normalizeAuthor(value: unknown): "assistant" | "system" | "user"
 }
 
 export function requireNativeInboundId(value: string, rule: NativeIdRule, label: string): string {
-  if (!rule.pattern.test(value)) {
+  if (!matchesNativeId(value, rule)) {
     throw new CrablineError(`${label} must be a native ${rule.name} such as ${rule.example}.`, {
       kind: "inbound",
     });
@@ -81,8 +81,8 @@ export function genericMockPayloadWithNativeThread(params: {
     };
   }
 
-  const isValidThread = params.threadRule.pattern.test(threadId);
-  const isValidChannel = params.channelRule?.pattern.test(threadId) ?? false;
+  const isValidThread = matchesNativeId(threadId, params.threadRule);
+  const isValidChannel = params.channelRule ? matchesNativeId(threadId, params.channelRule) : false;
   if (!isValidThread && !isValidChannel) {
     throw new CrablineError(
       `mock webhook threadId must be a native ${params.threadRule.name}${

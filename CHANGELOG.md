@@ -10,6 +10,7 @@
 - Reject provider and fixture timer durations above Node's supported ceiling.
 - Round-trip every supported WhatsApp handshake protobuf variant without dropping fields.
 - Reject unsupported Zalo thread targets during normalization, matching OpenClaw bridge execution.
+- Enforce Discord uint64 snowflakes and Telegram safe-integer chat and topic identifiers.
 - Bound shared JSON ingress, reject non-object payloads precisely, and strictly normalize loopback IP addresses.
 - Harden WhatsApp send evidence, direct-JID correlation, cursor and cleanup races, and cleartext listener exposure.
 - Revalidate npm package version, integrity, and provenance after every release publication outcome.
