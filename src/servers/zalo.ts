@@ -794,7 +794,9 @@ async function handleZaloMethod(
     return sendResponse;
   }
 
-  await appendEvent(state, event);
+  if (method !== "setWebhook") {
+    await appendEvent(state, event);
+  }
 
   if (method === "getMe") {
     return zaloOk({
@@ -825,27 +827,34 @@ async function handleZaloMethod(
     return zaloOk();
   }
   if (method === "setWebhook") {
+    const finish = async (response: Response, rejected: boolean): Promise<Response> => {
+      if (rejected && isJsonObject(event.body) && "url" in event.body) {
+        event.body.url = "<redacted>";
+      }
+      await appendEvent(state, event);
+      return response;
+    };
     const webhookUrl = requireParam(body, "url");
     const secretToken = requireParam(body, "secret_token");
     const error = firstError(webhookUrl, secretToken);
     if (error) {
-      return error;
+      return await finish(error, true);
     }
     if (typeof webhookUrl !== "string" || typeof secretToken !== "string") {
-      return zaloError("Invalid webhook parameters", 400);
+      return await finish(zaloError("Invalid webhook parameters", 400), true);
     }
     const secretError = validateZaloWebhookSecret(secretToken);
     if (secretError) {
-      return secretError;
+      return await finish(secretError, true);
     }
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(webhookUrl);
     } catch {
-      return zaloError("url must be a valid HTTPS URL", 400);
+      return await finish(zaloError("url must be a valid HTTPS URL", 400), true);
     }
     if (state.activeWebhookValidations.size >= MAX_ACTIVE_ZALO_WEBHOOK_VALIDATIONS) {
-      return zaloError("Too many webhook validations", 429);
+      return await finish(zaloError("Too many webhook validations", 429), true);
     }
     let target: Response | ZaloValidatedWebhookTarget;
     try {
@@ -855,20 +864,20 @@ async function handleZaloMethod(
         Date.now() + state.webhookDeliveryTimeoutMs,
       );
     } catch {
-      return zaloError("url host could not be resolved", 400);
+      return await finish(zaloError("url host could not be resolved", 400), true);
     }
     if (target instanceof Response) {
-      return target;
+      return await finish(target, true);
     }
     if (state.reservedUpdateOrders.size > 0) {
-      return zaloError("Polling deliveries are still in progress", 409);
+      return await finish(zaloError("Polling deliveries are still in progress", 409), true);
     }
     const webhook = { secretToken, updatedAt: Date.now(), url: parsedUrl.href };
     if (state.pendingRequest) {
       settlePendingUpdate(state, state.pendingRequest, { kind: "conflict" });
     }
     state.webhook = webhook;
-    return zaloOk({ updated_at: webhook.updatedAt, url: webhook.url });
+    return await finish(zaloOk({ updated_at: webhook.updatedAt, url: webhook.url }), false);
   }
   if (method === "deleteWebhook") {
     const updatedAt = Date.now();
