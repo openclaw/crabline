@@ -1347,6 +1347,78 @@ describe("cli", () => {
     expect(process.listenerCount("SIGTERM")).toBe(baseline);
   });
 
+  it("bounds iterator return and provider cleanup during watch shutdown", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeText(
+      configPath,
+      [
+        "configVersion: 1",
+        "providers:",
+        "  local:",
+        "    adapter: loopback",
+        "fixtures:",
+        "  - id: watched",
+        "    provider: local",
+        "    mode: agent",
+        "    target:",
+        "      id: echo-bot",
+      ].join("\n"),
+    );
+    const iterator = {
+      next: vi.fn(async () => await new Promise<never>(() => undefined)),
+      return: vi.fn(async () => await new Promise<never>(() => undefined)),
+    };
+    const cleanup = vi.fn(async () => await new Promise<never>(() => undefined));
+    const provider = {
+      cleanup,
+      watch() {
+        return {
+          [Symbol.asyncIterator]() {
+            return iterator;
+          },
+        };
+      },
+    };
+    const program = createProgram(() => undefined, {
+      createRegistry: () =>
+        ({
+          resolve: () => provider,
+        }) as never,
+    });
+    const baseline = process.listenerCount("SIGTERM");
+    const running = program
+      .parseAsync(["node", "crabline", "--config", configPath, "watch", "watched"])
+      .catch((error: unknown) => error);
+    await vi.waitFor(() => {
+      expect(iterator.next).toHaveBeenCalledTimes(1);
+      expect(process.listenerCount("SIGTERM")).toBeGreaterThan(baseline);
+    });
+
+    process.emit("SIGTERM", "SIGTERM");
+    let hangTimer: ReturnType<typeof setTimeout> | undefined;
+    const hung = new Promise<"hung">((resolve) => {
+      hangTimer = setTimeout(() => resolve("hung"), 2_000);
+    });
+    const failure = await Promise.race([running, hung]);
+    clearTimeout(hangTimer);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      expect.objectContaining({
+        message:
+          "Provider watch iterator return did not settle within 250ms during watch shutdown.",
+      }),
+      expect.objectContaining({
+        message: "Provider cleanup did not settle within 250ms during watch shutdown.",
+      }),
+    ]);
+    expect(iterator.return).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(process.listenerCount("SIGTERM")).toBe(baseline);
+  });
+
   it("waits for stdout backpressure while watching", async () => {
     const directory = await createTempDir();
     directories.push(directory);

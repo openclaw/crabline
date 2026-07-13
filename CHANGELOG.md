@@ -4,6 +4,7 @@
 
 - Verify downloaded npm tarball integrity, retry transient provenance lookups, and revalidate release tags immediately before publication mutations.
 - Validate effective fixture mode overrides and stop retrying permanent provider send failures.
+- Bound watch iterator return and provider cleanup during CLI shutdown.
 - Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
 - Suppress serve readiness output when shutdown begins during ready-file publication.
 - Treat Unicode format characters as continuations when recognizing standalone acknowledgement tokens.
