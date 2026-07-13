@@ -1,6 +1,6 @@
-import { Command, CommanderError } from "commander";
+import { Command, CommanderError, Option } from "commander";
 import { randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import nodePath from "node:path";
 import { lock } from "proper-lockfile";
@@ -62,6 +62,7 @@ type ServeCommandOptions = {
   adminToken?: string | undefined;
   botToken?: string | undefined;
   botUsername?: string | undefined;
+  credentialsFd?: string | undefined;
   host: string;
   once?: boolean | undefined;
   port: string;
@@ -79,6 +80,17 @@ type ServeParamFactory = (
 
 const READY_FILE_LEASE_STALE_MS = 60_000;
 const READY_FILE_LEASE_UPDATE_MS = 1_000;
+const MAX_SERVE_CREDENTIALS_BYTES = 64 * 1024;
+
+const SERVE_CREDENTIAL_ENV = [
+  ["accessToken", "CRABLINE_ACCESS_TOKEN"],
+  ["adminToken", "CRABLINE_ADMIN_TOKEN"],
+  ["botToken", "CRABLINE_BOT_TOKEN"],
+  ["signingSecret", "CRABLINE_SIGNING_SECRET"],
+] as const;
+
+type ServeCredentialName = (typeof SERVE_CREDENTIAL_ENV)[number][0];
+type ServeCredentials = Partial<Record<ServeCredentialName, string>>;
 
 const SERVE_PARAM_FACTORIES = {
   mattermost: (shared, commandOptions) => ({
@@ -200,6 +212,108 @@ async function withManifest<T>(
   action: (context: Awaited<ReturnType<typeof loadManifest>>) => Promise<T>,
 ): Promise<T> {
   return action(await loadManifest(options.config));
+}
+
+function rejectedSecretOption(flags: string, optionName: string, envName: string): Option {
+  return new Option(flags).hideHelp().argParser(() => {
+    throw new CrablineError(
+      `${optionName} no longer accepts credential values in command-line arguments. Use ${envName} or --credentials-fd.`,
+      { kind: "config" },
+    );
+  });
+}
+
+function parseCredentialsFd(value: string): number {
+  if (!/^[0-9]+$/u.test(value)) {
+    throw new CrablineError(
+      "Serve credentials file descriptor must be 0 or an integer greater than 2.",
+      { kind: "config" },
+    );
+  }
+  const fd = Number(value);
+  if (!Number.isSafeInteger(fd) || fd === 1 || fd === 2 || fd > 2_147_483_647) {
+    throw new CrablineError(
+      "Serve credentials file descriptor must be 0 or an integer greater than 2.",
+      { kind: "config" },
+    );
+  }
+  return fd;
+}
+
+async function readBoundedFileDescriptor(fd: number): Promise<string> {
+  const stream = createReadStream("", { autoClose: false, fd });
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  try {
+    for await (const chunk of stream) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buffer.byteLength;
+      if (totalBytes > MAX_SERVE_CREDENTIALS_BYTES) {
+        throw new CrablineError(
+          `Serve credentials JSON exceeds ${MAX_SERVE_CREDENTIALS_BYTES} bytes.`,
+          { kind: "config" },
+        );
+      }
+      chunks.push(buffer);
+    }
+  } catch (error) {
+    stream.destroy();
+    if (error instanceof CrablineError) {
+      throw error;
+    }
+    throw new CrablineError(`Unable to read serve credentials from file descriptor ${fd}.`, {
+      cause: error,
+      kind: "config",
+    });
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function parseServeCredentialsJson(input: string): ServeCredentials {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch (error) {
+    throw new CrablineError("Serve credentials input must be valid JSON.", {
+      cause: error,
+      kind: "config",
+    });
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CrablineError("Serve credentials JSON must be an object.", { kind: "config" });
+  }
+
+  const values: ServeCredentials = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!SERVE_CREDENTIAL_ENV.some(([name]) => name === key)) {
+      throw new CrablineError("Serve credentials JSON contains unsupported fields.", {
+        kind: "config",
+      });
+    }
+    if (typeof value !== "string") {
+      throw new CrablineError("Serve credentials JSON values must be strings.", {
+        kind: "config",
+      });
+    }
+    values[key as ServeCredentialName] = value;
+  }
+  return values;
+}
+
+async function resolveServeCredentials(credentialsFd?: string): Promise<ServeCredentials> {
+  const overrides =
+    credentialsFd === undefined
+      ? {}
+      : parseServeCredentialsJson(
+          await readBoundedFileDescriptor(parseCredentialsFd(credentialsFd)),
+        );
+  return Object.fromEntries(
+    SERVE_CREDENTIAL_ENV.flatMap(([name, envName]) => {
+      const override = overrides[name];
+      const value = override ?? process.env[envName];
+      return value === undefined ? [] : [[name, value]];
+    }),
+  ) as ServeCredentials;
 }
 
 export function createProgram(
@@ -418,27 +532,44 @@ export function createProgram(
     .description("Start a local provider server that OpenClaw live adapters can target")
     .option("--host <host>", "Bind host", "127.0.0.1")
     .option("--port <port>", "Bind port", "0")
-    .option(
-      "--admin-token <token>",
-      "Admin token for inbound test messages (or CRABLINE_ADMIN_TOKEN)",
-    )
     .option("--account <number>", "Signal account number")
-    .option("--access-token <token>", "Matrix or WhatsApp access token (or CRABLINE_ACCESS_TOKEN)")
-    .option(
-      "--bot-token <token>",
-      "Mattermost, Slack, Telegram, or Zalo bot token (or CRABLINE_BOT_TOKEN)",
-    )
     .option(
       "--bot-username <username>",
       "Mattermost, Telegram, or Zalo bot username",
       "crabline_bot",
     )
+    .option(
+      "--credentials-fd <fd>",
+      "Read JSON credentials from fd 0 or an inherited fd; values override CRABLINE_* env",
+    )
     .option("--recorder <path>", "JSONL recorder path")
     .option("--ready-file <path>", "Write the server runtime manifest to this path")
     .option("--self-jid <jid>", "WhatsApp self JID")
     .option("--show-secrets", "Print provider credentials in text output", false)
-    .option("--signing-secret <secret>", "Slack signing secret (or CRABLINE_SIGNING_SECRET)")
     .option("--once", "Start, print the runtime manifest, and stop immediately", false)
+    .addOption(
+      rejectedSecretOption("--access-token <token>", "--access-token", "CRABLINE_ACCESS_TOKEN"),
+    )
+    .addOption(
+      rejectedSecretOption("--admin-token <token>", "--admin-token", "CRABLINE_ADMIN_TOKEN"),
+    )
+    .addOption(rejectedSecretOption("--bot-token <token>", "--bot-token", "CRABLINE_BOT_TOKEN"))
+    .addOption(
+      rejectedSecretOption(
+        "--signing-secret <secret>",
+        "--signing-secret",
+        "CRABLINE_SIGNING_SECRET",
+      ),
+    )
+    .addHelpText(
+      "after",
+      [
+        "",
+        "Credential JSON fields: accessToken, adminToken, botToken, signingSecret",
+        "Environment fallbacks: CRABLINE_ACCESS_TOKEN, CRABLINE_ADMIN_TOKEN,",
+        "  CRABLINE_BOT_TOKEN, CRABLINE_SIGNING_SECRET",
+      ].join("\n"),
+    )
     .action(async (provider, commandOptions: ServeCommandOptions) => {
       const options = program.opts() as GlobalOptions;
       if (!isCrablineServerChannel(provider)) {
@@ -446,10 +577,11 @@ export function createProgram(
           kind: "config",
         });
       }
-      commandOptions.accessToken ??= process.env.CRABLINE_ACCESS_TOKEN;
-      commandOptions.adminToken ??= process.env.CRABLINE_ADMIN_TOKEN;
-      commandOptions.botToken ??= process.env.CRABLINE_BOT_TOKEN;
-      commandOptions.signingSecret ??= process.env.CRABLINE_SIGNING_SECRET;
+      const credentials = await resolveServeCredentials(commandOptions.credentialsFd);
+      commandOptions.accessToken = credentials.accessToken;
+      commandOptions.adminToken = credentials.adminToken;
+      commandOptions.botToken = credentials.botToken;
+      commandOptions.signingSecret = credentials.signingSecret;
       if (!/^[0-9]+$/u.test(commandOptions.port)) {
         throw new CrablineError(`Invalid local server port: ${commandOptions.port}`, {
           kind: "config",
