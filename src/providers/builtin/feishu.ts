@@ -40,7 +40,11 @@ type FeishuReplayState = {
 };
 
 const FEISHU_MAX_CALLBACK_AGE_MS = 5 * 60_000;
+const FEISHU_MAX_ENCRYPTED_PAYLOAD_BYTES = 1024 * 1024;
+const FEISHU_MAX_ENCRYPTED_PAYLOAD_BASE64_LENGTH =
+  Math.ceil(FEISHU_MAX_ENCRYPTED_PAYLOAD_BYTES / 3) * 4;
 const FEISHU_REPLAY_CACHE_LIMIT = 2_048;
+const FEISHU_MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
 
 export function resolveFeishuAdapterConfig(
   config: ProviderConfig,
@@ -104,6 +108,18 @@ function createFeishuWebhookAuthenticatorWithReplay(
     return undefined;
   }
   return async (request: Request, rawBody: string): Promise<Response | undefined> => {
+    if (!isFeishuWebhookBodyWithinLimit(rawBody)) {
+      return unauthorizedFeishuWebhook();
+    }
+    const signaturePresent = request.headers.has("x-lark-signature");
+    let signedRequest = false;
+    if (signaturePresent) {
+      if (!resolved.encryptKey || !verifyFeishuSignature(request, rawBody, resolved.encryptKey)) {
+        return unauthorizedFeishuWebhook();
+      }
+      signedRequest = true;
+    }
+
     let payload: unknown;
     try {
       payload = JSON.parse(rawBody) as unknown;
@@ -116,7 +132,6 @@ function createFeishuWebhookAuthenticatorWithReplay(
     const encryptedEnvelope = payload;
 
     const encrypted = typeof payload.encrypt === "string";
-    let signedRequest = false;
     if (encrypted) {
       if (!resolved.encryptKey) {
         return unauthorizedFeishuWebhook();
@@ -126,7 +141,6 @@ function createFeishuWebhookAuthenticatorWithReplay(
       } catch {
         return unauthorizedFeishuWebhook();
       }
-      signedRequest = verifyFeishuSignature(request, rawBody, resolved.encryptKey);
       if (!signedRequest && !(isFeishuUrlVerification(payload) && validateCallback)) {
         return unauthorizedFeishuWebhook();
       }
@@ -324,7 +338,13 @@ export function decryptFeishuWebhookPayload(payload: unknown, encryptKey: string
   if (!isRecord(payload) || typeof payload.encrypt !== "string") {
     return payload;
   }
+  if (payload.encrypt.length > FEISHU_MAX_ENCRYPTED_PAYLOAD_BASE64_LENGTH) {
+    throw new Error("Feishu encrypted payload is too large.");
+  }
   const encrypted = Buffer.from(payload.encrypt, "base64");
+  if (encrypted.length > FEISHU_MAX_ENCRYPTED_PAYLOAD_BYTES) {
+    throw new Error("Feishu encrypted payload is too large.");
+  }
   if (encrypted.length <= 16 || (encrypted.length - 16) % 16 !== 0) {
     throw new Error("Feishu encrypted payload is truncated.");
   }
@@ -356,6 +376,13 @@ function isFeishuUrlVerification(payload: unknown): boolean {
   );
 }
 
+function isFeishuWebhookBodyWithinLimit(rawBody: string): boolean {
+  return (
+    rawBody.length <= FEISHU_MAX_WEBHOOK_BODY_BYTES &&
+    Buffer.byteLength(rawBody, "utf8") <= FEISHU_MAX_WEBHOOK_BODY_BYTES
+  );
+}
+
 function verifyFeishuSignature(request: Request, rawBody: string, encryptKey: string): boolean {
   const timestamp = request.headers.get("x-lark-request-timestamp");
   const nonce = request.headers.get("x-lark-request-nonce");
@@ -364,7 +391,10 @@ function verifyFeishuSignature(request: Request, rawBody: string, encryptKey: st
     return false;
   }
   const expected = createHash("sha256")
-    .update(timestamp + nonce + encryptKey + rawBody)
+    .update(timestamp)
+    .update(nonce)
+    .update(encryptKey)
+    .update(rawBody)
     .digest();
   return timingSafeEqual(expected, Buffer.from(signature, "hex"));
 }

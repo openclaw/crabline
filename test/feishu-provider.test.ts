@@ -1,6 +1,6 @@
 import { createCipheriv, createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createFeishuWebhookAuthenticator,
   decryptFeishuWebhookPayload,
@@ -155,7 +155,13 @@ describe("Feishu webhook normalizer", () => {
     ).toThrow(/truncated/u);
   });
 
-  it("accepts token-authenticated encrypted URL verification without signature headers", async () => {
+  it("rejects encrypted payloads that exceed the ciphertext limit", () => {
+    expect(() =>
+      decryptFeishuWebhookPayload({ encrypt: "A".repeat(2 * 1024 * 1024) }, "encrypt-key"),
+    ).toThrow(/too large/u);
+  });
+
+  it("accepts token-authenticated encrypted URL verification with absent or valid signatures", async () => {
     const config = await createLocalMockConfig("feishu", "/feishu/webhook");
     const encryptKey = "encrypt-key";
     config.feishu!.encryptKey = encryptKey;
@@ -293,6 +299,61 @@ describe("Feishu webhook normalizer", () => {
         }),
       ),
     ).resolves.toMatchObject({ status: 401 });
+  });
+
+  it("rejects a present invalid signature before decrypting an encrypted challenge", async () => {
+    const config = await createLocalMockConfig("feishu", "/feishu/webhook");
+    const encryptKey = "encrypt-key";
+    config.feishu!.encryptKey = encryptKey;
+    config.feishu!.verificationToken = "sample";
+    const authenticate = createFeishuWebhookAuthenticator(config, {});
+    const encryptedPayload = {
+      encrypt: encryptFeishuPayload(
+        {
+          challenge: "challenge-token",
+          token: "sample",
+          type: "url_verification",
+        },
+        encryptKey,
+      ),
+    };
+    const rawBody = JSON.stringify(encryptedPayload);
+    const bufferFrom = vi.spyOn(Buffer, "from");
+
+    try {
+      await expect(
+        authenticate!(
+          new Request("https://feishu.example.test/webhook", {
+            headers: {
+              "x-lark-request-nonce": "challenge-nonce",
+              "x-lark-request-timestamp": "1700000000",
+              "x-lark-signature": "0".repeat(64),
+            },
+          }),
+          rawBody,
+        ),
+      ).resolves.toMatchObject({ status: 401 });
+      expect(bufferFrom).not.toHaveBeenCalledWith(encryptedPayload.encrypt, "base64");
+    } finally {
+      bufferFrom.mockRestore();
+    }
+  });
+
+  it("rejects oversized encrypted callback bodies before parsing them", async () => {
+    const config = await createLocalMockConfig("feishu", "/feishu/webhook");
+    config.feishu!.encryptKey = "encrypt-key";
+    const authenticate = createFeishuWebhookAuthenticator(config, {});
+    const rawBody = JSON.stringify({ encrypt: "A".repeat(1024 * 1024) });
+    const parse = vi.spyOn(JSON, "parse");
+
+    try {
+      await expect(
+        authenticate!(new Request("https://feishu.example.test/webhook"), rawBody),
+      ).resolves.toMatchObject({ status: 401 });
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+    }
   });
 
   it("rejects token-authenticated plaintext when encryption is configured", async () => {
