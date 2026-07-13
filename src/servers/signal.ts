@@ -434,7 +434,6 @@ async function handleAdminInbound(params: {
   if (timestamp >= Number.MAX_SAFE_INTEGER) {
     return jsonResponse({ error: "timestamp capacity exhausted", ok: false }, 503);
   }
-  params.state.nextTimestamp = Math.max(params.state.nextTimestamp, timestamp + 1);
   const groupId = readTrimmedString(params.body.groupId);
   const payload = {
     envelope: {
@@ -458,6 +457,7 @@ async function handleAdminInbound(params: {
       503,
     );
   }
+  params.state.nextTimestamp = Math.max(params.state.nextTimestamp, timestamp + 1);
   return jsonResponse({ event: payload, ok: true });
 }
 

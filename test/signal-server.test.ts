@@ -867,6 +867,60 @@ describe("signal local provider server", () => {
     });
   });
 
+  it("does not consume the final timestamp when queue admission fails", async () => {
+    const server = await startSignalServer({
+      adminToken: "admin",
+      maxPendingInboundEvents: 1,
+    });
+    servers.push(server);
+    const sendInbound = (body: Record<string, unknown>) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ sourceNumber: "+15557654321", ...body }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+    const finalTimestamp = Number.MAX_SAFE_INTEGER - 1;
+
+    expect(
+      (
+        await sendInbound({
+          text: "fill queue",
+          timestamp: finalTimestamp - 1,
+        })
+      ).status,
+    ).toBe(200);
+    const rejected = await sendInbound({ text: "rejected candidate" });
+    expect(rejected.status).toBe(503);
+    await expect(rejected.json()).resolves.toEqual({
+      error: "Pending inbound queue is full (1 events)",
+      ok: false,
+    });
+
+    const controller = new AbortController();
+    try {
+      const events = await fetch(server.manifest.endpoints.eventsUrl, {
+        signal: controller.signal,
+      });
+      expect(events.status).toBe(200);
+      const accepted = await sendInbound({ text: "reuse candidate" });
+      expect(accepted.status).toBe(200);
+      await expect(accepted.json()).resolves.toMatchObject({
+        event: {
+          envelope: {
+            dataMessage: { timestamp: finalTimestamp },
+            timestamp: finalTimestamp,
+          },
+        },
+        ok: true,
+      });
+    } finally {
+      controller.abort();
+    }
+  });
+
   it("bounds the disconnected event queue by encoded bytes", async () => {
     const server = await startSignalServer({
       adminToken: "admin",
