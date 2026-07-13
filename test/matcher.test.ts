@@ -68,6 +68,34 @@ describe("nonce + matcher", () => {
     ).toBe(false);
   });
 
+  it("requires a standalone ACK token and the expected canonical nonce for replies", () => {
+    const nonce = "mp-demo-abc-1234abcd";
+    const otherNonce = "mp-other-def-8765dcba";
+    const config = {
+      author: "assistant" as const,
+      nonce: "ignore" as const,
+      strategy: "contains" as const,
+    };
+    const envelope = {
+      author: "assistant" as const,
+      id: "1",
+      provider: "loopback",
+      sentAt: new Date().toISOString(),
+      text: `ACK ${nonce}`,
+      threadId: "loopback:echo",
+    };
+    const matchesReply = (text: string) =>
+      matchesInbound({ ...envelope, text }, config, nonce, { requireAcknowledgement: true });
+
+    expect(matchesReply(`ACK ${nonce}`)).toBe(true);
+    expect(matchesReply(`(ACK) ${nonce}`)).toBe(true);
+    expect(matchesReply(`HACK ${nonce}`)).toBe(false);
+    expect(matchesReply(`ACKNOWLEDGED ${nonce}`)).toBe(false);
+    expect(matchesReply(`ack ${nonce}`)).toBe(false);
+    expect(matchesReply(`ACK ${otherNonce}`)).toBe(false);
+    expect(matchesReply(`ACK ${nonce}-suffix`)).toBe(false);
+  });
+
   it("covers exact, regex, and ignore-nonce branches", () => {
     const baseMessage = {
       author: "assistant" as const,

@@ -17,6 +17,9 @@ describe("errors and reporters", () => {
       EXIT_CODES.FAILURE,
     );
     expect(ensureErrorMessage(Object.create(null))).toBe("Unknown error");
+    const numericMessage = new Error("hidden");
+    Object.defineProperty(numericMessage, "message", { value: 42 });
+    expect(ensureErrorMessage(numericMessage)).toBe("42");
     const throwingMessage = new Error("hidden");
     Object.defineProperty(throwingMessage, "message", {
       get() {

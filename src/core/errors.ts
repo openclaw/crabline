@@ -40,7 +40,7 @@ export class CrablineError extends Error {
 export function ensureErrorMessage(error: unknown): string {
   try {
     if (error instanceof Error) {
-      return error.message;
+      return typeof error.message === "string" ? error.message : String(error.message);
     }
     return String(error);
   } catch {
