@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 
 const execFileAsync = promisify(execFile);
 const DEV_ONLY_RUNTIME_PACKAGES = ["baileys"] as const;
@@ -191,11 +192,27 @@ describe("production package", () => {
     expect(files).toContain("README.md");
     expect(files).toContain("docs/channel-setup.md");
     expect(files).toContain("fixtures/examples/crabline.example.yaml");
-    expect(files).toContain("fixtures/examples/openclaw-bridge.yaml");
+    expect(files).not.toContain("fixtures/examples/openclaw-bridge.yaml");
     expect(files).toContain("LICENSE");
     expect(files.some((file) => file.startsWith("node_modules/"))).toBe(false);
     expect(files.some((file) => file.startsWith("test/"))).toBe(false);
     expect(files.some((file) => /(^|\/)baileys(\/|$)/u.test(file))).toBe(false);
+
+    const packedFixtures = files.filter(
+      (file) => file.startsWith("fixtures/") && /\.ya?ml$/u.test(file),
+    );
+    expect(packedFixtures).not.toEqual([]);
+    for (const fixturePath of packedFixtures) {
+      const fixture = parse(await fs.readFile(path.join(root, fixturePath), "utf8")) as {
+        providers?: Record<string, { adapter?: string }>;
+      };
+      expect(
+        Object.entries(fixture.providers ?? {})
+          .filter(([, provider]) => provider.adapter === "script")
+          .map(([providerId]) => providerId),
+        `${fixturePath} must not depend on unpackaged script commands`,
+      ).toEqual([]);
+    }
 
     const cliContents = await fs.readFile(path.join(root, cliPath!), "utf8");
     expect(cliContents).toMatch(/^#!\/usr\/bin\/env node\r?\n/u);
@@ -387,6 +404,19 @@ describe("production package", () => {
     } finally {
       await fs.rm(tempDir, { force: true, recursive: true });
     }
+  });
+
+  it("documents source-checkout and user-supplied script bridge commands", async () => {
+    const root = process.cwd();
+    const [readme, channelSetup] = await Promise.all([
+      fs.readFile(path.join(root, "README.md"), "utf8"),
+      fs.readFile(path.join(root, "docs/channel-setup.md"), "utf8"),
+    ]);
+
+    expect(readme).toContain("use `pnpm dev` there rather than");
+    expect(readme).toContain("`pnpm exec crabline`");
+    expect(channelSetup).toContain("does not ship a generic OpenClaw gateway command bridge");
+    expect(channelSetup).not.toContain("fixtures/examples/openclaw-bridge.yaml");
   });
 
   it("documents trusted script manifests and canonical WhatsApp Cloud targets", async () => {
