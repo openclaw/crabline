@@ -1,6 +1,6 @@
 import { constants as fsConstants } from "node:fs";
 import { lstat, mkdir, open, readFile, readlink, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
+import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import type { InboundEnvelope } from "./types.js";
@@ -612,12 +612,12 @@ function reportRecorderLockReleaseFailure(filePath: string, releaseError: unknow
   }
 }
 
-async function privateRecorderLockRoot(): Promise<string> {
+async function secureRecorderLockRoot(
+  root: string,
+  currentUserId: number | undefined,
+): Promise<string> {
+  await mkdir(root, { mode: 0o700, recursive: true });
   if (process.platform === "win32") {
-    const localAppData =
-      process.env.LOCALAPPDATA?.trim() || path.join(homedir(), "AppData", "Local");
-    const root = path.join(localAppData, "Crabline", "locks", "provider-recorder");
-    await mkdir(root, { recursive: true });
     const identity = await lstat(root);
     if (!identity.isDirectory() || identity.isSymbolicLink()) {
       throw new Error("Provider recorder lock directory is not a private directory.");
@@ -625,13 +625,10 @@ async function privateRecorderLockRoot(): Promise<string> {
     return root;
   }
 
-  const currentUserId = process.geteuid?.();
   if (currentUserId === undefined) {
     throw new Error("Provider recorder identity locking requires a current user id.");
   }
 
-  const root = path.join(homedir(), ".cache", "crabline", "locks", "provider-recorder");
-  await mkdir(root, { mode: 0o700, recursive: true });
   const handle = await open(
     root,
     fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
@@ -662,8 +659,48 @@ async function privateRecorderLockRoot(): Promise<string> {
   return root;
 }
 
-async function recorderIdentityLockTarget(identity: RecorderFileIdentity): Promise<string> {
-  return path.join(await privateRecorderLockRoot(), `recorder-${identity.dev}-${identity.ino}`);
+function recorderLockRootUnavailable(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EACCES" || code === "EPERM" || code === "EROFS";
+}
+
+async function privateRecorderLockRoot(
+  filePath: string,
+  identity: RecorderFileIdentity,
+): Promise<string> {
+  const account = userInfo();
+  const currentUserId = process.platform === "win32" ? undefined : process.geteuid?.();
+  const sharedRoot =
+    process.platform === "win32"
+      ? path.join(account.homedir, "AppData", "Local", "Crabline", "locks", "provider-recorder")
+      : path.join(account.homedir, ".cache", "crabline", "locks", "provider-recorder");
+  try {
+    return await secureRecorderLockRoot(sharedRoot, currentUserId);
+  } catch (error) {
+    if (!recorderLockRootUnavailable(error)) {
+      throw error;
+    }
+  }
+
+  if (identity.nlink > 1n) {
+    throw new Error(
+      "Provider recorder hardlinks require a writable shared per-user lock directory.",
+    );
+  }
+  return await secureRecorderLockRoot(
+    path.join(path.dirname(filePath), ".crabline-provider-recorder-locks"),
+    currentUserId,
+  );
+}
+
+async function recorderIdentityLockTarget(
+  filePath: string,
+  identity: RecorderFileIdentity,
+): Promise<string> {
+  return path.join(
+    await privateRecorderLockRoot(filePath, identity),
+    `recorder-${identity.dev}-${identity.ino}`,
+  );
 }
 
 async function acquireRecorderLock(filePath: string): Promise<() => Promise<void>> {
@@ -724,21 +761,16 @@ async function withRecorderLock<T>(
       if (!identity) {
         continue;
       }
-      const releaseIdentityLock =
-        identity.nlink > 1n
-          ? await acquireRecorderLock(await recorderIdentityLockTarget(identity))
-          : undefined;
+      const releaseIdentityLock = await acquireRecorderLock(
+        await recorderIdentityLockTarget(filePath, identity),
+      );
       const currentIdentity = await readRecorderFileIdentity(filePath);
       if (sameRecorderFileIdentity(identity, currentIdentity)) {
-        if (releaseIdentityLock) {
-          releases.push(releaseIdentityLock);
-        }
+        releases.push(releaseIdentityLock);
         lockedIdentity = identity;
         break;
       }
-      const releaseErrors = releaseIdentityLock
-        ? await releaseRecorderLocks([releaseIdentityLock])
-        : [];
+      const releaseErrors = await releaseRecorderLocks([releaseIdentityLock]);
       if (releaseErrors.length > 0) {
         throw recorderLockReleaseError(
           filePath,
