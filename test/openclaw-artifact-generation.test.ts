@@ -61,6 +61,16 @@ function publishParams(outputDir: string, lock = createLock()) {
   };
 }
 
+function publishParamsWithRecorderSnapshot(outputDir: string, lock = createLock()) {
+  return {
+    ...publishParams(outputDir, lock),
+    recorderSnapshot: {
+      contents: '{"accepted":true}\n',
+      fileName: "telegram-fake-provider.jsonl",
+    },
+  };
+}
+
 describe("OpenClaw artifact generation publication", () => {
   it("documents runtime pruning of abandoned artifact generations", async () => {
     const channelSetup = await fs.readFile(
@@ -191,6 +201,41 @@ describe("OpenClaw artifact generation publication", () => {
           "generation-11111111-1111-4111-8111-111111111111",
         ),
       );
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("rejects publication when the current generation lost its recorder snapshot", async () => {
+    const outputDir = await createTempDir();
+    const firstGeneration = "generation-11111111-1111-4111-8111-111111111111";
+    const secondGeneration = "generation-22222222-2222-4222-8222-222222222222";
+    try {
+      const first = await publishOpenClawCrablineArtifactGeneration(
+        publishParamsWithRecorderSnapshot(outputDir),
+        { createGenerationId: () => firstGeneration.slice("generation-".length) },
+      );
+      const second = await publishOpenClawCrablineArtifactGeneration(
+        publishParamsWithRecorderSnapshot(outputDir),
+        { createGenerationId: () => secondGeneration.slice("generation-".length) },
+      );
+      const secondManifest = JSON.parse(
+        await fs.readFile(path.join(outputDir, second.manifestPath), "utf8"),
+      ) as { recorderPath: string };
+      await fs.rm(path.join(outputDir, secondManifest.recorderPath));
+
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParamsWithRecorderSnapshot(outputDir), {
+          createGenerationId: () => "33333333-3333-4333-8333-333333333333",
+        }),
+      ).rejects.toThrow("OpenClaw Crabline current artifact generation is incomplete.");
+
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toMatchObject({
+        generation: secondGeneration,
+        previousGeneration: firstGeneration,
+      });
+      await expect(fs.stat(path.join(outputDir, first.manifestPath))).resolves.toBeDefined();
+      await expect(fs.stat(path.join(outputDir, second.manifestPath))).resolves.toBeDefined();
     } finally {
       await disposeTempDir(outputDir);
     }
