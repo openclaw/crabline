@@ -113,6 +113,11 @@ describe("nonce + matcher", () => {
     expect(matchesReply(`ACK\u200c ${nonce}`)).toBe(false);
     expect(matchesReply(`H\u00b7ACK ${nonce}`)).toBe(false);
     expect(matchesReply(`ACK\u0387NOW ${nonce}`)).toBe(false);
+    for (const formatCharacter of ["\u00ad", "\u200b", "\u2060", "\ufeff"]) {
+      const codePoint = `U+${formatCharacter.codePointAt(0)!.toString(16).padStart(4, "0")}`;
+      expect(matchesReply(`${formatCharacter}ACK ${nonce}`), `${codePoint} before ACK`).toBe(false);
+      expect(matchesReply(`ACK${formatCharacter} ${nonce}`), `${codePoint} after ACK`).toBe(false);
+    }
   });
 
   it("covers exact, regex, and ignore-nonce branches", () => {

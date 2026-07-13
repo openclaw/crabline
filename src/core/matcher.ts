@@ -3,7 +3,7 @@ import { compileInboundRegex } from "./safe-regex.js";
 import type { InboundEnvelope, InboundMatchConfig } from "../providers/types.js";
 
 const EXACT_ACK_TOKEN =
-  /(?<![\p{ID_Continue}\p{Mark}\u200c\u200d])ACK(?![\p{ID_Continue}\p{Mark}\u200c\u200d])/u;
+  /(?<![\p{ID_Continue}\p{Mark}\p{Cf}])ACK(?![\p{ID_Continue}\p{Mark}\p{Cf}])/u;
 
 export function matchesInbound(
   envelope: InboundEnvelope,
