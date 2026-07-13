@@ -27,6 +27,7 @@ describe("webhook server", () => {
   it.each([
     ["0.0.0.0", "127.0.0.1"],
     ["::", "[::1]"],
+    ["0:0:0:0:0:0:0:0", "[::1]"],
   ])("advertises loopback instead of the %s wildcard bind", async (host, advertisedHost) => {
     const server = await startWebhookServer({
       handle: async () => new Response("ok"),

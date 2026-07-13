@@ -27,6 +27,9 @@ const LOOPBACK_ADDRESSES = new BlockList();
 LOOPBACK_ADDRESSES.addSubnet("127.0.0.0", 8, "ipv4");
 LOOPBACK_ADDRESSES.addAddress("::1", "ipv6");
 LOOPBACK_ADDRESSES.addSubnet("::ffff:127.0.0.0", 104, "ipv6");
+const UNSPECIFIED_ADDRESSES = new BlockList();
+UNSPECIFIED_ADDRESSES.addAddress("0.0.0.0", "ipv4");
+UNSPECIFIED_ADDRESSES.addAddress("::", "ipv6");
 const HOP_BY_HOP_RESPONSE_HEADERS = new Set([
   "connection",
   "keep-alive",
@@ -215,10 +218,12 @@ export function isLoopbackHost(host: string): boolean {
 }
 
 export function advertisedHostForBindAddress(host: string, boundAddress: string): string {
-  if (host === "0.0.0.0") {
+  const normalizedBoundAddress = normalizeHost(boundAddress);
+  const boundFamily = isIP(normalizedBoundAddress);
+  if (boundFamily === 4 && UNSPECIFIED_ADDRESSES.check(normalizedBoundAddress, "ipv4")) {
     return "127.0.0.1";
   }
-  if (host === "::") {
+  if (boundFamily === 6 && UNSPECIFIED_ADDRESSES.check(normalizedBoundAddress, "ipv6")) {
     return "::1";
   }
   return isLoopbackHost(host) && isLoopbackAddress(boundAddress) ? boundAddress : host;
