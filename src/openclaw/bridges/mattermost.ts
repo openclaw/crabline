@@ -79,7 +79,7 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
                   groupAllowFrom: ["*"],
                   groupPolicy: "open",
                   network: { dangerouslyAllowPrivateNetwork: true },
-                  streaming: "off",
+                  streaming: { mode: "off" },
                 },
               },
             };
