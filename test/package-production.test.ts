@@ -407,12 +407,16 @@ describe("production package", () => {
   });
 
   it("runs autoreview Python tests in the verify gate", async () => {
-    const pkg = JSON.parse(await fs.readFile("package.json", "utf8")) as {
-      scripts?: Record<string, string>;
-    };
+    const [pkgContents, launcher] = await Promise.all([
+      fs.readFile("package.json", "utf8"),
+      fs.readFile("tools/run-autoreview-tests.mjs", "utf8"),
+    ]);
+    const pkg = JSON.parse(pkgContents) as { scripts?: Record<string, string> };
 
     expect(pkg.scripts?.["test:autoreview"]).toBe("node tools/run-autoreview-tests.mjs");
     expect(pkg.scripts?.verify).toContain("pnpm test:autoreview");
+    expect(launcher).toContain("sys.version_info >= (3, 10)");
+    expect(launcher).toContain("Python 3.10 or newer is required");
   });
 
   it("documents source-checkout and user-supplied script bridge commands", async () => {

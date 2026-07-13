@@ -21,7 +21,7 @@ const python = candidates.find(([command, launcherArgs]) => {
     [
       ...launcherArgs,
       "-c",
-      "import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)",
+      "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)",
     ],
     { stdio: "ignore" },
   );
@@ -29,7 +29,7 @@ const python = candidates.find(([command, launcherArgs]) => {
 });
 
 if (!python) {
-  console.error("Python 3 is required to run the autoreview tests.");
+  console.error("Python 3.10 or newer is required to run the autoreview tests.");
   process.exit(127);
 }
 
