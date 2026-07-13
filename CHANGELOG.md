@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.10 - 2026-07-13
 
 - Emit nested OpenClaw streaming config from the Matrix and Mattermost provider bridges.
 - Harden CLI secret ingress and numeric parsing, provider cancellation and script thread propagation, timer bounds, review fixtures, and dependency review coverage.
