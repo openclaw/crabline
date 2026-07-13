@@ -290,11 +290,18 @@ export class LazyProviderAdapter implements ProviderAdapter {
     return iterator;
   }
 
-  async cleanup(): Promise<void> {
+  beginCleanup(): void {
+    if (this.#cleanedUp) {
+      return;
+    }
     this.#cleanedUp = true;
     for (const watch of this.#activeWatches) {
       watch.abort();
     }
+  }
+
+  async cleanup(): Promise<void> {
+    this.beginCleanup();
     this.#cleanupPromise ??= (async () => {
       const operations = [...this.#inFlightOperations];
       const watches = [...this.#activeWatches];
