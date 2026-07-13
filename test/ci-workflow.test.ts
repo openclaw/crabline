@@ -13,6 +13,10 @@ type WorkflowStep = {
 
 type Workflow = {
   jobs?: Record<string, { steps?: WorkflowStep[]; uses?: string }>;
+  on?: {
+    pull_request?: { paths?: string[] };
+    push?: { paths?: string[] };
+  };
 };
 
 type CompositeAction = {
@@ -87,6 +91,21 @@ describe("CI workflow hardening", () => {
 
     expect(codeowners).toContain("/pnpm-workspace.yaml @openclaw/openclaw-secops");
     expect(dependencyReview).toContain("      - pnpm-workspace.yaml");
+  });
+
+  it("protects and scans local action changes", async () => {
+    const [codeowners, codeqlWorkflow, actionsConfig] = await Promise.all([
+      fs.readFile(".github/CODEOWNERS", "utf8"),
+      readWorkflow(".github/workflows/codeql.yml"),
+      fs
+        .readFile(".github/codeql/codeql-actions-security.yml", "utf8")
+        .then((contents) => parse(contents) as { paths?: string[] }),
+    ]);
+
+    expect(codeowners).toContain("/.github/actions/ @openclaw/openclaw-secops");
+    expect(codeqlWorkflow.on?.push?.paths).toContain(".github/actions/**");
+    expect(codeqlWorkflow.on?.pull_request?.paths).toContain(".github/actions/**");
+    expect(actionsConfig.paths).toContain(".github/actions");
   });
 
   it("exempts security pull requests from stale automation", async () => {

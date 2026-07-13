@@ -15,6 +15,7 @@
 - Revalidate npm package version, integrity, and provenance after every release publication outcome.
 - Authenticate Feishu signatures before encrypted callback decryption and bound callback ciphertext work.
 - Correct Slack edited-message identity and text fallback handling, acknowledge unsupported callbacks, and fairly budget Events API address failover.
+- Cover local GitHub Actions with ownership, CodeQL, immutable image, and test-tool runtime policies.
 - Protect pnpm install-script policy and enforce immutable action pins across reusable workflows and composite actions.
 - Stop shipping a non-runnable OpenClaw script fixture and clarify source-checkout CLI invocation.
 - Bind npm and GitHub release mutations to the revalidated tag commit and fail closed on release lookup errors.

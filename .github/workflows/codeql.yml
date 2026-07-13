@@ -12,6 +12,7 @@ on:
   push:
     branches: [main]
     paths:
+      - ".github/actions/**"
       - ".github/codeql/**"
       - ".github/workflows/**"
       - "src/**"
@@ -21,6 +22,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
+      - ".github/actions/**"
       - ".github/codeql/**"
       - ".github/workflows/**"
       - "src/**"
