@@ -224,7 +224,7 @@ describe("local mock provider", () => {
     providers.push(provider);
     const probe = provider.probe(createContext(config));
     await vi.waitFor(() => expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1));
-    provider.beginCleanup();
+    (provider as ProviderAdapter).beginCleanup?.();
     const cleanup = provider.cleanup();
 
     resolveStart?.({

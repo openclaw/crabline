@@ -249,6 +249,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     this.#options = params.options;
     this.#publicUrl = params.options.publicUrl ?? params.options.webhook?.publicUrl;
     this.#recorderPath = toRecorderPath(params.id, params.options.recorderPath);
+    this.#installCleanupFence();
   }
 
   normalizeTarget(target: ProviderContext["fixture"]["target"]): NormalizedTarget {
@@ -429,8 +430,14 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     this.#waitCursors.clear();
   }
 
-  beginCleanup(): void {
-    this.#beginCleanup();
+  #installCleanupFence(): void {
+    const adapter = this as ProviderAdapter;
+    if (adapter.beginCleanup) {
+      return;
+    }
+    Object.defineProperty(adapter, "beginCleanup", {
+      value: () => this.#beginCleanup(),
+    });
   }
 
   async cleanup(): Promise<void> {
