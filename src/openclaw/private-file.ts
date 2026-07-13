@@ -1949,6 +1949,37 @@ async function createPrivateMutationClaimDirectory(
   await syncParentDirectory(metadataPath, options.platform);
 }
 
+async function removeInstalledPrivateMutationDirectoryClaim(
+  claimPath: string,
+  expectedIdentity: FileIdentity,
+  ownerContents: string,
+  rootClaimPath: string,
+  platform: NodeJS.Platform,
+): Promise<void> {
+  const observed = await readPrivateMutationDirectoryClaim(claimPath);
+  if (
+    observed === null ||
+    observed.identity.device !== expectedIdentity.device ||
+    observed.identity.inode !== expectedIdentity.inode ||
+    observed.metadata.contents !== ownerContents
+  ) {
+    throw new Error("Private mutation directory claim changed before rollback.");
+  }
+  const rollbackPath = `${rootClaimPath}.${randomUUID()}.rollback-dir`;
+  await fs.rename(claimPath, rollbackPath);
+  const moved = await readPrivateMutationDirectoryClaim(rollbackPath);
+  if (
+    moved === null ||
+    moved.identity.device !== expectedIdentity.device ||
+    moved.identity.inode !== expectedIdentity.inode ||
+    moved.metadata.contents !== ownerContents
+  ) {
+    throw new Error("Private mutation directory claim changed during rollback.");
+  }
+  await fs.rm(rollbackPath, { force: true, recursive: true });
+  await syncParentDirectory(claimPath, platform);
+}
+
 async function acquireDirectoryPrivateMutationClaim(
   parent: SecuredPrivateDirectory,
   options: {
@@ -1968,16 +1999,27 @@ async function acquireDirectoryPrivateMutationClaim(
   parsePrivateMutationClaimOwner(ownerContents);
   const rootClaimPath = path.join(parent.directoryPath, PRIVATE_MUTATION_CLAIM_ROOT_FILE);
   const candidatePath = `${rootClaimPath}.${runtime.pid}.${randomUUID()}.candidate-dir`;
-  await createPrivateMutationClaimDirectory(candidatePath, ownerContents, {
-    ...(options.createWindowsFile ? { createWindowsFile: options.createWindowsFile } : {}),
-    platform,
-  });
+  const createCandidate = async () => {
+    await createPrivateMutationClaimDirectory(candidatePath, ownerContents, {
+      ...(options.createWindowsFile ? { createWindowsFile: options.createWindowsFile } : {}),
+      platform,
+    });
+    const candidate = await readPrivateMutationDirectoryClaim(candidatePath);
+    if (candidate === null || candidate.metadata.contents !== ownerContents) {
+      throw new Error("Private mutation directory claim candidate could not be verified.");
+    }
+    return candidate;
+  };
+  let candidate = await createCandidate();
 
   let claimPath = rootClaimPath;
+  let installedClaimPath: string | undefined;
+  let expectedRootIdentity: FileIdentity | undefined;
   try {
     for (;;) {
       try {
         await fs.rename(candidatePath, claimPath);
+        installedClaimPath = claimPath;
       } catch (error) {
         const observed = await readPrivateMutationDirectoryClaim(claimPath);
         if (observed === null) {
@@ -1996,8 +2038,54 @@ async function acquireDirectoryPrivateMutationClaim(
         ) {
           continue;
         }
+        if (claimPath === rootClaimPath) {
+          expectedRootIdentity = revalidated.identity;
+        } else {
+          const revalidatedRoot = await readPrivateMutationDirectoryClaim(rootClaimPath);
+          if (
+            expectedRootIdentity === undefined ||
+            revalidatedRoot === null ||
+            revalidatedRoot.identity.device !== expectedRootIdentity.device ||
+            revalidatedRoot.identity.inode !== expectedRootIdentity.inode
+          ) {
+            claimPath = rootClaimPath;
+            expectedRootIdentity = undefined;
+            continue;
+          }
+        }
         claimPath = path.join(claimPath, ".next");
         continue;
+      }
+      const claimed = await readPrivateMutationDirectoryClaim(claimPath);
+      if (
+        claimed === null ||
+        claimed.identity.device !== candidate.identity.device ||
+        claimed.identity.inode !== candidate.identity.inode ||
+        claimed.metadata.contents !== ownerContents
+      ) {
+        throw new Error("Private mutation directory claim ownership could not be verified.");
+      }
+      if (claimPath !== rootClaimPath) {
+        const revalidatedRoot = await readPrivateMutationDirectoryClaim(rootClaimPath);
+        if (
+          expectedRootIdentity === undefined ||
+          revalidatedRoot === null ||
+          revalidatedRoot.identity.device !== expectedRootIdentity.device ||
+          revalidatedRoot.identity.inode !== expectedRootIdentity.inode
+        ) {
+          await removeInstalledPrivateMutationDirectoryClaim(
+            claimPath,
+            candidate.identity,
+            ownerContents,
+            rootClaimPath,
+            platform,
+          );
+          installedClaimPath = undefined;
+          candidate = await createCandidate();
+          claimPath = rootClaimPath;
+          expectedRootIdentity = undefined;
+          continue;
+        }
       }
       break;
     }
@@ -2009,8 +2097,21 @@ async function acquireDirectoryPrivateMutationClaim(
     if (rootClaim === null) {
       throw new Error("Private mutation directory claim root disappeared.");
     }
-    if (claimed === null || claimed.metadata.contents !== ownerContents) {
+    if (
+      claimed === null ||
+      claimed.identity.device !== candidate.identity.device ||
+      claimed.identity.inode !== candidate.identity.inode ||
+      claimed.metadata.contents !== ownerContents
+    ) {
       throw new Error("Private mutation directory claim ownership could not be verified.");
+    }
+    if (
+      claimPath !== rootClaimPath &&
+      (expectedRootIdentity === undefined ||
+        rootClaim.identity.device !== expectedRootIdentity.device ||
+        rootClaim.identity.inode !== expectedRootIdentity.inode)
+    ) {
+      throw new Error("Private mutation directory claim root changed during acquisition.");
     }
     const terminalRelativePath = path.relative(rootClaimPath, claimPath);
     await parent.assertIdentityAt();
@@ -2108,6 +2209,30 @@ async function acquireDirectoryPrivateMutationClaim(
         await syncParentDirectory(ownedRootClaimPath, platform);
       },
     };
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    if (installedClaimPath !== undefined) {
+      try {
+        await removeInstalledPrivateMutationDirectoryClaim(
+          installedClaimPath,
+          candidate.identity,
+          ownerContents,
+          rootClaimPath,
+          platform,
+        );
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      const aggregateError = new AggregateError(
+        [error, ...cleanupErrors],
+        "Private mutation directory claim acquisition failed and rollback cleanup also failed.",
+      );
+      aggregateError.cause = error;
+      throw aggregateError;
+    }
+    throw error;
   } finally {
     await fs.rm(candidatePath, { force: true, recursive: true });
   }
