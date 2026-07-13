@@ -463,6 +463,8 @@ $mutationRights = (
   [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
   [System.Security.AccessControl.FileSystemRights]::TakeOwnership
 )
+$genericMutationRights = [uint32]0x50000000
+$mutationAccessMask = [uint32][int32]$mutationRights
 
 $actual = Get-Acl -LiteralPath $directoryPath
 $ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
@@ -475,10 +477,11 @@ $rules = @($actual.GetAccessRules(
   [System.Security.Principal.SecurityIdentifier]
 ))
 foreach ($rule in $rules) {
+  $ruleAccessMask = [uint32][int32]$rule.FileSystemRights
   if (
     $rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
     $trustedSids -notcontains $rule.IdentityReference.Value -and
-    ($rule.FileSystemRights -band $mutationRights) -ne 0
+    ($ruleAccessMask -band ($mutationAccessMask -bor $genericMutationRights)) -ne 0
   ) {
     throw "Directory grants mutation rights to an untrusted principal."
   }
@@ -648,7 +651,7 @@ export async function verifyOwnerOnlyWindowsDirectoryAcl(
   }
 }
 
-async function verifySafeWindowsDirectoryMutationBoundary(
+export async function verifySafeWindowsDirectoryMutationBoundary(
   directoryPath: string,
   run: WindowsAclRunner = runWindowsAclCommand,
   systemRoot: string | null | undefined = process.env.SystemRoot,
