@@ -210,7 +210,15 @@ function recorderLockReleaseError(
   filePath: string,
   operationError: unknown,
   releaseError: unknown,
-): AggregateError {
+): AggregateError | ServerRecorderCommittedError {
+  if (operationError instanceof ServerRecorderCommittedError) {
+    return new ServerRecorderCommittedError(
+      filePath,
+      operationError,
+      [releaseError],
+      operationError.indeterminate,
+    );
+  }
   return new AggregateError(
     [operationError, releaseError],
     `Server recorder append and lock release both failed for "${filePath}".`,
@@ -251,11 +259,14 @@ async function acquireRecorderLock(filePath: string): Promise<() => Promise<void
   }
 }
 
-async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+async function withRecorderLock(
+  filePath: string,
+  operation: () => Promise<boolean | undefined>,
+): Promise<boolean | undefined> {
   const release = await acquireRecorderLock(filePath);
   let operationFailed = false;
   let operationError: unknown;
-  let result: T | undefined;
+  let result: boolean | undefined;
   try {
     result = await operation();
   } catch (error) {
@@ -268,12 +279,15 @@ async function withRecorderLock<T>(filePath: string, operation: () => Promise<T>
     if (operationFailed) {
       throw recorderLockReleaseError(filePath, operationError, releaseError);
     }
+    if (result === true) {
+      throw new ServerRecorderCommittedError(filePath, releaseError);
+    }
     throw releaseError;
   }
   if (operationFailed) {
     throw operationError;
   }
-  return result as T;
+  return result;
 }
 
 async function closeRecorderAttempt(params: {
@@ -499,7 +513,7 @@ async function appendResolvedJsonLine(params: {
         await chmod(directory, 0o700);
       }
       // Keep the cross-process lock through append verification.
-      return await withRecorderLock(key, async () => {
+      const committed = await withRecorderLock(key, async () => {
         if ((await resolveRecorderPath(logicalPath)) !== key) {
           return undefined;
         }
@@ -512,20 +526,24 @@ async function appendResolvedJsonLine(params: {
               publicationPath: key,
             })) === "committed"
           ) {
-            return {
-              observation: enqueueObserver({
-                event: params.event,
-                key,
-                logicalPath,
-                onEvent: params.onEvent,
-              }),
-            };
+            return true;
           }
         }
         throw new ServerRecorderRotationError(
           `Server recorder rotation retries exhausted for "${logicalPath}".`,
         );
       });
+      if (committed !== true) {
+        return undefined;
+      }
+      return {
+        observation: enqueueObserver({
+          event: params.event,
+          key,
+          logicalPath,
+          onEvent: params.onEvent,
+        }),
+      };
     });
   const tail = current.then(
     () => undefined,
