@@ -31,7 +31,9 @@ export class CrablineError extends Error {
     this.name = "CrablineError";
     this.kind = options?.kind;
     this.exitCode =
-      options?.exitCode ?? (options?.kind ? KIND_TO_EXIT[options.kind] : EXIT_CODES.FAILURE);
+      options?.exitCode === EXIT_CODES.SUCCESS
+        ? EXIT_CODES.FAILURE
+        : (options?.exitCode ?? (options?.kind ? KIND_TO_EXIT[options.kind] : EXIT_CODES.FAILURE));
   }
 }
 
@@ -40,5 +42,9 @@ export function ensureErrorMessage(error: unknown): string {
     return error.message;
   }
 
-  return String(error);
+  try {
+    return String(error);
+  } catch {
+    return "Unknown error";
+  }
 }

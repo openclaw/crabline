@@ -13,6 +13,10 @@ describe("errors and reporters", () => {
     expect(error.exitCode).toBe(EXIT_CODES.AUTH);
     expect(ensureErrorMessage(error)).toBe("boom");
     expect(ensureErrorMessage("plain")).toBe("plain");
+    expect(new CrablineError("failed", { exitCode: EXIT_CODES.SUCCESS }).exitCode).toBe(
+      EXIT_CODES.FAILURE,
+    );
+    expect(ensureErrorMessage(Object.create(null))).toBe("Unknown error");
   });
 
   it("formats single and suite results", () => {

@@ -418,10 +418,16 @@ export function createProgram(
     .description("Start a local provider server that OpenClaw live adapters can target")
     .option("--host <host>", "Bind host", "127.0.0.1")
     .option("--port <port>", "Bind port", "0")
-    .option("--admin-token <token>", "Admin token for inbound test messages")
+    .option(
+      "--admin-token <token>",
+      "Admin token for inbound test messages (or CRABLINE_ADMIN_TOKEN)",
+    )
     .option("--account <number>", "Signal account number")
-    .option("--access-token <token>", "Matrix or WhatsApp access token")
-    .option("--bot-token <token>", "Mattermost, Slack, Telegram, or Zalo bot token")
+    .option("--access-token <token>", "Matrix or WhatsApp access token (or CRABLINE_ACCESS_TOKEN)")
+    .option(
+      "--bot-token <token>",
+      "Mattermost, Slack, Telegram, or Zalo bot token (or CRABLINE_BOT_TOKEN)",
+    )
     .option(
       "--bot-username <username>",
       "Mattermost, Telegram, or Zalo bot username",
@@ -431,12 +437,21 @@ export function createProgram(
     .option("--ready-file <path>", "Write the server runtime manifest to this path")
     .option("--self-jid <jid>", "WhatsApp self JID")
     .option("--show-secrets", "Print provider credentials in text output", false)
-    .option("--signing-secret <secret>", "Slack signing secret")
+    .option("--signing-secret <secret>", "Slack signing secret (or CRABLINE_SIGNING_SECRET)")
     .option("--once", "Start, print the runtime manifest, and stop immediately", false)
     .action(async (provider, commandOptions: ServeCommandOptions) => {
       const options = program.opts() as GlobalOptions;
       if (!isCrablineServerChannel(provider)) {
         throw new CrablineError(`Unsupported server channel: ${provider}`, {
+          kind: "config",
+        });
+      }
+      commandOptions.accessToken ??= process.env.CRABLINE_ACCESS_TOKEN;
+      commandOptions.adminToken ??= process.env.CRABLINE_ADMIN_TOKEN;
+      commandOptions.botToken ??= process.env.CRABLINE_BOT_TOKEN;
+      commandOptions.signingSecret ??= process.env.CRABLINE_SIGNING_SECRET;
+      if (!/^[0-9]+$/u.test(commandOptions.port)) {
+        throw new CrablineError(`Invalid local server port: ${commandOptions.port}`, {
           kind: "config",
         });
       }
