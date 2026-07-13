@@ -1010,7 +1010,42 @@ describe("whatsapp local provider server", () => {
     ).resolves.toBe(true);
   });
 
-  it("rolls back an early acknowledgement when message acceptance rejects", async () => {
+  it("shares a pending false acceptance with concurrent duplicates", async () => {
+    const receiver = new WhatsAppSignalBundleStore(1, 1);
+    let markAcceptanceStarted!: () => void;
+    const acceptanceStarted = new Promise<void>((resolve) => {
+      markAcceptanceStarted = resolve;
+    });
+    let releaseAcceptance!: (accepted: boolean) => void;
+    const acceptanceBlocked = new Promise<boolean>((resolve) => {
+      releaseAcceptance = resolve;
+    });
+    const acceptance = receiver.acceptMessageOnce("15557654321@s.whatsapp.net\0false-ack", () => {
+      markAcceptanceStarted();
+      return acceptanceBlocked;
+    });
+    await acceptanceStarted;
+
+    receiver.markMessageAcknowledged("15557654321@s.whatsapp.net", "false-ack");
+    const duplicateOperation = vi.fn(async () => true);
+    const duplicate = receiver.acceptMessageOnce(
+      "15557654321@s.whatsapp.net\0false-ack",
+      duplicateOperation,
+    );
+    releaseAcceptance(false);
+
+    await expect(acceptance).resolves.toBe(false);
+    await expect(duplicate).resolves.toBe(false);
+    expect(duplicateOperation).not.toHaveBeenCalled();
+
+    const retryOperation = vi.fn(async () => true);
+    await expect(
+      receiver.acceptMessageOnce("15557654321@s.whatsapp.net\0false-ack", retryOperation),
+    ).resolves.toBe(true);
+    expect(retryOperation).toHaveBeenCalledOnce();
+  });
+
+  it("shares a pending rejection with concurrent duplicates", async () => {
     const receiver = new WhatsAppSignalBundleStore(1, 1);
     let markAcceptanceStarted!: () => void;
     const acceptanceStarted = new Promise<void>((resolve) => {
@@ -1030,8 +1065,24 @@ describe("whatsapp local provider server", () => {
     await acceptanceStarted;
 
     receiver.markMessageAcknowledged("15557654321@s.whatsapp.net", "rejected-ack");
+    const duplicateOperation = vi.fn(async () => true);
+    const duplicate = receiver.acceptMessageOnce(
+      "15557654321@s.whatsapp.net\0rejected-ack",
+      duplicateOperation,
+    );
+    const outcomes = Promise.allSettled([acceptance, duplicate]);
     rejectAcceptance(new Error("simulated acceptance failure"));
-    await expect(acceptance).rejects.toThrow("simulated acceptance failure");
+    await expect(outcomes).resolves.toEqual([
+      {
+        reason: expect.objectContaining({ message: "simulated acceptance failure" }),
+        status: "rejected",
+      },
+      {
+        reason: expect.objectContaining({ message: "simulated acceptance failure" }),
+        status: "rejected",
+      },
+    ]);
+    expect(duplicateOperation).not.toHaveBeenCalled();
 
     const retryOperation = vi.fn(async () => true);
     await expect(

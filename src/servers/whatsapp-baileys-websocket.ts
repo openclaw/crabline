@@ -128,6 +128,7 @@ type PendingWhatsAppAcknowledgement = {
 export class WhatsAppSignalBundleStore {
   readonly #acknowledgedMessageIds = new Map<string, true>();
   readonly #bundles = new Map<string, MockSignalBundle>();
+  readonly #inFlightMessageAcceptances = new Map<string, Promise<boolean>>();
   readonly #lidByPhoneNumber = new Map<string, string>();
   readonly #pendingMessageAcceptances = new Map<string, Promise<void>>();
   readonly #pendingAcknowledgements = new Map<string, PendingWhatsAppAcknowledgement>();
@@ -167,43 +168,59 @@ export class WhatsAppSignalBundleStore {
   }
 
   async acceptMessageOnce(messageKey: string, operation: () => Promise<boolean>): Promise<boolean> {
-    return await this.#runSerialized(this.#pendingMessageAcceptances, "messages", async () => {
-      this.#recoverExpiredPendingAcknowledgements();
-      if (this.#pendingAcknowledgements.has(messageKey)) {
-        return true;
-      }
-      if (this.#acknowledgedMessageIds.delete(messageKey)) {
-        this.#acknowledgedMessageIds.set(messageKey, true);
-        return true;
-      }
-      if (this.#pendingAcknowledgements.size >= this.maxPendingAcknowledgements) {
-        throw new Error(
-          `WhatsApp pending acknowledgement limit exceeded (${this.maxPendingAcknowledgements}).`,
-        );
-      }
-      const pendingAcknowledgement: PendingWhatsAppAcknowledgement = {
-        acceptedAt: undefined,
-        acknowledged: false,
-      };
-      this.#pendingAcknowledgements.set(messageKey, pendingAcknowledgement);
-      try {
-        const accepted = await operation();
-        if (!accepted) {
-          this.#pendingAcknowledgements.delete(messageKey);
-          return false;
+    const inFlightAcceptance = this.#inFlightMessageAcceptances.get(messageKey);
+    if (inFlightAcceptance) {
+      return await inFlightAcceptance;
+    }
+    const acceptance = this.#runSerialized(
+      this.#pendingMessageAcceptances,
+      "messages",
+      async () => {
+        this.#recoverExpiredPendingAcknowledgements();
+        if (this.#pendingAcknowledgements.has(messageKey)) {
+          return true;
         }
-        if (pendingAcknowledgement.acknowledged) {
-          this.#pendingAcknowledgements.delete(messageKey);
-          this.#rememberAcknowledgedMessage(messageKey);
-        } else {
-          pendingAcknowledgement.acceptedAt = this.now();
+        if (this.#acknowledgedMessageIds.delete(messageKey)) {
+          this.#acknowledgedMessageIds.set(messageKey, true);
+          return true;
         }
-        return true;
-      } catch (error) {
-        this.#pendingAcknowledgements.delete(messageKey);
-        throw error;
+        if (this.#pendingAcknowledgements.size >= this.maxPendingAcknowledgements) {
+          throw new Error(
+            `WhatsApp pending acknowledgement limit exceeded (${this.maxPendingAcknowledgements}).`,
+          );
+        }
+        const pendingAcknowledgement: PendingWhatsAppAcknowledgement = {
+          acceptedAt: undefined,
+          acknowledged: false,
+        };
+        this.#pendingAcknowledgements.set(messageKey, pendingAcknowledgement);
+        try {
+          const accepted = await operation();
+          if (!accepted) {
+            this.#pendingAcknowledgements.delete(messageKey);
+            return false;
+          }
+          if (pendingAcknowledgement.acknowledged) {
+            this.#pendingAcknowledgements.delete(messageKey);
+            this.#rememberAcknowledgedMessage(messageKey);
+          } else {
+            pendingAcknowledgement.acceptedAt = this.now();
+          }
+          return true;
+        } catch (error) {
+          this.#pendingAcknowledgements.delete(messageKey);
+          throw error;
+        }
+      },
+    );
+    this.#inFlightMessageAcceptances.set(messageKey, acceptance);
+    try {
+      return await acceptance;
+    } finally {
+      if (this.#inFlightMessageAcceptances.get(messageKey) === acceptance) {
+        this.#inFlightMessageAcceptances.delete(messageKey);
       }
-    });
+    }
   }
 
   markMessageAcknowledged(peerJid: string, messageId: string): void {
