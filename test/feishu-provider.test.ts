@@ -407,6 +407,24 @@ describe("Feishu webhook normalizer", () => {
     ).toThrow(/message\.content/u);
   });
 
+  it("rejects malformed JSON message content instead of treating it as plaintext", () => {
+    const payload = {
+      event: {
+        message: {
+          chat_id: "oc_abc123",
+          content: "{not-json",
+          message_id: "om_message123",
+          message_type: "text",
+        },
+      },
+    };
+
+    expect(handleFeishuWebhookPayload(payload)).toBeUndefined();
+    expect(() => normalizeFeishuWebhookPayload(payload)).toThrow(
+      "Feishu message.content must be valid JSON",
+    );
+  });
+
   it("rejects stale callbacks", async () => {
     const config = await createLocalMockConfig("feishu", "/feishu/webhook");
     const encryptKey = "encrypt-key";

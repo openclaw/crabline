@@ -69,6 +69,9 @@ export function handleFeishuWebhookPayload(payload: unknown): Response | undefin
     }
     const messageType = optionalString(message, "message_type");
     const text = parseFeishuText(optionalString(message, "content"));
+    if (text === null) {
+      return undefined;
+    }
     if (messageType !== "text" || !text) {
       return new Response(null, { status: 200 });
     }
@@ -252,6 +255,11 @@ export function normalizeFeishuWebhookPayload(payload: unknown) {
   const rootId = optionalString(message, "root_id");
   const rawContent = optionalString(message, "content");
   const text = parseFeishuText(rawContent);
+  if (text === null) {
+    throw new CrablineError("Feishu message.content must be valid JSON", {
+      kind: "inbound",
+    });
+  }
   if (messageType !== "text") {
     throw new CrablineError("Feishu event payload requires message.message_type=text", {
       kind: "inbound",
@@ -283,7 +291,7 @@ export function normalizeFeishuWebhookPayload(payload: unknown) {
   };
 }
 
-function parseFeishuText(content: string | undefined): string | undefined {
+function parseFeishuText(content: string | undefined): string | null | undefined {
   if (!content) {
     return undefined;
   }
@@ -294,7 +302,7 @@ function parseFeishuText(content: string | undefined): string | undefined {
     }
     return undefined;
   } catch {
-    return content;
+    return null;
   }
 }
 
