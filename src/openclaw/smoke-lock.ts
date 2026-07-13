@@ -533,15 +533,8 @@ function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): 
   return ageMs >= -runtime.leaseMs && ageMs <= runtime.leaseMs;
 }
 
-function isRetiredCompatibilityMarker(record: SmokeLockRecord): boolean {
-  return (
-    isRenewableOwner(record.owner) && record.owner.createdAtMs === 1 && record.renewedAtMs <= 1
-  );
-}
-
 function needsLiveOwnerConfirmation(record: SmokeLockRecord, runtime: SmokeLockRuntime): boolean {
   return (
-    !isRetiredCompatibilityMarker(record) &&
     isRenewableOwner(record.owner) &&
     runtime.isProcessAlive(record.owner.pid) &&
     !hasProcessIdentityMismatch(record.owner, runtime) &&
@@ -700,7 +693,27 @@ async function assertCompatibilityMarkerOwned(params: {
   }
 }
 
-async function retireCompatibilityMarker(handle: FileHandle): Promise<void> {
+async function retireCompatibilityMarker(
+  handle: FileHandle,
+  owner: RenewableSmokeLockOwner,
+): Promise<void> {
+  const retiredOwner: RenewableSmokeLockOwner = {
+    ...owner,
+    createdAtMs: 1,
+    pid: MAX_PROCESS_ID,
+    ...(owner.processIdentity ? { processIdentity: "retired" } : {}),
+    processStartedAtMs: 1,
+  };
+  const originalBytes = Buffer.byteLength(`${JSON.stringify(owner)}\n`, "utf8");
+  const retiredJson = JSON.stringify(retiredOwner);
+  const retiredBytes = Buffer.byteLength(retiredJson, "utf8") + 1;
+  const targetBytes = Math.max(originalBytes, retiredBytes);
+  const paddingBytes = targetBytes - retiredBytes;
+  const retiredContents = `${retiredJson}${" ".repeat(paddingBytes)}\n`;
+  const written = await handle.write(retiredContents, 0, "utf8");
+  if (written.bytesWritten !== targetBytes) {
+    throw new Error("OpenClaw Crabline smoke lock compatibility marker retirement was incomplete.");
+  }
   const retiredAt = new Date(1);
   await handle.utimes(retiredAt, retiredAt);
   await handle.sync();
@@ -1204,7 +1217,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       await securedDirectory.assertIdentityAt(lockDirectory);
       const installed = await readLockRecord(lockDirectory);
       if (installed.kind !== "record" || installed.record.owner.token !== token) {
-        await retireCompatibilityMarker(markerHandle);
+        await retireCompatibilityMarker(markerHandle, compatibilityOwner);
         await markerHandle.close();
         await fs.rm(ownerCandidate.candidateDirectory, { force: true, recursive: true });
         continue;
@@ -1225,7 +1238,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         } else {
           await fs.rm(ownerCandidate.candidateDirectory, { force: true, recursive: true });
         }
-        await retireCompatibilityMarker(markerHandle);
+        await retireCompatibilityMarker(markerHandle, compatibilityOwner);
       } catch (caughtCleanupError) {
         cleanupError = caughtCleanupError;
       }
@@ -1268,7 +1281,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
       }
       try {
-        await retireCompatibilityMarker(markerHandle);
+        await retireCompatibilityMarker(markerHandle, compatibilityOwner);
       } finally {
         await markerHandle.close();
       }
@@ -1294,7 +1307,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     let heartbeat: HeartbeatController;
     const retireMarker = async () => {
       if (!markerRetired) {
-        await retireCompatibilityMarker(markerHandle);
+        await retireCompatibilityMarker(markerHandle, compatibilityOwner);
         markerRetired = true;
       }
       if (!markerClosed) {
