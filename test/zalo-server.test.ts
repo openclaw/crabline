@@ -1,4 +1,10 @@
-import { Agent, createServer, ServerResponse, type ClientRequest } from "node:http";
+import {
+  Agent,
+  createServer,
+  request as httpRequest,
+  ServerResponse,
+  type ClientRequest,
+} from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -344,6 +350,68 @@ describe("Zalo local provider server", () => {
 
     releaseFirst();
     expect((await first).status).toBe(200);
+  });
+
+  it("preserves inbound arrival order across concurrent body parsing", async () => {
+    const server = await startZaloServer({
+      adminToken: "admin",
+      maxPendingInboundEvents: 2,
+    });
+    servers.push(server);
+    const firstBody = JSON.stringify({
+      chatId: "chat-1",
+      senderId: "user-1",
+      text: "first",
+    });
+    const firstResponse = new Promise<{ status: number }>((resolve, reject) => {
+      const request = httpRequest(
+        server.manifest.endpoints.adminInboundUrl,
+        {
+          headers: {
+            "content-type": "application/json",
+            "x-crabline-admin-token": "admin",
+          },
+          method: "POST",
+        },
+        (response) => {
+          response.once("error", reject);
+          response.once("end", () => {
+            resolve({
+              status: response.statusCode ?? 0,
+            });
+          });
+          response.resume();
+        },
+      );
+      request.once("error", reject);
+      request.flushHeaders();
+      request.write(firstBody.slice(0, -1));
+
+      setTimeout(() => request.end(firstBody.slice(-1)), 100);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    let secondSettled = false;
+    const secondResponse = fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "second" }),
+      headers: adminHeaders(server),
+      method: "POST",
+    }).finally(() => {
+      secondSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(secondSettled).toBe(false);
+    expect((await firstResponse).status).toBe(200);
+    expect((await secondResponse).status).toBe(200);
+
+    for (const text of ["first", "second"]) {
+      const response = await fetch(
+        `${server.manifest.baseUrl}/bot${server.manifest.botToken}/getUpdates?timeout=0`,
+      );
+      await expect(response.json()).resolves.toMatchObject({
+        result: { message: { text } },
+      });
+    }
   });
 
   it("rejects oversized or header-unsafe webhook secrets", async () => {
