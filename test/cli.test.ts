@@ -362,18 +362,84 @@ describe("cli", () => {
     expect(startServer).not.toHaveBeenCalled();
   });
 
-  it("loads serve secrets from env while keeping flags authoritative", async () => {
+  it("documents safe serve credential ingress without advertising secret flags", async () => {
+    const captured = await captureWrites(async () => {
+      expect(await runCli(["node", "crabline", "serve", "--help"])).toBe(0);
+    });
+
+    const help = captured.stdout.join("");
+    expect(help).toContain("--credentials-fd <fd>");
+    expect(help).toContain("accessToken, adminToken, botToken, signingSecret");
+    expect(help).toContain("CRABLINE_ACCESS_TOKEN");
+    expect(help).not.toContain("--access-token");
+    expect(help).not.toContain("--admin-token");
+    expect(help).not.toContain("--bot-token");
+    expect(help).not.toContain("--signing-secret");
+  });
+
+  it("rejects command-line credential values without echoing them", async () => {
+    const unsafeArguments = [
+      ["--access-token", "access-value"],
+      [["--access-token", "access-equals-value"].join("=")],
+      ["--admin-token", "admin-value"],
+      [["--admin-token", "admin-equals-value"].join("=")],
+      ["--bot-token", "bot-value"],
+      [["--bot-token", "bot-equals-value"].join("=")],
+      ["--signing-secret", "signing-value"],
+      [["--signing-secret", "signing-equals-value"].join("=")],
+    ];
+
+    const captured = await captureWrites(async () => {
+      for (const args of unsafeArguments) {
+        expect(await runCli(["node", "crabline", "serve", "slack", "--once", ...args])).toBe(10);
+      }
+    });
+
+    const stderr = captured.stderr.join("");
+    expect(stderr).toContain("no longer accepts credential values in command-line arguments");
+    for (const sentinel of [
+      "access-value",
+      "access-equals-value",
+      "admin-value",
+      "admin-equals-value",
+      "bot-value",
+      "bot-equals-value",
+      "signing-value",
+      "signing-equals-value",
+    ]) {
+      expect(stderr).not.toContain(sentinel);
+    }
+  });
+
+  it("loads serve secrets from a bounded file descriptor over env", async () => {
     vi.stubEnv("CRABLINE_ACCESS_TOKEN", "example");
     vi.stubEnv("CRABLINE_ADMIN_TOKEN", "fake");
     vi.stubEnv("CRABLINE_BOT_TOKEN", "sample");
     vi.stubEnv("CRABLINE_SIGNING_SECRET", "test-token-placeholder");
+    const directory = await createTempDir();
+    directories.push(directory);
+    const credentialsPath = path.join(directory, "credentials.json");
+    const fdAccess = ["fd", "access"].join("-");
+    const fdAdmin = ["fd", "admin"].join("-");
+    const fdBot = ["fd", "bot"].join("-");
+    const fdSigning = ["fd", "signing"].join("-");
+    await writeText(
+      credentialsPath,
+      JSON.stringify({
+        accessToken: fdAccess,
+        adminToken: fdAdmin,
+        botToken: fdBot,
+        signingSecret: fdSigning,
+      }),
+    );
+    const credentialsHandle = await fs.open(credentialsPath, "r");
     const startServer = vi.fn(
       async (_params: StartCrablineServerParams): Promise<StartedCrablineServer> => ({
         async close() {},
         manifest: {
-          adminToken: "fake",
+          adminToken: fdAdmin,
           baseUrl: "http://127.0.0.1:12345",
-          botToken: "placeholder",
+          botToken: fdBot,
           endpoints: {
             adminInboundUrl: "http://127.0.0.1:12345/crabline/slack/inbound",
             apiRoot: "http://127.0.0.1:12345/api/",
@@ -381,38 +447,90 @@ describe("cli", () => {
           },
           env: {
             SLACK_API_URL: "http://127.0.0.1:12345/api/",
-            SLACK_BOT_TOKEN: "placeholder",
-            SLACK_SIGNING_SECRET: "test-token-placeholder",
+            SLACK_BOT_TOKEN: fdBot,
+            SLACK_SIGNING_SECRET: fdSigning,
           },
           provider: "slack" as const,
           recorderPath: "/tmp/slack.jsonl",
-          signingSecret: "test-token-placeholder",
+          signingSecret: fdSigning,
           version: 1 as const,
         },
       }),
     );
     const program = createProgram(() => undefined, { startServer });
-    await captureWrites(async () => {
-      await program.parseAsync([
-        "node",
-        "crabline",
-        "--json",
-        "serve",
-        "slack",
-        "--bot-token",
-        "placeholder",
-        "--once",
-      ]);
-    });
+    try {
+      await captureWrites(async () => {
+        await program.parseAsync([
+          "node",
+          "crabline",
+          "--json",
+          "serve",
+          "slack",
+          "--credentials-fd",
+          String(credentialsHandle.fd),
+          "--once",
+        ]);
+      });
+    } finally {
+      await credentialsHandle.close();
+    }
 
     expect(startServer).toHaveBeenCalledWith(
       expect.objectContaining({
-        adminToken: "fake",
-        botToken: "placeholder",
+        adminToken: fdAdmin,
+        botToken: fdBot,
         channel: "slack",
-        signingSecret: "test-token-placeholder",
+        signingSecret: fdSigning,
       }),
     );
+  });
+
+  it("rejects malformed credential streams without echoing their contents", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const credentialsPath = path.join(directory, "credentials.json");
+    const sentinel = "credential-stream-secret";
+    await writeText(credentialsPath, `{"adminToken":"${sentinel}"`);
+    const credentialsHandle = await fs.open(credentialsPath, "r");
+    const captured = await captureWrites(async () => {
+      expect(
+        await runCli([
+          "node",
+          "crabline",
+          "serve",
+          "slack",
+          "--once",
+          "--credentials-fd",
+          String(credentialsHandle.fd),
+        ]),
+      ).toBe(10);
+    }).finally(async () => await credentialsHandle.close());
+
+    expect(captured.stderr.join("")).toContain("Serve credentials input must be valid JSON.");
+    expect(captured.stderr.join("")).not.toContain(sentinel);
+  });
+
+  it("bounds credential streams before parsing them", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const credentialsPath = path.join(directory, "credentials.json");
+    await writeText(credentialsPath, JSON.stringify({ adminToken: "x".repeat(64 * 1024) }));
+    const credentialsHandle = await fs.open(credentialsPath, "r");
+    const captured = await captureWrites(async () => {
+      expect(
+        await runCli([
+          "node",
+          "crabline",
+          "serve",
+          "slack",
+          "--once",
+          "--credentials-fd",
+          String(credentialsHandle.fd),
+        ]),
+      ).toBe(10);
+    }).finally(async () => await credentialsHandle.close());
+
+    expect(captured.stderr.join("")).toContain("Serve credentials JSON exceeds 65536 bytes.");
   });
 
   it("isolates exit codes across repeated invocations", async () => {
@@ -1439,6 +1557,8 @@ describe("cli", () => {
     const directory = await createTempDir();
     directories.push(directory);
     const captured = await captureWrites(async () => {
+      vi.stubEnv("CRABLINE_ADMIN_TOKEN", "fake");
+      vi.stubEnv("CRABLINE_BOT_TOKEN", "sample");
       expect(
         await runCli([
           "node",
@@ -1446,14 +1566,12 @@ describe("cli", () => {
           "serve",
           "telegram",
           "--once",
-          "--admin-token",
-          "fake",
-          "--bot-token",
-          "sample",
           "--recorder",
           path.join(directory, "redacted.jsonl"),
         ]),
       ).toBe(0);
+      vi.stubEnv("CRABLINE_ADMIN_TOKEN", "example");
+      vi.stubEnv("CRABLINE_ACCESS_TOKEN", "placeholder");
       expect(
         await runCli([
           "node",
@@ -1461,14 +1579,11 @@ describe("cli", () => {
           "serve",
           "whatsapp",
           "--once",
-          "--admin-token",
-          "example",
-          "--access-token",
-          "placeholder",
           "--recorder",
           path.join(directory, "whatsapp-redacted.jsonl"),
         ]),
       ).toBe(0);
+      vi.stubEnv("CRABLINE_BOT_TOKEN", "placeholder");
       expect(
         await runCli([
           "node",
@@ -1477,10 +1592,6 @@ describe("cli", () => {
           "telegram",
           "--once",
           "--show-secrets",
-          "--admin-token",
-          "example",
-          "--bot-token",
-          "placeholder",
           "--recorder",
           path.join(directory, "visible.jsonl"),
         ]),
@@ -1501,6 +1612,7 @@ describe("cli", () => {
   it("prints a Telegram server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);
+    vi.stubEnv("CRABLINE_ADMIN_TOKEN", "test-admin-token");
     const readyFile = path.join(directory, ".crabline", "telegram-server.json");
     await fs.mkdir(path.dirname(readyFile), { recursive: true });
     await fs.writeFile(readyFile, "stale\n", { mode: 0o644 });
@@ -1515,8 +1627,6 @@ describe("cli", () => {
           "--once",
           "--ready-file",
           readyFile,
-          "--admin-token",
-          "test-admin-token",
           "--recorder",
           path.join(directory, "telegram.jsonl"),
         ]),
@@ -1543,6 +1653,8 @@ describe("cli", () => {
   it("prints a Zalo server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);
+    vi.stubEnv("CRABLINE_ADMIN_TOKEN", "test-admin-token");
+    vi.stubEnv("CRABLINE_BOT_TOKEN", "test-token-placeholder");
     const readyFile = path.join(directory, ".crabline", "zalo-server.json");
     const captured = await captureWrites(async () => {
       expect(
@@ -1555,10 +1667,6 @@ describe("cli", () => {
           "--once",
           "--ready-file",
           readyFile,
-          "--admin-token",
-          "test-admin-token",
-          "--bot-token",
-          "test-token-placeholder",
           "--recorder",
           path.join(directory, "zalo.jsonl"),
         ]),
@@ -1589,6 +1697,9 @@ describe("cli", () => {
   it("prints a Slack server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);
+    vi.stubEnv("CRABLINE_ADMIN_TOKEN", "test-admin-token");
+    vi.stubEnv("CRABLINE_BOT_TOKEN", "xoxb-test");
+    vi.stubEnv("CRABLINE_SIGNING_SECRET", "test-signing-secret");
     const readyFile = path.join(directory, ".crabline", "slack-server.json");
     const captured = await captureWrites(async () => {
       expect(
@@ -1601,12 +1712,6 @@ describe("cli", () => {
           "--once",
           "--ready-file",
           readyFile,
-          "--admin-token",
-          "test-admin-token",
-          "--bot-token",
-          "xoxb-test",
-          "--signing-secret",
-          "test-signing-secret",
           "--recorder",
           path.join(directory, "slack.jsonl"),
         ]),
@@ -1635,6 +1740,8 @@ describe("cli", () => {
   it("prints a WhatsApp server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);
+    vi.stubEnv("CRABLINE_ADMIN_TOKEN", "test-whatsapp-admin-token");
+    vi.stubEnv("CRABLINE_ACCESS_TOKEN", "test-whatsapp-access-token");
     const readyFile = path.join(directory, ".crabline", "whatsapp-server.json");
     const captured = await captureWrites(async () => {
       expect(
@@ -1647,10 +1754,6 @@ describe("cli", () => {
           "--once",
           "--ready-file",
           readyFile,
-          "--admin-token",
-          "test-whatsapp-admin-token",
-          "--access-token",
-          "test-whatsapp-access-token",
           "--recorder",
           path.join(directory, "whatsapp.jsonl"),
         ]),

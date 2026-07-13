@@ -15,6 +15,7 @@
 - Round-trip every supported WhatsApp handshake protobuf variant without dropping fields.
 - Reject unsupported Zalo thread targets during normalization, matching OpenClaw bridge execution.
 - Enforce Discord uint64 snowflakes and Telegram safe-integer chat and topic identifiers.
+- Reject credential-bearing CLI arguments and add bounded stdin or inherited-fd ingress for `serve` secrets.
 - Bound shared JSON ingress, reject non-object payloads precisely, and strictly normalize loopback IP addresses.
 - Commit Signal sends only after recorder publication, emit canonical native source numbers, and canonicalize OpenClaw outbound recipient identity.
 - Harden WhatsApp send evidence, direct-JID correlation, cursor and cleanup races, and cleartext listener exposure.
