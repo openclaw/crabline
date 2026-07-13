@@ -209,6 +209,12 @@ describe("Zalo local provider server", () => {
                     "http://fixture-user:placeholder@example.com/hook?api_key=placeholder",
                 },
               ],
+              invalidCallbackUrl: [
+                "http://",
+                "ambiguous-user",
+                ":",
+                "ambiguous-credential-placeholder",
+              ].join(""),
             },
             secret_token: "test-auth-token",
             url: webhookUrl.href,
@@ -291,6 +297,9 @@ describe("Zalo local provider server", () => {
       expect(recorder).toContain(
         '"callbackUrl":"http://<redacted>@example.com/hook?api_key=<redacted>"',
       );
+      expect(recorder).toContain('"invalidCallbackUrl":"<redacted>"');
+      expect(recorder).not.toContain("ambiguous-user");
+      expect(recorder).not.toContain("ambiguous-credential-placeholder");
       for (const secret of ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]) {
         expect(recorder).not.toContain(secret);
       }
@@ -301,7 +310,7 @@ describe("Zalo local provider server", () => {
     }
   });
 
-  it("bounds recursive redaction and hides nested camel-case credentials", async () => {
+  it("bounds recursive redaction and hides nested case-folded credentials", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const recorderPath = path.join(directory, "zalo-redaction.jsonl");
@@ -315,6 +324,8 @@ describe("Zalo local provider server", () => {
     for (let depth = 0; depth < 64; depth += 1) {
       deepState = { child: deepState };
     }
+    const lowerCasePasswordKey = ["database", "password"].join("");
+    const upperCaseClientSecretKey = ["OAUTH", "CLIENT", "SECRET"].join("");
 
     const response = await fetch(
       `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
@@ -323,8 +334,10 @@ describe("Zalo local provider server", () => {
           chat_id: "chat-1",
           diagnostics: {
             botToken: "test-token-placeholder",
+            [lowerCasePasswordKey]: "lowercase-credential-placeholder",
             nested: [{ databasePassword: "test-token-placeholder" }],
             oauthClientSecret: "test-token-placeholder",
+            [upperCaseClientSecretKey]: "uppercase-credential-placeholder",
           },
           state: deepState,
           text: "hello",
@@ -344,11 +357,18 @@ describe("Zalo local provider server", () => {
     const oauthClientSecretKey = ["oauth", "Client", "Secret"].join("");
     expect(recorded.body?.diagnostics).toMatchObject({
       [botTokenKey]: "<redacted>",
+      [lowerCasePasswordKey]: "<redacted>",
       nested: [{ [databasePasswordKey]: "<redacted>" }],
       [oauthClientSecretKey]: "<redacted>",
+      [upperCaseClientSecretKey]: "<redacted>",
     });
     expect(recorder).toContain('"child":"<redacted>"');
-    for (const secret of ["test-token-placeholder", "beyond-redaction-depth"]) {
+    for (const secret of [
+      "test-token-placeholder",
+      "beyond-redaction-depth",
+      "lowercase-credential-placeholder",
+      "uppercase-credential-placeholder",
+    ]) {
       expect(recorder).not.toContain(secret);
     }
   });

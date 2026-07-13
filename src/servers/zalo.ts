@@ -194,8 +194,8 @@ function isSensitiveParam(name: string): boolean {
   const canonicalName = normalizedName.replace(/[^A-Za-z0-9]/gu, "").toLowerCase();
   return (
     SENSITIVE_PARAM_NAMES.has(canonicalName) ||
-    /[a-z0-9](?:Credential|Credentials|Key|Password|Passwd|Secret|Signature|Token)s?$/u.test(
-      normalizedName,
+    /[a-z0-9](?:credentials?|keys?|passwords?|passwds?|secrets?|signatures?|tokens?)$/u.test(
+      canonicalName,
     ) ||
     /(?:^|[_-])(?:access[_-]?token|api[_-]?key|authorization|key|password|secret|signature|token)(?:$|[_-])/iu.test(
       normalizedName,
@@ -254,6 +254,9 @@ function redactMalformedUrlCredentials(value: string): string {
     /^(\s*)((?:[a-z][a-z0-9+.-]*:)?\/\/)[^/?#]*@/iu,
     "$1$2<redacted>@",
   );
+  if (credentialRedacted === value) {
+    return "<redacted>";
+  }
   const queryStart = credentialRedacted.indexOf("?");
   const fragmentStart = credentialRedacted.indexOf("#", queryStart + 1);
   if (queryStart < 0 || (fragmentStart >= 0 && fragmentStart < queryStart)) {
