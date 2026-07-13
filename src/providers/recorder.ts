@@ -104,6 +104,25 @@ function createIncrementalReadState(): IncrementalReadState {
   };
 }
 
+function snapshotIncrementalReadState(state: IncrementalReadState): IncrementalReadState {
+  return {
+    ...state,
+    identity: state.identity ? { ...state.identity } : undefined,
+  };
+}
+
+function restoreIncrementalReadState(
+  state: IncrementalReadState,
+  snapshot: IncrementalReadState,
+): void {
+  state.caughtUp = snapshot.caughtUp;
+  state.continuity = snapshot.continuity;
+  state.generation = snapshot.generation;
+  state.identity = snapshot.identity;
+  state.offset = snapshot.offset;
+  state.pending = snapshot.pending;
+}
+
 export function createRecordedInboundCursor(): RecordedInboundCursor {
   return {
     buffered: [],
@@ -614,6 +633,7 @@ async function readRecordedInboundAppend(
   filePath: string,
   state: IncrementalReadState,
 ): Promise<RecordedInboundEnvelope[]> {
+  const snapshot = snapshotIncrementalReadState(state);
   let handle;
 
   try {
@@ -671,6 +691,9 @@ async function readRecordedInboundAppend(
     }
     state.caughtUp = reachedUnexpectedEof || position >= stats.size;
     return events;
+  } catch (error) {
+    restoreIncrementalReadState(state, snapshot);
+    throw error;
   } finally {
     await handle.close();
   }
