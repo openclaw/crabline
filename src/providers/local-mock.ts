@@ -198,13 +198,18 @@ function normalizeWebhookPayload(payload: unknown): MockWebhookPayload {
     if (envelope.authorIsBot !== undefined && typeof envelope.authorIsBot !== "boolean") {
       throw new CrablineError(`${label}.authorIsBot must be a boolean`, { kind: "inbound" });
     }
-    for (const field of ["id", "text", "threadId"] as const) {
+    for (const field of ["id", "threadId"] as const) {
       const value = envelope[field];
       if (value !== undefined && (typeof value !== "string" || value.length === 0)) {
         throw new CrablineError(`${label}.${field} must be a non-empty string`, {
           kind: "inbound",
         });
       }
+    }
+    if (envelope.text !== undefined && typeof envelope.text !== "string") {
+      throw new CrablineError(`${label}.text must be a string`, {
+        kind: "inbound",
+      });
     }
   }
 
@@ -536,7 +541,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       const id = payload.message?.id ?? payload.id ?? createMessageId(this.platform);
       const threadId = payload.message?.threadId ?? payload.threadId;
       const text = payload.message?.text ?? payload.text;
-      if (!threadId || !text) {
+      if (threadId === undefined || text === undefined) {
         return respond(
           new Response("payload requires message.threadId and message.text", { status: 400 }),
         );

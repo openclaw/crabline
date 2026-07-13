@@ -1,4 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   createMsTeamsWebhookAuthenticator,
@@ -7,10 +8,20 @@ import {
 } from "../src/providers/builtin/msteams.js";
 import {
   createLocalMockConfig,
+  createProviderContext,
   runLocalMockProviderContract,
 } from "./local-mock-provider-helpers.js";
 
 const conversationId = "a:opaque-conversation-id";
+
+function endpointFromDetails(details: string[]): string {
+  const detail = details.find((entry) => entry.includes("http://"));
+  if (!detail) {
+    throw new Error(`No Microsoft Teams webhook endpoint found in ${details.join("\n")}`);
+  }
+  return detail.replace(/^.*?(https?:\/\/\S+)$/u, "$1");
+}
+
 describe("Microsoft Teams webhook authentication", () => {
   it("requires the native msteams activity channel", () => {
     expect(() =>
@@ -27,6 +38,12 @@ describe("Microsoft Teams webhook authentication", () => {
     expect(() => normalizeMsTeamsWebhookPayload({ type: "conversationUpdate" })).toThrow(
       /type=message/u,
     );
+    expect(() =>
+      normalizeMsTeamsWebhookPayload({
+        message: { text: "nested", threadId: conversationId },
+        type: "message",
+      }),
+    ).toThrow(/channelId=msteams/u);
   });
 
   it("requires Bot Connector auth for externally reachable webhooks", async () => {
@@ -219,6 +236,72 @@ describe("Microsoft Teams webhook authentication", () => {
         body,
       ),
     ).resolves.toMatchObject({ status: 401 });
+  });
+
+  it("acknowledges authenticated non-message activities without recording them", async () => {
+    const config = await createLocalMockConfig("msteams", "/msteams/webhook");
+    config.msteams!.appId = "teams-app-id";
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = Date.now();
+    const jwk = keys.publicKey.export({ format: "jwk" });
+    const provider = new MsTeamsProviderAdapter("msteams", config, "crabline", {
+      env: {},
+      fetch: async (input: string | URL | Request) =>
+        String(input).includes("openidconfiguration")
+          ? Response.json({ jwks_uri: "https://login.example.test/keys" })
+          : Response.json({ keys: [{ ...jwk, kid: "test-key" }] }),
+      now: () => now,
+    });
+    try {
+      const endpoint = endpointFromDetails(
+        (
+          await provider.probe(
+            createProviderContext("msteams", config, {
+              id: conversationId,
+              metadata: {},
+            }),
+          )
+        ).details,
+      );
+      const serviceUrl = "https://smba.trafficmanager.net/emea/";
+      const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "test-key" })).toString(
+        "base64url",
+      );
+      const jwtPayload = Buffer.from(
+        JSON.stringify({
+          aud: "teams-app-id",
+          exp: Math.floor(now / 1000) + 60,
+          iss: "https://api.botframework.com",
+          serviceurl: serviceUrl,
+        }),
+      ).toString("base64url");
+      const signature = sign(
+        "RSA-SHA256",
+        Buffer.from(`${header}.${jwtPayload}`),
+        keys.privateKey,
+      ).toString("base64url");
+      const response = await fetch(endpoint, {
+        body: JSON.stringify({
+          channelId: "msteams",
+          conversation: { id: conversationId },
+          message: { text: "must not record", threadId: conversationId },
+          serviceUrl,
+          type: "conversationUpdate",
+        }),
+        headers: {
+          authorization: `Bearer ${header}.${jwtPayload}.${signature}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(readFile(config.msteams!.recorder.path!, "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await provider.cleanup();
+    }
   });
 });
 

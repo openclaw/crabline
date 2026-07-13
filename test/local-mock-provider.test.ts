@@ -442,6 +442,48 @@ describe("local mock provider", () => {
     await expect(response.text()).resolves.toContain("payload.message.text");
   });
 
+  it("records empty webhook text instead of treating it as missing", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "empty-text.jsonl");
+    let handleRequest: ((request: Request) => Promise<Response>) | undefined;
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handleRequest = params.handle;
+      return {
+        async close() {},
+        endpointUrl: "http://127.0.0.1:43210/slack/events",
+      };
+    });
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+        recorderPath,
+      },
+    });
+    providers.push(provider);
+    await provider.probe(createContext(config));
+
+    const response = await handleRequest!(
+      new Request("http://127.0.0.1:43210/slack/events", {
+        body: JSON.stringify({ text: "", threadId: "C1234567890" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse((await readFile(recorderPath, "utf8")).trim())).toMatchObject({
+      text: "",
+      threadId: "C1234567890",
+    });
+  });
+
   it("does not let client raw.direction hide inbound events", async () => {
     const directory = await createTempDir();
     directories.push(directory);

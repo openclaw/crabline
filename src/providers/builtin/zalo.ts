@@ -63,9 +63,10 @@ export function normalizeZaloWebhookPayload(payload: unknown) {
     throw new CrablineError("Zalo webhook payload must be an object", { kind: "inbound" });
   }
 
+  const payloadMessage = optionalRecord(payload, "message");
   if (
-    optionalRecord(payload, "message") &&
-    optionalString(optionalRecord(payload, "message")!, "threadId")
+    optionalString(payload, "threadId") ||
+    (payloadMessage && optionalString(payloadMessage, "threadId"))
   ) {
     return genericMockPayloadWithNativeThread({
       channelRule: ZALO_ID_RULE,

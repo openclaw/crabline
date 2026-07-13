@@ -111,6 +111,33 @@ describe("Matrix webhook normalizer", () => {
     ).toMatchObject({ author: "assistant" });
   });
 
+  it("requires string message fields while allowing an empty body", () => {
+    expect(
+      normalizeMatrixWebhookPayload({
+        content: { body: "", msgtype: "m.text" },
+        event_id: "$empty123:matrix.org",
+        room_id: "!abc123:matrix.org",
+        type: "m.room.message",
+      }),
+    ).toMatchObject({ text: "" });
+    expect(() =>
+      normalizeMatrixWebhookPayload({
+        content: { body: "missing msgtype" },
+        event_id: "$event123:matrix.org",
+        room_id: "!abc123:matrix.org",
+        type: "m.room.message",
+      }),
+    ).toThrow(/content\.msgtype/u);
+    expect(() =>
+      normalizeMatrixWebhookPayload({
+        content: { body: 42, msgtype: "m.text" },
+        event_id: "$event123:matrix.org",
+        room_id: "!abc123:matrix.org",
+        type: "m.room.message",
+      }),
+    ).toThrow(/content\.body/u);
+  });
+
   it("matches local thread replies before native room scoping", () => {
     expect(
       matchesMatrixThread("$event123:matrix.org", "$event123:matrix.org", {
