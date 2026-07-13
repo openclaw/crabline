@@ -533,7 +533,15 @@ export async function runFixtureCommand(params: {
               }
             }
           } catch (error) {
-            lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "inbound", nonce);
+            lastFailure = toFailure(
+              fixture.id,
+              fixture.provider,
+              mode,
+              error,
+              "inbound",
+              nonce,
+              diagnostics,
+            );
             if (abortDrainFailed) {
               break;
             }
@@ -567,7 +575,15 @@ export async function runFixtureCommand(params: {
             providerId: fixture.provider,
           });
         } catch (error) {
-          lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "assertion", nonce);
+          lastFailure = toFailure(
+            fixture.id,
+            fixture.provider,
+            mode,
+            error,
+            "assertion",
+            nonce,
+            diagnostics,
+          );
         }
       }
 
@@ -742,13 +758,14 @@ function toFailure(
   error: unknown,
   fallbackKind: FailureKind,
   nonce?: string,
+  priorDiagnostics: readonly string[] = [],
 ): CommandRunResult {
-  const diagnostics = [ensureErrorMessage(error)];
+  const diagnostics = [...priorDiagnostics, ensureErrorMessage(error)];
   if (error instanceof CrablineError) {
     return {
       diagnostics,
-      exitCode: error.exitCode,
-      failureKind: error.kind,
+      ...(error.hasExplicitExitCode || error.kind ? { exitCode: error.exitCode } : {}),
+      failureKind: error.kind ?? fallbackKind,
       fixtureId,
       mode,
       nonce,
