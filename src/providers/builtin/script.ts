@@ -136,14 +136,11 @@ function windowsProcessTreeTermination(
     "$RootProcess=$AllProcesses | Where-Object { [int]$_.ProcessId -eq $RootProcessId } | Select-Object -First 1",
     "$RootCreated=if($null -ne $RootProcess){([datetime]$RootProcess.CreationDate).ToUniversalTime()}else{$null}",
     "$RootMatches=$null -ne $RootProcess -and $RootCreated -ge $RootNotBefore -and $RootCreated -le $RootObservedBy",
-    "$RootPidReused=$null -ne $RootProcess -and (!$RootExpectedAlive -or !$RootMatches)",
     "$KillRoot=$RootExpectedAlive -and $RootMatches",
     "if($KillRoot){",
     "$Snapshot.Add($RootProcess)",
     '$Visited.Add("$([int]$RootProcess.ProcessId)|$(([datetime]$RootProcess.CreationDate).ToFileTimeUtc())") | Out-Null',
     "$Pending.Enqueue($RootProcess)",
-    "}elseif(!$RootPidReused){",
-    "$Pending.Enqueue([pscustomobject]@{ProcessId=$RootProcessId;CreationDate=$RootNotBefore})",
     "}",
     "while($Pending.Count -gt 0){",
     "$Parent=$Pending.Dequeue()",
@@ -438,7 +435,7 @@ function snapshotCommandValues(
       return undefined;
     }
     if (token.startsWith("-")) {
-      addCommandValueRedactions(substringValues, token);
+      return undefined;
     } else {
       addRedactionRepresentations(substringValues, token);
     }
@@ -1023,6 +1020,12 @@ function watchScript(params: {
       const exit = await waitForChildClose(childClosed);
       if (!exit) {
         await stopChild();
+        if (params.cancelSignal.aborted) {
+          return;
+        }
+        if (params.context.signal?.aborted) {
+          throw params.context.signal.reason ?? new Error("Script watch command aborted.");
+        }
         throw new CrablineError("Script watch command did not close after its output ended.", {
           kind: "connectivity",
         });

@@ -664,6 +664,36 @@ describe("script provider", () => {
     expect(inspect(failure, { depth: null })).not.toContain(sentinel);
   });
 
+  it.each(["--password:unsupported-secret", "-api.unsupported-secret"])(
+    "suppresses diagnostics for unsupported option syntax %s",
+    async (argument) => {
+      const context = await createContext();
+      const sentinel = "unsupported-secret";
+      const failingScript = path.join(
+        path.dirname(context.manifestPath),
+        "send-unsupported-option.mjs",
+      );
+      await writeText(
+        failingScript,
+        `process.stderr.write(${JSON.stringify(sentinel)});process.exitCode=7;`,
+      );
+      context.config.script!.commands.send = `node ${JSON.stringify(failingScript)} ${argument}`;
+      const provider = new ScriptProviderAdapter(context);
+
+      const failure = await provider
+        .send({
+          ...context,
+          mode: "send",
+          nonce: "nonce",
+          text: "payload",
+        })
+        .catch((error: unknown) => error);
+
+      expect(ensureErrorMessage(failure)).toContain("[script diagnostics redacted]");
+      expect(inspect(failure, { depth: null })).not.toContain(sentinel);
+    },
+  );
+
   it("suppresses diagnostics when positional arguments require shell expansion", async () => {
     const context = await createContext();
     const sentinel = "expanded-positional-secret";
