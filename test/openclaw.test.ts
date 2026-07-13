@@ -923,12 +923,18 @@ describe("OpenClaw local provider bridge", () => {
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "thread:-100123/42" }).to).toBe(
       "-100123:topic:42",
     );
-    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@tiny" }).to).toBe(
-      "@tiny",
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@valid" }).to).toBe(
+      "@valid",
     );
-    expect(() => createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@abc" })).toThrow(
-      "Telegram usernames must contain 4-32 letters, digits, or underscores.",
-    );
+    const maxUsername = `@${"a".repeat(32)}`;
+    expect(
+      createOpenClawCrablineAgentDelivery({ manifest, target: `channel:${maxUsername}` }).to,
+    ).toBe(maxUsername);
+    for (const target of ["channel:@tiny", `channel:@${"a".repeat(33)}`]) {
+      expect(() => createOpenClawCrablineAgentDelivery({ manifest, target })).toThrow(
+        "Telegram usernames must contain 5-32 letters, digits, or underscores.",
+      );
+    }
 
     const inbound = createOpenClawCrablineInbound({
       manifest,
@@ -965,7 +971,7 @@ describe("OpenClaw local provider bridge", () => {
         manifest,
         input: {
           conversation: { id: "00042424242", kind: "direct" },
-          senderId: "00042424242",
+          senderId: "42424242",
           text: "canonical numeric ids",
         },
       }),
@@ -974,6 +980,69 @@ describe("OpenClaw local provider bridge", () => {
       providerTargetKey: "42424242",
       stateConversation: { id: "42424242", kind: "direct" },
     });
+    const usernameDirectInbound = createOpenClawCrablineInbound({
+      manifest,
+      input: {
+        conversation: { id: "@alice", kind: "direct" },
+        senderId: "@alice",
+        text: "username direct message",
+      },
+    });
+    expect(usernameDirectInbound).toMatchObject({
+      providerBody: {
+        chatId: expect.stringMatching(/^\d+$/u),
+        fromId: expect.any(Number),
+      },
+      providerTargetKey: expect.stringMatching(/^\d+$/u),
+      stateConversation: {
+        id: expect.stringMatching(/^\d+$/u),
+        kind: "direct",
+      },
+    });
+    expect(String(usernameDirectInbound.providerBody.fromId)).toBe(
+      usernameDirectInbound.providerBody.chatId,
+    );
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          senderId: "bob",
+          text: "mismatched direct identities",
+        },
+      }),
+    ).toThrow("Telegram direct conversation and sender must normalize to the same identity.");
+    const usernameGroupInbound = createOpenClawCrablineInbound({
+      manifest,
+      input: {
+        conversation: { id: "@channelusername", kind: "group" },
+        senderId: "@alice",
+        text: "username group message",
+      },
+    });
+    expect(usernameGroupInbound).toMatchObject({
+      providerBody: {
+        chatId: expect.stringMatching(/^-\d+$/u),
+        fromId: expect.any(Number),
+      },
+      providerTargetKey: expect.stringMatching(/^-\d+$/u),
+      qaTarget: "group:@channelusername",
+      stateConversation: {
+        id: expect.stringMatching(/^-\d+$/u),
+        kind: "group",
+      },
+    });
+    expect(usernameGroupInbound.providerBody.chatId).not.toBe("@channelusername");
+    expect(
+      createOpenClawCrablineInbound({
+        manifest,
+        input: {
+          conversation: { id: "@channelusername", kind: "group" },
+          senderId: "@alice",
+          text: "repeat username group message",
+        },
+      }).providerBody.chatId,
+    ).toBe(usernameGroupInbound.providerBody.chatId);
 
     expect(
       createOpenClawCrablineInbound({
