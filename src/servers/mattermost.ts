@@ -30,7 +30,7 @@ const DEFAULT_WEBSOCKET_AUTHENTICATION_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_WEBSOCKET_BUFFERED_BYTES = 1024 * 1024;
 const DEFAULT_MAX_WEBSOCKET_MESSAGE_BYTES = 64 * 1024;
 const DEFAULT_MAX_UNAUTHENTICATED_WEBSOCKET_CLIENTS = 32;
-const MATTERMOST_ID_PATTERN = /^[a-z0-9]{26}$/u;
+const MATTERMOST_ID_PATTERN = /^[a-z0-9]{26}(?![\s\S])/u;
 
 function resolvePositiveLimit(value: number | undefined, name: string, fallback: number): number {
   if (value === undefined) {
@@ -176,6 +176,10 @@ function readMattermostString(value: unknown): string | undefined {
 
 function readMattermostMessage(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function readMattermostId(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function isMattermostId(value: string): boolean {
@@ -368,8 +372,8 @@ function handleAdminInbound(params: {
       return jsonResponse({ error: `${field} must be a string`, ok: false }, 400);
     }
   }
-  const channelId = readMattermostString(params.body.channelId ?? params.body.channel_id);
-  const senderId = readMattermostString(params.body.senderId ?? params.body.user_id);
+  const channelId = readMattermostId(params.body.channelId ?? params.body.channel_id);
+  const senderId = readMattermostId(params.body.senderId ?? params.body.user_id);
   const text = readMattermostMessage(params.body.text ?? params.body.message);
   if (!channelId || !senderId || !text) {
     return jsonResponse({ error: "channelId, senderId, and text are required", ok: false }, 400);
@@ -383,7 +387,7 @@ function handleAdminInbound(params: {
   if (!isMattermostId(senderId)) {
     return jsonResponse({ error: "senderId must be a 26-character Mattermost ID", ok: false }, 400);
   }
-  const rootId = readMattermostString(params.body.rootId ?? params.body.root_id);
+  const rootId = readMattermostId(params.body.rootId ?? params.body.root_id);
   if (rootId && !isMattermostId(rootId)) {
     return jsonResponse({ error: "rootId must be a 26-character Mattermost ID", ok: false }, 400);
   }

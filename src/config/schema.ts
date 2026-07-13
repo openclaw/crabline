@@ -379,7 +379,7 @@ const TelegramConfigSchema = z.strictObject({
   secretToken: z
     .string()
     .regex(
-      /^[A-Za-z0-9_-]{1,256}$/u,
+      /^[A-Za-z0-9_-]{1,256}(?![\s\S])/u,
       "Telegram secretToken must use 1-256 letters, digits, underscores, or hyphens",
     )
     .optional(),

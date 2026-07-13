@@ -217,6 +217,7 @@ describe("manifest schema", () => {
     const tokenField = ["secret", "Token"].join("");
     for (const invalidValue of [
       "value\r\nx-injected: yes",
+      "value\n",
       `value${String.fromCharCode(0)}`,
       `value${String.fromCharCode(1)}`,
     ]) {
