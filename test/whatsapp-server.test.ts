@@ -980,6 +980,66 @@ describe("whatsapp local provider server", () => {
     expect(events).toHaveLength(1);
   });
 
+  it("commits acknowledgements received while message acceptance is pending", async () => {
+    const receiver = new WhatsAppSignalBundleStore(1, 1);
+    let markAcceptanceStarted!: () => void;
+    const acceptanceStarted = new Promise<void>((resolve) => {
+      markAcceptanceStarted = resolve;
+    });
+    let releaseAcceptance!: (accepted: boolean) => void;
+    const acceptanceBlocked = new Promise<boolean>((resolve) => {
+      releaseAcceptance = resolve;
+    });
+    const acceptance = receiver.acceptMessageOnce("15557654321@s.whatsapp.net\0pending-ack", () => {
+      markAcceptanceStarted();
+      return acceptanceBlocked;
+    });
+    await acceptanceStarted;
+
+    receiver.markMessageAcknowledged("15557654321@s.whatsapp.net", "pending-ack");
+    releaseAcceptance(true);
+    await expect(acceptance).resolves.toBe(true);
+
+    const duplicateOperation = vi.fn(async () => true);
+    await expect(
+      receiver.acceptMessageOnce("15557654321@s.whatsapp.net\0pending-ack", duplicateOperation),
+    ).resolves.toBe(true);
+    expect(duplicateOperation).not.toHaveBeenCalled();
+    await expect(
+      receiver.acceptMessageOnce("15557654321@s.whatsapp.net\0next", async () => true),
+    ).resolves.toBe(true);
+  });
+
+  it("rolls back an early acknowledgement when message acceptance rejects", async () => {
+    const receiver = new WhatsAppSignalBundleStore(1, 1);
+    let markAcceptanceStarted!: () => void;
+    const acceptanceStarted = new Promise<void>((resolve) => {
+      markAcceptanceStarted = resolve;
+    });
+    let rejectAcceptance!: (error: Error) => void;
+    const acceptanceBlocked = new Promise<boolean>((_resolve, reject) => {
+      rejectAcceptance = reject;
+    });
+    const acceptance = receiver.acceptMessageOnce(
+      "15557654321@s.whatsapp.net\0rejected-ack",
+      () => {
+        markAcceptanceStarted();
+        return acceptanceBlocked;
+      },
+    );
+    await acceptanceStarted;
+
+    receiver.markMessageAcknowledged("15557654321@s.whatsapp.net", "rejected-ack");
+    rejectAcceptance(new Error("simulated acceptance failure"));
+    await expect(acceptance).rejects.toThrow("simulated acceptance failure");
+
+    const retryOperation = vi.fn(async () => true);
+    await expect(
+      receiver.acceptMessageOnce("15557654321@s.whatsapp.net\0rejected-ack", retryOperation),
+    ).resolves.toBe(true);
+    expect(retryOperation).toHaveBeenCalledOnce();
+  });
+
   it("recovers expired pending acknowledgement capacity without duplicate delivery", async () => {
     let now = 0;
     const receiver = new WhatsAppSignalBundleStore(1, 1, 2, 100, () => now);
