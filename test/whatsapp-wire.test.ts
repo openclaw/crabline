@@ -76,7 +76,9 @@ describe("WhatsApp X25519 agreement", () => {
     let nativeSharedKeyCalls = 0;
     const curve = createCurve({
       generateKeyPair() {
-        throw new Error("native X25519 unavailable");
+        throw Object.assign(new Error("native X25519 unavailable"), {
+          code: "ERR_OSSL_EVP_UNSUPPORTED",
+        });
       },
       sharedKey() {
         nativeSharedKeyCalls += 1;
@@ -95,7 +97,9 @@ describe("WhatsApp X25519 agreement", () => {
   it("rejects low-order peers when the JS backend derives an all-zero secret", () => {
     const curve = createCurve({
       generateKeyPair() {
-        throw new Error("native X25519 unavailable");
+        throw Object.assign(new Error("native X25519 unavailable"), {
+          code: "ERR_OSSL_EVP_UNSUPPORTED",
+        });
       },
       sharedKey() {
         throw new Error("native shared key should not run");
@@ -111,6 +115,22 @@ describe("WhatsApp X25519 agreement", () => {
     expect(() =>
       curve.sharedKey(RFC_7748_ALICE_PRIVATE, Buffer.concat([Buffer.from([5]), lowOrderPeer])),
     ).toThrow("failed during derivation");
+  });
+
+  it("does not hide unexpected native key generation failures", () => {
+    const generateKeyPair = vi.fn(() => {
+      throw new Error("native entropy source failed");
+    });
+    const curve = createCurve({
+      generateKeyPair,
+      sharedKey() {
+        throw new Error("not reached");
+      },
+    });
+
+    expect(() => curve.generateKeyPair()).toThrow("native entropy source failed");
+    expect(() => curve.generateKeyPair()).toThrow("native entropy source failed");
+    expect(generateKeyPair).toHaveBeenCalledTimes(2);
   });
 });
 

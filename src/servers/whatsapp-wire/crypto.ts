@@ -97,7 +97,10 @@ export function createCurve(nativeBackend: NativeCurveBackend = nativeCurveBacke
       if (nativeAvailable) {
         try {
           return nativeBackend.generateKeyPair();
-        } catch {
+        } catch (error) {
+          if (!isUnsupportedNativeCurveError(error)) {
+            throw error;
+          }
           nativeAvailable = false;
         }
       }
