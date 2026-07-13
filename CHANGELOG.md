@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Fail OpenClaw provider readiness when a successful probe produces no recorder evidence.
+- Require valid OpenClaw readiness recorder evidence and allow unauthenticated loopback callback URLs.
 - Merge repeated WhatsApp handshake message occurrences according to protobuf semantics.
 - Close inherited credential descriptors and preserve runtime failure classification and accepted-send diagnostics.
 - Validate every configured webhook callback independently and gracefully drain admitted provider responses before bounded connection teardown.

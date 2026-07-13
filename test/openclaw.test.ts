@@ -3039,13 +3039,62 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
+  it.each([
+    ["empty", ""],
+    ["whitespace-only", " \n\t\r\n"],
+    ["malformed", "not-json\n"],
+    ["non-record JSON", "null\n42\n[]\n"],
+  ])("fails closed on %s readiness recorder evidence", async (_label, recorderContents) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-invalid-"));
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    const close = vi.fn(async () => undefined);
+    const publishGeneration = vi.fn<typeof publishOpenClawCrablineArtifactGeneration>();
+    const releaseLock = vi.fn(async (lock: { release(): Promise<void> }) => await lock.release());
+    const syncParent = vi.fn(async (unlinkedPath: string) => {
+      await expect(fs.stat(unlinkedPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+    try {
+      await expect(
+        runProviderReadinessWithDependencies(
+          { outputDir, selection },
+          {
+            publishGeneration,
+            releaseLock,
+            startAdapter: async (params) => {
+              await fs.writeFile(params.recorderPath!, recorderContents);
+              return {
+                close,
+                manifest: { ...manifest, recorderPath: params.recorderPath! },
+                probe: async () => ({ ok: true }),
+              } as unknown as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
+            },
+            syncParent,
+          },
+        ),
+      ).rejects.toThrow(
+        "OpenClaw Crabline provider probe produced no valid JSONL recorder evidence.",
+      );
+
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(publishGeneration).not.toHaveBeenCalled();
+      expect(syncParent).toHaveBeenCalledTimes(1);
+      expect(releaseLock).toHaveBeenCalledTimes(1);
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toBeNull();
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps readiness recorder snapshots immutable across later generations", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-snapshots-"));
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     let run = 0;
     const startAdapter = async (params: Parameters<typeof startOpenClawCrablineAdapter>[0]) => {
       const currentRun = ++run;
-      await fs.writeFile(params.recorderPath!, `run-${currentRun}\n`);
+      await fs.writeFile(
+        params.recorderPath!,
+        `${JSON.stringify({ event: "probe", run: currentRun })}\n`,
+      );
       return {
         close: async () => undefined,
         manifest: {
@@ -3063,7 +3112,7 @@ describe("OpenClaw local provider bridge", () => {
       const firstRecorderPath = (first.providerReadiness as { result: { recorderPath: string } })
         .result.recorderPath;
       await expect(fs.readFile(path.join(outputDir, firstRecorderPath), "utf8")).resolves.toBe(
-        "run-1\n",
+        '{"event":"probe","run":1}\n',
       );
 
       const second = await runProviderReadinessWithDependencies(
@@ -3075,10 +3124,10 @@ describe("OpenClaw local provider bridge", () => {
 
       expect(secondRecorderPath).not.toBe(firstRecorderPath);
       await expect(fs.readFile(path.join(outputDir, firstRecorderPath), "utf8")).resolves.toBe(
-        "run-1\n",
+        '{"event":"probe","run":1}\n',
       );
       await expect(fs.readFile(path.join(outputDir, secondRecorderPath), "utf8")).resolves.toBe(
-        "run-2\n",
+        '{"event":"probe","run":2}\n',
       );
     } finally {
       await fs.rm(outputDir, { recursive: true, force: true });

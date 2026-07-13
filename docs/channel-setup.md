@@ -82,7 +82,8 @@ header before JSON parsing or recorder writes:
   Google Chat may use its HTTPS `endpointUrl` as the signed public callback
   instead. A non-loopback bind without a public HTTPS endpoint is rejected even
   when request credentials are configured. Plain HTTP is reserved for local
-  tests where both the listener host and advertised URL host are loopback.
+  tests where both the listener host and advertised URL host are loopback; that
+  loopback-only case does not require provider callback authentication.
 - Discord `publicKey` or `DISCORD_PUBLIC_KEY` verifies
   `X-Signature-Ed25519` over `X-Signature-Timestamp` plus the raw request body.
 - Google Chat `endpointUrl` verifies Google ID tokens for the configured HTTP
@@ -98,14 +99,13 @@ header before JSON parsing or recorder writes:
   identity.
 - Microsoft Teams `appId` or `TEAMS_APP_ID` verifies Bot Connector bearer
   tokens, including the activity channel and exact `serviceUrl`. An `appId` is
-  required when the webhook host is non-loopback or `publicUrl` is set; an
-  unauthenticated webhook remains available only on loopback.
+  required when the webhook host or advertised callback is non-loopback.
 - Matrix webhook ingress currently has no provider-native authentication mode,
-  so it is restricted to loopback hosts and cannot set `publicUrl`.
+  so its listener and any advertised callback must remain loopback-only.
 - Mattermost and iMessage webhook ingress currently have no provider-native
-  authentication mode, so those adapter webhooks are restricted to loopback
-  hosts and cannot set `publicUrl`. Their API credentials do not authenticate
-  inbound callbacks.
+  authentication mode, so their listeners and any advertised callbacks must
+  remain loopback-only. Their API credentials do not authenticate inbound
+  callbacks.
 - Feishu `verificationToken` or `FEISHU_VERIFICATION_TOKEN` verifies plaintext
   callback tokens on loopback and remains an additional check when configured
   with encryption. Externally reachable webhooks require `encryptKey` or
@@ -117,7 +117,7 @@ header before JSON parsing or recorder writes:
   `text` field; malformed JSON is rejected instead of treated as plaintext.
 - Slack `signingSecret` or `SLACK_SIGNING_SECRET` verifies
   `X-Slack-Request-Timestamp` and `X-Slack-Signature`; it is required when the
-  webhook host is non-loopback or `publicUrl` is set.
+  webhook host or advertised callback is non-loopback.
 - Telegram `secretToken` or `TELEGRAM_WEBHOOK_SECRET_TOKEN` verifies
   `X-Telegram-Bot-Api-Secret-Token`. The value must contain 1-256 letters,
   digits, underscores, or hyphens; control characters are rejected.
@@ -591,7 +591,9 @@ inside one owner-only generation directory under the legacy
 directory, and then atomically switches the single `current.json` pointer.
 Readers therefore see either the prior complete generation or the next complete
 generation, never per-file mixtures. Setup, probe, cleanup, staging, or
-ownership failures leave the prior pointer unchanged. Crash-leftover staging
+ownership failures leave the prior pointer unchanged. A successful probe must
+also produce at least one valid JSONL recorder evidence record before
+publication. Crash-leftover staging
 directories and installed-but-uncommitted generations remain owner-only.
 Publication rollback removes them when possible, and the next lock-owning
 publisher prunes any leftovers before staging a new generation. Post-commit

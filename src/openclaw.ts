@@ -24,6 +24,7 @@ import {
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
+  isRecord,
   parseQaTarget,
   runOpenClawCrablineProviderProbe,
   type OpenClawCrablineAgentDelivery,
@@ -93,6 +94,19 @@ const RECORDER_LOCK_REMOVAL_TOMBSTONE_PATTERN =
 function isOpenClawCrablineRecorderTemporary(name: string): boolean {
   const channel = RECORDER_TEMP_NAME_PATTERN.exec(name)?.[1]?.toLowerCase();
   return channel !== undefined && isCrablineServerChannel(channel);
+}
+
+function hasOpenClawCrablineRecorderEvidence(contents: string): boolean {
+  return contents.split(/\r?\n/u).some((line) => {
+    if (!line.trim()) {
+      return false;
+    }
+    try {
+      return isRecord(JSON.parse(line));
+    } catch {
+      return false;
+    }
+  });
 }
 
 function isOpenClawCrablineRecorderTemporaryLock(name: string): boolean {
@@ -415,6 +429,11 @@ export async function runOpenClawCrablineProviderReadiness(
       throw probeFailure;
     }
     const recorderSnapshotContents = await fs.readFile(recorderPath, "utf8");
+    if (!hasOpenClawCrablineRecorderEvidence(recorderSnapshotContents)) {
+      throw new Error(
+        "OpenClaw Crabline provider probe produced no valid JSONL recorder evidence.",
+      );
+    }
 
     const capabilityReport = {
       result: {
