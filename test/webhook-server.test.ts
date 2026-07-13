@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import { connect } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { startWebhookServer } from "../src/providers/webhook-server.js";
 
@@ -135,6 +137,10 @@ describe("webhook server", () => {
 
     expect(response.status).toBe(413);
     expect(handlerInvoked).toBe(false);
+
+    const healthy = await fetch(server.endpointUrl, { body: "1234", method: "POST" });
+    expect(healthy.status).toBe(200);
+    expect(handlerInvoked).toBe(true);
   });
 
   it("rejects a wrong route before reading an oversized body", async () => {
@@ -153,5 +159,85 @@ describe("webhook server", () => {
     });
 
     expect(response.status).toBe(404);
+  });
+
+  it("times out slow request bodies before invoking the handler", async () => {
+    let handlerInvoked = false;
+    const server = await startWebhookServer({
+      bodyTimeoutMs: 20,
+      async handle() {
+        handlerInvoked = true;
+        return new Response("ok");
+      },
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+    const endpoint = new URL(server.endpointUrl);
+    const socket = connect(Number(endpoint.port), endpoint.hostname);
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      response += chunk;
+    });
+    await once(socket, "connect");
+    socket.write(
+      "POST /slack/events HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 5\r\nConnection: close\r\n\r\n1",
+    );
+    await once(socket, "close");
+
+    expect(response).toContain("HTTP/1.1 408");
+    expect(response).toContain("request body timeout");
+    expect(handlerInvoked).toBe(false);
+
+    const healthy = await fetch(server.endpointUrl, { body: "{}", method: "POST" });
+    expect(healthy.status).toBe(200);
+    expect(handlerInvoked).toBe(true);
+  });
+
+  it("does not let a slow request body block shutdown", async () => {
+    const server = await startWebhookServer({
+      bodyTimeoutMs: 10_000,
+      handle: async () => new Response("ok"),
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+    });
+    const endpoint = new URL(server.endpointUrl);
+    const socket = connect(Number(endpoint.port), endpoint.hostname);
+    await once(socket, "connect");
+    socket.write("POST /slack/events HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 5\r\n\r\n1");
+    socket.on("error", () => {});
+    const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+
+    await expect(
+      Promise.race([
+        server.close().then(() => "closed"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 250)),
+      ]),
+    ).resolves.toBe("closed");
+    await closed;
+  });
+
+  it("survives clients aborting incomplete request bodies", async () => {
+    const server = await startWebhookServer({
+      bodyTimeoutMs: 10_000,
+      handle: async () => new Response("ok"),
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+    const endpoint = new URL(server.endpointUrl);
+    const socket = connect(Number(endpoint.port), endpoint.hostname);
+    socket.on("error", () => {});
+    await once(socket, "connect");
+    socket.write("POST /slack/events HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 5\r\n\r\n1");
+    socket.destroy();
+    await new Promise<void>((resolve) => socket.once("close", () => resolve()));
+
+    const response = await fetch(server.endpointUrl, { body: "{}", method: "POST" });
+    expect(response.status).toBe(200);
   });
 });

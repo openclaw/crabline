@@ -12,6 +12,17 @@ import {
 
 const conversationId = "a:opaque-conversation-id";
 describe("Microsoft Teams webhook authentication", () => {
+  it("requires the native msteams activity channel", () => {
+    expect(() =>
+      normalizeMsTeamsWebhookPayload({
+        channelId: "webchat",
+        conversation: { id: conversationId },
+        text: "wrong channel",
+        type: "message",
+      }),
+    ).toThrow(/channelId=msteams/u);
+  });
+
   it("rejects non-message activities", () => {
     expect(() => normalizeMsTeamsWebhookPayload({ type: "conversationUpdate" })).toThrow(
       /type=message/u,
@@ -178,6 +189,19 @@ describe("Microsoft Teams webhook authentication", () => {
       ),
     ).resolves.toMatchObject({ status: 401 });
 
+    const wrongChannelBody = JSON.stringify({
+      ...JSON.parse(body),
+      channelId: "webchat",
+    });
+    await expect(
+      authenticate!(
+        new Request(url, {
+          headers: { authorization: `Bearer ${header}.${payload}.${signature}` },
+        }),
+        wrongChannelBody,
+      ),
+    ).resolves.toMatchObject({ status: 401 });
+
     const emptyEndorsementsAuthenticator = createMsTeamsWebhookAuthenticator(config, {
       fetch: async (input: string | URL | Request) =>
         String(input).includes("openidconfiguration")
@@ -207,6 +231,7 @@ runLocalMockProviderContract({
   target: { id: conversationId, metadata: {} },
   webhookExpected: { author: "user", id: "teams-activity-1", text: "reply nonce-2" },
   webhookPayload: {
+    channelId: "msteams",
     conversation: { id: conversationId },
     from: { role: "user" },
     id: "teams-activity-1",

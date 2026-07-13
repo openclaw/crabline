@@ -78,8 +78,43 @@ describe("Discord interaction responses", () => {
         type: 2,
       }),
     ).toMatchObject({
-      text: "deploy nonce-nested",
+      text: "deploy service environment nonce-nested",
     });
+  });
+
+  it.each([
+    [
+      {
+        channel_id: "123456789012345678",
+        data: {
+          component_type: 3,
+          custom_id: "environment",
+          values: ["staging", "nonce-select"],
+        },
+        id: "444456789012345678",
+        type: 3,
+      },
+      "environment staging nonce-select",
+    ],
+    [
+      {
+        channel_id: "123456789012345678",
+        data: {
+          components: [
+            {
+              components: [{ custom_id: "reason", type: 4, value: "deploy nonce-modal" }],
+              type: 1,
+            },
+          ],
+          custom_id: "deploy-form",
+        },
+        id: "444456789012345678",
+        type: 5,
+      },
+      "deploy-form deploy nonce-modal",
+    ],
+  ])("preserves native component and modal values", (payload, text) => {
+    expect(normalizeDiscordWebhookPayload(payload)).toMatchObject({ text });
   });
 });
 

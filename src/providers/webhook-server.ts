@@ -6,16 +6,39 @@ export type StartedWebhookServer = {
 };
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+const DEFAULT_BODY_TIMEOUT_MS = 5_000;
 
 class RequestBodyTooLargeError extends Error {}
+class RequestBodyTimeoutError extends Error {}
 
-async function readRequestBody(request: IncomingMessage, maxBodyBytes: number): Promise<Buffer> {
+async function readRequestBody(
+  request: IncomingMessage,
+  maxBodyBytes: number,
+  bodyTimeoutMs: number,
+): Promise<Buffer> {
   return await new Promise<Buffer>((resolve, reject) => {
     const chunks: Buffer[] = [];
     let bodyBytes = 0;
     let settled = false;
 
-    request.on("data", (chunk) => {
+    const cleanup = (preserveErrorListener = false) => {
+      clearTimeout(timeout);
+      request.off("data", onData);
+      request.off("end", onEnd);
+      if (!preserveErrorListener) {
+        request.off("error", onError);
+      }
+      request.off("aborted", onAborted);
+    };
+    const fail = (error: unknown) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup(true);
+      reject(error);
+    };
+    const onData = (chunk: Buffer | string) => {
       if (settled) {
         return;
       }
@@ -23,27 +46,31 @@ async function readRequestBody(request: IncomingMessage, maxBodyBytes: number): 
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       bodyBytes += buffer.length;
       if (bodyBytes > maxBodyBytes) {
-        settled = true;
         request.resume();
-        reject(new RequestBodyTooLargeError());
+        fail(new RequestBodyTooLargeError());
         return;
       }
       chunks.push(buffer);
-    });
-    request.once("end", () => {
+    };
+    const onEnd = () => {
       if (settled) {
         return;
       }
       settled = true;
+      cleanup();
       resolve(Buffer.concat(chunks));
-    });
-    request.once("error", (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      reject(error);
-    });
+    };
+    const onError = (error: Error) => fail(error);
+    const onAborted = () => fail(new Error("request body aborted"));
+    const timeout = setTimeout(() => {
+      request.resume();
+      fail(new RequestBodyTimeoutError());
+    }, bodyTimeoutMs);
+
+    request.on("data", onData);
+    request.once("end", onEnd);
+    request.once("error", onError);
+    request.once("aborted", onAborted);
   });
 }
 
@@ -51,11 +78,12 @@ async function toFetchRequest(
   request: IncomingMessage,
   url: URL,
   maxBodyBytes: number,
+  bodyTimeoutMs: number,
 ): Promise<Request> {
   const body =
     request.method === "GET" || request.method === "HEAD"
       ? undefined
-      : await readRequestBody(request, maxBodyBytes);
+      : await readRequestBody(request, maxBodyBytes, bodyTimeoutMs);
 
   const init: RequestInit = {
     headers: request.headers as Record<string, string>,
@@ -99,6 +127,7 @@ function closeServer(server: Server): Promise<void> {
       }
       resolve();
     });
+    server.closeAllConnections();
   });
 }
 
@@ -108,6 +137,7 @@ function formatUrlHost(host: string): string {
 
 export async function startWebhookServer(params: {
   handle(request: Request): Promise<Response>;
+  bodyTimeoutMs?: number | undefined;
   host: string;
   maxBodyBytes?: number;
   methods?: readonly string[] | undefined;
@@ -117,6 +147,7 @@ export async function startWebhookServer(params: {
 }): Promise<StartedWebhookServer> {
   const methods = new Set(params.methods ?? ["POST"]);
   const maxBodyBytes = params.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  const bodyTimeoutMs = params.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
   const server = createServer(async (request, response) => {
     try {
       const method = request.method ?? "GET";
@@ -128,10 +159,15 @@ export async function startWebhookServer(params: {
         return;
       }
 
-      const fetchRequest = await toFetchRequest(request, url, maxBodyBytes);
+      const fetchRequest = await toFetchRequest(request, url, maxBodyBytes, bodyTimeoutMs);
       await writeFetchResponse(response, await params.handle(fetchRequest));
     } catch (error) {
-      const status = error instanceof RequestBodyTooLargeError ? 413 : 500;
+      const status =
+        error instanceof RequestBodyTooLargeError
+          ? 413
+          : error instanceof RequestBodyTimeoutError
+            ? 408
+            : 500;
       if (status === 500) {
         try {
           params.onError?.(error);
@@ -141,9 +177,17 @@ export async function startWebhookServer(params: {
       }
       await writeFetchResponse(
         response,
-        new Response(status === 413 ? "request body too large" : "internal server error", {
-          status,
-        }),
+        new Response(
+          status === 413
+            ? "request body too large"
+            : status === 408
+              ? "request body timeout"
+              : "internal server error",
+          {
+            ...(status === 408 ? { headers: { connection: "close" } } : {}),
+            status,
+          },
+        ),
       );
     }
   });

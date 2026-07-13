@@ -5,9 +5,26 @@ import {
   normalizeMattermostWebhookPayload,
 } from "../src/providers/builtin/mattermost.js";
 import { optionalStringish } from "../src/providers/builtin/native-local-mock.js";
-import { runLocalMockProviderContract } from "./local-mock-provider-helpers.js";
+import {
+  createLocalMockConfig,
+  runLocalMockProviderContract,
+} from "./local-mock-provider-helpers.js";
 
 describe("Mattermost webhook normalizer", () => {
+  it("rejects externally reachable webhooks without provider-native authentication", async () => {
+    const config = await createLocalMockConfig("mattermost", "/mattermost/webhook");
+    config.mattermost!.webhook.host = "0.0.0.0";
+    expect(() => new MattermostProviderAdapter("mattermost", config, "crabline")).toThrow(
+      /provider-native authenticated ingress mode/u,
+    );
+
+    config.mattermost!.webhook.host = "127.0.0.1";
+    config.mattermost!.webhook.publicUrl = "https://mattermost.example.test/webhook";
+    expect(() => new MattermostProviderAdapter("mattermost", config, "crabline")).toThrow(
+      /provider-native authenticated ingress mode/u,
+    );
+  });
+
   it("preserves the channel when normalizing thread replies", () => {
     expect(
       normalizeMattermostWebhookPayload({

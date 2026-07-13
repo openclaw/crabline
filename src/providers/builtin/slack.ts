@@ -12,6 +12,7 @@ import {
   optionalString,
   requireNativeInboundId,
 } from "./native-local-mock.js";
+import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
 const SLACK_SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 
@@ -71,8 +72,9 @@ function normalizeSlackEventsPayload(payload: unknown) {
 
   if (isRecord(payload.event)) {
     const event = payload.event;
-    const message =
-      event.subtype === "message_changed" && isRecord(event.message) ? event.message : event;
+    const changedMessage = isRecord(event.message) ? event.message : undefined;
+    const isMessageChanged = event.subtype === "message_changed" && changedMessage !== undefined;
+    const message = isMessageChanged ? changedMessage : event;
     const channel = event.channel;
     const text = message.text;
     if (typeof channel !== "string" || typeof text !== "string") {
@@ -81,11 +83,13 @@ function normalizeSlackEventsPayload(payload: unknown) {
       });
     }
     const threadTs = message.thread_ts;
-    const ts = message.ts;
+    const eventId = isMessageChanged
+      ? optionalString(event, "event_ts")
+      : optionalString(message, "ts");
     return {
       author: slackAuthorFromEvent(message),
-      ...(typeof ts === "string"
-        ? { id: requireNativeInboundId(ts, SLACK_TS_RULE, "Slack event.ts") }
+      ...(eventId
+        ? { id: requireNativeInboundId(eventId, SLACK_TS_RULE, "Slack event timestamp") }
         : {}),
       raw: payload,
       text,
@@ -165,6 +169,12 @@ export function handleSlackWebhookPayload(payload: unknown): Response | undefine
 export class SlackProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     const resolvedConfig = resolveSlackAdapterConfig(config);
+    requireExternalWebhookAuthentication({
+      authenticated: Boolean(resolvedConfig.signingSecret),
+      provider: "Slack",
+      requirement: "slack.signingSecret or SLACK_SIGNING_SECRET",
+      webhook: config.slack?.webhook,
+    });
     super({
       codec: getBuiltinTargetCodec("slack"),
       config,

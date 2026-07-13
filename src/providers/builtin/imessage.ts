@@ -12,6 +12,7 @@ import {
   optionalString,
   requireNativeInboundId,
 } from "./native-local-mock.js";
+import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
 export function resolveIMessageAdapterConfig(
   config: ProviderConfig,
@@ -26,6 +27,13 @@ export function resolveIMessageAdapterConfig(
 
 export class IMessageProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
+    requireExternalWebhookAuthentication({
+      authenticated: false,
+      provider: "iMessage",
+      requirement:
+        "a provider-native authenticated ingress mode, which this adapter does not support",
+      webhook: config.imessage?.webhook,
+    });
     super({
       codec: getBuiltinTargetCodec("imessage"),
       config,

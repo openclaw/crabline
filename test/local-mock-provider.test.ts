@@ -789,6 +789,48 @@ describe("local mock provider", () => {
     });
   });
 
+  it("excludes inbound ids already consumed by the fixture runner", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "excluded-ids.jsonl");
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+        recorderPath,
+      },
+    });
+    providers.push(provider);
+    const context = createContext(config);
+    context.fixture.inboundMatch.author = "any";
+    for (const id of ["original", "edit"]) {
+      await appendRecordedInbound(recorderPath, {
+        author: "user",
+        id,
+        provider: "provider-a",
+        sentAt: new Date().toISOString(),
+        text: id,
+        threadId: "slack:C1234567890",
+      });
+    }
+
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        excludeIds: ["original"],
+        nonce: "edit",
+        since: new Date(0).toISOString(),
+        threadId: "slack:C1234567890",
+        timeoutMs: 100,
+      }),
+    ).resolves.toMatchObject({ id: "edit" });
+  });
+
   it("persists incremental cursor progress after a timeout", async () => {
     const directory = await createTempDir();
     directories.push(directory);

@@ -12,6 +12,7 @@ import {
   optionalString,
   requireNativeInboundId,
 } from "./native-local-mock.js";
+import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
 export function resolveMattermostAdapterConfig(
   config: ProviderConfig,
@@ -26,6 +27,13 @@ export function resolveMattermostAdapterConfig(
 
 export class MattermostProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
+    requireExternalWebhookAuthentication({
+      authenticated: false,
+      provider: "Mattermost",
+      requirement:
+        "a provider-native authenticated ingress mode, which this adapter does not support",
+      webhook: config.mattermost?.webhook,
+    });
     super({
       codec: getBuiltinTargetCodec("mattermost"),
       config,

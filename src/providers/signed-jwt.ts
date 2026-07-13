@@ -15,9 +15,21 @@ export type RemoteJwtKeySet<T> = {
 const DEFAULT_KEY_FETCH_TIMEOUT_MS = 5_000;
 const DEFAULT_UNKNOWN_KEY_COOLDOWN_MS = 30_000;
 const MAX_NEGATIVE_KEY_IDS = 128;
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+function decodeBase64UrlPart(value: string, label: string): Buffer {
+  if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
+    throw new Error(`${label} must use unpadded base64url encoding.`);
+  }
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.length === 0 || decoded.toString("base64url") !== value) {
+    throw new Error(`${label} must use canonical base64url encoding.`);
+  }
+  return decoded;
+}
 
 function decodeJsonPart(value: string): Record<string, unknown> {
-  const decoded: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+  const decoded: unknown = JSON.parse(UTF8_DECODER.decode(decodeBase64UrlPart(value, "JWT part")));
   if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
     throw new Error("JWT part must be a JSON object.");
   }
@@ -35,9 +47,18 @@ function hasAudience(claim: unknown, expected: string): boolean {
   return claim === expected || (Array.isArray(claim) && claim.includes(expected));
 }
 
-function numericClaim(claims: JwtClaims, name: string): number | undefined {
+function numericClaim(claims: JwtClaims, name: string, required = false): number | undefined {
+  if (!(name in claims)) {
+    if (required) {
+      throw new Error(`JWT ${name} claim is required.`);
+    }
+    return undefined;
+  }
   const value = claims[name];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`JWT ${name} claim must be a finite number.`);
+  }
+  return value;
 }
 
 export function readBearerToken(request: Request): string | undefined {
@@ -198,7 +219,7 @@ export async function verifySignedJwt(params: {
   const header = readHeader(decodeJsonPart(encodedHeader));
   const claims = decodeJsonPart(encodedClaims);
   const key = await params.resolveKey(header);
-  const signature = Buffer.from(encodedSignature, "base64url");
+  const signature = decodeBase64UrlPart(encodedSignature, "JWT signature");
   if (!verify("RSA-SHA256", Buffer.from(`${encodedHeader}.${encodedClaims}`), key, signature)) {
     throw new Error("JWT signature is invalid.");
   }
@@ -212,8 +233,8 @@ export async function verifySignedJwt(params: {
 
   const now = Math.floor((params.now?.() ?? Date.now()) / 1000);
   const skew = params.clockSkewSeconds ?? 300;
-  const expiresAt = numericClaim(claims, "exp");
-  if (expiresAt === undefined || expiresAt < now - skew) {
+  const expiresAt = numericClaim(claims, "exp", true)!;
+  if (expiresAt <= now - skew) {
     throw new Error("JWT is expired.");
   }
   const notBefore = numericClaim(claims, "nbf");
