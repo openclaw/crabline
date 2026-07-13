@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerRequestEvent } from "../src/servers/http.js";
 import {
   recordCommittedServerEvent,
@@ -181,6 +181,10 @@ beforeEach(() => {
   fsMocks.stat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("server recorder", () => {
   it("makes a recursively created recorder path durable before observing its first append", async () => {
     const firstParent = path.join("/tmp", "private");
@@ -270,7 +274,12 @@ describe("server recorder", () => {
         onEvent: observer,
         recorderPath,
       }),
-    ).rejects.toBe(ancestrySyncFailure);
+    ).rejects.toMatchObject({
+      cause: ancestrySyncFailure,
+      committed: true,
+      indeterminate: true,
+      name: "ServerRecorderCommittedError",
+    });
     expect(observer).not.toHaveBeenCalled();
 
     const retryEvent = serverEvent("/retry");
@@ -281,7 +290,7 @@ describe("server recorder", () => {
     });
 
     expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
-    expect(fsMocks.file.sync).toHaveBeenCalledTimes(3);
+    expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
     expect(fsMocks.directory.sync).toHaveBeenCalledTimes(3);
     expect(fsMocks.open).not.toHaveBeenCalledWith(path.parse(recorderPath).root, "r");
     expect(observer).toHaveBeenCalledOnce();
@@ -321,7 +330,12 @@ describe("server recorder", () => {
         onEvent: observer,
         recorderPath,
       }),
-    ).rejects.toBe(syncFailure);
+    ).rejects.toMatchObject({
+      cause: syncFailure,
+      committed: true,
+      indeterminate: true,
+      name: "ServerRecorderCommittedError",
+    });
     expect(observer).not.toHaveBeenCalled();
 
     const retryEvent = serverEvent("/retry-after-denial");
@@ -332,7 +346,7 @@ describe("server recorder", () => {
     });
 
     expect(immediateAttempts).toBe(2);
-    expect(fsMocks.file.sync).toHaveBeenCalledTimes(3);
+    expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
     expect(fsMocks.directory.sync).toHaveBeenCalledOnce();
     expect(observer).toHaveBeenCalledOnce();
     expect(observer).toHaveBeenCalledWith(retryEvent);
@@ -378,7 +392,12 @@ describe("server recorder", () => {
         onEvent: observer,
         recorderPath,
       }),
-    ).rejects.toBe(syncFailure);
+    ).rejects.toMatchObject({
+      cause: syncFailure,
+      committed: true,
+      indeterminate: true,
+      name: "ServerRecorderCommittedError",
+    });
     expect(observer).not.toHaveBeenCalled();
 
     const retryEvent = serverEvent("/retry-created-denial");
@@ -388,7 +407,7 @@ describe("server recorder", () => {
       recorderPath,
     });
 
-    expect(fsMocks.file.sync).toHaveBeenCalledTimes(3);
+    expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
     expect(fsMocks.directory.sync).toHaveBeenCalledTimes(4);
     expect(observer).toHaveBeenCalledOnce();
     expect(observer).toHaveBeenCalledWith(retryEvent);
@@ -479,7 +498,12 @@ describe("server recorder", () => {
         onEvent: undefined,
         recorderPath,
       }),
-    ).rejects.toBe(appendFailure);
+    ).rejects.toMatchObject({
+      cause: appendFailure,
+      committed: true,
+      indeterminate: true,
+      name: "ServerRecorderCommittedError",
+    });
     await expect(
       recordServerEvent({
         event: serverEvent("/second"),
@@ -489,8 +513,8 @@ describe("server recorder", () => {
     ).resolves.toBeUndefined();
 
     expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
-    expect(fsMocks.file.truncate).toHaveBeenCalledWith(0);
-    expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
+    expect(fsMocks.file.truncate).not.toHaveBeenCalled();
+    expect(fsMocks.file.sync).toHaveBeenCalledOnce();
   });
 
   it("syncs every accepted append without requiring an observer", async () => {
@@ -502,6 +526,50 @@ describe("server recorder", () => {
 
     expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
+  });
+
+  it("waits beyond the stale threshold before reclaiming an orphaned lock", async () => {
+    vi.useFakeTimers();
+    const staleAt = performance.now() + 30_000;
+    lockMocks.lock.mockImplementation(async () => {
+      if (performance.now() <= staleAt) {
+        throw Object.assign(new Error("Recorder is locked"), { code: "ELOCKED" });
+      }
+      return lockMocks.release;
+    });
+
+    const recording = recordServerEvent({
+      event: serverEvent("/after-stale-lock"),
+      onEvent: undefined,
+      recorderPath: path.join("/tmp", "crabline-server-recorder-stale-lock.jsonl"),
+    });
+    await vi.waitFor(() => expect(lockMocks.lock).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(30_100);
+
+    await expect(recording).resolves.toBeUndefined();
+    expect(lockMocks.lock.mock.calls.length).toBeGreaterThan(300);
+  });
+
+  it("stops retrying lock contention at the elapsed deadline", async () => {
+    vi.useFakeTimers();
+    const locked = Object.assign(new Error("Recorder is locked"), { code: "ELOCKED" });
+    lockMocks.lock.mockRejectedValue(locked);
+
+    const recording = recordServerEvent({
+      event: serverEvent("/lock-deadline"),
+      onEvent: undefined,
+      recorderPath: path.join("/tmp", "crabline-server-recorder-lock-deadline.jsonl"),
+    });
+    let rejection: unknown;
+    const handled = recording.catch((error: unknown) => {
+      rejection = error;
+    });
+    await vi.waitFor(() => expect(lockMocks.lock).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(35_000);
+
+    await handled;
+    expect(rejection).toBe(locked);
+    expect(lockMocks.lock.mock.calls.length).toBeGreaterThan(300);
   });
 
   it("reopens the recorder when rotation happens before append", async () => {
@@ -537,7 +605,7 @@ describe("server recorder", () => {
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
   });
 
-  it("rolls back and reopens when rotation happens after append", async () => {
+  it("reports a committed append without truncating a rotated inode", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-rotated-after.jsonl");
     fsMocks.file.stat
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
@@ -548,19 +616,21 @@ describe("server recorder", () => {
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
 
-    await recordServerEvent({
-      event: serverEvent("/after-rotation"),
-      onEvent: undefined,
-      recorderPath,
-    });
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/after-rotation"),
+        onEvent: undefined,
+        recorderPath,
+      }),
+    ).rejects.toMatchObject({ committed: true, name: "ServerRecorderCommittedError" });
 
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
-    expect(fsMocks.file.truncate).toHaveBeenCalledWith(0);
-    expect(fsMocks.file.sync).toHaveBeenCalledTimes(3);
-    expect(fsMocks.file.close).toHaveBeenCalledTimes(2);
+    expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    expect(fsMocks.file.truncate).not.toHaveBeenCalled();
+    expect(fsMocks.file.sync).toHaveBeenCalledOnce();
+    expect(fsMocks.file.close).toHaveBeenCalledOnce();
   });
 
-  it("rolls back and reopens when rotation happens during ancestry sync", async () => {
+  it("does not roll back a committed append when rotation happens during ancestry sync", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-rotated-during-sync.jsonl");
     fsMocks.file.stat
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
@@ -572,20 +642,22 @@ describe("server recorder", () => {
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
 
-    await recordServerEvent({
-      event: serverEvent("/after-sync-rotation"),
-      onEvent: undefined,
-      recorderPath,
-    });
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/after-sync-rotation"),
+        onEvent: undefined,
+        recorderPath,
+      }),
+    ).rejects.toMatchObject({ committed: true, name: "ServerRecorderCommittedError" });
 
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
-    expect(fsMocks.file.truncate).toHaveBeenCalledWith(0);
-    expect(fsMocks.file.sync).toHaveBeenCalledTimes(3);
-    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(4);
-    expect(fsMocks.file.close).toHaveBeenCalledTimes(2);
+    expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    expect(fsMocks.file.truncate).not.toHaveBeenCalled();
+    expect(fsMocks.file.sync).toHaveBeenCalledOnce();
+    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(2);
+    expect(fsMocks.file.close).toHaveBeenCalledOnce();
   });
 
-  it("retries rotation after a second rollback succeeds", async () => {
+  it("preserves committed rotation status when close also fails", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-rotation-retry.jsonl");
     fsMocks.file.stat
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
@@ -595,25 +667,20 @@ describe("server recorder", () => {
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValueOnce({ dev: 1, ino: 1, size: 0 })
       .mockResolvedValue({ dev: 1, ino: 2, size: 0 });
-    fsMocks.file.sync
-      .mockResolvedValueOnce()
-      .mockRejectedValueOnce(new Error("simulated rollback sync failure"))
-      .mockResolvedValue();
+    fsMocks.file.close.mockRejectedValueOnce(new Error("simulated close failure"));
 
     await expect(
       recordServerEvent({
-        event: serverEvent("/after-rotation-retry"),
+        event: serverEvent("/rotation-close-failed"),
         onEvent: undefined,
         recorderPath,
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toMatchObject({ committed: true, name: "ServerRecorderCommittedError" });
 
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
-    expect(fsMocks.file.truncate).toHaveBeenCalledTimes(2);
-    expect(fsMocks.file.sync).toHaveBeenCalledTimes(4);
+    expect(fsMocks.file.truncate).not.toHaveBeenCalled();
   });
 
-  it("rolls back an append when post-append sync fails", async () => {
+  it("classifies post-append sync failure as indeterminate without truncating", async () => {
     const syncFailure = new Error("simulated fsync failure");
     const observer = vi.fn<(event: ServerRequestEvent) => void>();
     fsMocks.file.sync.mockRejectedValueOnce(syncFailure).mockResolvedValue(undefined);
@@ -624,47 +691,54 @@ describe("server recorder", () => {
         onEvent: observer,
         recorderPath: path.join("/tmp", "crabline-server-recorder-sync-failed.jsonl"),
       }),
-    ).rejects.toBe(syncFailure);
+    ).rejects.toMatchObject({
+      cause: syncFailure,
+      committed: true,
+      indeterminate: true,
+      name: "ServerRecorderCommittedError",
+    });
 
-    expect(fsMocks.file.truncate).toHaveBeenCalledWith(0);
-    expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
+    expect(fsMocks.file.truncate).not.toHaveBeenCalled();
+    expect(fsMocks.file.sync).toHaveBeenCalledOnce();
     expect(observer).not.toHaveBeenCalled();
   });
 
-  it("exposes a committed result when append rollback fails", async () => {
-    const syncFailure = new Error("simulated fsync failure");
-    const rollbackFailure = new Error("simulated rollback failure");
-    fsMocks.file.sync.mockRejectedValueOnce(syncFailure);
-    fsMocks.file.truncate.mockRejectedValueOnce(rollbackFailure);
+  it("exposes an indeterminate result when an append fails", async () => {
+    const appendFailure = new Error("simulated append failure");
+    fsMocks.file.appendFile.mockRejectedValueOnce(appendFailure);
 
     const recording = recordServerEvent({
-      event: serverEvent("/rollback-failed"),
+      event: serverEvent("/append-failed"),
       onEvent: undefined,
-      recorderPath: path.join("/tmp", "crabline-server-recorder-rollback-failed.jsonl"),
+      recorderPath: path.join("/tmp", "crabline-server-recorder-append-failed.jsonl"),
     });
 
     await expect(recording).rejects.toMatchObject({
+      cause: appendFailure,
       committed: true,
+      indeterminate: true,
       name: "ServerRecorderCommittedError",
     });
     await expect(recording).rejects.toBeInstanceOf(ServerRecorderCommittedError);
+    expect(fsMocks.file.truncate).not.toHaveBeenCalled();
   });
 
-  it("preserves committed status when rollback and close both fail", async () => {
+  it("preserves indeterminate status when sync and close both fail", async () => {
     fsMocks.file.sync.mockRejectedValueOnce(new Error("simulated fsync failure"));
-    fsMocks.file.truncate.mockRejectedValueOnce(new Error("simulated rollback failure"));
     fsMocks.file.close.mockRejectedValueOnce(new Error("simulated close failure"));
 
     await expect(
       recordServerEvent({
-        event: serverEvent("/rollback-and-close-failed"),
+        event: serverEvent("/sync-and-close-failed"),
         onEvent: undefined,
         recorderPath: path.join("/tmp", "crabline-server-recorder-close-failed.jsonl"),
       }),
     ).rejects.toMatchObject({
       committed: true,
+      indeterminate: true,
       name: "ServerRecorderCommittedError",
     });
+    expect(fsMocks.file.truncate).not.toHaveBeenCalled();
   });
 
   it("exposes committed status when close fails after a durable append", async () => {
