@@ -195,21 +195,20 @@ def run_reviews(repo: Path, script_dir: Path, fixture: str, engines: list[str]) 
 
 def cleanup_repo(repo: Path) -> None:
     def make_writable_and_retry(function: Callable[[str], object], path: str, _exc_info: object) -> None:
-        try:
-            mode = stat.S_IREAD | stat.S_IWRITE
-            if os.path.isdir(path):
-                mode |= stat.S_IEXEC
-            os.chmod(path, mode)
-            function(path)
-        except OSError as exc:
-            print(f"warning: unable to remove temp path {path}: {exc}", file=sys.stderr)
+        mode = stat.S_IREAD | stat.S_IWRITE
+        if os.path.isdir(path):
+            mode |= stat.S_IEXEC
+        os.chmod(path, mode)
+        function(path)
 
     if not repo.exists():
         return
     try:
         shutil.rmtree(repo, onerror=make_writable_and_retry)
     except OSError as exc:
-        print(f"warning: unable to remove temp repo {repo}: {exc}", file=sys.stderr)
+        raise RuntimeError(f"unable to remove temp repo {repo}: {exc}") from exc
+    if repo.exists():
+        raise RuntimeError(f"unable to remove temp repo {repo}: path was retained")
 
 
 def main(argv: list[str]) -> int:
@@ -217,14 +216,19 @@ def main(argv: list[str]) -> int:
     script_dir = Path(__file__).resolve().parent
     engines = args.engines or list(DEFAULT_ENGINES)
     repo = Path(tempfile.mkdtemp(prefix="autoreview-fixture."))
+    exit_code = 0
     try:
         create_fixture_repo(repo, args.fixture)
         run_reviews(repo, script_dir, args.fixture, engines)
     except subprocess.CalledProcessError as exc:
-        return int(exc.returncode or 1)
+        exit_code = int(exc.returncode or 1)
     finally:
-        cleanup_repo(repo)
-    return 0
+        try:
+            cleanup_repo(repo)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            exit_code = exit_code or 1
+    return exit_code
 
 
 if __name__ == "__main__":

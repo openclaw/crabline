@@ -43,10 +43,11 @@
     "prepare": "npm run build",
     "run": "tsx src/bin/crabline.ts run",
     "test": "vitest run",
+    "test:autoreview": "node tools/run-autoreview-tests.mjs",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.test.json",
-    "verify": "pnpm lint && pnpm test:coverage",
+    "verify": "pnpm lint && pnpm test:autoreview && pnpm test:coverage",
     "check": "pnpm verify"
   },
   "dependencies": {

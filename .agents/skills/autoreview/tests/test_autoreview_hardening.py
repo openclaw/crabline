@@ -62,6 +62,23 @@ def realistic_secret_value() -> str:
     return "A7f9K2m4Q8v6" + "N3x5R1p0T9z8"
 
 
+def usable_java() -> str | None:
+    java = shutil.which("java")
+    if java is None:
+        return None
+    try:
+        result = subprocess.run(
+            [java, "-version"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return java if result.returncode == 0 else None
+
+
 class AutoreviewHardeningTests(unittest.TestCase):
     def setUp(self) -> None:
         self.helper = load_helper()
@@ -88,6 +105,7 @@ class AutoreviewHardeningTests(unittest.TestCase):
 
                 def retry(target: str) -> None:
                     retried_modes.append(stat.S_IMODE(os.stat(target).st_mode))
+                    Path(target).rmdir()
 
                 callback(retry, str(path), None)
 
@@ -95,7 +113,42 @@ class AutoreviewHardeningTests(unittest.TestCase):
                 cleanup_repo(repo)
 
             self.assertEqual(retried_modes, [0o700])
-            repo.chmod(0o700)
+
+    def test_harness_cleanup_rejects_retained_temp_repo(self) -> None:
+        harness = SCRIPT.with_name("test-review-harness.py")
+        cleanup_repo = runpy.run_path(str(harness))["cleanup_repo"]
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = Path(tempdir) / "repo"
+            repo.mkdir()
+
+            with mock.patch.object(shutil, "rmtree", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, "path was retained"):
+                    cleanup_repo(repo)
+
+    def test_harness_main_fails_when_cleanup_retains_temp_repo(self) -> None:
+        harness = SCRIPT.with_name("test-review-harness.py")
+        namespace = runpy.run_path(str(harness))
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = Path(tempdir) / "repo"
+            repo.mkdir()
+            stderr = io.StringIO()
+
+            with (
+                mock.patch.dict(
+                    namespace,
+                    {
+                        "create_fixture_repo": mock.Mock(),
+                        "run_reviews": mock.Mock(),
+                    },
+                ),
+                mock.patch.object(namespace["tempfile"], "mkdtemp", return_value=str(repo)),
+                mock.patch.object(namespace["shutil"], "rmtree", return_value=None),
+                contextlib.redirect_stderr(stderr),
+            ):
+                status = namespace["main"]([])
+
+            self.assertEqual(status, 1)
+            self.assertIn("path was retained", stderr.getvalue())
 
     def test_powershell_wrappers_launch_only_verified_python3(self) -> None:
         scripts = SCRIPT.parent
@@ -3115,9 +3168,9 @@ class AutoreviewHardeningTests(unittest.TestCase):
                 os.environ.update(old)
 
     def test_parallel_test_environment_isolates_jvm_user_home(self) -> None:
-        java = shutil.which("java")
+        java = usable_java()
         if java is None:
-            self.skipTest("java is not installed")
+            self.skipTest("java runtime is not available")
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
             repo = init_repo(root)
@@ -3167,9 +3220,9 @@ class AutoreviewHardeningTests(unittest.TestCase):
         )
 
     def test_java_tool_option_quote_round_trips_special_paths(self) -> None:
-        java = shutil.which("java")
+        java = usable_java()
         if java is None:
-            self.skipTest("java is not installed")
+            self.skipTest("java runtime is not available")
         names = ["space home", "apostrophe's home"]
         if os.name != "nt":
             names.append('double"quote home')
