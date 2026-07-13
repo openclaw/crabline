@@ -1122,6 +1122,40 @@ describe("server recorder", () => {
     expect(observer).toHaveBeenCalledWith(event);
   });
 
+  it("runs observers in durable append order", async () => {
+    const recorderPath = path.join("/tmp", "crabline-server-recorder-observer-order.jsonl");
+    const order: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const first = recordServerEvent({
+      event: serverEvent("/first"),
+      onEvent: async () => {
+        order.push("first:start");
+        await firstBlocked;
+        order.push("first:end");
+      },
+      recorderPath,
+    });
+    await vi.waitFor(() => expect(order).toEqual(["first:start"]));
+
+    const second = recordServerEvent({
+      event: serverEvent("/second"),
+      onEvent: () => {
+        order.push("second");
+      },
+      recorderPath,
+    });
+    await vi.waitFor(() => expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2));
+    expect(order).toEqual(["first:start"]);
+
+    releaseFirst?.();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["first:start", "first:end", "second"]);
+  });
+
   it("allows observers to append reentrantly to the same recorder", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-reentrant.jsonl");
 

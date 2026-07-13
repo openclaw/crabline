@@ -31,6 +31,7 @@ class ServerRecorderRotationError extends Error {}
 
 const pendingAppends = new Map<string, Promise<void>>();
 const pendingAdmissions = new Map<string, Promise<void>>();
+const pendingObservers = new Map<string, Promise<void>>();
 const durableRecorderIdentities = new Map<string, string>();
 const MAX_DURABLE_RECORDER_IDENTITIES = 128;
 const MAX_RECOVERY_VALIDATION_BYTES = 64 * 1024 * 1024;
@@ -441,7 +442,52 @@ async function resolveRecorderPath(filePath: string): Promise<string> {
   return path.join(await resolveRecorderPath(path.dirname(filePath)), path.basename(filePath));
 }
 
-async function appendResolvedJsonLine(logicalPath: string, line: string): Promise<boolean> {
+function enqueueObserver(params: {
+  event: ServerRequestEvent;
+  key: string;
+  logicalPath: string;
+  onEvent: ServerEventObserver | undefined;
+}): Promise<void> {
+  if (params.onEvent === undefined) {
+    return Promise.resolve();
+  }
+  const previous = pendingObservers.get(params.key) ?? Promise.resolve();
+  const current = previous
+    .catch(() => {})
+    .then(async () => {
+      try {
+        await params.onEvent?.(params.event);
+      } catch (error) {
+        throw new ServerRecorderCommittedError(params.logicalPath, error);
+      }
+    });
+  pendingObservers.set(params.key, current);
+  void current.then(
+    () => {
+      if (pendingObservers.get(params.key) === current) {
+        pendingObservers.delete(params.key);
+      }
+    },
+    () => {
+      if (pendingObservers.get(params.key) === current) {
+        pendingObservers.delete(params.key);
+      }
+    },
+  );
+  return current;
+}
+
+type RecorderAppendResult = {
+  observation: Promise<void>;
+};
+
+async function appendResolvedJsonLine(params: {
+  event: ServerRequestEvent;
+  line: string;
+  logicalPath: string;
+  onEvent: ServerEventObserver | undefined;
+}): Promise<RecorderAppendResult | undefined> {
+  const { logicalPath } = params;
   const key = await resolveRecorderPath(logicalPath);
   const previous = pendingAppends.get(key) ?? Promise.resolve();
   const current = previous
@@ -455,18 +501,25 @@ async function appendResolvedJsonLine(logicalPath: string, line: string): Promis
       // Keep the cross-process lock through append verification.
       return await withRecorderLock(key, async () => {
         if ((await resolveRecorderPath(logicalPath)) !== key) {
-          return false;
+          return undefined;
         }
         for (let attempt = 0; attempt < RECORDER_ROTATION_ATTEMPTS; attempt++) {
           if (
             (await appendRecorderAttempt({
               createdDirectory,
               logicalPath,
-              line,
+              line: params.line,
               publicationPath: key,
             })) === "committed"
           ) {
-            return true;
+            return {
+              observation: enqueueObserver({
+                event: params.event,
+                key,
+                logicalPath,
+                onEvent: params.onEvent,
+              }),
+            };
           }
         }
         throw new ServerRecorderRotationError(
@@ -489,30 +542,46 @@ async function appendResolvedJsonLine(logicalPath: string, line: string): Promis
   }
 }
 
-async function appendJsonLine(filePath: string, line: string): Promise<void> {
-  const logicalPath = path.resolve(filePath);
+async function appendJsonLine(params: {
+  event: ServerRequestEvent;
+  onEvent: ServerEventObserver | undefined;
+  recorderPath: string;
+}): Promise<void> {
+  const logicalPath = path.resolve(params.recorderPath);
   const previous = pendingAdmissions.get(logicalPath) ?? Promise.resolve();
   const current = previous
     .catch(() => {})
     .then(async () => {
       for (let attempt = 0; attempt < RECORDER_PATH_ATTEMPTS; attempt++) {
-        if (await appendResolvedJsonLine(logicalPath, line)) {
-          return;
+        const result = await appendResolvedJsonLine({
+          event: params.event,
+          line: `${JSON.stringify(params.event)}\n`,
+          logicalPath,
+          onEvent: params.onEvent,
+        });
+        if (result !== undefined) {
+          return result;
         }
       }
       throw new ServerRecorderRotationError(
         `Server recorder path retries exhausted for "${logicalPath}".`,
       );
     });
-  pendingAdmissions.set(logicalPath, current);
+  const tail = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  pendingAdmissions.set(logicalPath, tail);
 
+  let result: RecorderAppendResult;
   try {
-    await current;
+    result = await current;
   } finally {
-    if (pendingAdmissions.get(logicalPath) === current) {
+    if (pendingAdmissions.get(logicalPath) === tail) {
       pendingAdmissions.delete(logicalPath);
     }
   }
+  await result.observation;
 }
 
 export async function recordServerEvent(params: {
@@ -520,12 +589,7 @@ export async function recordServerEvent(params: {
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
 }): Promise<void> {
-  await appendJsonLine(params.recorderPath, `${JSON.stringify(params.event)}\n`);
-  try {
-    await params.onEvent?.(params.event);
-  } catch (error) {
-    throw new ServerRecorderCommittedError(params.recorderPath, error);
-  }
+  await appendJsonLine(params);
 }
 
 export async function recordCommittedServerEvent(params: {
@@ -534,8 +598,7 @@ export async function recordCommittedServerEvent(params: {
   recorderPath: string;
 }): Promise<void> {
   try {
-    await appendJsonLine(params.recorderPath, `${JSON.stringify(params.event)}\n`);
-    await params.onEvent?.(params.event);
+    await appendJsonLine(params);
   } catch {
     // The provider mutation already committed, so telemetry failure cannot change its response.
   }
