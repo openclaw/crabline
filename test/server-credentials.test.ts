@@ -8,6 +8,7 @@ import {
   startZaloServer,
   type StartedCrablineServer,
 } from "../src/index.js";
+import { isLoopbackAddress } from "../src/servers/http.js";
 
 const servers: StartedCrablineServer[] = [];
 
@@ -51,6 +52,14 @@ describe("externally bound provider server credentials", () => {
     await expect(startWhatsAppServer({ host: "0.0.0.0" })).rejects.toThrow(
       /requires a loopback host/u,
     );
+  });
+
+  it("advertises the resolved loopback address for a loopback hostname", async () => {
+    const server = await startWhatsAppServer({ host: "localhost" });
+    servers.push(server);
+
+    expect(isLoopbackAddress(new URL(server.manifest.baseUrl).hostname)).toBe(true);
+    expect(new URL(server.manifest.baseUrl).hostname).not.toBe("localhost");
   });
 });
 

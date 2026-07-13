@@ -5,6 +5,7 @@ import {
   DEFAULT_MAX_REQUEST_BODY_BYTES,
   drainRequestBody,
   InvalidJsonBodyError,
+  isLoopbackAddress,
   isLoopbackHost,
   parseRequestBody,
   parseUnknownRequestBody,
@@ -130,6 +131,14 @@ describe("server HTTP body reader", () => {
     expect(isLoopbackHost(host)).toBe(expected);
   });
 
+  it("distinguishes loopback-looking hostnames from actual loopback addresses", () => {
+    expect(isLoopbackHost("service.localhost")).toBe(true);
+    expect(isLoopbackAddress("service.localhost")).toBe(false);
+    expect(isLoopbackAddress("127.0.0.1")).toBe(true);
+    expect(isLoopbackAddress("[::1]")).toBe(true);
+    expect(isLoopbackAddress("192.0.2.1")).toBe(false);
+  });
+
   it.each([
     ["0.0.0.0", "127.0.0.1"],
     ["::", "[::1]"],
@@ -199,6 +208,32 @@ describe("server HTTP body reader", () => {
       const response = await fetch(server.baseUrl);
       expect(response.headers.get("trailer")).toBeNull();
       expect(response.headers.get("content-length")).toBe("8");
+      await expect(response.text()).resolves.toBe("complete");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("removes connection-scoped response headers named by Connection", async () => {
+    const server = await startHttpJsonServer({
+      async handle() {
+        return new Response("complete", {
+          headers: {
+            connection: "x-internal",
+            "x-internal": "secret",
+            "x-safe": "visible",
+          },
+        });
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const response = await fetch(server.baseUrl);
+      expect(response.headers.get("x-internal")).toBeNull();
+      expect(response.headers.get("x-safe")).toBe("visible");
       await expect(response.text()).resolves.toBe("complete");
     } finally {
       await server.close();

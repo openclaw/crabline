@@ -27,6 +27,17 @@ const LOOPBACK_ADDRESSES = new BlockList();
 LOOPBACK_ADDRESSES.addSubnet("127.0.0.0", 8, "ipv4");
 LOOPBACK_ADDRESSES.addAddress("::1", "ipv6");
 LOOPBACK_ADDRESSES.addSubnet("::ffff:127.0.0.0", 104, "ipv6");
+const HOP_BY_HOP_RESPONSE_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
 
 export class InvalidJsonBodyError extends Error {
   constructor(cause: unknown, message = "Request body is not valid JSON.") {
@@ -177,15 +188,16 @@ export function formatUrlHost(host: string): string {
   return host.includes(":") ? `[${host}]` : host;
 }
 
-export function isLoopbackHost(host: string): boolean {
-  const normalized = host
+function normalizeHost(host: string): string {
+  return host
     .trim()
     .replace(/^\[(.*)\]$/u, "$1")
     .toLowerCase()
     .replace(/\.$/u, "");
-  if (normalized === "localhost" || normalized.endsWith(".localhost")) {
-    return true;
-  }
+}
+
+export function isLoopbackAddress(address: string): boolean {
+  const normalized = normalizeHost(address);
   const family = isIP(normalized);
   return family === 4
     ? LOOPBACK_ADDRESSES.check(normalized, "ipv4")
@@ -194,30 +206,63 @@ export function isLoopbackHost(host: string): boolean {
       : false;
 }
 
-export async function writeResponse(
-  response: ServerResponse,
-  fetchResponse: Response,
-): Promise<void> {
-  const body = Buffer.from(await fetchResponse.arrayBuffer());
+export function isLoopbackHost(host: string): boolean {
+  const normalized = normalizeHost(host);
+  if (normalized === "localhost" || normalized.endsWith(".localhost")) {
+    return true;
+  }
+  return isLoopbackAddress(normalized);
+}
+
+export function advertisedHostForBindAddress(host: string, boundAddress: string): string {
+  if (host === "0.0.0.0") {
+    return "127.0.0.1";
+  }
+  if (host === "::") {
+    return "::1";
+  }
+  return isLoopbackHost(host) && isLoopbackAddress(boundAddress) ? boundAddress : host;
+}
+
+export function writeFetchResponseHeaders(response: ServerResponse, fetchResponse: Response): void {
   const preserveRepresentationLength =
     response.req?.method === "HEAD" || fetchResponse.status === 304;
-  response.statusCode = fetchResponse.status;
+  const connectionHeaders = new Set(
+    (fetchResponse.headers.get("connection") ?? "")
+      .split(",")
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  if (connectionHeaders.has("close")) {
+    response.shouldKeepAlive = false;
+  }
+
   for (const [name, value] of fetchResponse.headers) {
     const normalizedName = name.toLowerCase();
     if (
-      (normalizedName === "content-length" && !preserveRepresentationLength) ||
       normalizedName === "set-cookie" ||
-      normalizedName === "trailer" ||
-      normalizedName === "transfer-encoding"
+      HOP_BY_HOP_RESPONSE_HEADERS.has(normalizedName) ||
+      connectionHeaders.has(normalizedName) ||
+      (normalizedName === "content-length" && !preserveRepresentationLength)
     ) {
       continue;
     }
     response.setHeader(name, value);
   }
+
   const setCookies = fetchResponse.headers.getSetCookie();
   if (setCookies.length > 0) {
     response.setHeader("set-cookie", setCookies);
   }
+}
+
+export async function writeResponse(
+  response: ServerResponse,
+  fetchResponse: Response,
+): Promise<void> {
+  const body = Buffer.from(await fetchResponse.arrayBuffer());
+  response.statusCode = fetchResponse.status;
+  writeFetchResponseHeaders(response, fetchResponse);
   await new Promise<void>((resolve, reject) => {
     if (
       response.destroyed ||
@@ -348,8 +393,14 @@ export async function startHttpJsonServer(params: {
       kind: "connectivity",
     });
   }
-  const advertisedHost =
-    params.host === "0.0.0.0" ? "127.0.0.1" : params.host === "::" ? "::1" : params.host;
+  if (isLoopbackHost(params.host) && !isLoopbackAddress(address.address)) {
+    await closeServer(server);
+    throw new CrablineError(
+      `${params.serverName} resolved a loopback hostname to non-loopback address ${address.address}.`,
+      { kind: "connectivity" },
+    );
+  }
+  const advertisedHost = advertisedHostForBindAddress(params.host, address.address);
   return {
     baseUrl: `http://${formatUrlHost(advertisedHost)}:${address.port}`,
     async close() {
