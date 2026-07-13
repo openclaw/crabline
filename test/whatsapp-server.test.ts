@@ -32,7 +32,7 @@ import {
   WhatsAppSignalBundleStore,
 } from "../src/servers/whatsapp-baileys-websocket.js";
 import type { BinaryNode } from "../src/servers/whatsapp-wire/binary-node.js";
-import { Curve, KEY_BUNDLE_TYPE, type KeyPair } from "../src/servers/whatsapp-wire/crypto.js";
+import { Curve, ensureSignalPublicKey, type KeyPair } from "../src/servers/whatsapp-wire/crypto.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedWhatsAppServer[] = [];
@@ -107,7 +107,7 @@ function createMemorySignalStore(): MemorySignalStore {
 function signalTestKeyPair(pair: KeyPair): { privKey: Buffer; pubKey: Buffer } {
   return {
     privKey: Buffer.from(pair.private),
-    pubKey: Buffer.concat([KEY_BUNDLE_TYPE, pair.public]),
+    pubKey: ensureSignalPublicKey(pair.public),
   };
 }
 

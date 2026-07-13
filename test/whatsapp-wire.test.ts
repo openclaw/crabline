@@ -16,9 +16,13 @@ import {
   createCurve,
   Curve,
   encodeBigEndian,
+  generateSignalKeyPair,
+  KEY_BUNDLE_TYPE,
   NOISE_WA_HEADER,
+  signedKeyPair,
 } from "../src/servers/whatsapp-wire/crypto.js";
 import { decodeHandshakeMessage } from "../src/servers/whatsapp-wire/handshake.js";
+import { xmppPreKey, xmppSignedPreKey } from "../src/servers/whatsapp-wire/signal.js";
 import {
   createSerializedMessageHandler,
   MAX_WHATSAPP_NOISE_BUFFER_CHUNKS,
@@ -48,6 +52,29 @@ const RFC_7748_SHARED_SECRET = Buffer.from(
 );
 
 describe("WhatsApp X25519 agreement", () => {
+  it("generates provider-native Signal public keys without changing raw Noise keys", () => {
+    const noiseKeyPair = Curve.generateKeyPair();
+    const identityKeyPair = generateSignalKeyPair();
+    const signedPreKey = signedKeyPair(identityKeyPair, 1);
+
+    expect(noiseKeyPair.public).toHaveLength(32);
+    expect(identityKeyPair.public).toHaveLength(33);
+    expect(identityKeyPair.public[0]).toBe(KEY_BUNDLE_TYPE[0]);
+    expect(signedPreKey.keyPair.public).toHaveLength(33);
+    expect(signedPreKey.keyPair.public[0]).toBe(KEY_BUNDLE_TYPE[0]);
+  });
+
+  it("serializes Signal bundle public keys without the in-memory type prefix", () => {
+    const identityKeyPair = generateSignalKeyPair();
+    const preKeyNode = xmppPreKey(identityKeyPair, 1);
+    const signedPreKeyNode = xmppSignedPreKey(signedKeyPair(identityKeyPair, 1));
+    const preKeyValue = (preKeyNode.content as BinaryNode[])[1]!.content as Buffer;
+    const signedPreKeyValue = (signedPreKeyNode.content as BinaryNode[])[1]!.content as Buffer;
+
+    expect(preKeyValue).toHaveLength(32);
+    expect(signedPreKeyValue).toHaveLength(32);
+  });
+
   it("matches the RFC 7748 vector and bundled Baileys Curve", () => {
     expect(Curve.sharedKey(RFC_7748_ALICE_PRIVATE, RFC_7748_BOB_PUBLIC)).toEqual(
       RFC_7748_SHARED_SECRET,
@@ -499,6 +526,12 @@ describe("WhatsApp signal bundle store", () => {
     expect(first).toHaveLength(1);
     expect(store.resolveMany(["15551234567@s.whatsapp.net"])[0]).toBe(first[0]);
     expect(store.resolveMany(["15551234567@c.us"])[0]).toBe(first[0]);
+    expect(first[0]!.identityKey.public).toHaveLength(33);
+    expect(first[0]!.identityKey.public[0]).toBe(KEY_BUNDLE_TYPE[0]);
+    expect(first[0]!.preKey.public).toHaveLength(33);
+    expect(first[0]!.preKey.public[0]).toBe(KEY_BUNDLE_TYPE[0]);
+    expect(first[0]!.signedPreKey.keyPair.public).toHaveLength(33);
+    expect(first[0]!.signedPreKey.keyPair.public[0]).toBe(KEY_BUNDLE_TYPE[0]);
     expect(store.size).toBe(1);
     expect(() => store.resolveMany(["not-a-jid"])).toThrow(/Invalid WhatsApp signal bundle JID/u);
     expect(() => store.resolveMany(["15557654321@s.whatsapp.net"])).toThrow(
