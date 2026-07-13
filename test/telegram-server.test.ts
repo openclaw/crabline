@@ -208,15 +208,13 @@ describe("telegram local provider server", () => {
     expect(
       (
         await injectUpdate(server, {
-          channel_post: {
+          my_chat_member: {
             chat: {
               id: -1001111111111,
               title: "Announcements",
               type: "channel",
               username: "Crabline_News",
             },
-            message_id: 1,
-            text: "channel registration",
           },
           update_id: 1,
         })
@@ -272,6 +270,34 @@ describe("telegram local provider server", () => {
         },
       },
     });
+
+    expect(
+      (
+        await injectUpdate(server, {
+          my_chat_member: {
+            chat: {
+              id: -1001111111111,
+              title: "Announcements",
+              type: "channel",
+              username: "Crabline_Updates",
+            },
+          },
+          update_id: 3,
+        })
+      ).status,
+    ).toBe(200);
+    await expect(sendMessage("@crabline_updates")).resolves.toMatchObject({
+      result: {
+        chat: {
+          id: -1001111111111,
+          type: "channel",
+          username: "Crabline_Updates",
+        },
+      },
+    });
+    const staleUsername = await sendMessage("@crabline_news");
+    expect(staleUsername.result.chat.id).not.toBe(-1001111111111);
+    expect(staleUsername.result.chat.type).toBe("supergroup");
   });
 
   it("normalizes non-positive topic ids while preserving private-chat topics", async () => {
@@ -2060,6 +2086,23 @@ describe("telegram local provider server", () => {
     expect(media[2]!.result.photo[0]?.file_unique_id).not.toBe(
       media[0]!.result.photo[0]?.file_unique_id,
     );
+
+    const reusedFileId = media[0]!.result.photo[0]!.file_id;
+    const reused = await fetch(`${apiRoot}/sendPhoto`, {
+      body: JSON.stringify({ chat_id: 300, photo: reusedFileId }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(reused.status).toBe(200);
+    await expect(reused.json()).resolves.toMatchObject({
+      result: {
+        photo: [
+          {
+            file_unique_id: media[0]!.result.photo[0]!.file_unique_id,
+          },
+        ],
+      },
+    });
   });
 
   it("tracks explicit message IDs independently per chat", async () => {

@@ -95,6 +95,16 @@ const TELEGRAM_MESSAGE_UPDATE_FIELDS = [
   ...TELEGRAM_NEW_MESSAGE_UPDATE_FIELDS,
   ...TELEGRAM_MESSAGE_REFERENCE_FIELDS,
 ] as const;
+const TELEGRAM_CHAT_UPDATE_FIELDS = [
+  "chat_boost",
+  "chat_join_request",
+  "chat_member",
+  "deleted_business_messages",
+  "message_reaction",
+  "message_reaction_count",
+  "my_chat_member",
+  "removed_chat_boost",
+] as const;
 
 type TelegramServerEvent = {
   accepted?: boolean | undefined;
@@ -404,6 +414,11 @@ function telegramChatType(value: unknown): TelegramChat["type"] | undefined {
 }
 
 function registerTelegramChat(state: TelegramServerState, chat: TelegramChat): void {
+  const previous = state.chatsById.get(chat.id);
+  const previousUsername = telegramChatUsername(previous?.username);
+  if (previousUsername && state.chatsByUsername.get(previousUsername)?.id === chat.id) {
+    state.chatsByUsername.delete(previousUsername);
+  }
   const stored = { ...chat };
   state.chatsById.set(chat.id, stored);
   const username = telegramChatUsername(chat.username);
@@ -482,6 +497,16 @@ function registerTelegramUpdateChats(state: TelegramServerState, body: Record<st
   if (callbackChat) {
     registerTelegramChat(state, callbackChat);
   }
+  for (const field of TELEGRAM_CHAT_UPDATE_FIELDS) {
+    const update = body[field];
+    if (!isJsonObject(update)) {
+      continue;
+    }
+    const chat = telegramChatFromRecord(update.chat);
+    if (chat) {
+      registerTelegramChat(state, chat);
+    }
+  }
 }
 
 function telegramChatKey(chatId: number): string {
@@ -553,13 +578,19 @@ function createOutboundMediaMessage(
   const height = Math.max(1, toIntegerValue(body.height) ?? 1);
   const width = Math.max(1, toIntegerValue(body.width) ?? 1);
   const chatIdentity = Buffer.from(telegramChatKey(chat.id)).toString("base64url");
-  const fileId = `crabline-${mediaKind}-${chatIdentity}-${messageId}`;
-  const fileUniqueId = `crabline-${mediaKind}-unique-${createHash("sha256")
-    .update(mediaKind)
-    .update("\0")
-    .update(fileName)
-    .digest("base64url")
-    .slice(0, 32)}`;
+  const reusedIdentity = new RegExp(`^crabline-${mediaKind}-([A-Za-z0-9_-]{32})-`, "u").exec(
+    fileName,
+  )?.[1];
+  const fileIdentity =
+    reusedIdentity ??
+    createHash("sha256")
+      .update(mediaKind)
+      .update("\0")
+      .update(fileName)
+      .digest("base64url")
+      .slice(0, 32);
+  const fileId = `crabline-${mediaKind}-${fileIdentity}-${chatIdentity}-${messageId}`;
+  const fileUniqueId = `crabline-${mediaKind}-unique-${fileIdentity}`;
   const media = {
     file_id: fileId,
     file_name: fileName,
