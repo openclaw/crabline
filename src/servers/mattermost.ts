@@ -30,6 +30,9 @@ const DEFAULT_WEBSOCKET_AUTHENTICATION_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_WEBSOCKET_BUFFERED_BYTES = 1024 * 1024;
 const DEFAULT_MAX_WEBSOCKET_MESSAGE_BYTES = 64 * 1024;
 const DEFAULT_MAX_UNAUTHENTICATED_WEBSOCKET_CLIENTS = 32;
+const DEFAULT_MAX_COMMITTED_CHANNELS = 1_000;
+const DEFAULT_MAX_COMMITTED_POSTS = 1_000;
+const DEFAULT_MAX_COMMITTED_USERS = 1_000;
 const MATTERMOST_ID_PATTERN = /^[a-z0-9]{26}(?![\s\S])/u;
 
 function resolvePositiveLimit(value: number | undefined, name: string, fallback: number): number {
@@ -45,10 +48,13 @@ function resolvePositiveLimit(value: number | undefined, name: string, fallback:
 type MattermostPost = {
   channel_id: string;
   create_at: number;
+  delete_at: number;
+  edit_at: number;
   id: string;
   message: string;
   root_id: string;
   type: string;
+  update_at: number;
   user_id: string;
 };
 
@@ -79,6 +85,9 @@ type MattermostServerState = {
   botUserId: string;
   botUsername: string;
   channels: Map<string, MattermostChannel>;
+  maxCommittedChannels: number;
+  maxCommittedPosts: number;
+  maxCommittedUsers: number;
   maxPendingInboundEvents: number;
   maxWebSocketBufferedBytes: number;
   nextPost: number;
@@ -123,6 +132,9 @@ export type StartMattermostServerParams = {
   onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
+  maxCommittedChannels?: number | undefined;
+  maxCommittedPosts?: number | undefined;
+  maxCommittedUsers?: number | undefined;
   maxPendingInboundEvents?: number | undefined;
   maxWebSocketBufferedBytes?: number | undefined;
   maxWebSocketMessageBytes?: number | undefined;
@@ -339,6 +351,16 @@ function pendingQueueFullResponse(state: MattermostServerState): Response {
   );
 }
 
+function committedStateFullResponse(resource: "channels" | "posts" | "users"): Response {
+  return jsonResponse(
+    {
+      error: `Committed Mattermost ${resource} limit reached`,
+      ok: false,
+    },
+    503,
+  );
+}
+
 function buildPost(params: {
   channelId: string;
   id: string;
@@ -346,13 +368,17 @@ function buildPost(params: {
   rootId?: string | undefined;
   userId: string;
 }): MattermostPost {
+  const now = Date.now();
   return {
     channel_id: params.channelId,
-    create_at: Date.now(),
+    create_at: now,
+    delete_at: 0,
+    edit_at: 0,
     id: params.id,
     message: params.message,
     root_id: params.rootId ?? "",
     type: "",
+    update_at: now,
     user_id: params.userId,
   };
 }
@@ -451,6 +477,16 @@ function handleAdminInbound(params: {
   }
   if (existingRoot?.root_id) {
     return jsonResponse({ error: "Root post is itself a reply", ok: false }, 400);
+  }
+  if (!previousUser && params.state.users.size >= params.state.maxCommittedUsers) {
+    return committedStateFullResponse("users");
+  }
+  if (!previousChannel && params.state.channels.size >= params.state.maxCommittedChannels) {
+    return committedStateFullResponse("channels");
+  }
+  const requiredPostSlots = 1 + (rootId && !existingRoot ? 1 : 0);
+  if (params.state.posts.size + requiredPostSlots > params.state.maxCommittedPosts) {
+    return committedStateFullResponse("posts");
   }
   const rootPost =
     rootId && !existingRoot
@@ -551,8 +587,13 @@ async function handleApi(params: {
     if (firstUserId !== state.botUserId && secondUserId !== state.botUserId) {
       return mattermostError("Authenticated user must belong to the direct channel", 403);
     }
-    const channelId = mattermostId(`dm:${userIds.sort().join(":")}`);
-    const channel = { display_name: "", id: channelId, name: channelId, type: "D" };
+    const participantIds = [...userIds].sort();
+    const channelName = participantIds.join("__");
+    const channelId = mattermostId(`dm:${participantIds.join(":")}`);
+    if (!state.channels.has(channelId) && state.channels.size >= state.maxCommittedChannels) {
+      return mattermostError("Too many retained channels", 503);
+    }
+    const channel = { display_name: "", id: channelId, name: channelName, type: "D" };
     state.channels.set(channelId, channel);
     return jsonResponse(channel, 201);
   }
@@ -616,6 +657,9 @@ async function handleApi(params: {
         return mattermostError("Root post is itself a reply", 400);
       }
     }
+    if (state.posts.size >= state.maxCommittedPosts) {
+      return mattermostError("Too many retained posts", 503);
+    }
     const pendingPost = buildNextPost(state, {
       channelId,
       message,
@@ -644,7 +688,8 @@ async function handleApi(params: {
     if (!message) {
       return mattermostError("message must be a string", 400);
     }
-    const updated = { ...post, message };
+    const editedAt = Math.max(Date.now(), post.update_at + 1);
+    const updated = { ...post, edit_at: editedAt, message, update_at: editedAt };
     const event = postEvent(
       "post_edited",
       updated,
@@ -666,11 +711,13 @@ async function handleApi(params: {
     if (post.user_id !== state.botUserId) {
       return mattermostError("You do not have permission to delete this post", 403);
     }
+    const deletedAt = Math.max(Date.now(), post.update_at + 1);
+    const deletedPost = { ...post, delete_at: deletedAt, update_at: deletedAt };
     const event = postEvent(
       "post_deleted",
-      post,
+      deletedPost,
       state.botUsername,
-      state.channels.get(post.channel_id)!,
+      state.channels.get(deletedPost.channel_id)!,
     );
     if (webSocketEventBytes(event) > state.maxWebSocketBufferedBytes) {
       return webSocketEventTooLargeResponse();
@@ -936,6 +983,21 @@ export async function startMattermostServer(
     botUserId,
     botUsername,
     channels: new Map(),
+    maxCommittedChannels: resolvePositiveLimit(
+      params.maxCommittedChannels,
+      "maxCommittedChannels",
+      DEFAULT_MAX_COMMITTED_CHANNELS,
+    ),
+    maxCommittedPosts: resolvePositiveLimit(
+      params.maxCommittedPosts,
+      "maxCommittedPosts",
+      DEFAULT_MAX_COMMITTED_POSTS,
+    ),
+    maxCommittedUsers: resolvePositiveLimit(
+      params.maxCommittedUsers,
+      "maxCommittedUsers",
+      DEFAULT_MAX_COMMITTED_USERS,
+    ),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     maxWebSocketBufferedBytes: resolvePositiveLimit(
       params.maxWebSocketBufferedBytes,

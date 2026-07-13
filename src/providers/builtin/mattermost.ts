@@ -1,7 +1,9 @@
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { LocalMockProviderAdapter } from "../local-mock.js";
+import { isLoopbackHost } from "../../servers/http.js";
+import { LocalMockProviderAdapter, resolveGeneratedLocalMockRecorderPath } from "../local-mock.js";
+import { appendRecordedInbound } from "../recorder.js";
 import type { ProviderAdapter } from "../types.js";
 import { getBuiltinTargetCodec, MATTERMOST_ID_RULE } from "../target-normalizers.js";
 import {
@@ -18,12 +20,31 @@ export function resolveMattermostAdapterConfig(
   config: ProviderConfig,
   env: NodeJS.ProcessEnv = process.env,
 ) {
+  const baseUrl =
+    config.mattermost?.baseUrl ??
+    env.MATTERMOST_URL ??
+    env.MATTERMOST_BASE_URL ??
+    "http://127.0.0.1";
+  let parsedBaseUrl: URL;
+  try {
+    parsedBaseUrl = new URL(baseUrl);
+  } catch (error) {
+    throw new CrablineError("Mattermost base URL is invalid.", {
+      cause: error,
+      kind: "config",
+    });
+  }
+  if (
+    parsedBaseUrl.protocol !== "https:" &&
+    !(parsedBaseUrl.protocol === "http:" && isLoopbackHost(parsedBaseUrl.hostname))
+  ) {
+    throw new CrablineError(
+      "Mattermost bearer authentication requires HTTPS; plain HTTP is allowed only for loopback-local servers.",
+      { kind: "config" },
+    );
+  }
   return {
-    baseUrl:
-      config.mattermost?.baseUrl ??
-      env.MATTERMOST_URL ??
-      env.MATTERMOST_BASE_URL ??
-      "http://mattermost.local",
+    baseUrl,
     botToken: config.mattermost?.botToken ?? env.MATTERMOST_BOT_TOKEN ?? "local-mock-token",
     userName: config.mattermost?.userName,
   };
@@ -31,6 +52,7 @@ export function resolveMattermostAdapterConfig(
 
 export class MattermostProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
+    resolveMattermostAdapterConfig(config);
     requireExternalWebhookAuthentication({
       authenticated: false,
       provider: "Mattermost",
@@ -38,6 +60,9 @@ export class MattermostProviderAdapter extends LocalMockProviderAdapter implemen
         "a provider-native authenticated ingress mode, which this adapter does not support",
       webhook: config.mattermost?.webhook,
     });
+    const recorderPath = config.mattermost?.recorder.path
+      ? path.resolve(config.mattermost.recorder.path)
+      : resolveGeneratedLocalMockRecorderPath(id);
     super({
       codec: getBuiltinTargetCodec("mattermost"),
       config,
@@ -46,12 +71,47 @@ export class MattermostProviderAdapter extends LocalMockProviderAdapter implemen
         defaultWebhook: { host: "127.0.0.1", path: "/mattermost/webhook", port: 8793 },
         endpointLabel: "webhook endpoint",
         matchesThread: matchesMattermostThread,
+        handleWebhookPayload: async (payload, request) => {
+          const mediaType = request.headers
+            .get("content-type")
+            ?.split(";", 1)[0]
+            ?.trim()
+            .toLowerCase();
+          if (mediaType !== "application/x-www-form-urlencoded" || typeof payload !== "string") {
+            return undefined;
+          }
+          let normalized: ReturnType<typeof normalizeMattermostWebhookPayload>;
+          try {
+            normalized = normalizeMattermostWebhookPayload(
+              Object.fromEntries(new URLSearchParams(payload).entries()),
+            );
+          } catch (error) {
+            if (error instanceof CrablineError && error.kind === "inbound") {
+              return new Response(error.message, { status: 400 });
+            }
+            throw error;
+          }
+          const messageId =
+            normalized.id ??
+            `mattermost-mock-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          await appendRecordedInbound(recorderPath, {
+            author: normalized.author,
+            id: messageId,
+            provider: id,
+            raw: normalized.raw,
+            recordedDirection: "inbound",
+            sentAt: new Date().toISOString(),
+            text: normalized.text,
+            threadId: normalized.threadId,
+          });
+          return new Response(JSON.stringify({ id: messageId, ok: true }), {
+            headers: { "content-type": "application/json" },
+          });
+        },
         normalizeWebhookPayload: normalizeMattermostWebhookPayload,
         platform: "mattermost",
         publicUrl: config.mattermost?.webhook.publicUrl,
-        recorderPath: config.mattermost?.recorder.path
-          ? path.resolve(config.mattermost.recorder.path)
-          : undefined,
+        recorderPath,
         webhook: config.mattermost?.webhook,
       },
     });
@@ -84,7 +144,17 @@ export function matchesMattermostThread(
   );
 }
 
-export function normalizeMattermostWebhookPayload(payload: unknown) {
+type NormalizedMattermostWebhookPayload = {
+  author: "assistant" | "system" | "user";
+  id?: string | undefined;
+  raw: unknown;
+  text: string;
+  threadId: string;
+};
+
+export function normalizeMattermostWebhookPayload(
+  payload: unknown,
+): NormalizedMattermostWebhookPayload {
   if (!isRecord(payload)) {
     throw new CrablineError("Mattermost webhook payload must be an object", { kind: "inbound" });
   }
@@ -94,7 +164,7 @@ export function normalizeMattermostWebhookPayload(payload: unknown) {
       channelRule: MATTERMOST_ID_RULE,
       payload,
       threadRule: MATTERMOST_ID_RULE,
-    });
+    }) as NormalizedMattermostWebhookPayload;
   }
 
   const channelId = optionalString(payload, "channel_id");
