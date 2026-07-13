@@ -1014,8 +1014,17 @@ export function attachWhatsAppBaileysWebSocketServer(
       params.httpServer.off("upgrade", handleUpgrade);
       pendingMessages.length = 0;
       await closeWebSocketServer(wss);
-      await Promise.all([...pendingSessionMessages]);
+      const messageResults = await Promise.allSettled([...pendingSessionMessages]);
       await flushPromise;
+      const messageErrors = messageResults.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (messageErrors.length === 1) {
+        throw messageErrors[0];
+      }
+      if (messageErrors.length > 1) {
+        throw new AggregateError(messageErrors, "WhatsApp WebSocket message drain failed.");
+      }
     },
     prepareInboundMessage(message) {
       if (pendingMessages.length + pendingReservations >= maxPendingInboundMessages) {
