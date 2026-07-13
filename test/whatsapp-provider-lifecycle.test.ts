@@ -107,6 +107,35 @@ function signedWhatsAppRequest(body: unknown): Request {
 }
 
 describe("WhatsApp provider lifecycle", () => {
+  it("does not start listeners for pre-aborted waits or watches", async () => {
+    const config = createConfig();
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createContext(config);
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled before dispatch"));
+
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        nonce: "pre-aborted-wait",
+        signal: controller.signal,
+        since: new Date(0).toISOString(),
+        timeoutMs: 30_000,
+      }),
+    ).resolves.toBeNull();
+    const watching = provider
+      .watch({
+        ...context,
+        signal: controller.signal,
+        since: new Date(0).toISOString(),
+      })
+      [Symbol.asyncIterator]();
+    await expect(watching.next()).resolves.toEqual({ done: true, value: undefined });
+
+    expect(webhookMocks.startWebhookServer).not.toHaveBeenCalled();
+    await provider.cleanup();
+  });
+
   it("shares one listener across concurrent probes and closes it once", async () => {
     let resolveStart:
       | ((server: { close(): Promise<void>; endpointUrl: string }) => void)
