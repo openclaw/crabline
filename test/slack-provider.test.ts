@@ -319,6 +319,17 @@ describe("slack provider", () => {
       .update(`v0:${timestamp}:${body}`)
       .digest("hex")}`;
 
+    const malformed = await fetch(endpoint, {
+      body: "{",
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": "v0=invalid",
+      },
+      method: "POST",
+    });
+    expect(malformed.status).toBe(401);
+
     const rejected = await fetch(endpoint, {
       body,
       headers: {

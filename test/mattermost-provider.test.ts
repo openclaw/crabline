@@ -3,6 +3,7 @@ import {
   MattermostProviderAdapter,
   matchesMattermostThread,
   normalizeMattermostWebhookPayload,
+  resolveMattermostAdapterConfig,
 } from "../src/providers/builtin/mattermost.js";
 import { optionalStringish } from "../src/providers/builtin/native-local-mock.js";
 import {
@@ -11,6 +12,22 @@ import {
 } from "./local-mock-provider-helpers.js";
 
 describe("Mattermost webhook normalizer", () => {
+  it("prefers MATTERMOST_URL while retaining the legacy base URL fallback", async () => {
+    const config = await createLocalMockConfig("mattermost", "/mattermost/webhook");
+
+    expect(
+      resolveMattermostAdapterConfig(config, {
+        MATTERMOST_BASE_URL: "https://legacy.example.test",
+        MATTERMOST_URL: "https://current.example.test",
+      }),
+    ).toMatchObject({ baseUrl: "https://current.example.test" });
+    expect(
+      resolveMattermostAdapterConfig(config, {
+        MATTERMOST_BASE_URL: "https://legacy.example.test",
+      }),
+    ).toMatchObject({ baseUrl: "https://legacy.example.test" });
+  });
+
   it("rejects externally reachable webhooks without provider-native authentication", async () => {
     const config = await createLocalMockConfig("mattermost", "/mattermost/webhook");
     config.mattermost!.webhook.host = "0.0.0.0";
