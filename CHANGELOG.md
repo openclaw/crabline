@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Validate signed-JWT registered claims, clock skew, and synchronous key-loader failure cleanup.
 - Bound shared JSON ingress, reject non-object payloads precisely, and strictly normalize loopback IP addresses.
 - Harden WhatsApp send evidence, direct-JID correlation, cursor and cleanup races, and cleartext listener exposure.
 - Revalidate npm package version, integrity, and provenance after every release publication outcome.
