@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { RE2JS } from "re2js";
 import { CrablineError } from "../src/core/errors.js";
 import { EXIT_CODES } from "../src/core/exit-codes.js";
 import { computeExitCode, runFixtureCommand, runSuite } from "../src/core/run.js";
@@ -210,6 +211,63 @@ describe("run behavior", () => {
     expect(result.failureKind).toBe("config");
     expect(result.diagnostics.join("\n")).toContain("Invalid inbound regex");
     expect(sendCalls).toBe(0);
+  });
+
+  it("compiles an inbound regex once while checking multiple candidates", async () => {
+    let waitCalls = 0;
+    const compileSpy = vi.spyOn(RE2JS, "compile");
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["roundtrip"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => ({ accepted: true, messageId: "sent", threadId: "thread" }),
+      waitForInbound: async () => {
+        waitCalls += 1;
+        return {
+          author: "assistant",
+          id: `inbound-${waitCalls}`,
+          provider: "mock",
+          sentAt: new Date().toISOString(),
+          text: waitCalls === 3 ? "expected reply" : "unrelated reply",
+          threadId: "thread",
+        };
+      },
+    };
+    const regexManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [
+        {
+          ...manifest.fixtures[0]!,
+          inboundMatch: {
+            author: "assistant",
+            nonce: "ignore",
+            pattern: "^expected reply$",
+            strategy: "regex",
+          },
+          timeoutMs: 100,
+        },
+      ],
+    });
+
+    try {
+      const result = await runFixtureCommand({
+        fixtureId: "fixture",
+        manifest: regexManifest,
+        manifestPath: "/tmp/crabline.yaml",
+        registry: buildRegistry(provider),
+      });
+
+      expect(result.ok).toBe(true);
+      expect(waitCalls).toBe(3);
+      expect(compileSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      compileSpy.mockRestore();
+    }
   });
 
   it("uses one effective fixture for mode overrides in provider contexts", async () => {
