@@ -253,6 +253,34 @@ async function waitForChildClose(
   return exit;
 }
 
+function waitForChildCloseOrAbort(
+  childClosed: Promise<ScriptChildExit>,
+  signals: Array<AbortSignal | undefined>,
+): Promise<ScriptChildExit | undefined> {
+  const activeSignals = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  if (activeSignals.some((signal) => signal.aborted)) {
+    return Promise.resolve(undefined);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const abort = () => finish(undefined);
+    const finish = (exit: ScriptChildExit | undefined) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      for (const signal of activeSignals) {
+        signal.removeEventListener("abort", abort);
+      }
+      resolve(exit);
+    };
+    for (const signal of activeSignals) {
+      signal.addEventListener("abort", abort, { once: true });
+    }
+    void childClosed.then((exit) => finish(exit));
+  });
+}
+
 function formatValidationError(error: z.ZodError): string {
   return error.issues
     .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "result"}: ${issue.message}`)
@@ -335,6 +363,9 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
   let quote: '"' | "'" | undefined;
   for (let index = 0; index < command.length; index += 1) {
     const character = command[index]!;
+    if (process.platform === "win32" && character === "\\" && command[index + 1] === '"') {
+      return undefined;
+    }
     if (quote) {
       if (character === quote) {
         quote = undefined;
@@ -463,17 +494,6 @@ function snapshotSensitiveEnvironmentValues(): string[] {
   return [...representations].sort((left, right) => right.length - left.length);
 }
 
-function redactSensitiveEnvironmentValues(
-  detail: string,
-  sensitiveEnvironmentValues: string[],
-): string {
-  let redacted = detail;
-  for (const representation of sensitiveEnvironmentValues) {
-    redacted = redacted.split(representation).join("[redacted environment value]");
-  }
-  return redacted;
-}
-
 function collectSensitivePayloadValues(
   value: unknown,
   values: Set<string>,
@@ -526,46 +546,103 @@ function snapshotSensitivePayloadValues(payload: unknown): string[] {
   return [...values].sort((left, right) => right.length - left.length);
 }
 
-function redactSensitivePayloadValues(detail: string, sensitivePayloadValues: string[]): string {
-  let redacted = detail;
-  for (const value of sensitivePayloadValues) {
-    redacted = redacted.split(value).join("[redacted configured value]");
-  }
-  return redacted;
-}
-
-function redactCommandValues(detail: string, commandValues: string[]): string {
-  let redacted = detail;
-  for (const value of commandValues) {
-    redacted = redacted.split(value).join("[redacted command value]");
-  }
-  return redacted;
-}
-
 function isExactCommandValueBoundary(character: string | undefined): boolean {
   return character === undefined || /[\s"'`=,:;.()[\]{}<>!?]/u.test(character);
 }
 
-function redactExactCommandValues(detail: string, commandValues: string[]): string {
-  let redacted = detail;
-  for (const value of commandValues) {
+type DiagnosticRedactionSpan = {
+  end: number;
+  label: string;
+  priority: number;
+  sourceLength: number;
+  start: number;
+};
+
+function collectDiagnosticRedactionSpans(
+  detail: string,
+  values: string[],
+  label: string,
+  priority: number,
+  exact = false,
+): DiagnosticRedactionSpan[] {
+  const spans: DiagnosticRedactionSpan[] = [];
+  for (const value of values) {
     let cursor = 0;
-    while (cursor < redacted.length) {
-      const index = redacted.indexOf(value, cursor);
-      if (index < 0) {
+    while (cursor < detail.length) {
+      const start = detail.indexOf(value, cursor);
+      if (start < 0) {
         break;
       }
-      const end = index + value.length;
+      const end = start + value.length;
       if (
-        isExactCommandValueBoundary(redacted[index - 1]) &&
-        isExactCommandValueBoundary(redacted[end])
+        !exact ||
+        (isExactCommandValueBoundary(detail[start - 1]) && isExactCommandValueBoundary(detail[end]))
       ) {
-        redacted = redacted.slice(0, index) + "[redacted command value]" + redacted.slice(end);
-        cursor = index + "[redacted command value]".length;
-      } else {
-        cursor = end;
+        spans.push({ end, label, priority, sourceLength: value.length, start });
       }
+      cursor = end;
     }
+  }
+  return spans;
+}
+
+function redactDiagnosticValues(detail: string, diagnostics: ScriptDiagnosticsSnapshot): string {
+  const spans = [
+    ...collectDiagnosticRedactionSpans(
+      detail,
+      diagnostics.sensitiveEnvironmentValues,
+      "[redacted environment value]",
+      4,
+    ),
+    ...collectDiagnosticRedactionSpans(
+      detail,
+      diagnostics.configuredCommands,
+      "[configured script command]",
+      3,
+    ),
+    ...collectDiagnosticRedactionSpans(
+      detail,
+      diagnostics.commandValues,
+      "[redacted command value]",
+      3,
+    ),
+    ...collectDiagnosticRedactionSpans(
+      detail,
+      diagnostics.exactCommandValues,
+      "[redacted command value]",
+      3,
+      true,
+    ),
+    ...collectDiagnosticRedactionSpans(
+      detail,
+      diagnostics.sensitivePayloadValues,
+      "[redacted configured value]",
+      2,
+    ),
+  ].sort(
+    (left, right) =>
+      left.start - right.start || right.end - left.end || right.priority - left.priority,
+  );
+  const merged: DiagnosticRedactionSpan[] = [];
+  for (const span of spans) {
+    const previous = merged.at(-1);
+    if (!previous || span.start >= previous.end) {
+      merged.push({ ...span });
+      continue;
+    }
+    previous.end = Math.max(previous.end, span.end);
+    if (
+      span.sourceLength > previous.sourceLength ||
+      (span.sourceLength === previous.sourceLength && span.priority > previous.priority)
+    ) {
+      previous.label = span.label;
+      previous.priority = span.priority;
+      previous.sourceLength = span.sourceLength;
+    }
+  }
+  let redacted = detail;
+  for (const span of merged.toReversed()) {
+    redacted = redacted.slice(0, span.start) + span.label + redacted.slice(span.end);
   }
   return redacted;
 }
@@ -582,16 +659,8 @@ function formatScriptError(
   if (!diagnostics.diagnosticsSafe || commandContainsSensitiveValue(command)) {
     return `${summary}\n[script diagnostics redacted]`;
   }
-  let redacted = redactSensitivePayloadValues(
-    redactSensitiveEnvironmentValues(detail, diagnostics.sensitiveEnvironmentValues),
-    diagnostics.sensitivePayloadValues,
-  );
+  let redacted = redactDiagnosticValues(detail, diagnostics);
   redacted = redactCredentialSyntax(redacted);
-  for (const configuredCommand of diagnostics.configuredCommands) {
-    redacted = redacted.split(configuredCommand).join("[configured script command]");
-  }
-  redacted = redactCommandValues(redacted, diagnostics.commandValues);
-  redacted = redactExactCommandValues(redacted, diagnostics.exactCommandValues);
   redacted = redacted.trim();
   return redacted ? `${summary}\n${redacted}` : summary;
 }
@@ -1019,23 +1088,13 @@ function watchScript(params: {
         };
       }
 
-      const exit = await waitForChildClose(childClosed);
-      if (!exit) {
-        await stopChild();
-        if (params.cancelSignal.aborted) {
-          return;
-        }
-        if (params.context.signal?.aborted) {
-          throw params.context.signal.reason ?? new Error("Script watch command aborted.");
-        }
-        throw new CrablineError("Script watch command did not close after its output ended.", {
-          kind: "connectivity",
-        });
-      }
       if (outputLimitError) {
+        await stopChild();
+        await waitForChildClose(childClosed);
         throw outputLimitError;
       }
       if (childError) {
+        await waitForChildClose(childClosed);
         throw new CrablineError(
           formatScriptError(
             "Script watch command failed to start.",
@@ -1045,6 +1104,20 @@ function watchScript(params: {
           ),
           { kind: "connectivity" },
         );
+      }
+      const exit = await waitForChildCloseOrAbort(childClosed, [
+        params.cancelSignal,
+        params.context.signal,
+      ]);
+      if (!exit) {
+        await stopChild();
+        if (params.cancelSignal.aborted) {
+          return;
+        }
+        if (params.context.signal?.aborted) {
+          throw params.context.signal.reason ?? new Error("Script watch command aborted.");
+        }
+        return;
       }
       if (exit.code !== 0) {
         throw new CrablineError(

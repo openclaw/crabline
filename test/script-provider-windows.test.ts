@@ -120,6 +120,29 @@ describe("script provider Windows cleanup", () => {
     expect(ensureErrorMessage(failure)).not.toContain("opaque-value");
   });
 
+  it("suppresses diagnostics for ambiguous Windows backslash quoting", async () => {
+    const scriptChild = createFakeChild(1133);
+    spawnMock.mockReturnValueOnce(scriptChild);
+    const context = createContext();
+    context.config.script!.commands.send = String.raw`node "C:\workspace\opaque-value\\"`;
+    const provider = new ScriptProviderAdapter(context);
+
+    const failurePromise = provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    scriptChild.stderr.write("opaque-value");
+    scriptChild.emit("close", 7, null);
+    const failure = await failurePromise;
+
+    expect(ensureErrorMessage(failure)).toContain("[script diagnostics redacted]");
+    expect(ensureErrorMessage(failure)).not.toContain("opaque-value");
+  });
+
   it("uses identity-checked taskkill fallback and tears down inherited pipes", async () => {
     const scriptChild = createFakeChild(1234);
     spawnMock.mockReturnValueOnce(scriptChild).mockImplementationOnce(() => createCleanupChild(0));

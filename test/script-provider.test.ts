@@ -126,6 +126,19 @@ describe("script provider", () => {
     expect(watched?.value?.id).toBe("watch-1");
   });
 
+  it("allows normal watch completion after stdout closes", async () => {
+    const context = await createContext();
+    const watchScript = path.join(path.dirname(context.manifestPath), "watch-delayed-exit.mjs");
+    await writeText(watchScript, "process.stdout.end();setTimeout(()=>process.exit(0),1100);");
+    context.config.script!.commands.watch = `node ${watchScript}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    await expect(provider.watch(context).next()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+  });
+
   it("preserves UTF-8 code points split across watch stdout chunks", async () => {
     const context = await createContext();
     const watchScript = path.join(path.dirname(context.manifestPath), "watch-split-utf8.mjs");
@@ -662,6 +675,31 @@ describe("script provider", () => {
 
     expect(ensureErrorMessage(failure)).toContain("[redacted command value]");
     expect(inspect(failure, { depth: null })).not.toContain(sentinel);
+  });
+
+  it("redacts command values before overlapping payload fragments", async () => {
+    const context = await createContext();
+    const payloadValue = "fixture-fragment";
+    const commandValue = `prefix-${payloadValue}-suffix`;
+    const failingScript = path.join(path.dirname(context.manifestPath), "send-overlap.mjs");
+    await writeText(failingScript, "process.stderr.write(process.argv[2]);process.exitCode=7;");
+    context.fixture.target.metadata = {
+      [["private", "Value"].join("")]: payloadValue,
+    };
+    context.config.script!.commands.send = `node ${JSON.stringify(failingScript)} ${commandValue}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    const failure = await provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+
+    expect(ensureErrorMessage(failure)).toContain("[redacted command value]");
+    expect(inspect(failure, { depth: null })).not.toContain(commandValue);
   });
 
   it.each(["--opaque:fixture-value", "-opaque.fixture-value"])(
