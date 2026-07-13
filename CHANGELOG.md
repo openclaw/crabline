@@ -15,6 +15,7 @@
 - Acknowledge authenticated non-message chat callbacks without recording them, and tighten Slack, Google Chat, Teams, Zalo, Matrix, and shared local-mock normalization.
 - Stop suite dispatch while timed-out cleanup is unsettled and report every requested or skipped fixture.
 - Require exact agent acknowledgement tokens with canonical nonces and safely normalize non-string error messages.
+- Canonicalize recorder aliases, bound lock and rotation retries, preserve rotated-inode writers during rollback, classify published provider writes, and redact rejected Zalo webhook targets.
 - Harden provider adapter authentication, target identity, credential redaction, and webhook lifecycle behavior.
 - Harden release provenance retries, provider-native contract tests, cross-platform tooling, cleanup ordering, and channel setup coverage.
 - Stop `serve` after closed-pipe output, withdraw readiness before shutdown, and retain ownership when server close fails.

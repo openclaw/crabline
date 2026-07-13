@@ -281,10 +281,7 @@ describe("Zalo local provider server", () => {
       expect(recorder).toContain(
         `http://<redacted>@127.0.0.1:${address.port}/zalo?mode=test&accessToken=<redacted>&password=<redacted>&apiKey=<redacted>&clientSecret=<redacted>&auth=<redacted>&callbackId=keep`,
       );
-      expect(recorder).toContain(
-        "http://<redacted>@127.0.0.1:bad/zalo?accessToken=<redacted>&mode=invalid",
-      );
-      expect(recorder).toContain("<redacted>@example.com/hook");
+      expect(recorder.match(/"url":"<redacted>"/gu)).toHaveLength(2);
       expect(recorder).not.toContain("test-auth-token");
       expect(recorder).not.toContain("alice");
       expect(recorder).not.toContain("sample");
