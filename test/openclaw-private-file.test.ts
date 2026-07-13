@@ -870,6 +870,42 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
+  it("removes a partially created directory claim candidate after setup failure", async () => {
+    const directory = await createTempDir();
+    const linkSpy = vi
+      .spyOn(fs, "link")
+      .mockRejectedValue(Object.assign(new Error("hard links unsupported"), { code: "ENOTSUP" }));
+    const actualOpen = fs.open.bind(fs);
+    const setupFailure = new Error("directory claim metadata setup failed");
+    let setupFailed = false;
+    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (openedPath, flags, mode) => {
+      if (!setupFailed && path.basename(String(openedPath)) === "owner.json" && flags === "wx+") {
+        setupFailed = true;
+        throw setupFailure;
+      }
+      return mode === undefined
+        ? await actualOpen(openedPath, flags)
+        : await actualOpen(openedPath, flags, mode);
+    });
+    try {
+      const filePath = path.join(directory, "manifest.json");
+
+      await expect(publishPrivateFileAtomically(filePath, "first\n")).rejects.toBe(setupFailure);
+
+      expect(
+        (await fs.readdir(directory)).filter((entry) => entry.endsWith(".candidate-dir")),
+      ).toEqual([]);
+      openSpy.mockRestore();
+      linkSpy.mockRestore();
+      await publishPrivateFileAtomically(filePath, "second\n");
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
+    } finally {
+      openSpy.mockRestore();
+      linkSpy.mockRestore();
+      await disposeTempDir(directory);
+    }
+  });
+
   it("uses one parent-wide claim for filesystem-equivalent target names", async () => {
     const directory = await createTempDir();
     let releaseCommit!: () => void;
@@ -1881,6 +1917,22 @@ describe("OpenClaw private file publication", () => {
     expect(options.env.CRABLINE_PRIVATE_FILE_PATH).toBe(path.resolve(filePath));
     expect(options.windowsHide).toBe(true);
   });
+
+  it.skipIf(process.platform !== "win32")(
+    "stops Windows claim ancestry before system-owned directories",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const filePath = path.join(directory, "manifest.json");
+
+        await publishPrivateFileAtomically(filePath, "private\n");
+
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it("uses an inheritable protected Windows ACL for generation directories", async () => {
     const calls: Parameters<WindowsAclRunner>[] = [];
