@@ -462,6 +462,11 @@ const MattermostConfigSchema = z.strictObject({
     path: "/mattermost/webhook",
     port: 8793,
   }),
+  webhookToken: z
+    .string()
+    .min(1)
+    .refine((value) => value.trim().length > 0, "webhookToken must not be blank")
+    .optional(),
   websocket: MattermostWebsocketSchema.optional(),
 });
 

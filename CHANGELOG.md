@@ -10,7 +10,7 @@
 - Correlate complete NAT64 discovery pairs and retain DNS capacity until abandoned lookups settle.
 - Verify loopback bindings by their listening address, sanitize framing and connection-nominated Fetch response headers, and advertise usable endpoints for every wildcard address spelling.
 - Route local-mock GET hooks through the real server and parse structured JSON media types as JSON.
-- Bound Matrix and Mattermost committed state, enforce native Mattermost transport, webhook, post lifecycle, and direct-channel identity semantics, and serialize Signal timestamps, SSE cleanup, JSON-RPC strings, and username identity.
+- Bound Matrix and Mattermost committed state, authenticate and redact native Mattermost outgoing webhooks, enforce native transport, post lifecycle, and direct-channel identity semantics, and serialize Signal timestamps, SSE cleanup, JSON-RPC strings, and username identity.
 - Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
 - Suppress serve readiness output when shutdown begins during ready-file publication.
 - Treat Unicode format characters as continuations when recognizing standalone acknowledgement tokens.

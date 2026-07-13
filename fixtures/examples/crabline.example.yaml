@@ -89,6 +89,7 @@ providers:
   mattermost:
     adapter: mattermost
     mattermost:
+      # webhookToken: sample
       recorder:
         path: ./.crabline/recorders/mattermost.jsonl
       webhook:

@@ -102,10 +102,12 @@ header before JSON parsing or recorder writes:
   required when the webhook host or advertised callback is non-loopback.
 - Matrix webhook ingress currently has no provider-native authentication mode,
   so its listener and any advertised callback must remain loopback-only.
-- Mattermost and iMessage webhook ingress currently have no provider-native
-  authentication mode, so their listeners and any advertised callbacks must
-  remain loopback-only. Their API credentials do not authenticate inbound
-  callbacks.
+- Mattermost `webhookToken` or `MATTERMOST_TOKEN` verifies the `token` field in
+  outgoing webhook form or JSON bodies. The token is removed before recorder
+  persistence. Externally reachable callbacks require this token and an HTTPS
+  `webhook.publicUrl`.
+- iMessage webhook ingress currently has no provider-native authentication
+  mode, so its listener and any advertised callback must remain loopback-only.
 - Feishu `verificationToken` or `FEISHU_VERIFICATION_TOKEN` verifies plaintext
   callback tokens on loopback and remains an additional check when configured
   with encryption. Externally reachable webhooks require `encryptKey` or

@@ -8,6 +8,7 @@ import type { ProviderAdapter } from "../types.js";
 import { getBuiltinTargetCodec, MATTERMOST_ID_RULE } from "../target-normalizers.js";
 import {
   authorFromBotFlag,
+  createSecretVerifier,
   genericMockPayloadWithNativeThread,
   isRecord,
   optionalRecord,
@@ -16,9 +17,16 @@ import {
 } from "./native-local-mock.js";
 import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
+type MattermostEnvironment = Partial<
+  Pick<
+    NodeJS.ProcessEnv,
+    "MATTERMOST_BASE_URL" | "MATTERMOST_BOT_TOKEN" | "MATTERMOST_TOKEN" | "MATTERMOST_URL"
+  >
+>;
+
 export function resolveMattermostAdapterConfig(
   config: ProviderConfig,
-  env: NodeJS.ProcessEnv = process.env,
+  env: MattermostEnvironment = process.env,
 ) {
   const baseUrl =
     config.mattermost?.baseUrl ??
@@ -43,21 +51,32 @@ export function resolveMattermostAdapterConfig(
       { kind: "config" },
     );
   }
+  if (
+    config.mattermost?.webhookToken === undefined &&
+    env.MATTERMOST_TOKEN !== undefined &&
+    !env.MATTERMOST_TOKEN.trim()
+  ) {
+    throw new Error("MATTERMOST_TOKEN must not be empty or whitespace-only.");
+  }
   return {
     baseUrl,
     botToken: config.mattermost?.botToken ?? env.MATTERMOST_BOT_TOKEN ?? "local-mock-token",
     userName: config.mattermost?.userName,
+    webhookToken: config.mattermost?.webhookToken ?? env.MATTERMOST_TOKEN,
   };
 }
 
 export class MattermostProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
-  constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
-    resolveMattermostAdapterConfig(config);
+  constructor(id: string, config: ProviderConfig, _userName: string, runtime?: unknown) {
+    const env = (runtime as { env?: MattermostEnvironment } | undefined)?.env ?? process.env;
+    const resolvedConfig = resolveMattermostAdapterConfig(config, env);
+    const authenticateWebhook = resolvedConfig.webhookToken
+      ? createSecretVerifier(resolvedConfig.webhookToken)
+      : undefined;
     requireExternalWebhookAuthentication({
-      authenticated: false,
+      authenticated: Boolean(authenticateWebhook),
       provider: "Mattermost",
-      requirement:
-        "a provider-native authenticated ingress mode, which this adapter does not support",
+      requirement: "webhookToken or MATTERMOST_TOKEN",
       webhook: config.mattermost?.webhook,
     });
     const recorderPath = config.mattermost?.recorder.path
@@ -68,6 +87,15 @@ export class MattermostProviderAdapter extends LocalMockProviderAdapter implemen
       config,
       id,
       options: {
+        ...(authenticateWebhook
+          ? {
+              authenticateWebhookRequest(request: Request, rawBody: string) {
+                return authenticateWebhook(readMattermostWebhookToken(request, rawBody))
+                  ? undefined
+                  : new Response("unauthorized", { status: 401 });
+              },
+            }
+          : {}),
         defaultWebhook: { host: "127.0.0.1", path: "/mattermost/webhook", port: 8793 },
         endpointLabel: "webhook endpoint",
         matchesThread: matchesMattermostThread,
@@ -144,6 +172,27 @@ export function matchesMattermostThread(
   );
 }
 
+function readMattermostWebhookToken(request: Request, rawBody: string): string | null {
+  const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType === "application/x-www-form-urlencoded") {
+    return new URLSearchParams(rawBody).get("token");
+  }
+  if (mediaType !== "application/json") {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(rawBody) as unknown;
+    return isRecord(payload) && typeof payload.token === "string" ? payload.token : null;
+  } catch {
+    return null;
+  }
+}
+
+function withoutMattermostWebhookToken(payload: Record<string, unknown>): Record<string, unknown> {
+  const { token: _token, ...safePayload } = payload;
+  return safePayload;
+}
+
 type NormalizedMattermostWebhookPayload = {
   author: "assistant" | "system" | "user";
   id?: string | undefined;
@@ -159,18 +208,19 @@ export function normalizeMattermostWebhookPayload(
     throw new CrablineError("Mattermost webhook payload must be an object", { kind: "inbound" });
   }
 
-  if (optionalRecord(payload, "message")) {
+  const safePayload = withoutMattermostWebhookToken(payload);
+  if (optionalRecord(safePayload, "message")) {
     return genericMockPayloadWithNativeThread({
       channelRule: MATTERMOST_ID_RULE,
-      payload,
+      payload: safePayload,
       threadRule: MATTERMOST_ID_RULE,
     }) as NormalizedMattermostWebhookPayload;
   }
 
-  const channelId = optionalString(payload, "channel_id");
-  const postId = optionalString(payload, "post_id");
-  const rootId = optionalString(payload, "root_id");
-  const text = optionalString(payload, "text");
+  const channelId = optionalString(safePayload, "channel_id");
+  const postId = optionalString(safePayload, "post_id");
+  const rootId = optionalString(safePayload, "root_id");
+  const text = optionalString(safePayload, "text");
   if (!channelId || !text) {
     throw new CrablineError("Mattermost webhook payload requires channel_id and text", {
       kind: "inbound",
@@ -182,7 +232,7 @@ export function normalizeMattermostWebhookPayload(
     ...(postId
       ? { id: requireNativeInboundId(postId, MATTERMOST_ID_RULE, "Mattermost post_id") }
       : {}),
-    raw: payload,
+    raw: safePayload,
     text,
     threadId: rootId
       ? mattermostThreadKey(
