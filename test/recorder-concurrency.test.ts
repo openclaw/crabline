@@ -299,6 +299,61 @@ describe("recorder append serialization", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")(
+    "abandons an adjacent identity lock when the recorder becomes hardlinked",
+    async () => {
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-server-recorder-fallback-race-${process.pid}-${Date.now()}.jsonl`,
+      );
+      const currentUserId = process.geteuid?.();
+      if (currentUserId === undefined) {
+        throw new Error("Expected a current user id on Unix.");
+      }
+      const fallbackRoot = path.join(
+        path.dirname(recorderPath),
+        `.crabline-server-recorder-locks-${currentUserId}`,
+      );
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverFileNlink = 1;
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+      const sharedFailure = Object.assign(new Error("shared lock filesystem full"), {
+        code: "ENOSPC",
+      });
+      const pathRelease = vi.fn(async () => {});
+      const fallbackRelease = vi.fn(async () => {});
+      fsMocks.lock
+        .mockResolvedValueOnce(pathRelease)
+        .mockImplementationOnce(async () => {
+          fsMocks.serverFileNlink = 2;
+          throw sharedFailure;
+        })
+        .mockResolvedValueOnce(fallbackRelease)
+        .mockRejectedValueOnce(sharedFailure);
+
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/fallback-hardlink-race",
+              query: {},
+              type: "api",
+            },
+            onEvent: undefined,
+            recorderPath,
+          }),
+        ).rejects.toBe(sharedFailure);
+        expect(fsMocks.serverWrite).not.toHaveBeenCalled();
+        expect(fallbackRelease).toHaveBeenCalledOnce();
+        expect(pathRelease).toHaveBeenCalledOnce();
+      } finally {
+        await rm(fallbackRoot, { force: true, recursive: true });
+      }
+    },
+  );
+
   it("serializes provider inbound appends to the same JSONL file", async () => {
     const recorderPath = path.join(
       "/tmp",
