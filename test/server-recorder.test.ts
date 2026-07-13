@@ -1239,13 +1239,78 @@ describe("server recorder", () => {
       }),
     ).rejects.toMatchObject({
       cause: expect.objectContaining({
-        message: "Server recorder observers cannot register nested observers.",
+        message: "Server recorder observers cannot depend on an active observer.",
       }),
       committed: true,
       name: "ServerRecorderCommittedError",
     });
 
     expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+  });
+
+  it("allows nested observers for independent recorder paths", async () => {
+    const nestedObserver = vi.fn<(event: ServerRequestEvent) => void>();
+
+    await recordServerEvent({
+      event: serverEvent("/outer"),
+      onEvent: async () => {
+        await recordServerEvent({
+          event: serverEvent("/nested"),
+          onEvent: nestedObserver,
+          recorderPath: path.join("/tmp", "crabline-server-recorder-independent-nested.jsonl"),
+        });
+      },
+      recorderPath: path.join("/tmp", "crabline-server-recorder-independent-outer.jsonl"),
+    });
+
+    expect(nestedObserver).toHaveBeenCalledWith(serverEvent("/nested"));
+    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects cross-recorder observer dependency cycles", async () => {
+    const firstPath = path.join("/tmp", "crabline-server-recorder-cycle-first.jsonl");
+    const secondPath = path.join("/tmp", "crabline-server-recorder-cycle-second.jsonl");
+    let activeObservers = 0;
+    let releaseObservers: (() => void) | undefined;
+    const observersReady = new Promise<void>((resolve) => {
+      releaseObservers = resolve;
+    });
+    const waitForBothObservers = async () => {
+      activeObservers += 1;
+      if (activeObservers === 2) {
+        releaseObservers?.();
+      }
+      await observersReady;
+    };
+
+    const first = recordServerEvent({
+      event: serverEvent("/first"),
+      onEvent: async () => {
+        await waitForBothObservers();
+        await recordServerEvent({
+          event: serverEvent("/first-to-second"),
+          onEvent: () => undefined,
+          recorderPath: secondPath,
+        });
+      },
+      recorderPath: firstPath,
+    });
+    const second = recordServerEvent({
+      event: serverEvent("/second"),
+      onEvent: async () => {
+        await waitForBothObservers();
+        await recordServerEvent({
+          event: serverEvent("/second-to-first"),
+          onEvent: () => undefined,
+          recorderPath: firstPath,
+        });
+      },
+      recorderPath: secondPath,
+    });
+
+    const results = await Promise.allSettled([first, second]);
+    expect(results.some((result) => result.status === "rejected")).toBe(true);
+    expect(fsMocks.file.appendFile.mock.calls.length).toBeLessThanOrEqual(3);
   });
 
   it("keeps later appends available after an observer failure", async () => {
