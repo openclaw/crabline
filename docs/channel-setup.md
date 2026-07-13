@@ -78,6 +78,11 @@ reachable Discord webhooks require `publicKey` or `DISCORD_PUBLIC_KEY`.
 Optional webhook credentials enforce each provider's native authentication
 header before JSON parsing or recorder writes:
 
+- Authenticated external ingress must set `webhook.publicUrl` to an HTTPS URL;
+  Google Chat may use its HTTPS `endpointUrl` as the signed public callback
+  instead. A non-loopback bind without a public HTTPS endpoint is rejected even
+  when request credentials are configured. Plain HTTP is reserved for local
+  tests where both the listener host and advertised URL host are loopback.
 - Discord `publicKey` or `DISCORD_PUBLIC_KEY` verifies
   `X-Signature-Ed25519` over `X-Signature-Timestamp` plus the raw request body.
 - Google Chat `endpointUrl` verifies Google ID tokens for the configured HTTP
@@ -115,6 +120,10 @@ header before JSON parsing or recorder writes:
   `X-Telegram-Bot-Api-Secret-Token`.
 - Zalo `webhookSecret` or `ZALO_WEBHOOK_SECRET` verifies
   `X-Bot-Api-Secret-Token`.
+
+Webhook `path` values must already be canonical URL pathnames. Authority-form
+paths, dot-segment or backslash traversal, query strings, fragments, spaces,
+and other values changed by URL normalization are rejected.
 
 The built-in `whatsapp` adapter implements Meta's GET verification challenge
 and requires `X-Hub-Signature-256` on POST requests. Set `whatsapp.appSecret`

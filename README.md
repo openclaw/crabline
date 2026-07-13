@@ -103,6 +103,8 @@ Telegram `secretToken`, and Zalo `webhookSecret` enforce provider-native
 webhook authentication. Feishu `verificationToken` remains an additional or
 loopback-only callback check. Microsoft Teams also requires `appId` for
 non-loopback or explicitly public webhook endpoints.
+Authenticated external webhook ingress must advertise an HTTPS `publicUrl`;
+plain HTTP is limited to loopback-local testing.
 
 ## Built-In Mock Channels
 
@@ -411,6 +413,8 @@ Nested message payloads are also accepted:
 ```
 
 Malformed webhooks return `400`, and non-JSON requests return `415`.
+Configured webhook paths must be canonical URL pathnames without normalization,
+query, or fragment ambiguity.
 
 ## Evidence Flow
 
