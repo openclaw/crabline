@@ -144,7 +144,7 @@ function redactCredentialSyntax(detail: string): string {
       `${prefix}${scheme ? `${scheme} ` : ""}[redacted credential]`,
   );
   redacted = redacted.replace(
-    /\b([A-Za-z_][A-Za-z0-9_-]*)\s*(\+?=|:)\s*("[^"]*"|'[^']*'|[^\s,;}\]]+)/gu,
+    /\b([A-Za-z_][A-Za-z0-9_-]*)\s*(\+?=|:)\s*("[^"]*"|'[^']*'|[^,;}\]\r\n]+)/gu,
     (match, name: string, operator: string) =>
       name.toLowerCase() !== "authorization" && isSensitiveEnvironmentName(name)
         ? `${name}${operator}[redacted credential]`
