@@ -89,7 +89,15 @@ function collectSlackBlockText(value: unknown, output: string[]): void {
   } else {
     pushSlackText(value.text, output);
   }
-  for (const key of ["blocks", "elements", "fields", "rows", "tasks"] as const) {
+  for (const key of [
+    "blocks",
+    "elements",
+    "fields",
+    "rows",
+    "details",
+    "output",
+    "tasks",
+  ] as const) {
     collectSlackBlockText(value[key], output);
   }
 }

@@ -380,8 +380,24 @@ describe("slack provider", () => {
               type: "table",
             },
             {
-              details: "task details",
-              output: "task output",
+              details: {
+                elements: [
+                  {
+                    elements: [{ text: "task details", type: "text" }],
+                    type: "rich_text_section",
+                  },
+                ],
+                type: "rich_text",
+              },
+              output: {
+                elements: [
+                  {
+                    elements: [{ text: "task output", type: "text" }],
+                    type: "rich_text_section",
+                  },
+                ],
+                type: "rich_text",
+              },
               tasks: [{ title: "nested task" }],
               title: "task title",
               type: "task_card",
