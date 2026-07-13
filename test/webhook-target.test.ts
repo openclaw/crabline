@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
 import {
   postWebhookRequest,
+  postWebhookRequestWithResponse,
   validateWebhookTarget,
   WebhookDnsLookupPool,
 } from "../src/servers/webhook-target.js";
@@ -89,7 +90,7 @@ describe("webhook target validation", () => {
         restrictPrivateAddresses: true,
         url: new URL("http://127.0.0.1/webhook"),
       }),
-    ).resolves.toEqual({ addresses: undefined });
+    ).resolves.toEqual({ addresses: [{ address: "127.0.0.1", family: 4 }] });
     await expect(
       validateWebhookTarget({
         allowLoopbackHttp: true,
@@ -111,6 +112,22 @@ describe("webhook target validation", () => {
       ).resolves.toEqual({ error: "https-required" });
     },
   );
+
+  it("rejects DNS answers that can rebind from public to private addresses", async () => {
+    const dnsLookupPool = new WebhookDnsLookupPool(1, async () => [
+      { address: "93.184.216.34", family: 4 },
+      { address: "127.0.0.1", family: 4 },
+    ]);
+
+    await expect(
+      validateWebhookTarget({
+        allowLoopbackHttp: false,
+        dnsLookupPool,
+        restrictPrivateAddresses: true,
+        url: new URL("https://rebind.example.test/webhook"),
+      }),
+    ).resolves.toEqual({ error: "private-address" });
+  });
 
   it("bounds DNS lookup concurrency and cancels queued registrations", async () => {
     const started: string[] = [];
@@ -162,6 +179,42 @@ describe("webhook target validation", () => {
       await postWebhookRequest({ address: pinnedAddress, body: "{}", timeoutMs: 1_000, url });
       expect(remotePorts).toHaveLength(2);
       expect(new Set(remotePorts).size).toBe(2);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        receiver.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("returns webhook status and response headers without reading the body", async () => {
+    const receiver = createServer((_request, response) => {
+      response.writeHead(302, {
+        location: "/redirected",
+        "x-slack-no-retry": "1",
+      });
+      response.write("ignored body");
+    });
+    await new Promise<void>((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+    const address = receiver.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Unable to resolve webhook receiver.");
+    }
+
+    try {
+      await expect(
+        postWebhookRequestWithResponse({
+          address: { address: "127.0.0.1", family: 4 },
+          body: "{}",
+          timeoutMs: 1_000,
+          url: new URL(`http://response.invalid:${address.port}/webhook`),
+        }),
+      ).resolves.toMatchObject({
+        headers: {
+          location: "/redirected",
+          "x-slack-no-retry": "1",
+        },
+        status: 302,
+      });
     } finally {
       await new Promise<void>((resolve, reject) =>
         receiver.close((error) => (error ? reject(error) : resolve())),
