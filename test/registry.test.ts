@@ -118,15 +118,15 @@ describe("registry", () => {
   });
 
   it("enforces Telegram's native username length in shared target normalization", () => {
-    expect(normalizeBuiltinTarget("telegram", { id: "@abcde", metadata: {} })).toMatchObject({
-      channelId: "@abcde",
+    expect(normalizeBuiltinTarget("telegram", { id: "@abcd", metadata: {} })).toMatchObject({
+      channelId: "@abcd",
     });
     expect(
       normalizeBuiltinTarget("telegram", { id: `@${"a".repeat(32)}`, metadata: {} }),
     ).toMatchObject({
       channelId: `@${"a".repeat(32)}`,
     });
-    for (const id of ["@abcd", `@${"a".repeat(33)}`]) {
+    for (const id of ["@abc", `@${"a".repeat(33)}`]) {
       expect(() => normalizeBuiltinTarget("telegram", { id, metadata: {} })).toThrow(
         /native Telegram chat id/u,
       );

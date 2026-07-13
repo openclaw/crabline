@@ -933,9 +933,12 @@ describe("OpenClaw local provider bridge", () => {
     expect(
       createOpenClawCrablineAgentDelivery({ manifest, target: `channel:${maxUsername}` }).to,
     ).toBe(maxUsername);
-    for (const target of ["channel:@tiny", `channel:@${"a".repeat(33)}`]) {
+    expect(createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@tiny" }).to).toBe(
+      "@tiny",
+    );
+    for (const target of ["channel:@abc", `channel:@${"a".repeat(33)}`]) {
       expect(() => createOpenClawCrablineAgentDelivery({ manifest, target })).toThrow(
-        "Telegram usernames must contain 5-32 letters, digits, or underscores.",
+        "Telegram usernames must contain 4-32 letters, digits, or underscores.",
       );
     }
 
