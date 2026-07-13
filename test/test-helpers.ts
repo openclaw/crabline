@@ -105,6 +105,7 @@ export async function settleCleanup(operations: Promise<unknown>[]): Promise<voi
 }
 
 type WriteCapture = {
+  active: boolean;
   stderr: string[];
   stdout: string[];
 };
@@ -128,7 +129,7 @@ const createCaptureWriter =
     callback?: (error?: Error | null) => void,
   ) => {
     const capture = writeCaptureStorage.getStore();
-    if (!capture) {
+    if (!capture?.active) {
       const target = stream === "stdout" ? process.stdout : process.stderr;
       const originalWrite = (
         stream === "stdout" ? originalStdoutWrite : originalStderrWrite
@@ -152,8 +153,7 @@ export const createWriteCapture = (): {
   stderr: string[];
   stdout: string[];
 } => {
-  const capture: WriteCapture = { stderr: [], stdout: [] };
-  let active = true;
+  const capture: WriteCapture = { active: true, stderr: [], stdout: [] };
   if (activeWriteCaptureCount === 0) {
     originalStdoutWrite = process.stdout.write;
     originalStderrWrite = process.stderr.write;
@@ -164,10 +164,10 @@ export const createWriteCapture = (): {
 
   return {
     restore() {
-      if (!active) {
+      if (!capture.active) {
         return;
       }
-      active = false;
+      capture.active = false;
       activeWriteCaptureCount -= 1;
       if (activeWriteCaptureCount === 0) {
         process.stdout.write = originalStdoutWrite!;
@@ -177,7 +177,7 @@ export const createWriteCapture = (): {
       }
     },
     async run<T>(operation: () => Promise<T> | T): Promise<T> {
-      if (!active) {
+      if (!capture.active) {
         throw new Error("Cannot run a restored output capture.");
       }
       return await writeCaptureStorage.run(capture, operation);
