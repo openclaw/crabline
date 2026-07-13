@@ -1,6 +1,7 @@
 import {
   appendFile,
   chmod,
+  mkdir,
   open,
   readFile,
   rename,
@@ -10,6 +11,7 @@ import {
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
+import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import { afterEach, expect, it } from "vitest";
@@ -85,6 +87,70 @@ it.skipIf(process.platform === "win32")(
 
     expect(await readFile(firstTarget, "utf8")).toBe("");
     expect(await readFile(secondTarget, "utf8")).toContain('"path":"/retargeted"');
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "revalidates a recorder symlink after waiting for its identity lock",
+  async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "server.jsonl");
+    const firstTarget = path.join(directory, "first.jsonl");
+    const secondTarget = path.join(directory, "second.jsonl");
+    await writeFile(firstTarget, "", "utf8");
+    await writeFile(secondTarget, "", "utf8");
+    await symlink(firstTarget, recorderPath, "file");
+    const identity = await stat(firstTarget, { bigint: true });
+    const lockRoot = path.join(
+      userInfo().homedir,
+      ".cache",
+      "crabline",
+      "locks",
+      "server-recorder",
+    );
+    await mkdir(lockRoot, { mode: 0o700, recursive: true });
+    await chmod(lockRoot, 0o700);
+
+    let releaseIdentity: (() => Promise<void>) | undefined = await lock(
+      path.join(lockRoot, `recorder-${identity.dev}-${identity.ino}`),
+      { realpath: false },
+    );
+    const recording = recordServerEvent({
+      event: {
+        at: new Date().toISOString(),
+        method: "POST",
+        path: "/retargeted-during-identity-wait",
+        query: {},
+        type: "api",
+      },
+      onEvent: undefined,
+      recorderPath,
+    });
+    try {
+      await expect
+        .poll(async () => {
+          try {
+            await stat(`${firstTarget}.lock`);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .toBe(true);
+      await rm(recorderPath);
+      await symlink(secondTarget, recorderPath, "file");
+      await releaseIdentity();
+      releaseIdentity = undefined;
+      await recording;
+    } finally {
+      await releaseIdentity?.();
+    }
+
+    expect(await readFile(firstTarget, "utf8")).toBe("");
+    expect(await readFile(secondTarget, "utf8")).toContain(
+      '"path":"/retargeted-during-identity-wait"',
+    );
   },
 );
 
