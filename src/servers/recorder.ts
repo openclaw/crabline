@@ -34,6 +34,8 @@ const pendingAppends = new Map<string, Promise<void>>();
 const pendingAdmissions = new Map<string, Promise<void>>();
 const pendingLogicalObservers = new Map<string, Promise<void>>();
 const pendingPublicationObservers = new Map<string, Promise<void>>();
+const activeLogicalObservers = new Set<string>();
+const activePublicationObservers = new Set<string>();
 const observerContext = new AsyncLocalStorage<{
   active: boolean;
 }>();
@@ -482,12 +484,16 @@ function enqueueObserver(params: {
     const context = {
       active: true,
     };
+    activeLogicalObservers.add(params.logicalPath);
+    activePublicationObservers.add(params.key);
     try {
       await observerContext.run(context, async () => await params.onEvent?.(params.event));
     } catch (error) {
       throw new ServerRecorderCommittedError(params.logicalPath, error);
     } finally {
       context.active = false;
+      activeLogicalObservers.delete(params.logicalPath);
+      activePublicationObservers.delete(params.key);
     }
   });
   pendingLogicalObservers.set(params.logicalPath, current);
@@ -525,6 +531,13 @@ async function appendResolvedJsonLine(params: {
 }): Promise<RecorderAppendResult | undefined> {
   const { logicalPath } = params;
   const key = await resolveRecorderPath(logicalPath);
+  if (
+    observerContext.getStore()?.active === true &&
+    params.onEvent !== undefined &&
+    (activeLogicalObservers.has(logicalPath) || activePublicationObservers.has(key))
+  ) {
+    throw new Error("Server recorder observers cannot depend on an active observer.");
+  }
   const previous = pendingAppends.get(key) ?? Promise.resolve();
   const current = previous
     .catch(() => {})
@@ -588,9 +601,6 @@ async function appendJsonLine(params: {
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
 }): Promise<void> {
-  if (observerContext.getStore()?.active === true && params.onEvent !== undefined) {
-    throw new Error("Server recorder observers cannot register nested observers.");
-  }
   const logicalPath = path.resolve(params.recorderPath);
   const previous = pendingAdmissions.get(logicalPath) ?? Promise.resolve();
   const current = previous
