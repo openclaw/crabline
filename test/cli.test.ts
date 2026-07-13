@@ -697,7 +697,7 @@ describe("cli", () => {
     expect(removeReadyFileMock).not.toHaveBeenCalled();
   });
 
-  it("holds ready-file ownership until server shutdown completes", async () => {
+  it("withdraws readiness but holds ownership until server shutdown completes", async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const readyFile = path.join(directory, "server.json");
@@ -705,8 +705,13 @@ describe("cli", () => {
     const closeBlocked = new Promise<void>((resolve) => {
       releaseClose = resolve;
     });
+    let markCloseStarted: (() => void) | undefined;
+    const closeStarted = new Promise<void>((resolve) => {
+      markCloseStarted = resolve;
+    });
     const server = {
       async close() {
+        markCloseStarted?.();
         await closeBlocked;
       },
       manifest: {
@@ -741,10 +746,7 @@ describe("cli", () => {
         "--ready-file",
         readyFile,
       ]);
-      await vi.waitFor(async () => {
-        await expect(fs.readFile(readyFile, "utf8")).resolves.toContain('"provider": "telegram"');
-      });
-      const originalContents = await fs.readFile(readyFile, "utf8");
+      await closeStarted;
       const secondStart = vi.fn(async () => server);
       const secondProgram = createProgram(() => undefined, { startServer: secondStart });
 
@@ -761,7 +763,7 @@ describe("cli", () => {
         ]),
       ).rejects.toBeInstanceOf(Error);
       expect(secondStart).not.toHaveBeenCalled();
-      await expect(fs.readFile(readyFile, "utf8")).resolves.toBe(originalContents);
+      await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 
       releaseClose?.();
       await first;
@@ -1366,8 +1368,93 @@ describe("cli", () => {
       .catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(AggregateError);
-    expect((failure as AggregateError).errors).toEqual([closeError, removeError]);
-    expect((failure as AggregateError).cause).toBe(closeError);
+    expect((failure as AggregateError).errors).toEqual([removeError, closeError]);
+    expect((failure as AggregateError).cause).toBe(removeError);
+  });
+
+  it("stops and cleans a serve command when stdout closes", async () => {
+    const close = vi.fn(async () => undefined);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation((() => {
+      throw Object.assign(new Error("closed stdout"), { code: "EPIPE" });
+    }) as typeof process.stdout.write);
+    const program = createProgram(() => undefined, {
+      startServer: async () => ({
+        close,
+        manifest: {
+          adminToken: "admin",
+          baseUrl: "http://127.0.0.1:12345",
+          botToken: "sample",
+          endpoints: {
+            adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
+            apiRoot: "http://127.0.0.1:12345",
+          },
+          env: { TELEGRAM_BOT_TOKEN: "sample" },
+          provider: "telegram",
+          recorderPath: "telegram.jsonl",
+          version: 1,
+        },
+      }),
+    });
+
+    try {
+      await expect(
+        program.parseAsync(["node", "crabline", "--json", "serve", "telegram"]),
+      ).resolves.toBe(program);
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains ready-file ownership when server close fails", async () => {
+    const release = vi.fn(async () => undefined);
+    const closeError = new Error("close exploded");
+    const remove = vi.fn(async () => undefined);
+    const program = createProgram(() => undefined, {
+      acquireReadyFileLease: async () => release,
+      publishReadyFile: async () => ({
+        birthtimeNs: 1n,
+        ctimeNs: 1n,
+        dev: 1n,
+        ino: 1n,
+        size: 1n,
+      }),
+      removeReadyFile: remove,
+      startServer: async () => ({
+        async close() {
+          throw closeError;
+        },
+        manifest: {
+          adminToken: "admin",
+          baseUrl: "http://127.0.0.1:12345",
+          botToken: "sample",
+          endpoints: {
+            adminInboundUrl: "http://127.0.0.1:12345/crabline/telegram/inbound",
+            apiRoot: "http://127.0.0.1:12345",
+          },
+          env: { TELEGRAM_BOT_TOKEN: "sample" },
+          provider: "telegram",
+          recorderPath: "telegram.jsonl",
+          version: 1,
+        },
+      }),
+    });
+
+    await expect(
+      program.parseAsync([
+        "node",
+        "crabline",
+        "--json",
+        "serve",
+        "telegram",
+        "--once",
+        "--ready-file",
+        "server.json",
+      ]),
+    ).rejects.toBe(closeError);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(release).not.toHaveBeenCalled();
   });
 
   it("redacts serve credentials from text output unless explicitly requested", async () => {
