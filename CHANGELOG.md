@@ -21,6 +21,7 @@
 - Revalidate npm package version, integrity, and provenance after every release publication outcome.
 - Authenticate Feishu signatures before encrypted callback decryption and bound callback ciphertext work.
 - Correct Slack edited-message identity and text fallback handling, acknowledge unsupported callbacks, and fairly budget Events API address failover.
+- Preserve provider recorder cursors across parse failures, report post-commit lock cleanup failures without rejecting committed appends, and synchronize hardlink aliases.
 - Cover local GitHub Actions with ownership, CodeQL, immutable image, and test-tool runtime policies.
 - Publish Matrix direct-room account data and share strict native identifier validation across server, target, and inbound paths.
 - Protect pnpm install-script policy and enforce immutable action pins across reusable workflows and composite actions.
