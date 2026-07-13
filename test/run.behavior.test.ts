@@ -270,6 +270,58 @@ describe("run behavior", () => {
     expect(outboundText).toContain("crabline agent fixture");
   });
 
+  it("requires an exact ACK and canonical nonce for agent replies", async () => {
+    let waitCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => ({ accepted: true, messageId: "sent", threadId: "thread" }),
+      waitForInbound: async (context) => {
+        waitCalls += 1;
+        const texts = [
+          `HACK ${context.nonce}`,
+          "ACK mp-other-def-8765dcba",
+          `ACK ${context.nonce}`,
+        ];
+        return {
+          author: "assistant",
+          id: `inbound-${waitCalls}`,
+          provider: "mock",
+          sentAt: new Date().toISOString(),
+          text: texts[waitCalls - 1]!,
+          threadId: "thread",
+        };
+      },
+    };
+    const agentManifest = withAllCapabilities({
+      ...manifest,
+      fixtures: [
+        {
+          ...manifest.fixtures[0]!,
+          inboundMatch: { author: "assistant", nonce: "ignore", strategy: "contains" },
+          mode: "agent",
+          timeoutMs: 100,
+        },
+      ],
+    });
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest: agentManifest,
+      manifestPath: "/tmp/crabline.yaml",
+      registry: buildRegistry(provider),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(waitCalls).toBe(3);
+  });
+
   it("classifies probe and send failures", async () => {
     const provider: ProviderAdapter = {
       id: "mock",
@@ -881,6 +933,64 @@ describe("run behavior", () => {
     expect(result.diagnostics).toContain("cleanup failed: Provider cleanup timed out after 10ms.");
   });
 
+  it("skips later fixtures while timed-out cleanup remains unsettled", async () => {
+    let releaseCleanup: (() => void) | undefined;
+    const firstProvider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["send"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      probe: async () => ({ details: [], healthy: true }),
+      send: async () => ({ accepted: true, messageId: "first", threadId: "thread" }),
+      waitForInbound: async () => null,
+      cleanup: async () =>
+        await new Promise<void>((resolve) => {
+          releaseCleanup = resolve;
+        }),
+    };
+    const secondProvider: ProviderAdapter = {
+      ...firstProvider,
+      send: async () => ({ accepted: true, messageId: "second", threadId: "thread" }),
+      cleanup: async () => undefined,
+    };
+    const secondSend = vi.spyOn(secondProvider, "send");
+    const suiteManifest: ManifestDefinition = {
+      ...withAllCapabilities(manifest),
+      fixtures: [
+        { ...manifest.fixtures[0]!, id: "first", mode: "send", timeoutMs: 10 },
+        { ...manifest.fixtures[0]!, id: "second", mode: "send", timeoutMs: 10 },
+      ],
+    };
+
+    try {
+      const suite = await runSuite({
+        fixtureIds: ["first", "second"],
+        manifest: suiteManifest,
+        manifestPath: "/tmp/crabline.yaml",
+        registry: {
+          catalog: OPENCLAW_SUPPORT_CATALOG,
+          resolve(_providerId, fixtureId) {
+            return fixtureId === "first" ? firstProvider : secondProvider;
+          },
+        },
+      });
+
+      expect(suite.requestedFixtureIds).toEqual(["first", "second"]);
+      expect(suite.skippedFixtureIds).toEqual(["second"]);
+      expect(suite.results).toHaveLength(1);
+      expect(suite.results[0]).toMatchObject({ failureKind: "assertion", ok: false });
+      expect(suite.results[0]?.diagnostics).toContain(
+        "cleanup failed: Provider cleanup timed out after 10ms.",
+      );
+      expect(secondSend).not.toHaveBeenCalled();
+    } finally {
+      releaseCleanup?.();
+    }
+  });
+
   it("rejects oversized script stdin payloads before provider dispatch", async () => {
     let sendCalls = 0;
     const provider: ProviderAdapter = {
@@ -1123,6 +1233,8 @@ describe("run behavior", () => {
       });
 
       expect(suite.results).toHaveLength(1);
+      expect(suite.requestedFixtureIds).toEqual(["first", "second"]);
+      expect(suite.skippedFixtureIds).toEqual(["second"]);
       expect(suite.results[0]?.ok).toBe(false);
       expect(suite.results[0]?.diagnostics).toContain(
         "Provider send did not settle within 250ms after abort.",

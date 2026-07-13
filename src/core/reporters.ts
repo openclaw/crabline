@@ -32,12 +32,20 @@ export function sanitizeTerminalText(value: string, singleLine = false): string 
 
 export function formatRunResultText(result: CommandRunResult | SuiteRunResult): string {
   if ("results" in result) {
+    const requestedFixtureIds =
+      result.requestedFixtureIds ?? result.results.map((entry) => entry.fixtureId);
+    const skippedFixtureIds = result.skippedFixtureIds ?? [];
+    const skippedSummary =
+      skippedFixtureIds.length > 0 ? `, ${skippedFixtureIds.length} skipped` : "";
     const lines = [
-      `${pc.bold("suite")} ${result.totalPassed}/${result.results.length} passed`,
+      `${pc.bold("suite")} ${result.totalPassed}/${requestedFixtureIds.length} passed${skippedSummary}`,
       ...result.results.flatMap((entry) => [
         formatCaseLine(entry),
         ...entry.diagnostics.flatMap(formatDiagnostic),
       ]),
+      ...skippedFixtureIds.map(
+        (fixtureId) => `${pc.yellow("SKIP")} ${sanitizeTerminalText(fixtureId, true)} not run`,
+      ),
     ];
     return lines.join("\n");
   }

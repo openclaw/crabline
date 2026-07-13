@@ -19,7 +19,9 @@ export type CommandRunResult = {
 };
 
 export type SuiteRunResult = {
+  requestedFixtureIds?: string[];
   results: CommandRunResult[];
+  skippedFixtureIds?: string[];
   totalPassed: number;
 };
 
@@ -27,7 +29,10 @@ const INBOUND_DEADLINE_REACHED = Symbol("inbound deadline reached");
 const INBOUND_ABORT_GRACE_MS = 250;
 const MAX_EXCLUDED_INBOUND_IDS = 1_024;
 const MAX_SCRIPT_STDIN_BYTES = 1024 * 1024;
-const suiteBlockingResults = new WeakSet<CommandRunResult>();
+const suiteBlockingOperations = new WeakMap<
+  CommandRunResult,
+  ObservedProviderOperation<unknown>[]
+>();
 
 type ObservedProviderOperation<T> = {
   isSettled(): boolean;
@@ -120,15 +125,19 @@ async function withFixtureDeadline<T>(
 }
 
 async function withCleanupDeadline<T>(
-  operation: Promise<T>,
+  operation: ObservedProviderOperation<T>,
   timeoutMs: number,
   operationName: string,
 ): Promise<T> {
-  const result = await raceInboundDeadline(operation, timeoutMs);
+  const result = await raceInboundDeadline(operation.promise, timeoutMs);
   if (result === INBOUND_DEADLINE_REACHED) {
-    throw new CrablineError(`Provider ${operationName} timed out after ${timeoutMs}ms.`, {
-      kind: "timeout",
-    });
+    throw new UnsettledProviderOperationError(
+      `Provider ${operationName} timed out after ${timeoutMs}ms.`,
+      {
+        kind: "timeout",
+      },
+      operation,
+    );
   }
   return result;
 }
@@ -569,23 +578,29 @@ export async function runFixtureCommand(params: {
       cleanupErrors.push(error);
     }
     try {
-      const cleanup = provider.cleanup?.();
-      if (cleanup) {
+      const cleanupPromise = provider.cleanup?.();
+      if (cleanupPromise) {
+        const cleanup = observeProviderOperation(cleanupPromise);
         if (
           abortDrainFailed &&
-          (await raceInboundDeadline(cleanup, INBOUND_ABORT_GRACE_MS)) === INBOUND_DEADLINE_REACHED
+          (await raceInboundDeadline(cleanup.promise, INBOUND_ABORT_GRACE_MS)) ===
+            INBOUND_DEADLINE_REACHED
         ) {
           cleanupErrors.push(
             new Error(
               `Provider cleanup did not settle within ${INBOUND_ABORT_GRACE_MS}ms after an aborted operation.`,
             ),
           );
+          unsettledProviderOperations.push(cleanup);
         }
         if (!abortDrainFailed) {
           await withCleanupDeadline(cleanup, fixture.timeoutMs, "cleanup");
         }
       }
     } catch (error) {
+      if (error instanceof UnsettledProviderOperationError) {
+        unsettledProviderOperations.push(error.operation);
+      }
       cleanupErrors.push(error);
     }
     if (cleanupErrors.length > 0) {
@@ -617,8 +632,11 @@ export async function runFixtureCommand(params: {
       }
     }
     await Promise.resolve();
-    if (result && unsettledProviderOperations.some((operation) => !operation.isSettled())) {
-      suiteBlockingResults.add(result);
+    const blockingOperations = unsettledProviderOperations.filter(
+      (operation) => !operation.isSettled(),
+    );
+    if (result && blockingOperations.length > 0) {
+      suiteBlockingOperations.set(result, blockingOperations);
     }
   }
 
@@ -633,8 +651,10 @@ export async function runSuite(params: {
   manifestPath: string;
   registry: Registry;
 }): Promise<SuiteRunResult> {
+  const requestedFixtureIds = [...params.fixtureIds];
   const results: CommandRunResult[] = [];
-  for (const fixtureId of params.fixtureIds) {
+  let skippedFixtureIds: string[] = [];
+  for (const [index, fixtureId] of requestedFixtureIds.entries()) {
     let result: CommandRunResult;
     try {
       result = await runFixtureCommand({
@@ -657,13 +677,16 @@ export async function runSuite(params: {
       result = toFailure(fixture.id, fixture.provider, fixture.mode, error, "config");
     }
     results.push(result);
-    if (suiteBlockingResults.has(result)) {
+    if (suiteBlockingOperations.get(result)?.some((operation) => !operation.isSettled())) {
+      skippedFixtureIds = requestedFixtureIds.slice(index + 1);
       break;
     }
   }
 
   return {
+    requestedFixtureIds,
     results,
+    skippedFixtureIds,
     totalPassed: results.filter((entry) => entry.ok).length,
   };
 }

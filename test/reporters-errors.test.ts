@@ -47,12 +47,15 @@ describe("errors and reporters", () => {
           providerId: "local",
         },
       ],
+      requestedFixtureIds: ["fixture", "second"],
+      skippedFixtureIds: ["second"],
       totalPassed: 1,
     });
 
     expect(stripAnsi(single)).toContain("PASS");
-    expect(stripAnsi(suite)).toContain("suite 1/1 passed");
+    expect(stripAnsi(suite)).toContain("suite 1/2 passed, 1 skipped");
     expect(stripAnsi(suite)).toContain("  - accepted");
+    expect(stripAnsi(suite)).toContain("SKIP second not run");
     expect(formatJson({ ok: true })).toContain('"ok": true');
     expect(formatJson(undefined)).toBe("null");
     expect(formatJson(Symbol("value"))).toBe("null");
