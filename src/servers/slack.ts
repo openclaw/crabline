@@ -98,6 +98,13 @@ type SlackRetryReason =
 
 type SlackCursorKind = "history" | "replies";
 
+class SlackEventHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Slack Events API delivery failed with HTTP ${status}.`);
+    this.name = "SlackEventHttpError";
+  }
+}
+
 class SlackEventTargetError extends Error {
   constructor(
     readonly retryReason: SlackRetryReason,
@@ -569,6 +576,9 @@ function errorChain(error: unknown): Array<Record<string, unknown>> {
 
 /** @internal */
 export function classifySlackRetryReason(error: unknown): SlackRetryReason {
+  if (error instanceof SlackEventHttpError) {
+    return "http_error";
+  }
   if (error instanceof SlackEventTargetError) {
     return error.retryReason;
   }
@@ -758,7 +768,7 @@ async function deliverSlackEvent(
         if (response.status >= 200 && response.status < 300) {
           return;
         }
-        retryReason = "http_error";
+        throw new SlackEventHttpError(response.status);
       }
     } catch (error) {
       if (lifecycleSignal.aborted) {
