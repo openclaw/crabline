@@ -58,12 +58,13 @@ type StartHeartbeat = (renew: () => Promise<void>, intervalMs: number) => Heartb
 type BeforeRecoveryClaim = () => Promise<void>;
 type BeforeRecoveryDeleteClaim = () => Promise<void>;
 type BeforeReleaseClaim = () => Promise<void>;
+type BeforeReleaseRename = () => Promise<void>;
 type BeforeCommitClaim = () => Promise<void>;
 type BeforeCommitFileRename = () => Promise<void>;
 type BeforeCommitRename = () => Promise<void>;
 type SecureWindowsDirectory = (directoryPath: string) => Promise<void>;
 type AfterLockDirectoryWrite = (directoryPath: string) => Promise<void>;
-type LockClaimKind = "commit" | "recovering" | "release";
+type LockClaimKind = "commit" | "owned" | "recovering" | "release";
 type LockClaim = {
   directoryPath: string;
   kind: LockClaimKind;
@@ -89,6 +90,7 @@ const LOCK_COMMIT_STAGE_FILE_PREFIX = "commit-stage";
 const LOCK_LEASE_FILE_PREFIX = "lease.";
 const LEGACY_RECOVERY_SUFFIX = ".recovering";
 const COMMIT_CLAIM_SUFFIX = ".commit";
+const OWNED_CLAIM_SUFFIX = ".owned";
 const RELEASE_CLAIM_SUFFIX = ".release";
 const LOCK_LEASE_MS = 10 * 60 * 1000;
 const RELEASE_ATTEMPTS = 3;
@@ -530,8 +532,15 @@ function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): 
   return ageMs >= -runtime.leaseMs && ageMs <= runtime.leaseMs;
 }
 
+function isRetiredCompatibilityMarker(record: SmokeLockRecord): boolean {
+  return (
+    isRenewableOwner(record.owner) && record.owner.createdAtMs === 1 && record.renewedAtMs <= 1
+  );
+}
+
 function needsLiveOwnerConfirmation(record: SmokeLockRecord, runtime: SmokeLockRuntime): boolean {
   return (
+    !isRetiredCompatibilityMarker(record) &&
     isRenewableOwner(record.owner) &&
     runtime.isProcessAlive(record.owner.pid) &&
     !hasProcessIdentityMismatch(record.owner, runtime) &&
@@ -577,6 +586,7 @@ function activeRunError(params: {
 
 async function removeOwnedLock(params: {
   beforeClaim?: () => Promise<void>;
+  beforeRename?: () => Promise<void>;
   lockDirectory: string;
   onOwnedDirectoryChange?: (directoryPath: string) => void;
   ownedDirectory: string;
@@ -584,6 +594,7 @@ async function removeOwnedLock(params: {
   runtime?: SmokeLockRuntime;
   token: string;
 }): Promise<boolean> {
+  await params.beforeClaim?.();
   const observed = await readLockRecord(params.ownedDirectory);
   if (observed.kind === "missing" || observed.record.owner.token !== params.token) {
     return false;
@@ -592,8 +603,18 @@ async function removeOwnedLock(params: {
   if (observedIdentity === null) {
     return false;
   }
+  const revalidated = await readLockRecord(params.ownedDirectory);
+  const revalidatedIdentity = await readDirectoryIdentity(params.ownedDirectory);
+  if (
+    revalidated.kind === "missing" ||
+    revalidated.record.owner.token !== params.token ||
+    !hasSameDirectoryIdentity(observedIdentity, revalidatedIdentity) ||
+    (params.runtime !== undefined && isLockOwnerActive(revalidated.record, params.runtime))
+  ) {
+    return false;
+  }
 
-  await params.beforeClaim?.();
+  await params.beforeRename?.();
   const releaseClaim = `${params.lockDirectory}${RELEASE_CLAIM_SUFFIX}.${params.token}.${randomUUID()}`;
   try {
     await fs.rename(params.ownedDirectory, releaseClaim);
@@ -644,6 +665,44 @@ async function removeOwnedLock(params: {
 
   await (params.removeDirectory ?? removeLockDirectory)(releaseClaim);
   return true;
+}
+
+async function renewCompatibilityMarker(params: {
+  handle: FileHandle;
+  lockDirectory: string;
+  renewedAtMs: number;
+  securedDirectory: Awaited<ReturnType<typeof securePrivateDirectory>>;
+  token: string;
+}): Promise<boolean> {
+  await params.securedDirectory.assertIdentityAt(params.lockDirectory);
+  const observed = await readLockRecord(params.lockDirectory);
+  if (observed.kind === "missing" || observed.record.owner.token !== params.token) {
+    return false;
+  }
+  const renewedAt = new Date(params.renewedAtMs);
+  await params.handle.utimes(renewedAt, renewedAt);
+  await params.handle.sync();
+  await params.securedDirectory.assertIdentityAt(params.lockDirectory);
+  const revalidated = await readLockRecord(params.lockDirectory);
+  return revalidated.kind === "record" && revalidated.record.owner.token === params.token;
+}
+
+async function assertCompatibilityMarkerOwned(params: {
+  lockDirectory: string;
+  securedDirectory: Awaited<ReturnType<typeof securePrivateDirectory>>;
+  token: string;
+}): Promise<void> {
+  await params.securedDirectory.assertIdentityAt(params.lockDirectory);
+  const observed = await readLockRecord(params.lockDirectory);
+  if (observed.kind === "missing" || observed.record.owner.token !== params.token) {
+    throw new Error("OpenClaw Crabline smoke lock compatibility marker was lost.");
+  }
+}
+
+async function retireCompatibilityMarker(handle: FileHandle): Promise<void> {
+  const retiredAt = new Date(1);
+  await handle.utimes(retiredAt, retiredAt);
+  await handle.sync();
 }
 
 async function renewOwnedLock(
@@ -701,6 +760,7 @@ async function listLockClaims(lockDirectory: string): Promise<LockClaim[]> {
   const prefixes: Array<{ kind: LockClaimKind; prefix: string }> = [
     { kind: "recovering", prefix: claimPrefix(lockDirectory, LEGACY_RECOVERY_SUFFIX) },
     { kind: "commit", prefix: claimPrefix(lockDirectory, COMMIT_CLAIM_SUFFIX) },
+    { kind: "owned", prefix: claimPrefix(lockDirectory, OWNED_CLAIM_SUFFIX) },
     { kind: "release", prefix: claimPrefix(lockDirectory, RELEASE_CLAIM_SUFFIX) },
   ];
   const entries = await fs.readdir(directory, { withFileTypes: true });
@@ -918,6 +978,8 @@ async function resolveLockContention(params: {
 
 async function createLockCandidate(params: {
   afterOwnerWrite?: AfterLockDirectoryWrite;
+  candidateDirectory?: string;
+  includeLease?: boolean;
   lockDirectory: string;
   owner: RenewableSmokeLockOwner;
   platform?: NodeJS.Platform;
@@ -926,7 +988,9 @@ async function createLockCandidate(params: {
   candidateDirectory: string;
   securedDirectory: Awaited<ReturnType<typeof securePrivateDirectory>>;
 }> {
-  const candidateDirectory = `${params.lockDirectory}.${params.owner.pid}.${params.owner.token}.tmp`;
+  const candidateDirectory =
+    params.candidateDirectory ??
+    `${params.lockDirectory}.${params.owner.pid}.${params.owner.token}.tmp`;
   await fs.mkdir(candidateDirectory, { mode: 0o700 });
   try {
     const securedDirectory = await securePrivateDirectory(candidateDirectory, {
@@ -948,18 +1012,20 @@ async function createLockCandidate(params: {
     await params.afterOwnerWrite?.(candidateDirectory);
     await securedDirectory.assertIdentityAt();
 
-    const leasePath = path.join(candidateDirectory, leaseFileName(params.owner.token));
-    await fs.writeFile(
-      leasePath,
-      `${JSON.stringify({ renewedAtMs: params.owner.createdAtMs, token: params.owner.token })}\n`,
-      {
-        encoding: "utf8",
-        flag: "wx",
-        mode: 0o600,
-      },
-    );
-    await fs.chmod(leasePath, 0o600);
-    await fs.utimes(leasePath, createdAt, createdAt);
+    if (params.includeLease !== false) {
+      const leasePath = path.join(candidateDirectory, leaseFileName(params.owner.token));
+      await fs.writeFile(
+        leasePath,
+        `${JSON.stringify({ renewedAtMs: params.owner.createdAtMs, token: params.owner.token })}\n`,
+        {
+          encoding: "utf8",
+          flag: "wx",
+          mode: 0o600,
+        },
+      );
+      await fs.chmod(leasePath, 0o600);
+      await fs.utimes(leasePath, createdAt, createdAt);
+    }
     await securedDirectory.assertIdentityAt();
     return { candidateDirectory, securedDirectory };
   } catch (error) {
@@ -975,6 +1041,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
   },
   dependencies: {
     afterLockCandidateInstall?: AfterLockDirectoryWrite;
+    afterLockOwnerClaimInstall?: AfterLockDirectoryWrite;
     afterLockOwnerWrite?: AfterLockDirectoryWrite;
     getProcessIdentity?: GetProcessIdentity;
     isProcessAlive?: IsProcessAlive;
@@ -991,6 +1058,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     beforeRecoveryDeleteClaim?: BeforeRecoveryDeleteClaim;
     beforeRecoveryClaim?: BeforeRecoveryClaim;
     beforeReleaseClaim?: BeforeReleaseClaim;
+    beforeReleaseRename?: BeforeReleaseRename;
     removeDirectory?: RemoveLockDirectory;
     sleep?: Sleep;
     startHeartbeat?: StartHeartbeat;
@@ -1035,6 +1103,10 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     processStartedAtMs: runtime.currentProcessStartedAtMs,
     token,
   };
+  const compatibilityOwner: RenewableSmokeLockOwner = {
+    ...owner,
+    createdAtMs: 1,
+  };
 
   await fs.mkdir(outputDir, { recursive: true });
   for (;;) {
@@ -1051,21 +1123,67 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       continue;
     }
 
+    const ownerDirectory = `${lockDirectory}${OWNED_CLAIM_SUFFIX}.${token}`;
     const { candidateDirectory, securedDirectory } = await createLockCandidate({
       ...(dependencies.afterLockOwnerWrite
         ? { afterOwnerWrite: dependencies.afterLockOwnerWrite }
         : {}),
+      includeLease: false,
       lockDirectory,
-      owner,
+      owner: compatibilityOwner,
       ...(dependencies.platform ? { platform: dependencies.platform } : {}),
       ...(dependencies.secureWindowsDirectory
         ? { secureWindowsDirectory: dependencies.secureWindowsDirectory }
         : {}),
     });
+    let ownerCandidate: Awaited<ReturnType<typeof createLockCandidate>>;
+    try {
+      ownerCandidate = await createLockCandidate({
+        candidateDirectory: `${lockDirectory}.${runtime.currentPid}.${token}.owned.tmp`,
+        lockDirectory: ownerDirectory,
+        owner,
+        ...(dependencies.platform ? { platform: dependencies.platform } : {}),
+        ...(dependencies.secureWindowsDirectory
+          ? { secureWindowsDirectory: dependencies.secureWindowsDirectory }
+          : {}),
+      });
+    } catch (error) {
+      await fs.rm(candidateDirectory, { force: true, recursive: true }).catch(() => undefined);
+      throw error;
+    }
+    let compatibilityMarkerHandle: FileHandle | undefined;
+    try {
+      compatibilityMarkerHandle = await fs.open(
+        path.join(candidateDirectory, LOCK_OWNER_FILE),
+        "r+",
+      );
+      const compatibilityRecord = await readLockRecordFromHandle(compatibilityMarkerHandle);
+      if (compatibilityRecord.owner.token !== token) {
+        throw new Error("OpenClaw Crabline smoke lock compatibility marker was replaced.");
+      }
+      const activeAt = new Date(createdAtMs);
+      await compatibilityMarkerHandle.utimes(activeAt, activeAt);
+      await compatibilityMarkerHandle.sync();
+    } catch (error) {
+      await compatibilityMarkerHandle?.close().catch(() => undefined);
+      await fs.rm(candidateDirectory, { force: true, recursive: true }).catch(() => undefined);
+      await fs
+        .rm(ownerCandidate.candidateDirectory, { force: true, recursive: true })
+        .catch(() => undefined);
+      throw error;
+    }
+    if (!compatibilityMarkerHandle) {
+      throw new Error("OpenClaw Crabline smoke lock compatibility marker was not opened.");
+    }
+    const markerHandle = compatibilityMarkerHandle;
     try {
       await fs.rename(candidateDirectory, lockDirectory);
     } catch (error) {
+      await markerHandle.close().catch(() => undefined);
       await fs.rm(candidateDirectory, { force: true, recursive: true }).catch(() => undefined);
+      await fs
+        .rm(ownerCandidate.candidateDirectory, { force: true, recursive: true })
+        .catch(() => undefined);
       await resolveLockContention({
         beforeRecoveryDeleteClaim:
           dependencies.beforeRecoveryDeleteClaim ?? (async () => undefined),
@@ -1078,18 +1196,80 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       });
       continue;
     }
-    await dependencies.afterLockCandidateInstall?.(lockDirectory);
-    await securedDirectory.assertIdentityAt(lockDirectory);
+    let ownerInstalled = false;
+    try {
+      await dependencies.afterLockCandidateInstall?.(lockDirectory);
+      await securedDirectory.assertIdentityAt(lockDirectory);
+      const installed = await readLockRecord(lockDirectory);
+      if (installed.kind !== "record" || installed.record.owner.token !== token) {
+        await retireCompatibilityMarker(markerHandle);
+        await markerHandle.close();
+        await fs.rm(ownerCandidate.candidateDirectory, { force: true, recursive: true });
+        continue;
+      }
+      await fs.rename(ownerCandidate.candidateDirectory, ownerDirectory);
+      ownerInstalled = true;
+      await dependencies.afterLockOwnerClaimInstall?.(ownerDirectory);
+      await ownerCandidate.securedDirectory.assertIdentityAt(ownerDirectory);
+    } catch (error) {
+      let cleanupError: unknown;
+      try {
+        if (ownerInstalled) {
+          await removeOwnedLock({
+            lockDirectory,
+            ownedDirectory: ownerDirectory,
+            token,
+          });
+        } else {
+          await fs.rm(ownerCandidate.candidateDirectory, { force: true, recursive: true });
+        }
+        await retireCompatibilityMarker(markerHandle);
+      } catch (caughtCleanupError) {
+        cleanupError = caughtCleanupError;
+      }
+      try {
+        await markerHandle.close();
+      } catch (closeError) {
+        cleanupError =
+          cleanupError === undefined
+            ? closeError
+            : new AggregateError(
+                [cleanupError, closeError],
+                "OpenClaw Crabline smoke lock setup cleanup also failed.",
+              );
+      }
+      if (cleanupError !== undefined) {
+        const aggregateError = new AggregateError(
+          [error, cleanupError],
+          "OpenClaw Crabline smoke lock setup and cleanup failed.",
+        );
+        aggregateError.cause = error;
+        throw aggregateError;
+      }
+      throw error;
+    }
 
+    const competingClaims = (await listLockClaims(lockDirectory)).filter(
+      (claim) => claim.directoryPath !== ownerDirectory,
+    );
     if (
-      (await listLockClaims(lockDirectory)).length > 0 ||
+      competingClaims.length > 0 ||
       (await pathExists(`${lockDirectory}${LEGACY_RECOVERY_SUFFIX}`))
     ) {
-      await removeOwnedLock({
+      const removed = await removeOwnedLock({
         lockDirectory,
-        ownedDirectory: lockDirectory,
+        ownedDirectory: ownerDirectory,
         token,
       });
+      if (!removed) {
+        await markerHandle.close();
+        throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
+      }
+      try {
+        await retireCompatibilityMarker(markerHandle);
+      } finally {
+        await markerHandle.close();
+      }
       await resolveLockClaims({
         beforeRecoveryDeleteClaim:
           dependencies.beforeRecoveryDeleteClaim ?? (async () => undefined),
@@ -1100,18 +1280,26 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       });
       continue;
     }
-    const installed = await readLockRecord(lockDirectory);
-    if (installed.kind !== "record" || installed.record.owner.token !== token) {
-      continue;
-    }
 
-    let ownedDirectory = lockDirectory;
+    let ownedDirectory = ownerDirectory;
     let clockRegressed = false;
     let lastObservedNowMs = createdAtMs;
     let lastRenewedAtMs = createdAtMs;
     let pendingRenewal = Promise.resolve();
     let commitFenceConsumed = false;
+    let markerClosed = false;
+    let markerRetired = false;
     let heartbeat: HeartbeatController;
+    const retireMarker = async () => {
+      if (!markerRetired) {
+        await retireCompatibilityMarker(markerHandle);
+        markerRetired = true;
+      }
+      if (!markerClosed) {
+        await markerHandle.close();
+        markerClosed = true;
+      }
+    };
     const renew = async () => {
       const renewal = pendingRenewal
         .catch(() => undefined)
@@ -1130,6 +1318,17 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           if (!(await renewOwnedLock(ownedDirectory, token, renewedAtMs))) {
             throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
           }
+          if (
+            !(await renewCompatibilityMarker({
+              handle: markerHandle,
+              lockDirectory,
+              renewedAtMs,
+              securedDirectory,
+              token,
+            }))
+          ) {
+            throw new Error("OpenClaw Crabline smoke lock compatibility marker was lost.");
+          }
           lastRenewedAtMs = renewedAtMs;
         });
       pendingRenewal = renewal;
@@ -1141,11 +1340,21 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         Math.max(1, Math.floor(runtime.leaseMs / 3)),
       );
     } catch (error) {
-      await removeOwnedLock({
-        lockDirectory,
-        ownedDirectory: lockDirectory,
-        token,
-      });
+      try {
+        await removeOwnedLock({
+          lockDirectory,
+          ownedDirectory: ownerDirectory,
+          token,
+        });
+        await retireMarker();
+      } catch (cleanupError) {
+        const aggregateError = new AggregateError(
+          [error, cleanupError],
+          "OpenClaw Crabline smoke lock heartbeat startup and cleanup failed.",
+        );
+        aggregateError.cause = error;
+        throw aggregateError;
+      }
       throw error;
     }
     let heartbeatStopped = false;
@@ -1158,12 +1367,17 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         heartbeat.assertHealthy();
         await renew();
         heartbeat.assertHealthy();
+        await assertCompatibilityMarkerOwned({
+          lockDirectory,
+          securedDirectory,
+          token,
+        });
       },
       async commitFileAtomically({ contents, destinationPath, stageDirectory, stageFile }) {
         if (released) {
           throw new Error("OpenClaw Crabline smoke lock has already been released.");
         }
-        if (commitFenceConsumed || heartbeatStopped || ownedDirectory !== lockDirectory) {
+        if (commitFenceConsumed || heartbeatStopped || ownedDirectory !== ownerDirectory) {
           throw new Error("OpenClaw Crabline smoke lock has already committed its fence.");
         }
         heartbeat.assertHealthy();
@@ -1171,19 +1385,26 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         heartbeat.assertHealthy();
 
         const stagedFileName = `.commit-file.${token}.${randomUUID()}.tmp`;
-        const stagedFilePath = path.join(stageDirectory ?? lockDirectory, stagedFileName);
+        const stagedFilePath = path.join(stageDirectory ?? ownerDirectory, stagedFileName);
         let committed = false;
         try {
           await stageFile(stagedFilePath, contents);
           if (stageDirectory) {
-            await writeCommitStagePath(lockDirectory, stagedFilePath, token);
+            await writeCommitStagePath(ownerDirectory, stagedFilePath, token);
           }
           heartbeat.assertHealthy();
           await renew();
           heartbeat.assertHealthy();
 
-          const observedIdentity = await readDirectoryIdentity(lockDirectory);
-          const observed = await readLockRecord(lockDirectory);
+          await dependencies.beforeCommitClaim?.();
+          await assertCompatibilityMarkerOwned({
+            lockDirectory,
+            securedDirectory,
+            token,
+          });
+          const commitClaim = `${lockDirectory}${COMMIT_CLAIM_SUFFIX}.${token}.${randomUUID()}`;
+          const observedIdentity = await readDirectoryIdentity(ownerDirectory);
+          const observed = await readLockRecord(ownerDirectory);
           if (
             observedIdentity === null ||
             observed.kind === "missing" ||
@@ -1192,10 +1413,8 @@ export async function acquireOpenClawCrablineSmokeRunLock(
             throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
           }
 
-          await dependencies.beforeCommitClaim?.();
-          const commitClaim = `${lockDirectory}${COMMIT_CLAIM_SUFFIX}.${token}.${randomUUID()}`;
           try {
-            await fs.rename(lockDirectory, commitClaim);
+            await fs.rename(ownerDirectory, commitClaim);
           } catch (error) {
             if (isMissingPathError(error)) {
               throw new Error("OpenClaw Crabline smoke lock ownership was lost.", {
@@ -1214,10 +1433,10 @@ export async function acquireOpenClawCrablineSmokeRunLock(
             claimed.record.owner.token !== token ||
             !hasSameDirectoryIdentity(observedIdentity, claimedIdentity)
           ) {
-            if (!(await pathExists(lockDirectory))) {
+            if (!(await pathExists(ownerDirectory))) {
               try {
-                await fs.rename(commitClaim, lockDirectory);
-                ownedDirectory = lockDirectory;
+                await fs.rename(commitClaim, ownerDirectory);
+                ownedDirectory = ownerDirectory;
               } catch (error) {
                 if (!isMissingPathError(error)) {
                   throw error;
@@ -1234,6 +1453,11 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           await heartbeat.settle();
           heartbeat.assertHealthy();
           await dependencies.beforeCommitRename?.();
+          await assertCompatibilityMarkerOwned({
+            lockDirectory,
+            securedDirectory,
+            token,
+          });
           await fs.rename(
             stageDirectory ? stagedFilePath : path.join(commitClaim, stagedFileName),
             destinationPath,
@@ -1257,6 +1481,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           ...(dependencies.beforeReleaseClaim
             ? { beforeClaim: dependencies.beforeReleaseClaim }
             : {}),
+          ...(dependencies.beforeReleaseRename
+            ? { beforeRename: dependencies.beforeReleaseRename }
+            : {}),
           lockDirectory,
           onOwnedDirectoryChange: (directoryPath) => {
             ownedDirectory = directoryPath;
@@ -1278,6 +1505,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
             token,
           });
         }
+        await retireMarker();
         released = true;
       },
     };
