@@ -137,6 +137,7 @@ function windowsProcessTreeTermination(
     "$RootCreated=if($null -ne $RootProcess){([datetime]$RootProcess.CreationDate).ToUniversalTime()}else{$null}",
     "$RootMatches=$null -ne $RootProcess -and $RootCreated -ge $RootNotBefore -and $RootCreated -le $RootObservedBy",
     "$KillRoot=$RootExpectedAlive -and $RootMatches",
+    "$CleanupFailed=$RootExpectedAlive -and !$RootMatches",
     "if($KillRoot){",
     "$Snapshot.Add($RootProcess)",
     '$Visited.Add("$([int]$RootProcess.ProcessId)|$(([datetime]$RootProcess.CreationDate).ToFileTimeUtc())") | Out-Null',
@@ -169,6 +170,11 @@ function windowsProcessTreeTermination(
     "}",
     "}",
     "}",
+    "foreach($Entry in @($Snapshot)){",
+    '$Current=Get-CimInstance Win32_Process -Filter "ProcessId=$($Entry.ProcessId)" -ErrorAction SilentlyContinue',
+    "if($null -ne $Current -and $Current.CreationDate -eq $Entry.CreationDate){$CleanupFailed=$true}",
+    "}",
+    "if($CleanupFailed){exit 1}",
   ].join(";");
 }
 
