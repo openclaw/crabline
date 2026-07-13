@@ -97,6 +97,21 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("normalizes non-object artifact pointer failures", async () => {
+    const outputDir = await createTempDir();
+    try {
+      const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
+      await fs.mkdir(path.dirname(pointerPath), { recursive: true });
+      await fs.writeFile(pointerPath, "null\n");
+
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).rejects.toThrow(
+        "OpenClaw Crabline artifact pointer is malformed.",
+      );
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("rejects caller-controlled artifact paths before creating the store", async () => {
     const outputDir = await createTempDir();
     const params = publishParams(outputDir);

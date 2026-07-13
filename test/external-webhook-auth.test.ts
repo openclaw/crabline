@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CrablineError } from "../src/core/errors.js";
 import { requireExternalWebhookAuthentication } from "../src/providers/builtin/external-webhook-auth.js";
 
 const base = {
@@ -45,6 +46,25 @@ describe("external webhook authentication policy", () => {
         },
       }),
     ).toThrow(/require HTTPS/u);
+  });
+
+  it("classifies malformed public callback URLs as configuration errors", () => {
+    let failure: unknown;
+    try {
+      requireExternalWebhookAuthentication({
+        ...base,
+        authenticated: true,
+        webhook: { host: "0.0.0.0", publicUrl: "not a URL" },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(CrablineError);
+    expect(failure).toMatchObject({
+      kind: "config",
+      message: "Example public callback URL is invalid.",
+    });
   });
 
   it("allows HTTPS frontends and loopback-local HTTP", () => {
