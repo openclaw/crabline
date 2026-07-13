@@ -230,6 +230,20 @@ describe("Zalo webhook normalizer", () => {
       await provider.cleanup();
     }
   });
+
+  it.each(["", " \t"])(
+    "rejects explicitly empty webhook secrets from the environment",
+    async (secret) => {
+      const config = await createLocalMockConfig("zalo", "/zalo/webhook");
+
+      expect(
+        () =>
+          new ZaloProviderAdapter("zalo", config, "crabline", {
+            env: { ZALO_WEBHOOK_SECRET: secret },
+          }),
+      ).toThrow(/ZALO_WEBHOOK_SECRET must not be empty/u);
+    },
+  );
 });
 
 runLocalMockProviderContract({
