@@ -2390,7 +2390,8 @@ async function acquireDirectoryPrivateMutationClaim(
         try {
           await fs.rename(relocatedClaimPath, rootClaimPath);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "EEXIST" && code !== "ENOTEMPTY") {
             try {
               await fs.rename(staleTreePath, rootClaimPath);
               installedClaimPath = claimPath;
