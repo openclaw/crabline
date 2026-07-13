@@ -12,6 +12,7 @@ const DEFAULT_BODY_TIMEOUT_MS = 5_000;
 
 class RequestBodyTooLargeError extends Error {}
 class RequestBodyTimeoutError extends Error {}
+class ResponseDeliveryClosedError extends Error {}
 
 async function readRequestBody(
   request: IncomingMessage,
@@ -111,13 +112,87 @@ async function writeFetchResponse(
     response.setHeader(name, value);
   }
 
-  if (!fetchResponse.body) {
-    response.end();
-    return;
-  }
+  const reader = fetchResponse.body?.getReader();
+  let cancellation: Promise<void> | undefined;
+  let rejectStopped!: (error: Error) => void;
+  let stoppedError: Error | undefined;
+  const stopped = new Promise<never>((_, reject) => {
+    rejectStopped = reject;
+  });
+  void stopped.catch(() => {});
 
-  const body = Buffer.from(await fetchResponse.arrayBuffer());
-  response.end(body);
+  const cancelBody = (reason: Error) => {
+    if (!reader || cancellation) {
+      return;
+    }
+    cancellation = reader.cancel(reason).catch(() => {});
+  };
+  const stop = (error: Error) => {
+    if (stoppedError) {
+      return;
+    }
+    stoppedError = error;
+    cancelBody(error);
+    rejectStopped(error);
+  };
+  const onClose = () => {
+    if (!response.writableFinished) {
+      stop(new ResponseDeliveryClosedError("Webhook response delivery closed before completion."));
+    }
+  };
+  const onError = (error: Error) => stop(error);
+  response.once("close", onClose);
+  response.once("error", onError);
+
+  try {
+    if (
+      response.destroyed ||
+      response.req?.aborted ||
+      response.req?.socket.destroyed ||
+      response.socket?.destroyed
+    ) {
+      throw new ResponseDeliveryClosedError("Webhook response delivery closed before it started.");
+    }
+
+    if (reader) {
+      while (true) {
+        const chunk = await Promise.race([reader.read(), stopped]);
+        if (chunk.done) {
+          break;
+        }
+        if (chunk.value.byteLength > 0 && !response.write(chunk.value)) {
+          let onDrain!: () => void;
+          const drained = new Promise<void>((resolve) => {
+            onDrain = resolve;
+            response.once("drain", onDrain);
+          });
+          try {
+            await Promise.race([drained, stopped]);
+          } finally {
+            response.off("drain", onDrain);
+          }
+        }
+      }
+    }
+
+    let onFinish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      onFinish = resolve;
+      response.once("finish", onFinish);
+    });
+    try {
+      response.end();
+      await Promise.race([finished, stopped]);
+    } finally {
+      response.off("finish", onFinish);
+    }
+  } catch (error) {
+    cancelBody(error instanceof Error ? error : new Error(String(error)));
+    throw error;
+  } finally {
+    response.off("close", onClose);
+    response.off("error", onError);
+  }
 }
 
 function clearUnsentResponseHeaders(response: ServerResponse<IncomingMessage>): void {
@@ -176,6 +251,10 @@ export async function startWebhookServer(params: {
       const fetchRequest = await toFetchRequest(request, url, maxBodyBytes, bodyTimeoutMs);
       await writeFetchResponse(response, await params.handle(fetchRequest));
     } catch (error) {
+      if (error instanceof ResponseDeliveryClosedError) {
+        response.destroy();
+        return;
+      }
       const status =
         error instanceof RequestBodyTooLargeError
           ? 413
@@ -189,21 +268,29 @@ export async function startWebhookServer(params: {
           // Error reporting must not change the public response.
         }
       }
+      if (response.headersSent || response.destroyed) {
+        response.destroy();
+        return;
+      }
       clearUnsentResponseHeaders(response);
-      await writeFetchResponse(
-        response,
-        new Response(
-          status === 413
-            ? "request body too large"
-            : status === 408
-              ? "request body timeout"
-              : "internal server error",
-          {
-            ...(status === 408 ? { headers: { connection: "close" } } : {}),
-            status,
-          },
-        ),
-      );
+      try {
+        await writeFetchResponse(
+          response,
+          new Response(
+            status === 413
+              ? "request body too large"
+              : status === 408
+                ? "request body timeout"
+                : "internal server error",
+            {
+              ...(status === 408 ? { headers: { connection: "close" } } : {}),
+              status,
+            },
+          ),
+        );
+      } catch {
+        response.destroy();
+      }
     }
   });
 
