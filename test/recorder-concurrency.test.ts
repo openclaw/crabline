@@ -22,6 +22,7 @@ const fsMocks = vi.hoisted(() => ({
   serverDirectory: "",
   serverDirectorySync: vi.fn<(directoryPath: string) => Promise<void>>(),
   serverFileExists: false,
+  serverFileNlink: 1,
   serverOpen: vi.fn<(filePath: string, flags: string) => void>(),
   serverStat: vi.fn<(filePath: string) => Promise<{ dev: number; ino: number; size: number }>>(),
   serverSync: vi.fn<(filePath: string) => Promise<void>>(),
@@ -91,7 +92,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
           chmod: async () => {},
           close: async () => {},
           read: async (buffer: Buffer) => ({ buffer, bytesRead: 0 }),
-          stat: async () => ({ dev: 1, ino: 1, size: 0 }),
+          stat: async () => ({ dev: 1, ino: 1, nlink: fsMocks.serverFileNlink, size: 0 }),
           sync: async () => await fsMocks.serverSync(filePath),
           truncate: async () => {},
         } as unknown as Awaited<ReturnType<typeof actual.open>>;
@@ -172,6 +173,7 @@ beforeEach(() => {
   fsMocks.serverDirectorySync.mockReset();
   fsMocks.serverDirectorySync.mockResolvedValue(undefined);
   fsMocks.serverFileExists = false;
+  fsMocks.serverFileNlink = 1;
   fsMocks.serverOpen.mockReset();
   fsMocks.serverStat.mockReset();
   fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
@@ -249,6 +251,53 @@ describe("recorder append serialization", () => {
     expect(fsMocks.lock).toHaveBeenCalledTimes(2);
     expect(fsMocks.serverOpen.mock.calls.map(([, flags]) => flags)).toEqual(["ax+", "ax+", "a+"]);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "preserves committed status when a hardlink identity lock release fails",
+    async () => {
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-server-recorder-hardlink-release-${process.pid}-${Date.now()}.jsonl`,
+      );
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverFileNlink = 2;
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+      const pathRelease = vi.fn(async () => {});
+      const releaseFailure = new Error("identity lock cleanup failed");
+      const identityRelease = vi.fn(async () => {
+        throw releaseFailure;
+      });
+      fsMocks.lock.mockResolvedValueOnce(pathRelease).mockResolvedValueOnce(identityRelease);
+      const observer = vi.fn();
+
+      await expect(
+        recordServerEvent({
+          event: {
+            at: "2026-07-12T10:00:00.000Z",
+            method: "POST",
+            path: "/committed-hardlink-release",
+            query: {},
+            type: "api",
+          },
+          onEvent: observer,
+          recorderPath,
+        }),
+      ).rejects.toMatchObject({
+        cause: releaseFailure,
+        committed: true,
+        indeterminate: false,
+        name: "ServerRecorderCommittedError",
+      });
+      expect(observer).not.toHaveBeenCalled();
+      expect(pathRelease).toHaveBeenCalledOnce();
+      expect(identityRelease).toHaveBeenCalledOnce();
+      expect(
+        fsMocks.lock.mock.calls.some(([lockPath]) =>
+          path.basename(String(lockPath)).startsWith("recorder-"),
+        ),
+      ).toBe(true);
+    },
+  );
 
   it("serializes provider inbound appends to the same JSONL file", async () => {
     const recorderPath = path.join(

@@ -1089,6 +1089,92 @@ describe("server recorder", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")(
+    "serializes hardlink aliases across recorder processes",
+    async () => {
+      const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+      const actualLockfile =
+        await vi.importActual<typeof import("proper-lockfile")>("proper-lockfile");
+      const directory = await actualFs.mkdtemp(
+        path.join(os.tmpdir(), "crabline-server-recorder-hardlink-"),
+      );
+      const recorderPath = path.join(directory, "events.jsonl");
+      const aliasPath = path.join(directory, "events-alias.jsonl");
+      const initialContents = `${JSON.stringify(serverEvent("/completed"))}\n{"path":"/torn"`;
+      let releaseGate: (() => Promise<void>) | undefined;
+      const processes: RecorderProcess[] = [];
+      try {
+        await actualFs.writeFile(recorderPath, initialContents, { mode: 0o600 });
+        await actualFs.link(recorderPath, aliasPath);
+        const identity = await actualFs.stat(recorderPath, { bigint: true });
+        const lockRoot = path.join(
+          os.userInfo().homedir,
+          ".cache",
+          "crabline",
+          "locks",
+          "server-recorder",
+        );
+        await actualFs.mkdir(lockRoot, { mode: 0o700, recursive: true });
+        await actualFs.chmod(lockRoot, 0o700);
+        releaseGate = await actualLockfile.lock(
+          path.join(lockRoot, `recorder-${identity.dev}-${identity.ino}`),
+          {
+            realpath: false,
+            stale: 30_000,
+            update: 10_000,
+          },
+        );
+        const first = startRecorderProcess(recorderPath, "/process-a");
+        const second = startRecorderProcess(aliasPath, "/process-b");
+        processes.push(first, second);
+
+        await vi.waitFor(
+          () => {
+            expect(first.stdout()).toContain("ready\n");
+            expect(second.stdout()).toContain("ready\n");
+          },
+          { timeout: 5_000 },
+        );
+        first.child.stdin.end("go\n");
+        second.child.stdin.end("go\n");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        expect(first.stdout()).not.toContain("done\n");
+        expect(second.stdout()).not.toContain("done\n");
+        await expect(actualFs.readFile(recorderPath, "utf8")).resolves.toBe(initialContents);
+
+        await releaseGate();
+        releaseGate = undefined;
+        await vi.waitFor(
+          () => {
+            expect(first.stdout()).toContain("done\n");
+            expect(second.stdout()).toContain("done\n");
+          },
+          { timeout: 5_000 },
+        );
+        await expect(Promise.all(processes.map((process) => process.exited))).resolves.toEqual([
+          0, 0,
+        ]);
+
+        const recordedPaths = (await actualFs.readFile(recorderPath, "utf8"))
+          .trimEnd()
+          .split("\n")
+          .map((line) => (JSON.parse(line) as ServerRequestEvent).path)
+          .sort();
+        expect(recordedPaths).toEqual(["/completed", "/process-a", "/process-b"]);
+      } finally {
+        await releaseGate?.();
+        for (const process of processes) {
+          if (process.child.exitCode === null) {
+            process.child.kill();
+          }
+        }
+        await Promise.all(processes.map((process) => process.exited));
+        await actualFs.rm(directory, { force: true, recursive: true });
+      }
+    },
+  );
+
   it("waits beyond five seconds for a live recorder owner", async () => {
     const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
     const actualLockfile =
