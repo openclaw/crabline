@@ -42,6 +42,7 @@ const GOOGLE_CHAT_SERVICE_ACCOUNT = "chat@system.gserviceaccount.com";
 const GOOGLE_OAUTH_CERTS_URL = "https://www.googleapis.com/oauth2/v1/certs";
 const GOOGLE_CHAT_CERTS_URL =
   "https://www.googleapis.com/service_accounts/v1/metadata/x509/chat@system.gserviceaccount.com";
+const GOOGLE_CHAT_MESSAGE_NAME_PATTERN = /^spaces\/[A-Za-z0-9_-]+\/messages\/[^/\s]+$/u;
 
 type GoogleChatAuthRuntime = {
   fetch?: typeof fetch | undefined;
@@ -278,12 +279,27 @@ export function normalizeGoogleChatWebhookPayload(payload: unknown) {
       kind: "inbound",
     });
   }
-  if (messageName && !messageName.startsWith(`${spaceName}/messages/`)) {
-    throw new CrablineError("Google Chat message.name must belong to message.space.name", {
-      kind: "inbound",
-    });
+  const validatedSpaceName = requireNativeInboundId(
+    spaceName,
+    GOOGLE_CHAT_SPACE_RULE,
+    "Google Chat space.name",
+  );
+  if (messageName) {
+    if (!GOOGLE_CHAT_MESSAGE_NAME_PATTERN.test(messageName)) {
+      throw new CrablineError("Google Chat message.name must be a valid message resource name", {
+        kind: "inbound",
+      });
+    }
+    if (!messageName.startsWith(`${validatedSpaceName}/messages/`)) {
+      throw new CrablineError("Google Chat message.name must belong to message.space.name", {
+        kind: "inbound",
+      });
+    }
   }
-  if (threadName && !threadName.startsWith(`${spaceName}/threads/`)) {
+  const validatedThreadName = threadName
+    ? requireNativeInboundId(threadName, GOOGLE_CHAT_THREAD_RULE, "Google Chat thread.name")
+    : undefined;
+  if (validatedThreadName && !validatedThreadName.startsWith(`${validatedSpaceName}/threads/`)) {
     throw new CrablineError("Google Chat thread.name must belong to message.space.name", {
       kind: "inbound",
     });
@@ -294,9 +310,7 @@ export function normalizeGoogleChatWebhookPayload(payload: unknown) {
     ...(messageName ? { id: messageName } : {}),
     raw: payload,
     text,
-    threadId: threadName
-      ? requireNativeInboundId(threadName, GOOGLE_CHAT_THREAD_RULE, "Google Chat thread.name")
-      : requireNativeInboundId(spaceName, GOOGLE_CHAT_SPACE_RULE, "Google Chat space.name"),
+    threadId: validatedThreadName ?? validatedSpaceName,
   };
 }
 
@@ -307,7 +321,7 @@ export function handleGoogleChatWebhookPayload(payload: unknown): Response | und
   } catch {
     return undefined;
   }
-  if (isRecord(event) && (event.type === "ADDED_TO_SPACE" || event.type === "REMOVED_FROM_SPACE")) {
+  if (isRecord(event) && typeof event.type === "string" && event.type !== "MESSAGE") {
     return new Response(null, { status: 200 });
   }
   return undefined;
