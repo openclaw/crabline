@@ -224,6 +224,7 @@ describe("release workflow", () => {
     );
     expect(contents).toContain('      - ".github/actions/**"');
     expect(contents).toContain('      - ".github/workflows/**"');
+    expect(contents).toContain("      - pnpm-workspace.yaml");
   });
 
   it("isolates package verification, OIDC publication, and GitHub release authority", async () => {

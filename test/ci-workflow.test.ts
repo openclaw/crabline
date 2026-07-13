@@ -1,4 +1,6 @@
+import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -10,7 +12,14 @@ type WorkflowStep = {
 };
 
 type Workflow = {
-  jobs?: Record<string, { steps?: WorkflowStep[] }>;
+  jobs?: Record<string, { steps?: WorkflowStep[]; uses?: string }>;
+};
+
+type CompositeAction = {
+  runs?: {
+    steps?: WorkflowStep[];
+    using?: string;
+  };
 };
 
 async function readWorkflow(filePath: string): Promise<Workflow> {
@@ -31,29 +40,53 @@ describe("CI workflow hardening", () => {
   });
 
   it("pins every external workflow action to immutable revisions", async () => {
-    const workflowDirectory = ".github/workflows";
-    const workflowFiles = (await fs.readdir(workflowDirectory))
-      .filter((entry) => /\.ya?ml$/u.test(entry))
-      .map((entry) => path.join(workflowDirectory, entry));
-    const actionRefs = (
-      await Promise.all(
-        workflowFiles.map(async (filePath) => {
-          const workflow = await readWorkflow(filePath);
-          return Object.values(workflow.jobs ?? {}).flatMap(
-            (job) =>
-              job.steps
-                ?.map((step) => step.uses)
-                .filter((uses): uses is string => uses !== undefined && !uses.startsWith("./")) ??
-              [],
-          );
-        }),
-      )
-    ).flat();
+    const actionRefs = await collectExternalActionRefs(process.cwd());
 
     expect(actionRefs).not.toEqual([]);
     for (const actionRef of actionRefs) {
       expect(actionRef).toMatch(/^[^@]+@[0-9a-f]{40}$/u);
     }
+  });
+
+  it("inspects reusable workflow jobs and composite action steps", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-action-pins-"));
+    try {
+      await Promise.all([
+        fs.mkdir(path.join(root, ".github", "workflows"), { recursive: true }),
+        fs.mkdir(path.join(root, ".github", "actions", "example"), { recursive: true }),
+      ]);
+      await Promise.all([
+        fs.writeFile(
+          path.join(root, ".github", "workflows", "reusable.yml"),
+          [
+            "jobs:",
+            "  external:",
+            "    uses: owner/repository/.github/workflows/check.yml@main",
+          ].join("\n"),
+        ),
+        fs.writeFile(
+          path.join(root, ".github", "actions", "example", "action.yml"),
+          ["runs:", "  using: composite", "  steps:", "    - uses: owner/action@v1"].join("\n"),
+        ),
+      ]);
+
+      await expect(collectExternalActionRefs(root)).resolves.toEqual([
+        "owner/repository/.github/workflows/check.yml@main",
+        "owner/action@v1",
+      ]);
+    } finally {
+      await fs.rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("protects pnpm install-script policy changes", async () => {
+    const [codeowners, dependencyReview] = await Promise.all([
+      fs.readFile(".github/CODEOWNERS", "utf8"),
+      fs.readFile(".github/workflows/dependency-review.yml", "utf8"),
+    ]);
+
+    expect(codeowners).toContain("/pnpm-workspace.yaml @openclaw/openclaw-secops");
+    expect(dependencyReview).toContain("      - pnpm-workspace.yaml");
   });
 
   it("exempts security pull requests from stale automation", async () => {
@@ -65,3 +98,60 @@ describe("CI workflow hardening", () => {
     expect(String(staleStep?.with?.["exempt-pr-labels"]).split(",")).toContain("security");
   });
 });
+
+async function collectExternalActionRefs(root: string): Promise<string[]> {
+  const workflowDirectory = path.join(root, ".github", "workflows");
+  const workflowFiles = await listYamlFiles(workflowDirectory);
+  const workflowRefs = (
+    await Promise.all(
+      workflowFiles.map(async (filePath) => {
+        const workflow = await readWorkflow(filePath);
+        return Object.values(workflow.jobs ?? {}).flatMap((job) => [
+          ...(job.uses ? [job.uses] : []),
+          ...(job.steps?.flatMap((step) => (step.uses ? [step.uses] : [])) ?? []),
+        ]);
+      }),
+    )
+  ).flat();
+
+  const actionFiles = await listYamlFiles(path.join(root, ".github", "actions"));
+  const compositeRefs = (
+    await Promise.all(
+      actionFiles.map(async (filePath) => {
+        const action = parse(await fs.readFile(filePath, "utf8")) as CompositeAction;
+        if (action.runs?.using !== "composite") {
+          return [];
+        }
+        return action.runs.steps?.flatMap((step) => (step.uses ? [step.uses] : [])) ?? [];
+      }),
+    )
+  ).flat();
+
+  return [...workflowRefs, ...compositeRefs].filter(
+    (uses) => !uses.startsWith("./") && !uses.startsWith("docker://"),
+  );
+}
+
+async function listYamlFiles(directory: string): Promise<string[]> {
+  let entries: Dirent<string>[];
+  try {
+    entries = await fs.readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+
+  return (
+    await Promise.all(
+      entries.map(async (entry) => {
+        const entryPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          return await listYamlFiles(entryPath);
+        }
+        return /\.ya?ml$/u.test(entry.name) ? [entryPath] : [];
+      }),
+    )
+  ).flat();
+}
