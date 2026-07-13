@@ -4,7 +4,7 @@ import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
-import { applyOwnerOnlyWindowsDirectoryAcl } from "../platform/windows-acl.js";
+import { createOwnerOnlyWindowsDirectory } from "../platform/windows-acl.js";
 import type { InboundEnvelope } from "./types.js";
 
 export type RecordableInboundEnvelope = InboundEnvelope & {
@@ -602,28 +602,20 @@ export async function secureProviderRecorderLockRoot(
   currentUserId: number | undefined,
   options: {
     platform?: NodeJS.Platform;
-    secureWindowsDirectory?: (directoryPath: string) => Promise<void>;
+    createWindowsDirectory?: (directoryPath: string) => Promise<void>;
   } = {},
 ): Promise<string> {
-  await mkdir(root, { mode: 0o700, recursive: true });
   if ((options.platform ?? process.platform) === "win32") {
-    const identity = await lstat(root, { bigint: true });
-    if (!identity.isDirectory() || identity.isSymbolicLink()) {
-      throw new Error("Provider recorder lock directory is not a private directory.");
-    }
-    await (options.secureWindowsDirectory ?? applyOwnerOnlyWindowsDirectoryAcl)(root);
+    await mkdir(path.dirname(root), { recursive: true });
+    await (options.createWindowsDirectory ?? createOwnerOnlyWindowsDirectory)(root);
     const secured = await lstat(root, { bigint: true });
-    if (
-      !secured.isDirectory() ||
-      secured.isSymbolicLink() ||
-      secured.dev !== identity.dev ||
-      secured.ino !== identity.ino
-    ) {
-      throw new Error("Provider recorder lock directory changed while securing it.");
+    if (!secured.isDirectory() || secured.isSymbolicLink()) {
+      throw new Error("Provider recorder lock directory is not a private directory.");
     }
     return root;
   }
 
+  await mkdir(root, { mode: 0o700, recursive: true });
   if (currentUserId === undefined) {
     throw new Error("Provider recorder identity locking requires a current user id.");
   }
