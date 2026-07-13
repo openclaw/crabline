@@ -702,7 +702,8 @@ function normalizeSignalHost(value: string): string {
   const normalized = value
     .trim()
     .replace(/^\[(.*)\]$/u, "$1")
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/\.$/u, "");
   if (isIP(normalized) !== 6) {
     return normalized;
   }
