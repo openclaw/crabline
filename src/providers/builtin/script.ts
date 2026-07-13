@@ -122,14 +122,13 @@ function windowsProcessTreeTermination(
 ): string {
   const rootNotBeforeMs = Math.max(0, Math.floor(childStartedAtMs));
   const rootObservedByMs = Math.max(rootNotBeforeMs, Math.ceil(childObservedAtMs));
-  const snapshotAtMs = Date.now();
   return [
     "$ErrorActionPreference='Stop'",
     `$RootProcessId=${pid}`,
     `$RootExpectedAlive=$${rootExpectedAlive ? "true" : "false"}`,
     `$RootNotBefore=([datetime]'1970-01-01T00:00:00Z').AddMilliseconds(${rootNotBeforeMs})`,
     `$RootObservedBy=([datetime]'1970-01-01T00:00:00Z').AddMilliseconds(${rootObservedByMs})`,
-    `$SnapshotAt=([datetime]'1970-01-01T00:00:00Z').AddMilliseconds(${snapshotAtMs})`,
+    "$SnapshotAt=[datetime]::UtcNow",
     "$AllProcesses=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate)",
     "$Snapshot=[System.Collections.Generic.List[object]]::new()",
     "$Pending=[System.Collections.Generic.Queue[object]]::new()",
