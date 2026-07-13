@@ -58,6 +58,7 @@ type SignalSseChunk = {
 const SIGNAL_CLI_SSE_KEEPALIVE_MS = 15_000;
 const DEFAULT_MAX_SIGNAL_SSE_CLIENTS = 32;
 const MAX_SIGNAL_SSE_BUFFER_BYTES = 2 * 1024 * 1024;
+const SIGNAL_PHONE_NUMBER_RE = /^\+[1-9]\d{2,14}$/u;
 const SIGNAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 type SignalSseWriteResult = "accepted" | "queued" | "rejected";
 type SignalRpcResult =
@@ -384,17 +385,29 @@ function emitSignalEvent(state: SignalServerState, payload: unknown): boolean {
   return delivered || queueSignalEvent(state, event);
 }
 
+function normalizeSignalPhoneNumber(value: unknown): string | undefined {
+  const number = readTrimmedString(value)?.replace(/[\s().-]/gu, "");
+  return number && SIGNAL_PHONE_NUMBER_RE.test(number) ? number : undefined;
+}
+
 async function handleAdminInbound(params: {
   body: Record<string, unknown>;
   state: SignalServerState;
 }): Promise<Response> {
   const text = typeof params.body.text === "string" ? params.body.text : undefined;
-  const sourceNumber = readTrimmedString(params.body.sourceNumber ?? params.body.senderId);
+  const sourceNumberValue = params.body.sourceNumber ?? params.body.senderId;
+  const sourceNumber = normalizeSignalPhoneNumber(sourceNumberValue);
   const sourceUuidValue = readTrimmedString(params.body.sourceUuid);
   const sourceUuid =
     sourceUuidValue && SIGNAL_UUID_RE.test(sourceUuidValue)
       ? sourceUuidValue.toLowerCase()
       : undefined;
+  if (sourceNumberValue !== undefined && sourceNumber === undefined) {
+    return jsonResponse(
+      { error: "sourceNumber must be an E.164 telephone number", ok: false },
+      400,
+    );
+  }
   if (params.body.sourceUuid !== undefined && sourceUuid === undefined) {
     return jsonResponse({ error: "sourceUuid must be a UUID", ok: false }, 400);
   }

@@ -539,6 +539,54 @@ describe("signal local provider server", () => {
     }
   });
 
+  it("validates and canonicalizes sourceNumber before emitting inbound events", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+
+    const canonical = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        sourceNumber: "+1 (555) 765-4321",
+        text: "canonical number",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(canonical.status).toBe(200);
+    await expect(canonical.json()).resolves.toMatchObject({
+      event: { envelope: { sourceNumber: "+15557654321" } },
+      ok: true,
+    });
+
+    for (const sourceNumber of [
+      "15557654321",
+      "signal-user",
+      "+0123456789",
+      "++15557654321",
+      "+1234567890123456",
+    ]) {
+      const invalid = await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          sourceNumber,
+          sourceUuid: "11111111-2222-4333-8444-555555555555",
+          text: "must not emit",
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+      expect(invalid.status).toBe(400);
+      await expect(invalid.json()).resolves.toEqual({
+        error: "sourceNumber must be an E.164 telephone number",
+        ok: false,
+      });
+    }
+  });
+
   it("advances generated timestamps past explicit inbound timestamps", async () => {
     const server = await startSignalServer({ adminToken: "admin" });
     servers.push(server);
