@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
+import { Buffer } from "node:buffer";
 import path from "node:path";
 import { CrablineError } from "../core/errors.js";
 import {
@@ -444,10 +445,11 @@ function createOutboundMediaMessage(
   const duration = Math.max(0, toIntegerValue(body.duration) ?? 0);
   const height = Math.max(1, toIntegerValue(body.height) ?? 1);
   const width = Math.max(1, toIntegerValue(body.width) ?? 1);
+  const chatIdentity = Buffer.from(telegramChatKey(chatId)).toString("base64url");
   const media = {
-    file_id: `crabline-${mediaKind}-${messageId}`,
+    file_id: `crabline-${mediaKind}-${chatIdentity}-${messageId}`,
     file_name: fileName,
-    file_unique_id: `crabline-${mediaKind}-unique-${messageId}`,
+    file_unique_id: `crabline-${mediaKind}-unique-${chatIdentity}-${messageId}`,
   };
   return {
     chat: createChat(chatId),
