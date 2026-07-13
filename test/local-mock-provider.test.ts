@@ -1240,6 +1240,9 @@ describe("local mock provider", () => {
     expect(() => codec.normalize({ id: "\uD800", metadata: {} })).toThrow(
       /loopback channelId cannot be encoded/u,
     );
+    expect(() => codec.normalize({ channelId: "", id: "room", metadata: {} })).toThrow(
+      /loopback channelId must not be empty/u,
+    );
     expect(() => codec.normalize({ id: "loopback:room%2f", metadata: {} })).toThrow(
       /loopback canonical channelId is malformed/u,
     );

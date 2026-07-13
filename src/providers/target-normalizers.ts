@@ -183,6 +183,9 @@ export function createGenericLocalMockTargetCodec(
     }
   };
   const normalizeChannel = (value: string) => {
+    if (!value) {
+      throw new CrablineError(`${platform} channelId must not be empty.`, { kind: "config" });
+    }
     if (!value.startsWith(prefix)) {
       return `${prefix}${encodeComponent(value, "channelId")}`;
     }
