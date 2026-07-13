@@ -775,6 +775,39 @@ describe("server recorder", () => {
     });
   });
 
+  it("exposes committed status when lock release fails after a durable append", async () => {
+    const releaseFailure = new Error("simulated lock release failure");
+    const observer = vi.fn<(event: ServerRequestEvent) => void>();
+    lockMocks.release.mockRejectedValueOnce(releaseFailure).mockResolvedValue(undefined);
+    const recorderPath = path.join(
+      "/tmp",
+      "crabline-server-recorder-committed-release-failed.jsonl",
+    );
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/release-failed-after-commit"),
+        onEvent: observer,
+        recorderPath,
+      }),
+    ).rejects.toMatchObject({
+      cause: releaseFailure,
+      committed: true,
+      indeterminate: false,
+      name: "ServerRecorderCommittedError",
+    });
+    expect(observer).not.toHaveBeenCalled();
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/after-release-failure"),
+        onEvent: undefined,
+        recorderPath,
+      }),
+    ).resolves.toBeUndefined();
+    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+  });
+
   it("fills short tail reads before repairing a torn final append", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-torn.jsonl");
     const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
