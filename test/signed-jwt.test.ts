@@ -181,6 +181,43 @@ describe("signed JWT remote key cache", () => {
     ).toBe(now);
   });
 
+  it("accepts quoted max-age delta-seconds with optional whitespace", () => {
+    const now = 1_700_000_000_000;
+
+    for (const cacheControl of [
+      'public, max-age="3600"',
+      'public, max-age = "3600"',
+      'public,\tmax-age\t=\t"3600"\t',
+    ]) {
+      expect(
+        resolveHttpCacheExpiry(
+          new Response(null, { headers: { "cache-control": cacheControl } }),
+          now,
+        ),
+      ).toBe(now + 3_600_000);
+    }
+  });
+
+  it("fails closed on malformed max-age instead of using fallback freshness", () => {
+    const now = 1_700_000_000_000;
+    const expires = new Date(now + 60 * 60 * 1_000).toUTCString();
+
+    for (const cacheControl of [
+      "public, max-age",
+      "public, max-age=invalid",
+      'public, max-age="3600',
+      'public, max-age=" 3600 "',
+      "public, max-age=3600, max-age=7200",
+    ]) {
+      expect(
+        resolveHttpCacheExpiry(
+          new Response(null, { headers: { "cache-control": cacheControl, expires } }),
+          now,
+        ),
+      ).toBe(now);
+    }
+  });
+
   it("distinguishes absent Expires from invalid or stale values", () => {
     const now = 1_700_000_000_000;
 

@@ -73,6 +73,32 @@ export function readBearerToken(request: Request): string | undefined {
   return match?.[1];
 }
 
+function splitCacheControlDirectives(value: string): string[] {
+  const directives: string[] = [];
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (quoted) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        quoted = false;
+      }
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === ",") {
+      directives.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  directives.push(value.slice(start));
+  return directives;
+}
+
 export function resolveHttpCacheExpiry(response: Response, now: number): number {
   const cacheControl = response.headers.get("cache-control");
   if (/(?:^|,)\s*(?:no-cache|no-store)(?:\s*(?:=|,|$))/iu.test(cacheControl ?? "")) {
@@ -80,9 +106,20 @@ export function resolveHttpCacheExpiry(response: Response, now: number): number 
   }
   const ageHeader = response.headers.get("age");
   const ageSeconds = ageHeader && /^\d+$/u.test(ageHeader) ? Number.parseInt(ageHeader, 10) : 0;
-  const maxAge = /(?:^|,)\s*max-age=(\d+)/iu.exec(cacheControl ?? "");
-  if (maxAge) {
-    const maxAgeSeconds = Number(maxAge[1]);
+  const maxAgeDirectives = splitCacheControlDirectives(cacheControl ?? "").filter((directive) =>
+    /^[ \t]*max-age\b/iu.test(directive),
+  );
+  if (maxAgeDirectives.length > 0) {
+    if (maxAgeDirectives.length !== 1) {
+      return now;
+    }
+    const maxAge = /^[ \t]*max-age[ \t]*=[ \t]*(?:"(\d+)"|(\d+))[ \t]*$/iu.exec(
+      maxAgeDirectives[0]!,
+    );
+    if (!maxAge) {
+      return now;
+    }
+    const maxAgeSeconds = Number(maxAge[1] ?? maxAge[2]);
     if (!Number.isSafeInteger(maxAgeSeconds)) {
       return now;
     }

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserve committed provider recorder errors during final identity confirmation and strictly parse quoted JWT cache lifetimes.
 - Lint repository tooling in the type-aware verification gate.
 - Preserve WhatsApp acknowledgement races without stale pending state or false deduplication.
 - Derive Telegram multipart media identity from upload bytes while preserving filenames and file reference reuse.

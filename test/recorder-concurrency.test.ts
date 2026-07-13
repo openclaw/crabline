@@ -25,6 +25,10 @@ const fsMocks = vi.hoisted(() => ({
   providerDirectorySync: vi.fn<(directoryPath: string) => Promise<void>>(),
   providerLstatFailure: undefined as Error | undefined,
   providerLstatFailureAfterLocks: 0,
+  providerLstatFailureAfterWrites: 0,
+  providerLogicalPath: "",
+  providerRealpathFailure: undefined as Error | undefined,
+  providerRealpathFailureAfterWrites: 0,
   providerRecorderPath: "",
   providerOpen: vi.fn<(filePath: string, flags: string, mode?: number | string) => void>(),
   providerSync: vi.fn<(filePath: string) => Promise<void>>(),
@@ -69,7 +73,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       if (
         String(args[0]) === fsMocks.providerRecorderPath &&
         fsMocks.providerLstatFailure &&
-        fsMocks.lock.mock.calls.length >= fsMocks.providerLstatFailureAfterLocks
+        fsMocks.lock.mock.calls.length >= fsMocks.providerLstatFailureAfterLocks &&
+        fsMocks.providerWrite.mock.calls.length >= fsMocks.providerLstatFailureAfterWrites
       ) {
         throw fsMocks.providerLstatFailure;
       }
@@ -128,6 +133,16 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       }
       return handle;
     },
+    realpath: async (...args: Parameters<typeof actual.realpath>) => {
+      if (
+        String(args[0]) === fsMocks.providerLogicalPath &&
+        fsMocks.providerRealpathFailure &&
+        fsMocks.providerWrite.mock.calls.length >= fsMocks.providerRealpathFailureAfterWrites
+      ) {
+        throw fsMocks.providerRealpathFailure;
+      }
+      return await actual.realpath(...args);
+    },
     stat: async (filePath: Parameters<typeof actual.stat>[0]) => {
       if (String(filePath).includes("crabline-server-recorder")) {
         return await fsMocks.serverStat(String(filePath));
@@ -175,6 +190,10 @@ beforeEach(() => {
   fsMocks.providerDirectorySync.mockResolvedValue(undefined);
   fsMocks.providerLstatFailure = undefined;
   fsMocks.providerLstatFailureAfterLocks = 0;
+  fsMocks.providerLstatFailureAfterWrites = 0;
+  fsMocks.providerLogicalPath = "";
+  fsMocks.providerRealpathFailure = undefined;
+  fsMocks.providerRealpathFailureAfterWrites = 0;
   fsMocks.providerRecorderPath = "";
   fsMocks.providerOpen.mockReset();
   fsMocks.providerSync.mockReset();
@@ -627,6 +646,65 @@ describe("recorder append serialization", () => {
       await rm(recorderPath, { force: true });
     }
   });
+
+  it.each([
+    {
+      configureFailure(failure: Error) {
+        fsMocks.providerRealpathFailure = failure;
+        fsMocks.providerRealpathFailureAfterWrites = 1;
+      },
+      name: "publication path resolution",
+    },
+    {
+      configureFailure(failure: Error) {
+        fsMocks.providerLstatFailure = failure;
+        fsMocks.providerLstatFailureAfterLocks = 2;
+        fsMocks.providerLstatFailureAfterWrites = 1;
+      },
+      name: "identity confirmation",
+    },
+  ])(
+    "classifies final $name failure as a committed provider append",
+    async ({ configureFailure }) => {
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-provider-recorder-committed-confirmation-${process.pid}-${Date.now()}.jsonl`,
+      );
+      fsMocks.providerDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.providerLogicalPath = path.resolve(recorderPath);
+      fsMocks.providerRecorderPath = path.join(
+        fsMocks.providerDirectory,
+        path.basename(recorderPath),
+      );
+      fsMocks.providerWrite.mockResolvedValue(undefined);
+      const confirmationFailure = Object.assign(new Error("simulated final confirmation failure"), {
+        code: "EIO",
+      });
+      configureFailure(confirmationFailure);
+
+      try {
+        const append = appendRecordedInbound(recorderPath, {
+          author: "assistant",
+          id: "committed-confirmation-failure",
+          provider: "slack",
+          sentAt: "2026-07-12T10:00:00.000Z",
+          text: "committed",
+          threadId: "slack:C123",
+        });
+        await expect(append).rejects.toMatchObject({
+          cause: confirmationFailure,
+          committed: true,
+          indeterminate: true,
+          name: "ProviderRecorderCommittedError",
+        });
+        await expect(append).rejects.toBeInstanceOf(ProviderRecorderCommittedError);
+        expect(fsMocks.providerWrite).toHaveBeenCalledOnce();
+        expect(fsMocks.lockRelease).toHaveBeenCalledTimes(2);
+      } finally {
+        await rm(recorderPath, { force: true });
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "uses one private UID-scoped lock namespace for hardlinked provider recorders",

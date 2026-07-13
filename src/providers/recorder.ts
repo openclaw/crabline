@@ -568,12 +568,15 @@ async function appendCommittedLine(
     throw operationError;
   }
 
-  if (
-    !sameRecorderFileIdentity(
-      recorderIdentity,
-      await readRecorderFileIdentity(await resolveRecorderPublicationPath(logicalPath)),
-    )
-  ) {
+  let publishedIdentity: RecorderFileIdentity | undefined;
+  try {
+    publishedIdentity = await readRecorderFileIdentity(
+      await resolveRecorderPublicationPath(logicalPath),
+    );
+  } catch (error) {
+    throw new ProviderRecorderCommittedError(logicalPath, error);
+  }
+  if (!sameRecorderFileIdentity(recorderIdentity, publishedIdentity)) {
     throw new RecorderRotatedError("Recorder rotated while appending a committed line.");
   }
 }
