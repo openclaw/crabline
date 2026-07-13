@@ -399,11 +399,20 @@ async function handleAdminInbound(params: {
     params.body.timestamp === undefined ? undefined : readInteger(params.body.timestamp);
   if (
     params.body.timestamp !== undefined &&
-    (suppliedTimestamp === undefined || suppliedTimestamp < 0)
+    (suppliedTimestamp === undefined ||
+      suppliedTimestamp < 0 ||
+      suppliedTimestamp >= Number.MAX_SAFE_INTEGER)
   ) {
-    return jsonResponse({ error: "timestamp must be a non-negative safe integer", ok: false }, 400);
+    return jsonResponse(
+      { error: "timestamp must be a non-negative safe integer with room to advance", ok: false },
+      400,
+    );
   }
   const timestamp = suppliedTimestamp ?? params.state.nextTimestamp;
+  if (timestamp >= Number.MAX_SAFE_INTEGER) {
+    return jsonResponse({ error: "timestamp capacity exhausted", ok: false }, 503);
+  }
+  params.state.nextTimestamp = Math.max(params.state.nextTimestamp, timestamp + 1);
   const groupId = readTrimmedString(params.body.groupId);
   const payload = {
     envelope: {
@@ -427,7 +436,6 @@ async function handleAdminInbound(params: {
       503,
     );
   }
-  params.state.nextTimestamp = Math.max(params.state.nextTimestamp, timestamp + 1);
   return jsonResponse({ event: payload, ok: true });
 }
 
@@ -488,7 +496,17 @@ async function handleRpc(params: {
           : rpcError(-32602, "Invalid params", id),
       };
     }
-    const timestamp = params.state.nextTimestamp++;
+    const timestamp = params.state.nextTimestamp;
+    if (timestamp >= Number.MAX_SAFE_INTEGER) {
+      return {
+        accepted: false,
+        record: false,
+        response: notification
+          ? new Response(null, { status: 204 })
+          : rpcError(-32603, "Timestamp capacity exhausted", id),
+      };
+    }
+    params.state.nextTimestamp = timestamp + 1;
     return {
       accepted: true,
       record: true,

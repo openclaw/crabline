@@ -588,11 +588,54 @@ describe("signal local provider server", () => {
     expect(generatedBody.event.envelope.timestamp).toBeGreaterThan(rpcBody.result.timestamp);
   });
 
+  it("stops timestamp allocation before safe-integer precision is exhausted", async () => {
+    const server = await startSignalServer({ adminToken: "admin" });
+    servers.push(server);
+    const finalTimestamp = Number.MAX_SAFE_INTEGER - 1;
+
+    const explicit = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        sourceNumber: "+15557654321",
+        text: "final precise timestamp",
+        timestamp: finalTimestamp,
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(explicit.status).toBe(200);
+
+    const exhausted = await fetch(server.manifest.endpoints.rpcUrl, {
+      body: JSON.stringify({
+        id: "timestamp-exhausted",
+        jsonrpc: "2.0",
+        method: "send",
+        params: { message: "reply", recipient: "+15551234567" },
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    await expect(exhausted.json()).resolves.toEqual({
+      error: { code: -32603, message: "Timestamp capacity exhausted" },
+      id: "timestamp-exhausted",
+      jsonrpc: "2.0",
+    });
+  });
+
   it("rejects invalid or negative supplied inbound timestamps", async () => {
     const server = await startSignalServer({ adminToken: "admin" });
     servers.push(server);
 
-    for (const timestamp of [-1, 1.5, "not-a-timestamp", "9007199254740992", null]) {
+    for (const timestamp of [
+      -1,
+      1.5,
+      "not-a-timestamp",
+      String(Number.MAX_SAFE_INTEGER),
+      "9007199254740992",
+      null,
+    ]) {
       const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
         body: JSON.stringify({ sourceNumber: "+15557654321", text: "invalid", timestamp }),
         headers: {
@@ -603,7 +646,7 @@ describe("signal local provider server", () => {
       });
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toEqual({
-        error: "timestamp must be a non-negative safe integer",
+        error: "timestamp must be a non-negative safe integer with room to advance",
         ok: false,
       });
     }
