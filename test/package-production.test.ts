@@ -6,7 +6,6 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const DEV_ONLY_RUNTIME_PACKAGES = ["baileys"] as const;
 const PUBLIC_RUNTIME_EXPORTS = [
   "BUILTIN_ADAPTERS",
@@ -229,8 +228,7 @@ describe("production package", () => {
         path.join(consumerDirectory, "package.json"),
         JSON.stringify({ name: "crabline-production-consumer", private: true, type: "module" }),
       );
-      await execFileAsync(
-        npmCommand,
+      await execNpm(
         [
           "install",
           "--ignore-scripts",
@@ -376,12 +374,12 @@ describe("production package", () => {
         fs.mkdir(path.join(tempDir, "dist"), { recursive: true }),
       ]);
 
-      await execFileAsync(npmCommand, ["run", "prebuild"], { cwd: tempDir });
+      await execNpm(["run", "prebuild"], { cwd: tempDir });
       await expect(fs.stat(path.join(tempDir, "dist"))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await fs.stat(path.join(tempDir, "coverage"))).toBeDefined();
 
       await fs.mkdir(path.join(tempDir, "dist"), { recursive: true });
-      await execFileAsync(npmCommand, ["run", "clean"], { cwd: tempDir });
+      await execNpm(["run", "clean"], { cwd: tempDir });
       await expect(fs.stat(path.join(tempDir, "dist"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(fs.stat(path.join(tempDir, "coverage"))).rejects.toMatchObject({
         code: "ENOENT",
@@ -433,7 +431,7 @@ type NpmPackMetadata = {
 };
 
 async function npmPackDryRun(root: string): Promise<NpmPackMetadata> {
-  const { stdout } = await execFileAsync(npmCommand, ["pack", "--dry-run", "--json"], {
+  const { stdout } = await execNpm(["pack", "--dry-run", "--json"], {
     cwd: root,
     maxBuffer: 10 * 1024 * 1024,
   });
@@ -441,15 +439,33 @@ async function npmPackDryRun(root: string): Promise<NpmPackMetadata> {
 }
 
 async function npmPack(root: string, destination: string): Promise<NpmPackMetadata> {
-  const { stdout } = await execFileAsync(
-    npmCommand,
-    ["pack", "--json", "--pack-destination", destination],
-    {
-      cwd: root,
-      maxBuffer: 10 * 1024 * 1024,
-    },
-  );
+  const { stdout } = await execNpm(["pack", "--json", "--pack-destination", destination], {
+    cwd: root,
+    maxBuffer: 10 * 1024 * 1024,
+  });
   return parseNpmPackOutput(stdout);
+}
+
+async function execNpm(
+  args: string[],
+  options: Parameters<typeof execFileAsync>[2],
+): Promise<{ stderr: string; stdout: string }> {
+  const result =
+    process.platform === "win32"
+      ? await execFileAsync(
+          process.env.ComSpec ?? "cmd.exe",
+          ["/d", "/s", "/c", ["npm.cmd", ...args].map(quoteCmdArgument).join(" ")],
+          options,
+        )
+      : await execFileAsync("npm", args, options);
+  return {
+    stderr: String(result.stderr),
+    stdout: String(result.stdout),
+  };
+}
+
+function quoteCmdArgument(value: string): string {
+  return `"${value.replaceAll("%", "%%").replaceAll('"', '""')}"`;
 }
 
 function parseNpmPackOutput(output: string): NpmPackMetadata {
