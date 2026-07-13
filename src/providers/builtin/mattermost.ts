@@ -19,7 +19,11 @@ export function resolveMattermostAdapterConfig(
   env: NodeJS.ProcessEnv = process.env,
 ) {
   return {
-    baseUrl: config.mattermost?.baseUrl ?? env.MATTERMOST_BASE_URL ?? "http://mattermost.local",
+    baseUrl:
+      config.mattermost?.baseUrl ??
+      env.MATTERMOST_URL ??
+      env.MATTERMOST_BASE_URL ??
+      "http://mattermost.local",
     botToken: config.mattermost?.botToken ?? env.MATTERMOST_BOT_TOKEN ?? "local-mock-token",
     userName: config.mattermost?.userName,
   };

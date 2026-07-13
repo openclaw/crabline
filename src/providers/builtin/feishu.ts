@@ -115,18 +115,15 @@ function createFeishuWebhookAuthenticatorWithReplay(
       if (!resolved.encryptKey) {
         return unauthorizedFeishuWebhook();
       }
+      if (!verifyFeishuSignature(request, rawBody, resolved.encryptKey)) {
+        return unauthorizedFeishuWebhook();
+      }
       try {
         payload = decryptFeishuWebhookPayload(payload, resolved.encryptKey);
       } catch {
         return unauthorizedFeishuWebhook();
       }
-      if (
-        !verifyFeishuSignature(request, rawBody, resolved.encryptKey) &&
-        !isFeishuUrlVerification(payload)
-      ) {
-        return unauthorizedFeishuWebhook();
-      }
-      signedRequest = !isFeishuUrlVerification(payload);
+      signedRequest = true;
     } else if (resolved.encryptKey) {
       return unauthorizedFeishuWebhook();
     }
@@ -260,10 +257,13 @@ export function normalizeFeishuWebhookPayload(payload: unknown) {
       kind: "inbound",
     });
   }
-  if (!chatId || !text) {
-    throw new CrablineError("Feishu event payload requires message.chat_id and message.content", {
-      kind: "inbound",
-    });
+  if (!chatId || !messageId || !text) {
+    throw new CrablineError(
+      "Feishu event payload requires message.chat_id, message.message_id, and message.content",
+      {
+        kind: "inbound",
+      },
+    );
   }
 
   return {
@@ -274,9 +274,7 @@ export function normalizeFeishuWebhookPayload(payload: unknown) {
           )
         : false,
     ),
-    ...(messageId
-      ? { id: requireNativeInboundId(messageId, FEISHU_MESSAGE_ID_RULE, "Feishu message_id") }
-      : {}),
+    id: requireNativeInboundId(messageId, FEISHU_MESSAGE_ID_RULE, "Feishu message_id"),
     raw: payload,
     text,
     threadId: rootId

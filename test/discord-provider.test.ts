@@ -82,6 +82,34 @@ describe("Discord interaction responses", () => {
     });
   });
 
+  it("preserves context-command target and resolved data", () => {
+    expect(
+      normalizeDiscordWebhookPayload({
+        channel_id: "123456789012345678",
+        data: {
+          name: "inspect user",
+          resolved: {
+            members: {
+              "555456789012345678": { nick: "Target User" },
+            },
+            users: {
+              "555456789012345678": {
+                id: "555456789012345678",
+                username: "target-user",
+              },
+            },
+          },
+          target_id: "555456789012345678",
+          type: 2,
+        },
+        id: "444456789012345678",
+        type: 2,
+      }),
+    ).toMatchObject({
+      text: 'inspect user {"target_id":"555456789012345678","resolved":{"members":{"555456789012345678":{"nick":"Target User"}},"users":{"555456789012345678":{"id":"555456789012345678","username":"target-user"}}}}',
+    });
+  });
+
   it.each([
     [
       {

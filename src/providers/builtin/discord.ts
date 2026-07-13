@@ -106,7 +106,16 @@ function discordApplicationCommandText(data: Record<string, unknown>): string | 
     }
   };
   collectValues(data.options);
-  return [name, ...values].join(" ");
+  const targetId = optionalString(data, "target_id");
+  const resolved = optionalRecord(data, "resolved");
+  const context =
+    targetId === undefined
+      ? undefined
+      : JSON.stringify({
+          target_id: targetId,
+          ...(resolved ? { resolved } : {}),
+        });
+  return [name, ...values, ...(context ? [context] : [])].join(" ");
 }
 
 function discordInteractionText(data: Record<string, unknown>): string | undefined {

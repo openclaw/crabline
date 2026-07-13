@@ -154,33 +154,105 @@ describe("Feishu webhook normalizer", () => {
     ).toThrow(/truncated/u);
   });
 
-  it("accepts unsigned encrypted URL verification only", async () => {
+  it("authenticates encrypted URL verification before decryption", async () => {
+    const config = await createLocalMockConfig("feishu", "/feishu/webhook");
+    const encryptKey = "encrypt-key";
+    config.feishu!.encryptKey = encryptKey;
+    const now = 1_700_000_000_000;
+    const authenticate = createFeishuWebhookAuthenticator(config, {}, { now: () => now });
+    const encryptedPayload = {
+      encrypt: encryptFeishuPayload(
+        {
+          challenge: "challenge-token",
+          type: "url_verification",
+        },
+        encryptKey,
+      ),
+    };
+    const rawBody = JSON.stringify(encryptedPayload);
+    const timestamp = String(now / 1_000);
+    const nonce = "challenge-nonce";
+    const signature = createHash("sha256")
+      .update(timestamp + nonce + encryptKey + rawBody)
+      .digest("hex");
+
+    await expect(
+      authenticate!(new Request("https://feishu.example.test/webhook"), rawBody),
+    ).resolves.toMatchObject({ status: 401 });
+    await expect(
+      authenticate!(
+        new Request("https://feishu.example.test/webhook", {
+          headers: {
+            "x-lark-request-nonce": nonce,
+            "x-lark-request-timestamp": timestamp,
+            "x-lark-signature": signature,
+          },
+        }),
+        rawBody,
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      authenticate!(
+        new Request("https://feishu.example.test/webhook", {
+          headers: {
+            "x-lark-request-nonce": nonce,
+            "x-lark-request-timestamp": timestamp,
+            "x-lark-signature": "0".repeat(64),
+          },
+        }),
+        JSON.stringify({ encrypt: Buffer.alloc(16).toString("base64") }),
+      ),
+    ).resolves.toMatchObject({ status: 401 });
+  });
+
+  it("rejects native messages without stable identifiers", () => {
+    const payload = {
+      event: {
+        message: {
+          chat_id: "oc_abc123",
+          content: JSON.stringify({ text: "identifier required" }),
+          message_type: "text",
+        },
+      },
+      header: { event_id: "event-without-message-id" },
+      schema: "2.0",
+    };
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(() => normalizeFeishuWebhookPayload(payload)).toThrow(/message\.message_id/u);
+    }
+  });
+
+  it("rejects unsigned encrypted event callbacks", async () => {
     const config = await createLocalMockConfig("feishu", "/feishu/webhook");
     const encryptKey = "encrypt-key";
     config.feishu!.encryptKey = encryptKey;
     const authenticate = createFeishuWebhookAuthenticator(config, {});
-    const challenge = JSON.stringify({
-      challenge: "challenge-token",
-      type: "url_verification",
+    const event = JSON.stringify({
+      event: {
+        message: {
+          chat_id: "oc_abc123",
+          content: JSON.stringify({ text: "unsigned" }),
+          message_id: "om_unsigned123",
+          message_type: "text",
+        },
+      },
     });
 
     await expect(
       authenticate!(
         new Request("https://feishu.example.test/webhook"),
-        JSON.stringify({ encrypt: encryptFeishuPayload(JSON.parse(challenge), encryptKey) }),
-      ),
-    ).resolves.toBeUndefined();
-    await expect(
-      authenticate!(
-        new Request("https://feishu.example.test/webhook"),
-        JSON.stringify({
-          encrypt: encryptFeishuPayload(
-            { event: { message: { content: "{}", message_type: "text" } } },
-            encryptKey,
-          ),
-        }),
+        JSON.stringify({ encrypt: encryptFeishuPayload(JSON.parse(event), encryptKey) }),
       ),
     ).resolves.toMatchObject({ status: 401 });
+  });
+
+  it("still recognizes plaintext URL verification payloads", () => {
+    const challenge = {
+      challenge: "challenge-token",
+      type: "url_verification",
+    };
+    expect(handleFeishuWebhookPayload(challenge)?.status).toBe(200);
   });
 
   it("rejects plaintext callbacks when only encrypted ingress is configured", async () => {
