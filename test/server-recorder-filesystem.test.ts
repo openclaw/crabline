@@ -4,6 +4,7 @@ import {
   mkdir,
   open,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -105,10 +106,11 @@ it.skipIf(process.platform === "win32")(
     const lockRoot = path.join(directory, "shared-locks");
     await mkdir(lockRoot, { mode: 0o700, recursive: true });
     await chmod(lockRoot, 0o700);
-    vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", lockRoot);
+    const canonicalLockRoot = await realpath(lockRoot);
+    vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", canonicalLockRoot);
 
     let releaseIdentity: (() => Promise<void>) | undefined = await lock(
-      path.join(lockRoot, `recorder-${identity.ino}`),
+      path.join(canonicalLockRoot, `recorder-${identity.ino}`),
       { realpath: false },
     );
     const recording = recordServerEvent({

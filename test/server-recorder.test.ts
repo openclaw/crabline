@@ -1209,12 +1209,16 @@ describe("server recorder", () => {
         const lockRoot = path.join(directory, "shared-locks");
         await actualFs.mkdir(lockRoot, { mode: 0o700, recursive: true });
         await actualFs.chmod(lockRoot, 0o700);
-        releaseGate = await actualLockfile.lock(path.join(lockRoot, `recorder-${identity.ino}`), {
-          realpath: false,
-          stale: 30_000,
-          update: 10_000,
-        });
-        const first = startRecorderProcess(recorderPath, "/process-a", lockRoot);
+        const canonicalLockRoot = await actualFs.realpath(lockRoot);
+        releaseGate = await actualLockfile.lock(
+          path.join(canonicalLockRoot, `recorder-${identity.ino}`),
+          {
+            realpath: false,
+            stale: 30_000,
+            update: 10_000,
+          },
+        );
+        const first = startRecorderProcess(recorderPath, "/process-a", canonicalLockRoot);
         processes.push(first);
 
         await vi.waitFor(
@@ -1228,7 +1232,7 @@ describe("server recorder", () => {
           await expect(actualFs.stat(`${recorderPath}.lock`)).resolves.toBeDefined();
         });
         await actualFs.link(recorderPath, aliasPath);
-        const second = startRecorderProcess(aliasPath, "/process-b", lockRoot);
+        const second = startRecorderProcess(aliasPath, "/process-b", canonicalLockRoot);
         processes.push(second);
         await vi.waitFor(
           () => {

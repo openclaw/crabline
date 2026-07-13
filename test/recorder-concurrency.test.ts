@@ -1,5 +1,15 @@
 import path from "node:path";
-import { chmod, link, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  link,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -268,7 +278,7 @@ describe("recorder append serialization", () => {
       fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
       fsMocks.serverWrite.mockResolvedValue(undefined);
       fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, nlink: 2, size: 0 });
-      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", tmpdir());
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", await realpath(tmpdir()));
       const pathRelease = vi.fn(async () => {});
       const releaseFailure = new Error("identity lock cleanup failed");
       const identityRelease = vi.fn(async () => {
@@ -316,7 +326,7 @@ describe("recorder append serialization", () => {
       fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
       fsMocks.serverWrite.mockResolvedValue(undefined);
       fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, nlink: 2, size: 0 });
-      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", tmpdir());
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", await realpath(tmpdir()));
       const sharedFailure = Object.assign(new Error("shared lock filesystem full"), {
         code: "ENOSPC",
       });
@@ -405,6 +415,48 @@ describe("recorder append serialization", () => {
       await rm(directory, { force: true, recursive: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects configured server recorder lock paths with symlink components",
+    async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "crabline-server-lock-symlink-"));
+      const canonicalRoot = path.join(directory, "canonical");
+      const symlinkRoot = path.join(directory, "current");
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-server-recorder-lock-symlink-${process.pid}-${Date.now()}.jsonl`,
+      );
+      await mkdir(canonicalRoot, { mode: 0o700 });
+      await symlink(canonicalRoot, symlinkRoot, "dir");
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", symlinkRoot);
+      const pathRelease = vi.fn(async () => {});
+      fsMocks.lock.mockResolvedValueOnce(pathRelease);
+
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/symlinked-lock-root",
+              query: {},
+              type: "api",
+            },
+            onEvent: undefined,
+            recorderPath,
+          }),
+        ).rejects.toThrow(
+          "CRABLINE_RECORDER_LOCK_DIR must name a canonical directory without symlink components.",
+        );
+        expect(fsMocks.serverWrite).not.toHaveBeenCalled();
+        expect(pathRelease).toHaveBeenCalledOnce();
+      } finally {
+        await rm(directory, { force: true, recursive: true });
+      }
+    },
+  );
 
   it("serializes provider inbound appends to the same JSONL file", async () => {
     const recorderPath = path.join(
