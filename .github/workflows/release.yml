@@ -233,34 +233,6 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Revalidate release tag commit
-        env:
-          GITHUB_EVENT_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
-          VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_EVENT_SHA" != "$VERIFIED_COMMIT" ]]; then
-            echo "::error::Release run commit $GITHUB_EVENT_SHA does not match verified commit $VERIFIED_COMMIT."
-            exit 1
-          fi
-          remote_refs="$(
-            git ls-remote --exit-code \
-              "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" \
-              "refs/tags/$RELEASE_TAG" \
-              "refs/tags/$RELEASE_TAG^{}"
-          )"
-          remote_commit="$(
-            awk -v direct="refs/tags/$RELEASE_TAG" -v peeled="refs/tags/$RELEASE_TAG^{}" '
-              $2 == peeled { peeled_sha = $1 }
-              $2 == direct { direct_sha = $1 }
-              END { print (peeled_sha != "" ? peeled_sha : direct_sha) }
-            ' <<< "$remote_refs"
-          )"
-          if [[ -z "$remote_commit" || "$remote_commit" != "$VERIFIED_COMMIT" ]]; then
-            echo "::error::Release tag $RELEASE_TAG resolves to ${remote_commit:-<missing>}, expected $VERIFIED_COMMIT."
-            exit 1
-          fi
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
@@ -273,9 +245,12 @@ jobs:
           path: ${{ runner.temp }}/release
       - name: Publish package with npm provenance
         env:
+          GITHUB_EVENT_SHA: ${{ github.sha }}
           PACKAGE_INTEGRITY: ${{ needs.verify.outputs.integrity }}
           PACKAGE_NAME: ${{ needs.verify.outputs.name }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
           RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+          VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -286,6 +261,24 @@ jobs:
           fi
           PACKAGE_TARBALL="${tarballs[0]}"
 
+          PACKAGE_TARBALL="$PACKAGE_TARBALL" node --input-type=module <<'NODE'
+          import { createHash, timingSafeEqual } from "node:crypto";
+          import fs from "node:fs";
+
+          const integrity = process.env.PACKAGE_INTEGRITY;
+          const match = /^sha512-([A-Za-z0-9+/]+={0,2})$/u.exec(integrity);
+          if (!match) {
+            throw new Error(`Expected a sha512 SRI value, got ${integrity}.`);
+          }
+          const expected = Buffer.from(match[1], "base64");
+          const actual = createHash("sha512")
+            .update(fs.readFileSync(process.env.PACKAGE_TARBALL))
+            .digest();
+          if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+            throw new Error(`Downloaded npm tarball does not match expected integrity ${integrity}.`);
+          }
+          NODE
+
           check_existing_package() {
             local actual_integrity actual_provenance actual_version
             if ! actual_integrity="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity 2>/dev/null)"; then
@@ -295,8 +288,7 @@ jobs:
               return 1
             fi
             if ! actual_provenance="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.attestations.provenance.predicateType 2>/dev/null)"; then
-              echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION is missing npm provenance."
-              return 2
+              return 3
             fi
             if [[ "$actual_version" != "$RELEASE_VERSION" ]]; then
               echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION reports version $actual_version."
@@ -304,6 +296,10 @@ jobs:
             fi
             if [[ "$actual_integrity" != "$PACKAGE_INTEGRITY" ]]; then
               echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION has integrity $actual_integrity, expected $PACKAGE_INTEGRITY."
+              return 2
+            fi
+            if [[ -z "$actual_provenance" ]]; then
+              echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION is missing npm provenance."
               return 2
             fi
             if [[ "$actual_provenance" != "https://slsa.dev/provenance/v1" ]]; then
@@ -327,6 +323,31 @@ jobs:
               fi
             done
             return 1
+          }
+
+          revalidate_release_tag() {
+            local remote_commit remote_refs
+            if [[ "$GITHUB_EVENT_SHA" != "$VERIFIED_COMMIT" ]]; then
+              echo "::error::Release run commit $GITHUB_EVENT_SHA does not match verified commit $VERIFIED_COMMIT."
+              return 1
+            fi
+            remote_refs="$(
+              git ls-remote --exit-code \
+                "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" \
+                "refs/tags/$RELEASE_TAG" \
+                "refs/tags/$RELEASE_TAG^{}"
+            )"
+            remote_commit="$(
+              awk -v direct="refs/tags/$RELEASE_TAG" -v peeled="refs/tags/$RELEASE_TAG^{}" '
+                $2 == peeled { peeled_sha = $1 }
+                $2 == direct { direct_sha = $1 }
+                END { print (peeled_sha != "" ? peeled_sha : direct_sha) }
+              ' <<< "$remote_refs"
+            )"
+            if [[ -z "$remote_commit" || "$remote_commit" != "$VERIFIED_COMMIT" ]]; then
+              echo "::error::Release tag $RELEASE_TAG resolves to ${remote_commit:-<missing>}, expected $VERIFIED_COMMIT."
+              return 1
+            fi
           }
 
           guard_latest_version() {
@@ -369,8 +390,22 @@ jobs:
             if [[ "$existing_status" -eq 2 ]]; then
               exit 1
             fi
+            if [[ "$existing_status" -eq 3 ]]; then
+              if verify_published_package; then
+                echo "$PACKAGE_NAME@$RELEASE_VERSION is already published with the expected postconditions."
+                exit 0
+              else
+                verification_status=$?
+                if [[ "$verification_status" -eq 2 ]]; then
+                  exit 1
+                fi
+              fi
+              echo "::error::Unable to verify existing $PACKAGE_NAME@$RELEASE_VERSION after bounded retries."
+              exit 1
+            fi
 
             guard_latest_version
+            revalidate_release_tag
             if npm publish "$PACKAGE_TARBALL" --access public --provenance; then
               publication_message="$PACKAGE_NAME@$RELEASE_VERSION was published with npm provenance."
             else
@@ -401,40 +436,39 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Revalidate release tag commit
+      - name: Create GitHub release
         env:
+          GH_TOKEN: ${{ github.token }}
           GITHUB_EVENT_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ needs.verify.outputs.tag }}
           VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_EVENT_SHA" != "$VERIFIED_COMMIT" ]]; then
-            echo "::error::Release run commit $GITHUB_EVENT_SHA does not match verified commit $VERIFIED_COMMIT."
-            exit 1
-          fi
-          remote_refs="$(
-            git ls-remote --exit-code \
-              "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" \
-              "refs/tags/$RELEASE_TAG" \
-              "refs/tags/$RELEASE_TAG^{}"
-          )"
-          remote_commit="$(
-            awk -v direct="refs/tags/$RELEASE_TAG" -v peeled="refs/tags/$RELEASE_TAG^{}" '
-              $2 == peeled { peeled_sha = $1 }
-              $2 == direct { direct_sha = $1 }
-              END { print (peeled_sha != "" ? peeled_sha : direct_sha) }
-            ' <<< "$remote_refs"
-          )"
-          if [[ -z "$remote_commit" || "$remote_commit" != "$VERIFIED_COMMIT" ]]; then
-            echo "::error::Release tag $RELEASE_TAG resolves to ${remote_commit:-<missing>}, expected $VERIFIED_COMMIT."
-            exit 1
-          fi
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
-        run: |
-          set -euo pipefail
+          revalidate_release_tag() {
+            local remote_commit remote_refs
+            if [[ "$GITHUB_EVENT_SHA" != "$VERIFIED_COMMIT" ]]; then
+              echo "::error::Release run commit $GITHUB_EVENT_SHA does not match verified commit $VERIFIED_COMMIT."
+              return 1
+            fi
+            remote_refs="$(
+              git ls-remote --exit-code \
+                "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" \
+                "refs/tags/$RELEASE_TAG" \
+                "refs/tags/$RELEASE_TAG^{}"
+            )"
+            remote_commit="$(
+              awk -v direct="refs/tags/$RELEASE_TAG" -v peeled="refs/tags/$RELEASE_TAG^{}" '
+                $2 == peeled { peeled_sha = $1 }
+                $2 == direct { direct_sha = $1 }
+                END { print (peeled_sha != "" ? peeled_sha : direct_sha) }
+              ' <<< "$remote_refs"
+            )"
+            if [[ -z "$remote_commit" || "$remote_commit" != "$VERIFIED_COMMIT" ]]; then
+              echo "::error::Release tag $RELEASE_TAG resolves to ${remote_commit:-<missing>}, expected $VERIFIED_COMMIT."
+              return 1
+            fi
+          }
+
           release_error="$RUNNER_TEMP/gh-release-view-error"
           if release_state="$(gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
@@ -457,6 +491,7 @@ jobs:
             printf '%s\n' "$view_error" >&2
             exit "$view_status"
           fi
+          revalidate_release_tag
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --generate-notes \
