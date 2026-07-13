@@ -926,6 +926,9 @@ describe("OpenClaw local provider bridge", () => {
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@valid" }).to).toBe(
       "@valid",
     );
+    expect(
+      createOpenClawCrablineAgentDelivery({ manifest, target: "channel:@ChannelUserName" }).to,
+    ).toBe("@channelusername");
     const maxUsername = `@${"a".repeat(32)}`;
     expect(
       createOpenClawCrablineAgentDelivery({ manifest, target: `channel:${maxUsername}` }).to,
@@ -1000,6 +1003,17 @@ describe("OpenClaw local provider bridge", () => {
       },
     });
     expect(String(usernameDirectInbound.providerBody.fromId)).toBe(
+      usernameDirectInbound.providerBody.chatId,
+    );
+    const caseFoldedDirectInbound = createOpenClawCrablineInbound({
+      manifest,
+      input: {
+        conversation: { id: "@Alice", kind: "direct" },
+        senderId: "@alice",
+        text: "case-insensitive username",
+      },
+    });
+    expect(caseFoldedDirectInbound.providerBody.chatId).toBe(
       usernameDirectInbound.providerBody.chatId,
     );
     expect(() =>

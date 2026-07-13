@@ -43,10 +43,16 @@ function normalizeTelegramChatId(
     if (!TELEGRAM_USERNAME_RE.test(value)) {
       throw new Error("Telegram usernames must contain 5-32 letters, digits, or underscores.");
     }
+    const username = value.toLowerCase();
     if (kind === "group" && options.preserveGroupUsername) {
-      return value;
+      return username;
     }
+    return syntheticTelegramChatId(kind, username);
   }
+  return syntheticTelegramChatId(kind, value);
+}
+
+function syntheticTelegramChatId(kind: "direct" | "group", value: string): string {
   const hash = createHash("sha256").update(`${kind}:${value}`).digest().readBigUInt64BE();
   if (kind === "group") {
     return String(-(TELEGRAM_SYMBOLIC_GROUP_ID_BASE + (hash % TELEGRAM_SYMBOLIC_GROUP_ID_RANGE)));
