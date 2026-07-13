@@ -392,6 +392,7 @@ export async function securePrivateDirectory(
     currentUserId?: number;
     platform?: NodeJS.Platform;
     secureWindowsDirectory?: (directoryPath: string) => Promise<void>;
+    syncDirectory?: () => Promise<void>;
     syncParent?: (filePath: string, platform?: NodeJS.Platform) => Promise<void>;
   } = {},
 ): Promise<SecuredPrivateDirectory> {
@@ -451,6 +452,7 @@ export async function securePrivateDirectory(
         throw new Error("Private directory must be owned by the current POSIX user.");
       }
       await handle.chmod(0o700);
+      await (options.syncDirectory ?? (() => handle.sync()))();
     }
     await secured.assertIdentityAt();
     const syncParent = options.syncParent ?? syncParentDirectory;
