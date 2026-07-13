@@ -120,12 +120,17 @@ export type WhatsAppSignalDecryptResult<T> =
   | { status: "unavailable" }
   | { status: "rejected" };
 
+type PendingWhatsAppAcknowledgement = {
+  acceptedAt: number | undefined;
+  acknowledged: boolean;
+};
+
 export class WhatsAppSignalBundleStore {
   readonly #acknowledgedMessageIds = new Map<string, true>();
   readonly #bundles = new Map<string, MockSignalBundle>();
   readonly #lidByPhoneNumber = new Map<string, string>();
   readonly #pendingMessageAcceptances = new Map<string, Promise<void>>();
-  readonly #pendingAcknowledgements = new Map<string, number>();
+  readonly #pendingAcknowledgements = new Map<string, PendingWhatsAppAcknowledgement>();
   readonly #pendingTransactions = new Map<string, Promise<void>>();
   readonly #sessions = new Map<string, Map<string, SessionRecord>>();
 
@@ -176,12 +181,28 @@ export class WhatsAppSignalBundleStore {
           `WhatsApp pending acknowledgement limit exceeded (${this.maxPendingAcknowledgements}).`,
         );
       }
-      const accepted = await operation();
-      if (!accepted) {
-        return false;
+      const pendingAcknowledgement: PendingWhatsAppAcknowledgement = {
+        acceptedAt: undefined,
+        acknowledged: false,
+      };
+      this.#pendingAcknowledgements.set(messageKey, pendingAcknowledgement);
+      try {
+        const accepted = await operation();
+        if (!accepted) {
+          this.#pendingAcknowledgements.delete(messageKey);
+          return false;
+        }
+        if (pendingAcknowledgement.acknowledged) {
+          this.#pendingAcknowledgements.delete(messageKey);
+          this.#rememberAcknowledgedMessage(messageKey);
+        } else {
+          pendingAcknowledgement.acceptedAt = this.now();
+        }
+        return true;
+      } catch (error) {
+        this.#pendingAcknowledgements.delete(messageKey);
+        throw error;
       }
-      this.#pendingAcknowledgements.set(messageKey, this.now());
-      return true;
     });
   }
 
@@ -190,9 +211,15 @@ export class WhatsAppSignalBundleStore {
     if (peer && messageId) {
       const messageKey = `${peer}\0${messageId}`;
       this.#recoverExpiredPendingAcknowledgements();
-      if (!this.#pendingAcknowledgements.delete(messageKey)) {
+      const pendingAcknowledgement = this.#pendingAcknowledgements.get(messageKey);
+      if (!pendingAcknowledgement) {
         return;
       }
+      if (pendingAcknowledgement.acceptedAt === undefined) {
+        pendingAcknowledgement.acknowledged = true;
+        return;
+      }
+      this.#pendingAcknowledgements.delete(messageKey);
       this.#rememberAcknowledgedMessage(messageKey);
     }
   }
@@ -363,7 +390,11 @@ export class WhatsAppSignalBundleStore {
 
   #recoverExpiredPendingAcknowledgements(): void {
     const now = this.now();
-    for (const [messageKey, acceptedAt] of this.#pendingAcknowledgements) {
+    for (const [messageKey, pendingAcknowledgement] of this.#pendingAcknowledgements) {
+      const { acceptedAt } = pendingAcknowledgement;
+      if (acceptedAt === undefined) {
+        continue;
+      }
       if (now - acceptedAt < this.maxPendingAcknowledgementAgeMs) {
         continue;
       }
