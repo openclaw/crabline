@@ -292,12 +292,16 @@ describe("server recorder", () => {
     expect(fsMocks.directory.sync.mock.invocationCallOrder.at(-1)).toBeLessThan(
       observer.mock.invocationCallOrder[0]!,
     );
-    expect(lockMocks.lock).toHaveBeenCalledWith(canonicalRecorderPath, {
-      realpath: false,
-      retries: 0,
-      stale: 30_000,
-      update: 10_000,
-    });
+    expect(lockMocks.lock).toHaveBeenCalledWith(
+      canonicalRecorderPath,
+      expect.objectContaining({
+        fs: expect.any(Object),
+        realpath: false,
+        retries: 0,
+        stale: 30_000,
+        update: 10_000,
+      }),
+    );
     expect(lockMocks.release).toHaveBeenCalledOnce();
     expect(fsMocks.file.chmod.mock.invocationCallOrder[0]).toBeLessThan(
       fsMocks.file.appendFile.mock.invocationCallOrder[0]!,
