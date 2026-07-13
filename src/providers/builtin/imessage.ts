@@ -66,10 +66,7 @@ export function matchesIMessageThread(
   if (expectedThreadId === undefined) {
     return true;
   }
-  const expectedIdentifiers = new Set([expectedThreadId, target.id]);
-  if (target.channelId) {
-    expectedIdentifiers.add(target.channelId);
-  }
+  const expectedIdentifiers = new Set([expectedThreadId, target.channelId ?? target.id]);
   return (
     expectedIdentifiers.has(candidateThreadId) ||
     (recipientAlias !== undefined && expectedIdentifiers.has(recipientAlias))
