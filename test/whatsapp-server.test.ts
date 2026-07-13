@@ -896,6 +896,83 @@ describe("whatsapp local provider server", () => {
     expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
   });
 
+  it("keeps Signal ciphertext retryable when acknowledgement fails", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const senderJid = "15550000001@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1);
+    const bundle = receiver.resolveMany([recipientJid])[0]!;
+    const originalPreKey = bundle.preKey;
+    const originalPreKeyId = bundle.preKeyId;
+    const senderIdentity = Curve.generateKeyPair();
+    const senderStorage = createSignalTestStorage(senderIdentity, 2);
+    const senderAddress = new ProtocolAddress("15551234567", 0);
+    await new SessionBuilder(senderStorage, senderAddress).initOutgoing({
+      identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+      preKey: {
+        keyId: bundle.preKeyId,
+        publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+      },
+      registrationId: bundle.registrationId,
+      signedPreKey: {
+        keyId: bundle.signedPreKey.keyId,
+        publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+        signature: bundle.signedPreKey.signature,
+      },
+    });
+    const encrypted = await new SessionCipher(senderStorage, senderAddress).encrypt(
+      padSignalMessage(Buffer.from([0x0a, 0x05, ...Buffer.from("retry")])),
+    );
+    const node = signalMessageNode({
+      ciphertext: signalCiphertext(encrypted.body),
+      id: "retry-ack",
+      recipientJid,
+      type: encrypted.type,
+    });
+    const events: Array<{ accepted?: boolean; body?: unknown }> = [];
+
+    await expect(
+      persistAcceptedBaileysMessage({
+        acknowledge: async () => {
+          throw new Error("simulated acknowledgement failure");
+        },
+        appendEvent: async (event) => {
+          events.push(event);
+        },
+        node,
+        path: "/ws/chat",
+        remoteJid: senderJid,
+        signalBundles: receiver,
+      }),
+    ).rejects.toThrow("simulated acknowledgement failure");
+    expect(bundle.preKey).toBe(originalPreKey);
+    expect(bundle.preKeyId).toBe(originalPreKeyId);
+
+    let acknowledged = false;
+    await expect(
+      persistAcceptedBaileysMessage({
+        acknowledge: async () => {
+          acknowledged = true;
+        },
+        appendEvent: async (event) => {
+          events.push(event);
+        },
+        node,
+        path: "/ws/chat",
+        remoteJid: senderJid,
+        signalBundles: receiver,
+      }),
+    ).resolves.toBe(true);
+    expect(acknowledged).toBe(true);
+    expect(events.at(-1)).toMatchObject({
+      accepted: true,
+      body: {
+        message: { conversation: "retry" },
+      },
+    });
+    expect(bundle.preKey).not.toBe(originalPreKey);
+    expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
+  });
+
   it("commits and acknowledges decryptable unsupported payloads before later text", async () => {
     const recipientJid = "15551234567@s.whatsapp.net";
     const senderJid = "15550000001@s.whatsapp.net";
