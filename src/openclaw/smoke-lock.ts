@@ -74,6 +74,19 @@ type DirectoryIdentity = {
   device: bigint;
   inode: bigint;
 };
+type FileIdentity = DirectoryIdentity;
+type SerializedIdentity = {
+  device: string;
+  inode: string;
+};
+type CommitStageRecord = {
+  directoryIdentity: SerializedIdentity;
+  directoryPath: string;
+  fileIdentity: SerializedIdentity;
+  fileName: string;
+  token: string;
+  version: 1;
+};
 
 type SmokeLockRuntime = {
   currentProcessIdentity: string | null;
@@ -110,31 +123,79 @@ export function processStartedAtMsFromTimeOrigin(timeOrigin: number): number {
   return Math.trunc(timeOrigin);
 }
 
-function parseCommitStagePath(contents: string, token: string): string {
-  let value: { path?: unknown; token?: unknown };
+function parseSerializedIdentity(value: unknown): SerializedIdentity | null {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("device" in value) ||
+    !("inode" in value) ||
+    typeof value.device !== "string" ||
+    typeof value.inode !== "string" ||
+    !/^\d+$/u.test(value.device) ||
+    !/^[1-9]\d*$/u.test(value.inode)
+  ) {
+    return null;
+  }
+  return {
+    device: value.device,
+    inode: value.inode,
+  };
+}
+
+function parseCommitStageRecord(contents: string, token: string): CommitStageRecord | null {
+  let value: {
+    directoryIdentity?: unknown;
+    directoryPath?: unknown;
+    fileIdentity?: unknown;
+    fileName?: unknown;
+    path?: unknown;
+    token?: unknown;
+    version?: unknown;
+  };
   try {
-    value = JSON.parse(contents) as { path?: unknown; token?: unknown };
+    value = JSON.parse(contents) as typeof value;
   } catch (error) {
     throw new Error("OpenClaw Crabline smoke lock commit stage metadata is malformed.", {
       cause: error,
     });
   }
+  if (value.version === undefined && value.token === token && typeof value.path === "string") {
+    return null;
+  }
   const expectedPrefix = `.commit-file.${token}.`;
+  const directoryIdentity = parseSerializedIdentity(value.directoryIdentity);
+  const fileIdentity = parseSerializedIdentity(value.fileIdentity);
   if (
+    value.version !== 1 ||
     value.token !== token ||
-    typeof value.path !== "string" ||
-    !path.isAbsolute(value.path) ||
-    !path.basename(value.path).startsWith(expectedPrefix) ||
-    !path.basename(value.path).endsWith(".tmp")
+    typeof value.directoryPath !== "string" ||
+    !path.isAbsolute(value.directoryPath) ||
+    path.resolve(value.directoryPath) !== value.directoryPath ||
+    typeof value.fileName !== "string" ||
+    path.basename(value.fileName) !== value.fileName ||
+    !value.fileName.startsWith(expectedPrefix) ||
+    !value.fileName.endsWith(".tmp") ||
+    directoryIdentity === null ||
+    fileIdentity === null
   ) {
     throw new Error("OpenClaw Crabline smoke lock commit stage metadata is malformed.");
   }
-  return value.path;
+  return {
+    directoryIdentity,
+    directoryPath: value.directoryPath,
+    fileIdentity,
+    fileName: value.fileName,
+    token,
+    version: 1,
+  };
 }
 
-async function readCommitStagePath(lockDirectory: string, token: string): Promise<string | null> {
+async function readCommitStageRecord(
+  lockDirectory: string,
+  token: string,
+): Promise<CommitStageRecord | null> {
   try {
-    return parseCommitStagePath(
+    return parseCommitStageRecord(
       await fs.readFile(path.join(lockDirectory, commitStageFileName(token)), "utf8"),
       token,
     );
@@ -152,7 +213,7 @@ function commitStageFileName(token: string): string {
 
 async function writeCommitStagePath(
   lockDirectory: string,
-  stagedFilePath: string,
+  record: CommitStageRecord,
   token: string,
 ): Promise<void> {
   const temporaryPath = path.join(
@@ -160,7 +221,7 @@ async function writeCommitStagePath(
     `.${commitStageFileName(token)}.${randomUUID()}.tmp`,
   );
   try {
-    await fs.writeFile(temporaryPath, `${JSON.stringify({ path: stagedFilePath, token })}\n`, {
+    await fs.writeFile(temporaryPath, `${JSON.stringify(record)}\n`, {
       encoding: "utf8",
       flag: "wx",
       mode: 0o600,
@@ -242,6 +303,24 @@ async function readDirectoryIdentity(directoryPath: string): Promise<DirectoryId
     const stats = await fs.lstat(directoryPath, { bigint: true });
     if (!stats.isDirectory() || stats.ino <= 0n) {
       throw new Error("OpenClaw Crabline smoke lock claim is not a directory.");
+    }
+    return {
+      device: stats.dev,
+      inode: stats.ino,
+    };
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function readFileIdentity(filePath: string): Promise<FileIdentity | null> {
+  try {
+    const stats = await fs.lstat(filePath, { bigint: true });
+    if (!stats.isFile() || stats.nlink !== 1n || stats.ino <= 0n) {
+      return null;
     }
     return {
       device: stats.dev,
@@ -578,6 +657,91 @@ function activeRunError(params: {
   );
 }
 
+function serializeIdentity(identity: DirectoryIdentity): SerializedIdentity {
+  return {
+    device: identity.device.toString(),
+    inode: identity.inode.toString(),
+  };
+}
+
+function hasSerializedIdentity(
+  actual: DirectoryIdentity | null,
+  expected: SerializedIdentity,
+): actual is DirectoryIdentity {
+  return (
+    actual !== null &&
+    actual.device === BigInt(expected.device) &&
+    actual.inode === BigInt(expected.inode)
+  );
+}
+
+function isPathConfinedTo(rootPath: string, candidatePath: string): boolean {
+  const relative = path.relative(rootPath, candidatePath);
+  return (
+    relative === "" ||
+    (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
+  );
+}
+
+function resolveConfinedPath(rootPath: string, candidatePath: string, description: string): string {
+  const resolvedPath = path.resolve(candidatePath);
+  if (resolvedPath !== candidatePath || !isPathConfinedTo(rootPath, resolvedPath)) {
+    throw new Error(`OpenClaw Crabline smoke lock ${description} escapes its output directory.`);
+  }
+  return resolvedPath;
+}
+
+async function resolveValidatedCommitStagePath(
+  outputDir: string,
+  record: CommitStageRecord,
+): Promise<{ fileIdentity: FileIdentity; filePath: string } | null> {
+  let directoryPath: string;
+  try {
+    directoryPath = resolveConfinedPath(outputDir, record.directoryPath, "commit stage directory");
+  } catch {
+    return null;
+  }
+  if (
+    !hasSerializedIdentity(await readDirectoryIdentity(directoryPath), record.directoryIdentity)
+  ) {
+    return null;
+  }
+  const filePath = path.join(directoryPath, record.fileName);
+  if (
+    !isPathConfinedTo(directoryPath, filePath) ||
+    !hasSerializedIdentity(await readFileIdentity(filePath), record.fileIdentity)
+  ) {
+    return null;
+  }
+  return {
+    fileIdentity: {
+      device: BigInt(record.fileIdentity.device),
+      inode: BigInt(record.fileIdentity.inode),
+    },
+    filePath,
+  };
+}
+
+async function removeValidatedCommitStageFile(params: {
+  outputDir: string;
+  record: CommitStageRecord;
+  token: string;
+}): Promise<void> {
+  const validated = await resolveValidatedCommitStagePath(params.outputDir, params.record);
+  if (!validated) {
+    return;
+  }
+  const revokedStagePath = path.join(
+    path.dirname(validated.filePath),
+    `.revoked-commit-file.${params.token}.${randomUUID()}.tmp`,
+  );
+  await fs.rename(validated.filePath, revokedStagePath);
+  if (!hasSameDirectoryIdentity(validated.fileIdentity, await readFileIdentity(revokedStagePath))) {
+    throw new Error("OpenClaw Crabline smoke lock commit stage identity changed during cleanup.");
+  }
+  await fs.rm(revokedStagePath, { force: true });
+}
+
 async function removeOwnedLock(params: {
   beforeClaim?: () => Promise<void>;
   beforeRename?: () => Promise<void>;
@@ -641,15 +805,14 @@ async function removeOwnedLock(params: {
     return false;
   }
 
-  const stagedFilePath = await readCommitStagePath(releaseClaim, params.token);
-  if (stagedFilePath) {
-    const revokedStagePath = path.join(
-      path.dirname(stagedFilePath),
-      `.revoked-commit-file.${params.token}.${randomUUID()}.tmp`,
-    );
+  const stageRecord = await readCommitStageRecord(releaseClaim, params.token);
+  if (stageRecord) {
     try {
-      await fs.rename(stagedFilePath, revokedStagePath);
-      await fs.rm(revokedStagePath, { force: true });
+      await removeValidatedCommitStageFile({
+        outputDir: path.dirname(params.lockDirectory),
+        record: stageRecord,
+        token: params.token,
+      });
     } catch (error) {
       if (!isMissingPathError(error)) {
         throw error;
@@ -1400,13 +1563,60 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         await renew();
         heartbeat.assertHealthy();
 
+        const resolvedDestinationPath = resolveConfinedPath(
+          outputDir,
+          destinationPath,
+          "commit destination",
+        );
+        const resolvedStageDirectory = stageDirectory
+          ? resolveConfinedPath(outputDir, stageDirectory, "commit stage directory")
+          : ownerDirectory;
+        let stageDirectoryIdentity: DirectoryIdentity | null = null;
+        if (stageDirectory) {
+          try {
+            stageDirectoryIdentity = await readDirectoryIdentity(resolvedStageDirectory);
+          } catch (error) {
+            throw new Error("OpenClaw Crabline smoke lock commit stage directory is invalid.", {
+              cause: error,
+            });
+          }
+        }
+        if (stageDirectory && stageDirectoryIdentity === null) {
+          throw new Error("OpenClaw Crabline smoke lock commit stage directory is invalid.");
+        }
         const stagedFileName = `.commit-file.${token}.${randomUUID()}.tmp`;
-        const stagedFilePath = path.join(stageDirectory ?? ownerDirectory, stagedFileName);
+        const stagedFilePath = path.join(resolvedStageDirectory, stagedFileName);
+        let stagedFileIdentity: FileIdentity | null = null;
         let committed = false;
         try {
           await stageFile(stagedFilePath, contents);
           if (stageDirectory) {
-            await writeCommitStagePath(ownerDirectory, stagedFilePath, token);
+            if (
+              !hasSameDirectoryIdentity(
+                stageDirectoryIdentity,
+                await readDirectoryIdentity(resolvedStageDirectory),
+              )
+            ) {
+              throw new Error(
+                "OpenClaw Crabline smoke lock commit stage directory identity changed.",
+              );
+            }
+            stagedFileIdentity = await readFileIdentity(stagedFilePath);
+            if (stagedFileIdentity === null) {
+              throw new Error("OpenClaw Crabline smoke lock commit stage file is invalid.");
+            }
+            await writeCommitStagePath(
+              ownerDirectory,
+              {
+                directoryIdentity: serializeIdentity(stageDirectoryIdentity!),
+                directoryPath: resolvedStageDirectory,
+                fileIdentity: serializeIdentity(stagedFileIdentity),
+                fileName: stagedFileName,
+                token,
+                version: 1,
+              },
+              token,
+            );
           }
           heartbeat.assertHealthy();
           await renew();
@@ -1474,14 +1684,36 @@ export async function acquireOpenClawCrablineSmokeRunLock(
             securedDirectory,
             token,
           });
+          if (
+            stageDirectory &&
+            (!hasSameDirectoryIdentity(
+              stageDirectoryIdentity,
+              await readDirectoryIdentity(resolvedStageDirectory),
+            ) ||
+              !hasSameDirectoryIdentity(stagedFileIdentity, await readFileIdentity(stagedFilePath)))
+          ) {
+            throw new Error("OpenClaw Crabline smoke lock commit stage identity changed.");
+          }
           await fs.rename(
             stageDirectory ? stagedFilePath : path.join(commitClaim, stagedFileName),
-            destinationPath,
+            resolvedDestinationPath,
           );
           committed = true;
         } finally {
-          if (!committed && stageDirectory) {
-            await fs.rm(stagedFilePath, { force: true }).catch(() => undefined);
+          if (!committed && stageDirectory && stageDirectoryIdentity && stagedFileIdentity) {
+            const cleanupRecord: CommitStageRecord = {
+              directoryIdentity: serializeIdentity(stageDirectoryIdentity),
+              directoryPath: resolvedStageDirectory,
+              fileIdentity: serializeIdentity(stagedFileIdentity),
+              fileName: stagedFileName,
+              token,
+              version: 1,
+            };
+            await removeValidatedCommitStageFile({
+              outputDir,
+              record: cleanupRecord,
+              token,
+            }).catch(() => undefined);
           }
         }
       },

@@ -120,6 +120,198 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("rejects commit paths outside the lock output before staging", async () => {
+    const outputDir = await createTempDir();
+    const outsideDir = await createTempDir();
+    const stageFile = vi.fn(async () => undefined);
+    try {
+      const lock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        { startHeartbeat: disableHeartbeat },
+      );
+
+      await expect(
+        lock.commitFileAtomically({
+          contents: "private\n",
+          destinationPath: path.join(outputDir, "current.json"),
+          stageDirectory: outsideDir,
+          stageFile,
+        }),
+      ).rejects.toThrow("commit stage directory escapes its output directory");
+      expect(stageFile).not.toHaveBeenCalled();
+
+      await expect(
+        lock.commitFileAtomically({
+          contents: "private\n",
+          destinationPath: path.join(outsideDir, "current.json"),
+          stageFile,
+        }),
+      ).rejects.toThrow("commit destination escapes its output directory");
+      expect(stageFile).not.toHaveBeenCalled();
+      await lock.release();
+    } finally {
+      await disposeTempDir(outsideDir);
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("rejects a symlinked commit stage before writing through it", async () => {
+    const outputDir = await createTempDir();
+    const outsideDir = await createTempDir();
+    const stageDirectory = path.join(outputDir, "stage");
+    const stageFile = vi.fn(async () => undefined);
+    try {
+      await fs.symlink(outsideDir, stageDirectory, "dir");
+      const lock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        { startHeartbeat: disableHeartbeat },
+      );
+
+      await expect(
+        lock.commitFileAtomically({
+          contents: "private\n",
+          destinationPath: path.join(outputDir, "current.json"),
+          stageDirectory,
+          stageFile,
+        }),
+      ).rejects.toThrow("commit stage directory is invalid");
+      expect(stageFile).not.toHaveBeenCalled();
+      await lock.release();
+    } finally {
+      await disposeTempDir(outsideDir);
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("does not delete an escaped file named by persisted commit metadata", async () => {
+    const outputDir = await createTempDir();
+    const outsideDir = await createTempDir();
+    let now = 1_000;
+    try {
+      const expiredLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 4_242,
+          processStartedAtMs: 100,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+      const ownedDirectory = await findOwnedLockDirectory(outputDir);
+      const owner = JSON.parse(await fs.readFile(path.join(ownedDirectory, "owner.json"), "utf8"));
+      const fileName = `.commit-file.${owner.token}.sentinel.tmp`;
+      const escapedPath = path.join(outsideDir, fileName);
+      await fs.writeFile(escapedPath, "unrelated\n");
+      const directoryStats = await fs.lstat(outsideDir, { bigint: true });
+      const fileStats = await fs.lstat(escapedPath, { bigint: true });
+      await fs.writeFile(
+        path.join(ownedDirectory, `commit-stage.${owner.token}.json`),
+        `${JSON.stringify({
+          directoryIdentity: {
+            device: directoryStats.dev.toString(),
+            inode: directoryStats.ino.toString(),
+          },
+          directoryPath: outsideDir,
+          fileIdentity: {
+            device: fileStats.dev.toString(),
+            inode: fileStats.ino.toString(),
+          },
+          fileName,
+          token: owner.token,
+          version: 1,
+        })}\n`,
+      );
+
+      now = 2_001;
+      const successorLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 5_252,
+          processStartedAtMs: 200,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+
+      await expect(fs.readFile(escapedPath, "utf8")).resolves.toBe("unrelated\n");
+      await successorLock.release();
+      await expiredLock.release();
+    } finally {
+      await disposeTempDir(outsideDir);
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("does not delete a replacement file after the recorded stage directory changes", async () => {
+    const outputDir = await createTempDir();
+    const stageDirectory = path.join(outputDir, "stage");
+    const displacedDirectory = path.join(outputDir, "displaced-stage");
+    let now = 1_000;
+    try {
+      await fs.mkdir(stageDirectory);
+      const expiredLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 4_242,
+          processStartedAtMs: 100,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+      const ownedDirectory = await findOwnedLockDirectory(outputDir);
+      const owner = JSON.parse(await fs.readFile(path.join(ownedDirectory, "owner.json"), "utf8"));
+      const originalDirectoryStats = await fs.lstat(stageDirectory, { bigint: true });
+      await fs.rename(stageDirectory, displacedDirectory);
+      await fs.mkdir(stageDirectory);
+      const fileName = `.commit-file.${owner.token}.replacement.tmp`;
+      const replacementPath = path.join(stageDirectory, fileName);
+      await fs.writeFile(replacementPath, "replacement\n");
+      const replacementStats = await fs.lstat(replacementPath, { bigint: true });
+      await fs.writeFile(
+        path.join(ownedDirectory, `commit-stage.${owner.token}.json`),
+        `${JSON.stringify({
+          directoryIdentity: {
+            device: originalDirectoryStats.dev.toString(),
+            inode: originalDirectoryStats.ino.toString(),
+          },
+          directoryPath: stageDirectory,
+          fileIdentity: {
+            device: replacementStats.dev.toString(),
+            inode: replacementStats.ino.toString(),
+          },
+          fileName,
+          token: owner.token,
+          version: 1,
+        })}\n`,
+      );
+
+      now = 2_001;
+      const successorLock = await acquireOpenClawCrablineSmokeRunLock(
+        { channel: "telegram", outputDir },
+        {
+          isProcessAlive: () => true,
+          leaseMs: 1_000,
+          now: () => now,
+          pid: 5_252,
+          processStartedAtMs: 200,
+          startHeartbeat: disableHeartbeat,
+        },
+      );
+
+      await expect(fs.readFile(replacementPath, "utf8")).resolves.toBe("replacement\n");
+      await successorLock.release();
+      await expiredLock.release();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("secures an empty Windows lock directory before writing sensitive contents", async () => {
     const outputDir = await createTempDir();
     const destinationPath = path.join(outputDir, "current.json");
