@@ -41,7 +41,7 @@ export const MAX_WHATSAPP_NOISE_FRAMES_PER_MESSAGE = 1_024;
 export const WHATSAPP_WEBSOCKET_SEND_TIMEOUT_MS = 5_000;
 const MAX_PENDING_WEBSOCKET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_WEBSOCKET_MESSAGES = 32;
-const MAX_WHATSAPP_ACCEPTED_MESSAGE_IDS = 10_000;
+const MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENTS = 10_000;
 export const MAX_WHATSAPP_WEBSOCKET_FRAGMENTS = 1_024;
 export const MAX_WHATSAPP_SIGNAL_BUNDLES = 1_024;
 export const MAX_WHATSAPP_WEBSOCKET_CLOSE_REASON_BYTES = 123;
@@ -116,16 +116,22 @@ export type WhatsAppSignalDecryptResult<T> =
   | { status: "rejected" };
 
 export class WhatsAppSignalBundleStore {
-  readonly #acceptedMessageIds = new Map<string, true>();
   readonly #bundles = new Map<string, MockSignalBundle>();
   readonly #lidByPhoneNumber = new Map<string, string>();
   readonly #pendingMessageAcceptances = new Map<string, Promise<void>>();
+  readonly #pendingAcknowledgements = new Set<string>();
   readonly #pendingTransactions = new Map<string, Promise<void>>();
   readonly #sessions = new Map<string, Map<string, SessionRecord>>();
 
-  constructor(private readonly maxBundles = MAX_WHATSAPP_SIGNAL_BUNDLES) {
+  constructor(
+    private readonly maxBundles = MAX_WHATSAPP_SIGNAL_BUNDLES,
+    private readonly maxPendingAcknowledgements = MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENTS,
+  ) {
     if (!Number.isSafeInteger(maxBundles) || maxBundles < 1) {
       throw new Error("WhatsApp maxSignalBundles must be a positive safe integer.");
+    }
+    if (!Number.isSafeInteger(maxPendingAcknowledgements) || maxPendingAcknowledgements < 1) {
+      throw new Error("WhatsApp maxPendingAcknowledgements must be a positive safe integer.");
     }
   }
 
@@ -138,24 +144,29 @@ export class WhatsAppSignalBundleStore {
   }
 
   async acceptMessageOnce(messageKey: string, operation: () => Promise<boolean>): Promise<boolean> {
-    return await this.#runSerialized(this.#pendingMessageAcceptances, messageKey, async () => {
-      if (this.#acceptedMessageIds.delete(messageKey)) {
-        this.#acceptedMessageIds.set(messageKey, true);
+    return await this.#runSerialized(this.#pendingMessageAcceptances, "messages", async () => {
+      if (this.#pendingAcknowledgements.has(messageKey)) {
         return true;
+      }
+      if (this.#pendingAcknowledgements.size >= this.maxPendingAcknowledgements) {
+        throw new Error(
+          `WhatsApp pending acknowledgement limit exceeded (${this.maxPendingAcknowledgements}).`,
+        );
       }
       const accepted = await operation();
       if (!accepted) {
         return false;
       }
-      this.#acceptedMessageIds.set(messageKey, true);
-      if (this.#acceptedMessageIds.size > MAX_WHATSAPP_ACCEPTED_MESSAGE_IDS) {
-        const oldestMessageKey = this.#acceptedMessageIds.keys().next().value;
-        if (oldestMessageKey !== undefined) {
-          this.#acceptedMessageIds.delete(oldestMessageKey);
-        }
-      }
+      this.#pendingAcknowledgements.add(messageKey);
       return true;
     });
+  }
+
+  markMessageAcknowledged(peerJid: string, messageId: string): void {
+    const peer = canonicalizeWhatsAppUserCorrelationJid(peerJid);
+    if (peer && messageId) {
+      this.#pendingAcknowledgements.delete(`${peer}\0${messageId}`);
+    }
   }
 
   associateLid(phoneNumberJid: string, lidJid: string): void {
@@ -726,6 +737,7 @@ class WhatsAppBaileysWebSocketSession {
     }
     if (node.tag === "message") {
       const peer = requireAttr(node, "to");
+      const messageId = requireAttr(node, "id");
       const accepted = await persistAcceptedBaileysMessage({
         appendEvent: this.params.appendEvent,
         node,
@@ -740,12 +752,13 @@ class WhatsAppBaileysWebSocketSession {
         attrs: {
           class: "message",
           from: peer,
-          id: requireAttr(node, "id"),
+          id: messageId,
           to: this.params.selfJid,
           ...(node.attrs.type ? { type: node.attrs.type } : {}),
         },
         tag: "ack",
       });
+      this.params.signalBundles.markMessageAcknowledged(peer, messageId);
     }
   }
 
