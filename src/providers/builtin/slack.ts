@@ -65,6 +65,77 @@ function slackAuthorFromEvent(event: Record<string, unknown>): InboundEnvelope["
   return "user";
 }
 
+function pushSlackText(value: unknown, output: string[]): void {
+  if (typeof value === "string" && value.trim()) {
+    output.push(value);
+  }
+}
+
+function collectSlackBlockText(value: unknown, output: string[]): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectSlackBlockText(entry, output);
+    }
+    return;
+  }
+  if (!isRecord(value)) {
+    return;
+  }
+  pushSlackText(value.alt_text, output);
+  if (isRecord(value.text)) {
+    pushSlackText(value.text.text, output);
+  } else {
+    pushSlackText(value.text, output);
+  }
+  for (const key of ["blocks", "elements", "fields"] as const) {
+    collectSlackBlockText(value[key], output);
+  }
+}
+
+function collectSlackAttachmentText(value: unknown, output: string[]): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectSlackAttachmentText(entry, output);
+    }
+    return;
+  }
+  if (!isRecord(value)) {
+    return;
+  }
+  for (const key of ["fallback", "pretext", "author_name", "title", "text", "footer"] as const) {
+    pushSlackText(value[key], output);
+  }
+  if (Array.isArray(value.fields)) {
+    for (const field of value.fields) {
+      if (!isRecord(field)) {
+        continue;
+      }
+      pushSlackText(field.title, output);
+      pushSlackText(field.value, output);
+    }
+  }
+  collectSlackBlockText(value.blocks, output);
+}
+
+function slackMessageText(message: Record<string, unknown>): string | undefined {
+  if (typeof message.text === "string" && message.text.trim()) {
+    return message.text;
+  }
+  const fallback: string[] = [];
+  collectSlackBlockText(message.blocks, fallback);
+  collectSlackAttachmentText(message.attachments, fallback);
+  const unique = [...new Set(fallback)];
+  return unique.length > 0 ? unique.join("\n") : undefined;
+}
+
+function hasMalformedSlackMessageContent(message: Record<string, unknown>): boolean {
+  return (
+    (message.text !== undefined && typeof message.text !== "string") ||
+    (message.blocks !== undefined && !Array.isArray(message.blocks)) ||
+    (message.attachments !== undefined && !Array.isArray(message.attachments))
+  );
+}
+
 function normalizeSlackEventsPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("Slack webhook payload must be an object", { kind: "inbound" });
@@ -72,20 +143,28 @@ function normalizeSlackEventsPayload(payload: unknown) {
 
   if (isRecord(payload.event)) {
     const event = payload.event;
+    const isMessageChanged = event.subtype === "message_changed";
     const changedMessage = isRecord(event.message) ? event.message : undefined;
-    const isMessageChanged = event.subtype === "message_changed" && changedMessage !== undefined;
+    if (isMessageChanged && !changedMessage) {
+      throw new CrablineError("Slack message_changed event requires event.message", {
+        kind: "inbound",
+      });
+    }
     const message = isMessageChanged ? changedMessage : event;
+    if (!message || hasMalformedSlackMessageContent(message)) {
+      throw new CrablineError("Slack event payload contains malformed message content", {
+        kind: "inbound",
+      });
+    }
     const channel = event.channel;
-    const text = message.text;
-    if (typeof channel !== "string" || typeof text !== "string") {
+    const text = slackMessageText(message);
+    if (typeof channel !== "string" || text === undefined) {
       throw new CrablineError("Slack event payload requires event.channel and event.text", {
         kind: "inbound",
       });
     }
     const threadTs = message.thread_ts;
-    const eventId = isMessageChanged
-      ? optionalString(event, "event_ts")
-      : optionalString(message, "ts");
+    const eventId = optionalString(message, "ts");
     return {
       author: slackAuthorFromEvent(message),
       ...(eventId
@@ -156,19 +235,36 @@ function matchesSlackThread(
 }
 
 export function handleSlackWebhookPayload(payload: unknown): Response | undefined {
-  if (
-    isRecord(payload) &&
-    payload.type === "url_verification" &&
-    typeof payload.challenge === "string"
-  ) {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+  if (payload.type === "url_verification" && typeof payload.challenge === "string") {
     return Response.json({ challenge: payload.challenge });
   }
-  if (
-    isRecord(payload) &&
-    payload.type === "event_callback" &&
-    isRecord(payload.event) &&
-    (payload.event.type === "reaction_added" || payload.event.type === "reaction_removed")
-  ) {
+  if (payload.type === "event_callback") {
+    if (!isRecord(payload.event)) {
+      return undefined;
+    }
+    const eventType = optionalString(payload.event, "type");
+    if (!eventType) {
+      return undefined;
+    }
+    if (eventType !== "message") {
+      return new Response(null, { status: 200 });
+    }
+    const message =
+      payload.event.subtype === "message_changed" && isRecord(payload.event.message)
+        ? payload.event.message
+        : payload.event;
+    if (typeof payload.event.channel !== "string" || hasMalformedSlackMessageContent(message)) {
+      return undefined;
+    }
+    if (slackMessageText(message) === undefined) {
+      return new Response(null, { status: 200 });
+    }
+    return undefined;
+  }
+  if (typeof payload.type === "string" && payload.type.trim()) {
     return new Response(null, { status: 200 });
   }
   return undefined;

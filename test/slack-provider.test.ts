@@ -84,6 +84,12 @@ function endpointFromDetails(details: string[]): string {
   return detail.replace("events endpoint ", "");
 }
 
+function slackSignature(signingSecret: string, timestamp: string, body: string): string {
+  return `v0=${createHmac("sha256", signingSecret)
+    .update(`v0:${timestamp}:${body}`)
+    .digest("hex")}`;
+}
+
 describe("slack provider", () => {
   it("requires request signatures for externally reachable event endpoints", async () => {
     const config = await createSlackConfig(0);
@@ -294,9 +300,53 @@ describe("slack provider", () => {
     expect(response.status).toBe(200);
     await expect(waiting).resolves.toMatchObject({
       author: "user",
-      id: "1700000002.000300",
+      id: "1700000001.000200",
       text: "edited ACK edited-nonce",
       threadId: "C1234567890:thread:1700000000.000100",
+    });
+  });
+
+  it("extracts native block and attachment fallback text", async () => {
+    const config = await createSlackConfig(0);
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+    const context = createContext(config);
+    context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
+    const endpoint = endpointFromDetails((await provider.probe(context)).details);
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "attachment-value",
+      since: new Date(Date.now() - 1_000).toISOString(),
+      timeoutMs: 500,
+    });
+
+    const response = await fetch(endpoint, {
+      body: JSON.stringify({
+        event: {
+          attachments: [{ fields: [{ value: "attachment-value" }] }],
+          blocks: [
+            {
+              fields: [{ text: "block fallback", type: "mrkdwn" }],
+              text: { text: " \n\t", type: "plain_text" },
+              type: "section",
+            },
+          ],
+          channel: "C1234567890",
+          text: "",
+          ts: "1700000001.000200",
+          type: "message",
+          user: "U1234567890",
+        },
+        type: "event_callback",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(waiting).resolves.toMatchObject({
+      id: "1700000001.000200",
+      text: "block fallback\nattachment-value",
     });
   });
 
@@ -316,9 +366,7 @@ describe("slack provider", () => {
       },
       type: "event_callback",
     });
-    const signature = `v0=${createHmac("sha256", signingSecret)
-      .update(`v0:${timestamp}:${body}`)
-      .digest("hex")}`;
+    const signature = slackSignature(signingSecret, timestamp, body);
 
     const malformed = await fetch(endpoint, {
       body: "{",
@@ -354,38 +402,69 @@ describe("slack provider", () => {
     expect(accepted.status).toBe(200);
   });
 
-  it("acknowledges authenticated reaction callbacks without recording them", async () => {
+  it("acknowledges authenticated unsupported and textless callbacks without recording them", async () => {
     const signingSecret = "test-token-placeholder";
     const config = await createSlackConfig(0, signingSecret);
     const provider = new SlackProviderAdapter("slack", config, "crabline");
     providers.push(provider);
     const endpoint = endpointFromDetails((await provider.probe(createContext(config))).details);
     const timestamp = Math.floor(Date.now() / 1000).toString();
-    const body = JSON.stringify({
-      event: {
-        item: { channel: "C1234567890", ts: "1700000001.000200", type: "message" },
-        reaction: "white_check_mark",
-        type: "reaction_added",
-        user: "U1234567890",
+    for (const payload of [
+      {
+        event: {
+          item: { channel: "C1234567890", ts: "1700000001.000200", type: "message" },
+          reaction: "white_check_mark",
+          type: "reaction_added",
+          user: "U1234567890",
+        },
+        event_id: "Ev1234567890",
+        type: "event_callback",
       },
-      event_id: "Ev1234567890",
+      {
+        event: {
+          channel: "C1234567890",
+          deleted_ts: "1700000001.000200",
+          subtype: "message_deleted",
+          ts: "1700000002.000300",
+          type: "message",
+        },
+        type: "event_callback",
+      },
+      {
+        api_app_id: "ACRABLINE",
+        minute_rate_limited: 1_700_000_000,
+        team_id: "TCRABLINE",
+        type: "app_rate_limited",
+      },
+    ]) {
+      const body = JSON.stringify(payload);
+      const response = await fetch(endpoint, {
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature(signingSecret, timestamp, body),
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("");
+    }
+
+    const malformedBody = JSON.stringify({
+      event: { channel: "C1234567890", text: 42, type: "message" },
       type: "event_callback",
     });
-    const signature = `v0=${createHmac("sha256", signingSecret)
-      .update(`v0:${timestamp}:${body}`)
-      .digest("hex")}`;
-
-    const response = await fetch(endpoint, {
-      body,
+    const malformed = await fetch(endpoint, {
+      body: malformedBody,
       headers: {
         "content-type": "application/json",
         "x-slack-request-timestamp": timestamp,
-        "x-slack-signature": signature,
+        "x-slack-signature": slackSignature(signingSecret, timestamp, malformedBody),
       },
       method: "POST",
     });
-
-    expect(response.status).toBe(200);
+    expect(malformed.status).toBe(400);
     await expect(readFile(config.slack!.recorder.path!, "utf8")).rejects.toMatchObject({
       code: "ENOENT",
     });
