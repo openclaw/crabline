@@ -1989,7 +1989,16 @@ describe("OpenClaw local provider bridge", () => {
 
     for (const testCase of [
       { params: { recipient: directDelivery.to }, providerTarget: directDelivery.to },
+      {
+        params: { recipient: `uuid:${directDelivery.to.toUpperCase()}` },
+        providerTarget: directDelivery.to,
+      },
+      { params: { recipient: "15551234567" }, providerTarget: "+15551234567" },
       { params: { recipients: [directDelivery.to] }, providerTarget: directDelivery.to },
+      {
+        params: { recipients: ["15551234567", "+15551234567"] },
+        providerTarget: "+15551234567",
+      },
       { params: { groupIds: ["group-1"] }, providerTarget: "group:group-1" },
       { params: { username: "alice.01" }, providerTarget: "alice.01" },
       { params: { usernames: ["alice.01"] }, providerTarget: "alice.01" },
