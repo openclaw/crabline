@@ -28,6 +28,13 @@ import {
   recordServerEvent,
   type ServerEventObserver,
 } from "./recorder.js";
+import {
+  postWebhookRequestWithResponse,
+  validateWebhookTarget,
+  type WebhookAddress,
+  type WebhookResponse,
+  type WebhookTargetError,
+} from "./webhook-target.js";
 
 const SLACK_SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 const SLACK_EVENT_MAX_RETRIES = 3;
@@ -53,6 +60,7 @@ type SlackMessage = {
 type SlackServerState = {
   activeEventDeliveries: Set<Promise<void>>;
   adminToken: string;
+  allowLoopbackHttpEvents: boolean;
   botId: string;
   botToken: string;
   botUserId: string;
@@ -70,6 +78,7 @@ type SlackServerState = {
   nextTsIndex: number;
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
+  restrictEventTargets: boolean;
   signingSecret: string;
   userDmChannels: Map<string, string>;
   userMpimChannels: Map<string, { id: string; users: string[] }>;
@@ -88,6 +97,16 @@ type SlackRetryReason =
   | "unknown_error";
 
 type SlackCursorKind = "history" | "replies";
+
+class SlackEventTargetError extends Error {
+  constructor(
+    readonly retryReason: SlackRetryReason,
+    targetError: WebhookTargetError,
+  ) {
+    super(`Slack Events API target rejected: ${targetError}`);
+    this.name = "SlackEventTargetError";
+  }
+}
 
 export type SlackServerManifest = {
   adminToken: string;
@@ -483,10 +502,18 @@ function createSlackMessage(
   };
 }
 
-function asSlackEventCallback(message: SlackMessage) {
+function asSlackEventCallback(state: SlackServerState, message: SlackMessage) {
   return {
     api_app_id: "ACRABLINE",
-    authorizations: [],
+    authorizations: [
+      {
+        enterprise_id: null,
+        is_bot: true,
+        is_enterprise_install: false,
+        team_id: "TCRABLINE",
+        user_id: state.botUserId,
+      },
+    ],
     event: message,
     event_id: `Ev${message.ts.replace(".", "")}`,
     event_time: Number(message.ts.slice(0, 10)),
@@ -540,7 +567,11 @@ function errorChain(error: unknown): Array<Record<string, unknown>> {
   return chain;
 }
 
-function classifySlackRetryReason(error: unknown): SlackRetryReason {
+/** @internal */
+export function classifySlackRetryReason(error: unknown): SlackRetryReason {
+  if (error instanceof SlackEventTargetError) {
+    return error.retryReason;
+  }
   const chain = errorChain(error);
   const names = chain.map((entry) => String(entry.name ?? ""));
   const codes = chain.map((entry) => String(entry.code ?? "").toUpperCase());
@@ -589,6 +620,60 @@ function classifySlackRetryReason(error: unknown): SlackRetryReason {
   return "unknown_error";
 }
 
+function slackResponseHeader(response: WebhookResponse, name: string): string | undefined {
+  const value = response.headers[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function slackTargetRetryReason(error: WebhookTargetError): SlackRetryReason {
+  return error === "https-required" ? "ssl_error" : "connection_failed";
+}
+
+async function postSlackEventRequest(params: {
+  body: string;
+  headerEntries: ReadonlyArray<readonly [string, string]>;
+  signal: AbortSignal;
+  state: SlackServerState;
+  timeoutAt: number;
+  url: URL;
+}): Promise<WebhookResponse> {
+  const target = await validateWebhookTarget({
+    allowLoopbackHttp: params.state.allowLoopbackHttpEvents,
+    restrictPrivateAddresses: params.state.restrictEventTargets,
+    signal: params.signal,
+    url: params.url,
+  });
+  if ("error" in target) {
+    throw new SlackEventTargetError(slackTargetRetryReason(target.error), target.error);
+  }
+
+  const addresses: Array<WebhookAddress | undefined> =
+    target.addresses && target.addresses.length > 0 ? target.addresses : [undefined];
+  let lastError: unknown;
+  for (const [index, address] of addresses.entries()) {
+    const remainingMs = params.timeoutAt - Date.now();
+    if (remainingMs <= 0) {
+      throw new DOMException("Slack Events API delivery timed out", "TimeoutError");
+    }
+    try {
+      return await postWebhookRequestWithResponse({
+        address,
+        body: params.body,
+        headerEntries: params.headerEntries,
+        signal: params.signal,
+        timeoutMs: Math.max(1, Math.floor(remainingMs / (addresses.length - index))),
+        url: params.url,
+      });
+    } catch (error) {
+      lastError = error;
+      if (params.signal.aborted) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function waitForSlackRetry(delayMs: number, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) {
     return false;
@@ -630,44 +715,46 @@ async function deliverSlackEvent(
     }
     try {
       const timestamp = Math.floor(Date.now() / 1000).toString();
-      const headers = {
-        "content-type": "application/json",
+      const headerEntries = [
         ...(attempt > 0
-          ? {
-              "x-slack-retry-num": String(attempt),
-              "x-slack-retry-reason": retryReason ?? "unknown_error",
-            }
-          : {}),
-        "x-slack-request-timestamp": timestamp,
-        "x-slack-signature": slackRequestSignature(state.signingSecret, timestamp, body),
-      };
+          ? ([
+              ["x-slack-retry-num", String(attempt)],
+              ["x-slack-retry-reason", retryReason ?? "unknown_error"],
+            ] as const)
+          : []),
+        ["x-slack-request-timestamp", timestamp],
+        ["x-slack-signature", slackRequestSignature(state.signingSecret, timestamp, body)],
+      ] as const;
       const signal = AbortSignal.any([lifecycleSignal, AbortSignal.timeout(3_000)]);
-      let requestUrl = state.eventsRequestUrl;
-      let response: Response | undefined;
+      const timeoutAt = Date.now() + 3_000;
+      let requestUrl = new URL(state.eventsRequestUrl);
+      let response: WebhookResponse | undefined;
       for (let redirectCount = 0; ; redirectCount += 1) {
-        response = await fetch(requestUrl, {
+        response = await postSlackEventRequest({
           body,
-          headers,
-          method: "POST",
-          redirect: "manual",
+          headerEntries,
           signal,
+          state,
+          timeoutAt,
+          url: requestUrl,
         });
-        const location = response.headers.get("location");
+        const noRetry = slackResponseHeader(response, "x-slack-no-retry") === "1";
+        if (noRetry) {
+          return;
+        }
+        const location = slackResponseHeader(response, "location");
         if (![301, 302].includes(response.status) || !location) {
           break;
         }
-        await response.body?.cancel();
         if (redirectCount >= SLACK_EVENT_MAX_REDIRECTS) {
           response = undefined;
           retryReason = "too_many_redirects";
           break;
         }
-        requestUrl = new URL(location, requestUrl).toString();
+        requestUrl = new URL(location, requestUrl);
       }
       if (response) {
-        const noRetry = response.headers.get("x-slack-no-retry") === "1";
-        await response.body?.cancel();
-        if (response.ok || noRetry) {
+        if (response.status >= 200 && response.status < 300) {
           return;
         }
         retryReason = "http_error";
@@ -973,7 +1060,7 @@ async function handleAdminInbound(params: {
       user,
     }),
   );
-  const event = asSlackEventCallback(message);
+  const event = asSlackEventCallback(params.state, message);
   scheduleSlackEventDelivery(params.state, event);
   return slackOk({ event, message });
 }
@@ -1106,6 +1193,7 @@ export async function startSlackServer(
   const state: SlackServerState = {
     activeEventDeliveries: new Set(),
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
+    allowLoopbackHttpEvents: isLoopbackHost(host),
     botId: params.botId ?? "BCRABLINE",
     botToken: params.botToken ?? "xoxb-crabline-slack-token",
     botUserId: params.botUserId ?? "UCRABBOT",
@@ -1118,6 +1206,7 @@ export async function startSlackServer(
     nextTsIndex: 100,
     onEvent: params.onEvent,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "slack.jsonl"),
+    restrictEventTargets: true,
     signingSecret: params.signingSecret ?? "crabline-slack-signing-secret",
     userDmChannels: new Map(),
     userMpimChannels: new Map(),

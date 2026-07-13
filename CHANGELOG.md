@@ -7,6 +7,7 @@
 - Stop `serve` after closed-pipe output, withdraw readiness before shutdown, and retain ownership when server close fails.
 - Harden serve shutdown ownership, manifest ingress validation, webhook paths, provider secrets, and fixture retry bounds.
 - Harden core CLI lifecycle, manifest validation, retry bounds, error reporting, and suite isolation after unsettled provider cancellation.
+- Pin and validate Slack Events API delivery targets across redirects while preserving native retries and installation authorization envelopes.
 
 ## 0.1.11 - 2026-07-13
 
