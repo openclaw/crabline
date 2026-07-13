@@ -1,4 +1,7 @@
-import { ZALO_UNSUPPORTED_THREAD_TARGET_ERROR } from "../../providers/target-normalizers.js";
+import {
+  ZALO_ID_RULE,
+  ZALO_UNSUPPORTED_THREAD_TARGET_ERROR,
+} from "../../providers/target-normalizers.js";
 import {
   createAdminInboundRequest,
   createOpenClawCrablineProviderBridge,
@@ -13,6 +16,9 @@ function nativeId(value: string): string {
   const id = value.trim();
   if (!id) {
     throw new Error("Zalo target is required.");
+  }
+  if (!ZALO_ID_RULE.pattern.test(id)) {
+    throw new Error("Zalo target must be a native Zalo string id without whitespace.");
   }
   return id;
 }

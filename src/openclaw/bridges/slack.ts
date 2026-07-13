@@ -82,6 +82,48 @@ function structuredSlackValues(value: unknown): unknown[] {
   }
 }
 
+function slackInlineText(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map(slackInlineText).join("");
+  }
+  if (!isRecord(value)) {
+    return "";
+  }
+  if (value.type === "link" && typeof value.url === "string") {
+    return typeof value.text === "string" && value.text.length > 0 ? value.text : value.url;
+  }
+  if (value.type === "user" && typeof value.user_id === "string") {
+    return `<@${value.user_id}>`;
+  }
+  if (value.type === "channel" && typeof value.channel_id === "string") {
+    return `<#${value.channel_id}>`;
+  }
+  if (value.type === "usergroup" && typeof value.usergroup_id === "string") {
+    return `<!subteam^${value.usergroup_id}>`;
+  }
+  if (value.type === "emoji" && typeof value.name === "string") {
+    return `:${value.name}:`;
+  }
+  if (value.type === "broadcast" && typeof value.range === "string") {
+    return `<!${value.range}>`;
+  }
+  if (value.type === "date") {
+    if (typeof value.fallback === "string" && value.fallback.length > 0) {
+      return value.fallback;
+    }
+    if (
+      (typeof value.timestamp === "number" || typeof value.timestamp === "string") &&
+      typeof value.format === "string"
+    ) {
+      return `<!date^${value.timestamp}^${value.format}>`;
+    }
+  }
+  if (typeof value.text === "string") {
+    return value.text;
+  }
+  return slackInlineText(value.elements);
+}
+
 function collectSlackFallbackText(value: unknown, output: string[]): void {
   if (Array.isArray(value)) {
     for (const entry of value) {
@@ -90,6 +132,17 @@ function collectSlackFallbackText(value: unknown, output: string[]): void {
     return;
   }
   if (!isRecord(value)) {
+    return;
+  }
+  if (
+    value.type === "rich_text_section" ||
+    value.type === "rich_text_preformatted" ||
+    value.type === "rich_text_quote"
+  ) {
+    const text = slackInlineText(value.elements);
+    if (text.trim()) {
+      output.push(text);
+    }
     return;
   }
   for (const key of ["fallback", "title", "alt_text"] as const) {
@@ -114,15 +167,11 @@ function slackOutboundText(body: Record<string, unknown>): string | undefined {
     if (body.text.trim()) {
       return body.text;
     }
-    if (body.text.length > 0) {
-      return undefined;
-    }
   }
   const fallback: string[] = [];
   collectSlackFallbackText(structuredSlackValues(body.blocks), fallback);
   collectSlackFallbackText(structuredSlackValues(body.attachments), fallback);
-  const unique = [...new Set(fallback)];
-  return unique.length > 0 ? unique.join("\n") : undefined;
+  return fallback.length > 0 ? fallback.join("\n") : undefined;
 }
 
 export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
@@ -191,8 +240,11 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
       },
       createAgentDelivery(parsed) {
         const to = requireSlackSendTargetId(parsed.id, "Slack target");
-        requireSlackTargetKind(parsed, to);
         const threadTs = requireSlackThreadTs(parsed.threadId, "Slack target thread");
+        if (threadTs && !SLACK_CHANNEL_ID_RULE.pattern.test(to)) {
+          throw new Error("Slack thread targets require a native parent conversation id.");
+        }
+        requireSlackTargetKind(parsed, to);
         return {
           channel: "slack",
           to,
