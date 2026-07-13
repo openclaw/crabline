@@ -54,6 +54,20 @@ describe("Mattermost webhook normalizer", () => {
     });
   });
 
+  it("normalizes root posts to the channel target instead of their post id", () => {
+    expect(
+      normalizeMattermostWebhookPayload({
+        channel_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        post_id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+        root_id: "",
+        text: "root post",
+      }),
+    ).toMatchObject({
+      id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+      threadId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+  });
+
   it("matches local thread replies before native channel scoping", () => {
     expect(
       matchesMattermostThread("bbbbbbbbbbbbbbbbbbbbbbbbbb", "bbbbbbbbbbbbbbbbbbbbbbbbbb", {
