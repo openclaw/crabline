@@ -502,6 +502,20 @@ describe("server recorder", () => {
     );
   });
 
+  it("snapshots events before waiting for recorder admission", async () => {
+    const event = serverEvent("/original");
+    const recording = recordServerEvent({
+      event,
+      onEvent: undefined,
+      recorderPath: path.join("/tmp", "crabline-server-recorder-snapshot.jsonl"),
+    });
+    event.path = "/mutated";
+
+    await recording;
+
+    expect(JSON.parse(fsMocks.file.appendFile.mock.calls[0]![0]).path).toBe("/original");
+  });
+
   it("recovers serialization after an append failure", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-recovery.jsonl");
     const appendFailure = new Error("disk unavailable");
@@ -1189,20 +1203,26 @@ describe("server recorder", () => {
     expect(order).toEqual(["first:start", "first:end", "second"]);
   });
 
-  it("allows observers to append reentrantly to the same recorder", async () => {
+  it("allows observers to append reentrantly without overtaking the active observer", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-reentrant.jsonl");
+    const observations: string[] = [];
 
     await recordServerEvent({
       event: serverEvent("/outer"),
       onEvent: async () => {
+        observations.push("outer:start");
         await recordServerEvent({
           event: serverEvent("/nested"),
-          onEvent: undefined,
+          onEvent: () => {
+            observations.push("nested");
+          },
           recorderPath,
         });
+        observations.push("outer:end");
       },
       recorderPath,
     });
+    await vi.waitFor(() => expect(observations).toEqual(["outer:start", "outer:end", "nested"]));
 
     expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);

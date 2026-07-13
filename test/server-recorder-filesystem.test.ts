@@ -148,6 +148,72 @@ it.skipIf(process.platform === "win32")(
   },
 );
 
+it.skipIf(process.platform === "win32")(
+  "does not retry a committed append after a recorder symlink is retargeted",
+  async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "server.jsonl");
+    const firstTarget = path.join(directory, "first.jsonl");
+    const secondTarget = path.join(directory, "second.jsonl");
+    await writeFile(firstTarget, "", "utf8");
+    await writeFile(secondTarget, "", "utf8");
+    await symlink(firstTarget, recorderPath, "file");
+
+    const probe = await open(firstTarget, "a+");
+    const prototype = Object.getPrototypeOf(probe) as {
+      appendFile(data: string, options: { encoding: "utf8" }): Promise<void>;
+    };
+    await probe.close();
+    const originalAppendFile = prototype.appendFile;
+    let releaseWrite!: () => void;
+    let reportWrite!: () => void;
+    const writeReported = new Promise<void>((resolve) => {
+      reportWrite = resolve;
+    });
+    const writeReleased = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let interceptAppend = true;
+    prototype.appendFile = async function (this: FileHandle, data, options) {
+      await originalAppendFile.call(this, data, options);
+      if (interceptAppend && data.includes('"path":"/retargeted-after-append"')) {
+        interceptAppend = false;
+        reportWrite();
+        await writeReleased;
+      }
+    };
+
+    const recording = recordServerEvent({
+      event: {
+        at: new Date().toISOString(),
+        method: "POST",
+        path: "/retargeted-after-append",
+        query: {},
+        type: "api",
+      },
+      onEvent: undefined,
+      recorderPath,
+    });
+    try {
+      await writeReported;
+      await rm(recorderPath);
+      await symlink(secondTarget, recorderPath, "file");
+      releaseWrite();
+      await expect(recording).rejects.toMatchObject({
+        committed: true,
+        name: "ServerRecorderCommittedError",
+      });
+    } finally {
+      releaseWrite();
+      prototype.appendFile = originalAppendFile;
+    }
+
+    expect((await readFile(firstTarget, "utf8")).trimEnd().split("\n")).toHaveLength(1);
+    expect(await readFile(secondTarget, "utf8")).toBe("");
+  },
+);
+
 it.skipIf(process.platform === "win32")("preserves an existing recorder file mode", async () => {
   const directory = await createTempDir();
   directories.push(directory);

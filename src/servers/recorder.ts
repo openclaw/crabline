@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { chmod, lstat, mkdir, open, readlink, realpath, stat as statPath } from "node:fs/promises";
 import path from "node:path";
 import { lock } from "proper-lockfile";
@@ -33,6 +34,11 @@ const pendingAppends = new Map<string, Promise<void>>();
 const pendingAdmissions = new Map<string, Promise<void>>();
 const pendingLogicalObservers = new Map<string, Promise<void>>();
 const pendingPublicationObservers = new Map<string, Promise<void>>();
+const observerContext = new AsyncLocalStorage<{
+  active: boolean;
+  logicalPath: string;
+  publicationPath: string;
+}>();
 const durableRecorderIdentities = new Map<string, string>();
 const MAX_DURABLE_RECORDER_IDENTITIES = 128;
 const MAX_RECOVERY_VALIDATION_BYTES = 64 * 1024 * 1024;
@@ -474,10 +480,17 @@ function enqueueObserver(params: {
     previousLogical.catch(() => {}),
     previousPublication.catch(() => {}),
   ]).then(async () => {
+    const context = {
+      active: true,
+      logicalPath: params.logicalPath,
+      publicationPath: params.key,
+    };
     try {
-      await params.onEvent?.(params.event);
+      await observerContext.run(context, async () => await params.onEvent?.(params.event));
     } catch (error) {
       throw new ServerRecorderCommittedError(params.logicalPath, error);
+    } finally {
+      context.active = false;
     }
   });
   pendingLogicalObservers.set(params.logicalPath, current);
@@ -504,7 +517,9 @@ function enqueueObserver(params: {
 }
 
 type RecorderAppendResult = {
+  logicalPath: string;
   observation: Promise<void>;
+  publicationPath: string;
 };
 
 async function appendResolvedJsonLine(params: {
@@ -549,12 +564,14 @@ async function appendResolvedJsonLine(params: {
         return undefined;
       }
       return {
+        logicalPath,
         observation: enqueueObserver({
           event: params.event,
           key,
           logicalPath,
           onEvent: params.onEvent,
         }),
+        publicationPath: key,
       };
     });
   const tail = current.then(
@@ -574,6 +591,7 @@ async function appendResolvedJsonLine(params: {
 
 async function appendJsonLine(params: {
   event: ServerRequestEvent;
+  line: string;
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
 }): Promise<void> {
@@ -585,7 +603,7 @@ async function appendJsonLine(params: {
       for (let attempt = 0; attempt < RECORDER_PATH_ATTEMPTS; attempt++) {
         const result = await appendResolvedJsonLine({
           event: params.event,
-          line: `${JSON.stringify(params.event)}\n`,
+          line: params.line,
           logicalPath,
           onEvent: params.onEvent,
         });
@@ -611,6 +629,15 @@ async function appendJsonLine(params: {
       pendingAdmissions.delete(logicalPath);
     }
   }
+  const activeObserver = observerContext.getStore();
+  if (
+    activeObserver?.active === true &&
+    (activeObserver.logicalPath === result.logicalPath ||
+      activeObserver.publicationPath === result.publicationPath)
+  ) {
+    // The callback remains queued behind the active observer; awaiting it here would deadlock.
+    return;
+  }
   await result.observation;
 }
 
@@ -619,7 +646,10 @@ export async function recordServerEvent(params: {
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
 }): Promise<void> {
-  await appendJsonLine(params);
+  await appendJsonLine({
+    ...params,
+    line: `${JSON.stringify(params.event)}\n`,
+  });
 }
 
 export async function recordCommittedServerEvent(params: {
@@ -628,7 +658,10 @@ export async function recordCommittedServerEvent(params: {
   recorderPath: string;
 }): Promise<void> {
   try {
-    await appendJsonLine(params);
+    await appendJsonLine({
+      ...params,
+      line: `${JSON.stringify(params.event)}\n`,
+    });
   } catch {
     // The provider mutation already committed, so telemetry failure cannot change its response.
   }
