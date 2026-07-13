@@ -131,6 +131,7 @@ describe("script provider Windows cleanup", () => {
     expect(terminationScript).toContain("HashSet[string]");
     expect(terminationScript).toContain("$RootPidReused");
     expect(terminationScript).toContain("$RootObservedBy");
+    expect(terminationScript).toContain("$SnapshotAt=[datetime]::UtcNow");
     expect(scriptChild.kill).toHaveBeenCalledWith("SIGKILL");
     expect(scriptChild.stdin.destroyed).toBe(true);
     expect(scriptChild.stdout.destroyed).toBe(true);
