@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Use one case-insensitive numeric identity for Telegram username chats across provider sends, OpenClaw inbound injection, and recorder correlation.
 - Validate signed-JWT registered claims, clock skew, and synchronous key-loader failure cleanup.
 - Reject stale or far-future signed Discord interactions before payload handling.
 - Normalize malformed callback URLs, artifact pointers, and loopback thread addresses into stable domain errors.

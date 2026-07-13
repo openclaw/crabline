@@ -169,6 +169,37 @@ describe("telegram local provider server", () => {
     expect(shorterUsername.status).toBe(400);
   });
 
+  it("resolves username chats case-insensitively to one message sequence", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const sendMessage = (chatId: string, text: string, messageThreadId?: number) =>
+      fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`, {
+        body: JSON.stringify({
+          chat_id: chatId,
+          ...(messageThreadId === undefined ? {} : { message_thread_id: messageThreadId }),
+          text,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+    const first = await sendMessage("@Crabline_Channel", "first", 42);
+    const firstPayload = (await first.json()) as {
+      result: { chat: { id: number }; message_id: number; message_thread_id: number };
+    };
+    const second = await sendMessage("@crabline_channel", "second");
+    const secondPayload = (await second.json()) as {
+      result: { chat: { id: number }; message_id: number };
+    };
+
+    expect(firstPayload.result).toMatchObject({
+      message_id: 1,
+      message_thread_id: 42,
+    });
+    expect(secondPayload.result).toMatchObject({ message_id: 2 });
+    expect(secondPayload.result.chat.id).toBe(firstPayload.result.chat.id);
+  });
+
   it("normalizes non-positive topic ids while preserving private-chat topics", async () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
