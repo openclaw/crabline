@@ -694,6 +694,17 @@ class WhatsAppBaileysWebSocketSession {
     if (node.tag === "message") {
       const peer = requireAttr(node, "to");
       const accepted = await persistAcceptedBaileysMessage({
+        acknowledge: () =>
+          this.#sendNode({
+            attrs: {
+              class: "message",
+              from: peer,
+              id: requireAttr(node, "id"),
+              to: this.params.selfJid,
+              ...(node.attrs.type ? { type: node.attrs.type } : {}),
+            },
+            tag: "ack",
+          }),
         appendEvent: this.params.appendEvent,
         node,
         path: this.params.path,
@@ -703,16 +714,6 @@ class WhatsAppBaileysWebSocketSession {
       if (!accepted) {
         return;
       }
-      await this.#sendNode({
-        attrs: {
-          class: "message",
-          from: peer,
-          id: requireAttr(node, "id"),
-          to: this.params.selfJid,
-          ...(node.attrs.type ? { type: node.attrs.type } : {}),
-        },
-        tag: "ack",
-      });
     }
   }
 
@@ -1199,6 +1200,7 @@ function children(node: BinaryNode): BinaryNode[] {
 }
 
 export async function persistAcceptedBaileysMessage(params: {
+  acknowledge?(): Promise<void>;
   appendEvent(event: ServerRequestEvent): Promise<void>;
   node: BinaryNode;
   path: string;
@@ -1221,6 +1223,7 @@ export async function persistAcceptedBaileysMessage(params: {
       query: {},
       type: "api",
     } as ServerRequestEvent & { accepted: true });
+    await params.acknowledge?.();
     return true;
   }
   const remoteCorrelationJid = canonicalizeWhatsAppUserCorrelationJid(params.remoteJid);
@@ -1260,6 +1263,7 @@ export async function persistAcceptedBaileysMessage(params: {
           query: {},
           type: "api",
         } as ServerRequestEvent & { accepted: true });
+        await params.acknowledge?.();
         return true;
       },
       ciphertext: candidate.ciphertext,
