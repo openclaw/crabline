@@ -630,14 +630,8 @@ async function privateRecorderLockRoot(): Promise<string> {
     throw new Error("Provider recorder identity locking requires a current user id.");
   }
 
-  const root = path.join("/tmp", `.crabline-provider-recorder-${currentUserId}`);
-  try {
-    await mkdir(root, { mode: 0o700 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      throw error;
-    }
-  }
+  const root = path.join(homedir(), ".cache", "crabline", "locks", "provider-recorder");
+  await mkdir(root, { mode: 0o700, recursive: true });
   const handle = await open(
     root,
     fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
@@ -725,7 +719,7 @@ async function withRecorderLock<T>(
   try {
     releases.push(await acquireRecorderLock(filePath));
     for (let attempt = 0; attempt < RECORDER_ROTATION_ATTEMPTS; attempt += 1) {
-      lockCreatedFile = (await ensureRecorderExistsForLock(filePath)) || lockCreatedFile;
+      lockCreatedFile = await ensureRecorderExistsForLock(filePath);
       const identity = await readRecorderFileIdentity(filePath);
       if (!identity) {
         continue;
