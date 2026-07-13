@@ -536,6 +536,151 @@ describe("script provider", () => {
     expect(inspect(failure, { depth: null })).not.toContain(configuredWatchCommand);
   });
 
+  it("redacts bare positional command arguments from diagnostics", async () => {
+    const context = await createContext();
+    const sentinel = "bare-positional-secret";
+    const failingScript = path.join(
+      path.dirname(context.manifestPath),
+      "send-positional-secret.mjs",
+    );
+    await writeText(
+      failingScript,
+      "process.stderr.write(`failed with ${process.argv[2]}`);process.exitCode=7;",
+    );
+    context.config.script!.commands.send = `node ${JSON.stringify(failingScript)} ${JSON.stringify(sentinel)}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    const failure = await provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    const message = ensureErrorMessage(failure);
+
+    expect(message).toContain("failed with [redacted command value]");
+    expect(inspect(failure, { depth: null })).not.toContain(sentinel);
+  });
+
+  it("redacts attached option and dash-prefixed command values", async () => {
+    const context = await createContext();
+    const optionSentinel = "attached-option-secret";
+    const positionalSentinel = "-dash-positional-secret";
+    const failingScript = path.join(path.dirname(context.manifestPath), "send-option-secret.mjs");
+    await writeText(
+      failingScript,
+      "process.stderr.write(`${process.argv[2]} ${process.argv[3]}`);process.exitCode=7;",
+    );
+    context.config.script!.commands.send = `node ${JSON.stringify(failingScript)} --label=${optionSentinel} ${positionalSentinel}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    const failure = await provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    const message = ensureErrorMessage(failure);
+
+    expect(message).toContain("--label=[redacted command value]");
+    expect(message).toContain("[redacted command value]");
+    expect(inspect(failure, { depth: null })).not.toContain(optionSentinel);
+    expect(inspect(failure, { depth: null })).not.toContain(positionalSentinel);
+  });
+
+  it("suppresses diagnostics when positional arguments require shell expansion", async () => {
+    const context = await createContext();
+    const sentinel = "expanded-positional-secret";
+    const failingScript = path.join(path.dirname(context.manifestPath), "send-expanded-secret.mjs");
+    await writeText(
+      failingScript,
+      `process.stderr.write(${JSON.stringify(sentinel)});process.exitCode=7;`,
+    );
+    context.config.script!.commands.send = `node ${JSON.stringify(failingScript)} secret-*`;
+    const provider = new ScriptProviderAdapter(context);
+
+    const failure = await provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    const message = ensureErrorMessage(failure);
+
+    expect(message).toContain("[script diagnostics redacted]");
+    expect(inspect(failure, { depth: null })).not.toContain(sentinel);
+  });
+
+  it.each([
+    {
+      commandPrefix: ":\n",
+      name: "newlines",
+      suffix: "",
+    },
+    {
+      commandPrefix: "",
+      name: "brace expansion",
+      suffix: " opaque-{one,two}",
+    },
+  ])("suppresses diagnostics for unsafe shell $name", async ({ commandPrefix, suffix }) => {
+    const context = await createContext();
+    const sentinel = "unsafe-shell-secret";
+    const failingScript = path.join(path.dirname(context.manifestPath), "send-unsafe-shell.mjs");
+    await writeText(
+      failingScript,
+      `process.stderr.write(${JSON.stringify(sentinel)});process.exitCode=7;`,
+    );
+    context.config.script!.commands.send = `${commandPrefix}node ${JSON.stringify(failingScript)}${suffix}`;
+    const provider = new ScriptProviderAdapter(context);
+
+    const failure = await provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    const message = ensureErrorMessage(failure);
+
+    expect(message).toContain("[script diagnostics redacted]");
+    expect(inspect(failure, { depth: null })).not.toContain(sentinel);
+  });
+
+  it("suppresses diagnostics when quoted arguments use shell continuations", async () => {
+    const context = await createContext();
+    const sentinel = "continued-positional-secret";
+    const failingScript = path.join(
+      path.dirname(context.manifestPath),
+      "send-continued-secret.mjs",
+    );
+    await writeText(
+      failingScript,
+      `process.stderr.write(${JSON.stringify(sentinel)});process.exitCode=7;`,
+    );
+    context.config.script!.commands.send = `node ${JSON.stringify(failingScript)} "continued\\\nsecret"`;
+    const provider = new ScriptProviderAdapter(context);
+
+    const failure = await provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    const message = ensureErrorMessage(failure);
+
+    expect(message).toContain("[script diagnostics redacted]");
+    expect(inspect(failure, { depth: null })).not.toContain(sentinel);
+  });
+
   it("redacts the sensitive environment snapshot used for a subprocess", async () => {
     const context = await createContext();
     const envName = ["CRABLINE", "ACCESS", "TOKEN"].join("_");
@@ -823,6 +968,42 @@ describe("script provider", () => {
         } else {
           process.env[name] = originalValue;
         }
+      }
+    }
+  });
+
+  it("redacts inherited JWT environment values from script diagnostics", async () => {
+    const context = await createContext();
+    const envName = ["CI", "JOB", "JWT"].join("_");
+    const sentinel = "header.payload.signature";
+    const originalValue = process.env[envName];
+    process.env[envName] = sentinel;
+
+    try {
+      const failingScript = path.join(path.dirname(context.manifestPath), "send-jwt-secret.mjs");
+      await writeText(
+        failingScript,
+        `process.stderr.write(process.env[${JSON.stringify(envName)}]);process.exitCode=7;`,
+      );
+      context.config.script!.commands.send = `node ${JSON.stringify(failingScript)}`;
+      const provider = new ScriptProviderAdapter(context);
+
+      const failure = await provider
+        .send({
+          ...context,
+          mode: "send",
+          nonce: "nonce",
+          text: "payload",
+        })
+        .catch((error: unknown) => error);
+
+      expect(ensureErrorMessage(failure)).toContain("[redacted environment value]");
+      expect(inspect(failure, { depth: null })).not.toContain(sentinel);
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env[envName];
+      } else {
+        process.env[envName] = originalValue;
       }
     }
   });
