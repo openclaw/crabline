@@ -423,6 +423,12 @@ describe("production package", () => {
       expect(parseNpmPackOutput(output)).toEqual(pack);
     }
   });
+
+  it("wraps Windows npm commands for cmd /s /c quote stripping", () => {
+    expect(buildWindowsNpmCommand(["pack", "--pack-destination", "C:\\path with spaces"])).toBe(
+      '""npm.cmd" "pack" "--pack-destination" "C:\\path with spaces""',
+    );
+  });
 });
 
 type NpmPackMetadata = {
@@ -454,14 +460,18 @@ async function execNpm(
     process.platform === "win32"
       ? await execFileAsync(
           process.env.ComSpec ?? "cmd.exe",
-          ["/d", "/s", "/c", ["npm.cmd", ...args].map(quoteCmdArgument).join(" ")],
-          options,
+          ["/d", "/s", "/c", buildWindowsNpmCommand(args)],
+          { ...options, windowsVerbatimArguments: true },
         )
       : await execFileAsync("npm", args, options);
   return {
     stderr: String(result.stderr),
     stdout: String(result.stdout),
   };
+}
+
+function buildWindowsNpmCommand(args: string[]): string {
+  return `"${["npm.cmd", ...args].map(quoteCmdArgument).join(" ")}"`;
 }
 
 function quoteCmdArgument(value: string): string {
