@@ -190,12 +190,15 @@ export async function writeResponse(
   fetchResponse: Response,
 ): Promise<void> {
   const body = Buffer.from(await fetchResponse.arrayBuffer());
+  const preserveRepresentationLength =
+    response.req?.method === "HEAD" || fetchResponse.status === 304;
   response.statusCode = fetchResponse.status;
   for (const [name, value] of fetchResponse.headers) {
     const normalizedName = name.toLowerCase();
     if (
-      normalizedName === "content-length" ||
+      (normalizedName === "content-length" && !preserveRepresentationLength) ||
       normalizedName === "set-cookie" ||
+      normalizedName === "trailer" ||
       normalizedName === "transfer-encoding"
     ) {
       continue;
