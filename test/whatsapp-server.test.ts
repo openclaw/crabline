@@ -283,7 +283,6 @@ describe("whatsapp local provider server", () => {
     servers.push(second);
     expect(server.manifest.accessToken).toMatch(/^EAA[A-Za-z0-9_-]+$/u);
     expect(second.manifest.accessToken).not.toBe(server.manifest.accessToken);
-    expect(server.manifest.accessToken).not.toBe("crabline-whatsapp-access-token");
   });
 
   it("releases the HTTP listener when WebSocket attachment fails", async () => {
