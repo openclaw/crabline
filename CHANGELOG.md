@@ -27,6 +27,7 @@
 - Confine server recorder publication and locking to stable resolved paths across symlink retargets, start observers in durable append order without blocking later requests, snapshot observed events, classify post-commit lock cleanup failures, and preserve existing file modes.
 - Cover local GitHub Actions with ownership, CodeQL, immutable image, and test-tool runtime policies.
 - Publish Matrix direct-room account data and share strict native identifier validation across server, target, and inbound paths.
+- Materialize Mattermost thread roots, keep root posts channel-scoped, and reject oversized WebSocket post events atomically without disconnecting unrelated clients.
 - Protect pnpm install-script policy and enforce immutable action pins across reusable workflows and composite actions.
 - Stop shipping a non-runnable OpenClaw script fixture and clarify source-checkout CLI invocation.
 - Bind npm and GitHub release mutations to the revalidated tag commit and fail closed on release lookup errors.
