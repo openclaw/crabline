@@ -200,10 +200,13 @@ function requireRecorderFileIdentity(stats: {
   if (stats.dev === undefined || stats.ino === undefined) {
     throw new Error("Server recorder file identity is unavailable.");
   }
+  if (stats.nlink === undefined) {
+    throw new Error("Server recorder file link count is unavailable.");
+  }
   return {
     dev: BigInt(stats.dev),
     ino: BigInt(stats.ino),
-    nlink: BigInt(stats.nlink ?? 1),
+    nlink: BigInt(stats.nlink),
   };
 }
 
@@ -269,7 +272,6 @@ function isRecorderLockContention(error: unknown): boolean {
 }
 
 async function secureRecorderLockRoot(root: string): Promise<string> {
-  await mkdir(root, { mode: 0o700, recursive: true });
   if (process.platform === "win32") {
     const identity = await lstat(root);
     if (!identity.isDirectory() || identity.isSymbolicLink()) {

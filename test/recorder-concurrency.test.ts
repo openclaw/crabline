@@ -175,7 +175,7 @@ beforeEach(() => {
   fsMocks.serverDirectorySync.mockResolvedValue(undefined);
   fsMocks.serverFileExists = false;
   fsMocks.serverFileStat.mockReset();
-  fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
+  fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, nlink: 1, size: 0 });
   fsMocks.serverOpen.mockReset();
   fsMocks.serverStat.mockReset();
   fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
@@ -369,6 +369,41 @@ describe("recorder append serialization", () => {
     );
     expect(fsMocks.serverWrite).not.toHaveBeenCalled();
     expect(pathRelease).toHaveBeenCalledOnce();
+  });
+
+  it("requires the configured server recorder lock directory to be pre-created", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "crabline-server-lock-root-"));
+    const lockRoot = path.join(directory, "missing");
+    const recorderPath = path.join(
+      "/tmp",
+      `crabline-server-recorder-lock-root-${process.pid}-${Date.now()}.jsonl`,
+    );
+    fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+    fsMocks.serverWrite.mockResolvedValue(undefined);
+    vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", lockRoot);
+    const pathRelease = vi.fn(async () => {});
+    fsMocks.lock.mockResolvedValueOnce(pathRelease);
+
+    try {
+      await expect(
+        recordServerEvent({
+          event: {
+            at: "2026-07-12T10:00:00.000Z",
+            method: "POST",
+            path: "/missing-lock-root",
+            query: {},
+            type: "api",
+          },
+          onEvent: undefined,
+          recorderPath,
+        }),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(lockRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(fsMocks.serverWrite).not.toHaveBeenCalled();
+      expect(pathRelease).toHaveBeenCalledOnce();
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
   });
 
   it("serializes provider inbound appends to the same JSONL file", async () => {
