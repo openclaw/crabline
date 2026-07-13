@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Harden CLI secret ingress and numeric parsing, provider cancellation and script thread propagation, timer bounds, review fixtures, and dependency review coverage.
+- Complete final provider remediation across authenticated webhook exposure, native callback decoding, interaction values, target identities, JWT boundaries, and bounded ingress shutdown.
 - Harden secondary provider adapters with stable pagination, scoped native IDs, immutable diagnostics redaction, Slack edit normalization, and bounded WhatsApp ingress.
 - Harden provider-core webhook hooks, recorder durability and cursor semantics, lazy adapter lifecycle and target parity, and signed-JWT key caching.
 - Harden autoreview launchers and release automation, document trusted script manifests, and canonicalize WhatsApp Cloud targets.

@@ -10,6 +10,17 @@ import {
 } from "./local-mock-provider-helpers.js";
 
 describe("Matrix webhook normalizer", () => {
+  it("accepts Matrix v12 domainless room ids through the shared target codec", async () => {
+    const config = await createLocalMockConfig("matrix", "/matrix/webhook");
+    const provider = new MatrixProviderAdapter("matrix", config, "crabline");
+    const roomId = `!${Buffer.alloc(32, 0xab).toString("base64url")}`;
+
+    expect(provider.normalizeTarget({ id: roomId, metadata: {} })).toMatchObject({
+      channelId: roomId,
+    });
+    await provider.cleanup();
+  });
+
   it("rejects externally reachable webhooks without native authentication", async () => {
     const config = await createLocalMockConfig("matrix", "/matrix/webhook");
     config.matrix!.webhook.host = "0.0.0.0";

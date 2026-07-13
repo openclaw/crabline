@@ -298,7 +298,14 @@ function unwrapGoogleChatPubsubPayload(payload: unknown): unknown {
   }
 
   try {
-    return JSON.parse(Buffer.from(data, "base64").toString("utf8")) as unknown;
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(data)) {
+      throw new Error("invalid base64");
+    }
+    const decoded = Buffer.from(data, "base64");
+    if (decoded.toString("base64") !== data) {
+      throw new Error("non-canonical base64");
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(decoded)) as unknown;
   } catch {
     throw new CrablineError("Google Pub/Sub message.data must contain base64-encoded JSON.", {
       kind: "inbound",

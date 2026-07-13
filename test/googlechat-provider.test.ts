@@ -235,6 +235,18 @@ describe("Google Chat webhook authentication", () => {
     ).toBe(false);
   });
 
+  it.each(["e30", "%%%%", "e30=trailing"])(
+    "rejects non-canonical Pub/Sub base64 data: %s",
+    (data) => {
+      expect(() =>
+        normalizeGoogleChatWebhookPayload({
+          message: { data },
+          subscription: "projects/example/subscriptions/chat",
+        }),
+      ).toThrow(/base64-encoded JSON/u);
+    },
+  );
+
   it("rejects unbound Workspace add-on payloads and cross-space threads", () => {
     expect(() =>
       normalizeGoogleChatWebhookPayload({

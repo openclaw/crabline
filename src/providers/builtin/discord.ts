@@ -95,6 +95,9 @@ function discordApplicationCommandText(data: Record<string, unknown>): string | 
       if (!isRecord(option)) {
         continue;
       }
+      if ((option.type === 1 || option.type === 2) && typeof option.name === "string") {
+        values.push(option.name);
+      }
       const value = option.value;
       if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
         values.push(String(value));
@@ -104,6 +107,45 @@ function discordApplicationCommandText(data: Record<string, unknown>): string | 
   };
   collectValues(data.options);
   return [name, ...values].join(" ");
+}
+
+function discordInteractionText(data: Record<string, unknown>): string | undefined {
+  const command = discordApplicationCommandText(data);
+  if (command) {
+    return command;
+  }
+
+  const values: string[] = [];
+  const collectValues = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const child of value) {
+        collectValues(child);
+      }
+      return;
+    }
+    if (!isRecord(value)) {
+      return;
+    }
+    if (typeof value.value === "string") {
+      values.push(value.value);
+    }
+    if (Array.isArray(value.values)) {
+      for (const selected of value.values) {
+        if (
+          typeof selected === "string" ||
+          typeof selected === "number" ||
+          typeof selected === "boolean"
+        ) {
+          values.push(String(selected));
+        }
+      }
+    }
+    collectValues(value.components);
+  };
+  collectValues(data);
+  const customId = optionalString(data, "custom_id");
+  const parts = [...(customId ? [customId] : []), ...values];
+  return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
 function toRecorderPath(providerId: string, config: ProviderConfig): string {
@@ -136,11 +178,7 @@ export function normalizeDiscordWebhookPayload(payload: unknown) {
   const channelId = optionalString(payload, "channel_id");
   const text =
     optionalString(payload, "content") ??
-    (data
-      ? (optionalString(data, "content") ??
-        discordApplicationCommandText(data) ??
-        optionalString(data, "custom_id"))
-      : undefined) ??
+    (data ? (optionalString(data, "content") ?? discordInteractionText(data)) : undefined) ??
     (message ? optionalString(message, "content") : undefined);
   if (!channelId || !text) {
     throw new CrablineError("Discord event payload requires channel_id and content", {

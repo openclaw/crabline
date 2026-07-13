@@ -44,9 +44,21 @@ describe("Zalo webhook normalizer", () => {
   it.each([
     ["not-an-object", "Zalo webhook payload must be an object"],
     [{ sender: { id: "123456789012" }, message: {} }, "requires"],
-    [{ message: { text: "hello" }, sender: { id: "invalid-id" } }, "native Zalo user or OA id"],
+    [{ message: { text: "hello" }, sender: { id: "" } }, "requires"],
   ])("rejects malformed or invalid payloads: %s", (payload, message) => {
     expect(() => normalizeZaloWebhookPayload(payload)).toThrow(message);
+  });
+
+  it("accepts provider-native opaque string targets", async () => {
+    const config = await createLocalMockConfig("zalo", "/zalo/webhook");
+    const provider = new ZaloProviderAdapter("zalo", config, "crabline");
+    try {
+      expect(provider.normalizeTarget({ id: "user-1", metadata: {} })).toMatchObject({
+        channelId: "user-1",
+      });
+    } finally {
+      await provider.cleanup();
+    }
   });
 
   it("preserves generic fallback thread payloads", () => {
@@ -112,13 +124,17 @@ describe("Zalo webhook normalizer", () => {
 runLocalMockProviderContract({
   Adapter: ZaloProviderAdapter,
   endpointPath: "/zalo/webhook",
-  expectedChannelId: "123456789012",
+  expectedChannelId: "user-1",
+  invalidTargets: [
+    { id: "", metadata: {} },
+    { id: "   ", metadata: {} },
+  ],
   platform: "zalo",
-  target: { id: "123456789012", metadata: {} },
+  target: { id: "user-1", metadata: {} },
   webhookExpected: { author: "user", id: "zalo-msg-1", text: "reply nonce-2" },
   webhookPayload: {
     message: { msg_id: "zalo-msg-1", text: "reply nonce-2" },
-    sender: { id: "123456789012" },
+    sender: { id: "user-1" },
   },
-  webhookThreadId: "123456789012",
+  webhookThreadId: "user-1",
 });

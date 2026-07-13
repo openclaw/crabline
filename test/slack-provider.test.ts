@@ -84,6 +84,24 @@ function endpointFromDetails(details: string[]): string {
 }
 
 describe("slack provider", () => {
+  it("requires request signatures for externally reachable event endpoints", async () => {
+    const config = await createSlackConfig(0);
+    config.slack!.webhook.host = "0.0.0.0";
+    expect(() => new SlackProviderAdapter("slack", config, "crabline")).toThrow(
+      /externally reachable webhooks require slack\.signingSecret/u,
+    );
+
+    config.slack!.webhook.host = "127.0.0.1";
+    config.slack!.webhook.publicUrl = "https://slack.example.test/events";
+    expect(() => new SlackProviderAdapter("slack", config, "crabline")).toThrow(
+      /externally reachable webhooks require slack\.signingSecret/u,
+    );
+
+    config.slack!.signingSecret = "test-token-placeholder";
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+  });
+
   it("keeps native Slack conversation and thread timestamp ids", async () => {
     const config = await createSlackConfig(0);
     const provider = new SlackProviderAdapter("slack", config, "crabline");
@@ -255,6 +273,7 @@ describe("slack provider", () => {
       body: JSON.stringify({
         event: {
           channel: "C1234567890",
+          event_ts: "1700000002.000300",
           message: {
             text: "edited ACK edited-nonce",
             thread_ts: "1700000000.000100",
@@ -274,7 +293,7 @@ describe("slack provider", () => {
     expect(response.status).toBe(200);
     await expect(waiting).resolves.toMatchObject({
       author: "user",
-      id: "1700000001.000200",
+      id: "1700000002.000300",
       text: "edited ACK edited-nonce",
       threadId: "C1234567890:thread:1700000000.000100",
     });

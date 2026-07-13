@@ -47,7 +47,7 @@ export const IMESSAGE_THREAD_RULE: NativeIdRule = {
 export const MATRIX_ROOM_ID_RULE: NativeIdRule = {
   example: "!abcdef:matrix.org",
   name: "Matrix room id",
-  pattern: /^![^:\s]+:[^\s]+$/u,
+  pattern: /^!(?:[^:\s]+:[^\s]+|[A-Za-z0-9_-]{43})$/u,
 };
 
 export const MATRIX_EVENT_ID_RULE: NativeIdRule = {
@@ -87,9 +87,9 @@ export const WHATSAPP_WA_ID_RULE: NativeIdRule = {
 };
 
 export const ZALO_ID_RULE: NativeIdRule = {
-  example: "123456789012345678",
-  name: "Zalo user or OA id",
-  pattern: /^\d{6,20}$/u,
+  example: "user-1",
+  name: "Zalo string id",
+  pattern: /^\S+$/u,
 };
 
 function requireNativeId(value: string, rule: NativeIdRule, label: string): string {

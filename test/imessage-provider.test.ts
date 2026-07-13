@@ -10,6 +10,20 @@ import {
 import { describe, expect, it } from "vitest";
 
 describe("iMessage thread matching", () => {
+  it("rejects externally reachable webhooks without provider-native authentication", async () => {
+    const config = await createLocalMockConfig("imessage", "/imessage/webhook");
+    config.imessage!.webhook.host = "0.0.0.0";
+    expect(() => new IMessageProviderAdapter("imessage", config, "crabline")).toThrow(
+      /provider-native authenticated ingress mode/u,
+    );
+
+    config.imessage!.webhook.host = "127.0.0.1";
+    config.imessage!.webhook.publicUrl = "https://imessage.example.test/webhook";
+    expect(() => new IMessageProviderAdapter("imessage", config, "crabline")).toThrow(
+      /provider-native authenticated ingress mode/u,
+    );
+  });
+
   it("matches GUID targets when payloads also provide a public recipient", () => {
     expect(
       matchesIMessageThread(

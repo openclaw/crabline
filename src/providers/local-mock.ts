@@ -346,6 +346,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     const target = this.normalizeTarget(context.fixture.target);
     const expectedAuthor = context.fixture.inboundMatch.author;
     const channelId = context.threadId ?? target.threadId ?? target.channelId;
+    const excludedIds = new Set(context.excludeIds ?? []);
     const cursorKey = JSON.stringify([context.nonce, context.since, channelId, expectedAuthor]);
     const cursorState = this.#waitCursors.get(cursorKey) ?? { active: 0 };
     const cursor = cursorState.cursor
@@ -362,6 +363,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         filePath: this.#recorderPath,
         matches: (candidate) =>
           candidate.provider === this.id &&
+          !excludedIds.has(candidate.id) &&
           (expectedAuthor === "any" || candidate.author === expectedAuthor) &&
           (this.#options.matchesThread ?? isAddressInChannel)(
             candidate.threadId,

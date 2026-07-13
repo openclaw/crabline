@@ -109,8 +109,8 @@ export function createMsTeamsWebhookAuthenticator(
       }
       const channelId = optionalString(payload, "channelId");
       const serviceUrl = optionalString(payload, "serviceUrl");
-      if (!channelId || !serviceUrl) {
-        throw new Error("Bot Connector activity omitted channelId or serviceUrl.");
+      if (channelId !== "msteams" || !serviceUrl) {
+        throw new Error("Bot Connector activity requires channelId=msteams and serviceUrl.");
       }
       const claims = await verifySignedJwt({
         audience: appId,
@@ -198,12 +198,16 @@ export function normalizeMsTeamsWebhookPayload(payload: unknown) {
   }
   const conversation = optionalRecord(payload, "conversation");
   const from = optionalRecord(payload, "from");
+  const channelId = optionalString(payload, "channelId");
   const conversationId = conversation ? optionalString(conversation, "id") : undefined;
   const text = optionalString(payload, "text");
-  if (!conversationId || !text) {
-    throw new CrablineError("Microsoft Teams activity payload requires conversation.id and text", {
-      kind: "inbound",
-    });
+  if (channelId !== "msteams" || !conversationId || !text) {
+    throw new CrablineError(
+      "Microsoft Teams activity payload requires channelId=msteams, conversation.id, and text",
+      {
+        kind: "inbound",
+      },
+    );
   }
 
   return {

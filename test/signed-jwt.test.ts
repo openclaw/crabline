@@ -1,7 +1,62 @@
+import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createCachedJwtKeyResolver, resolveHttpCacheExpiry } from "../src/providers/signed-jwt.js";
+import {
+  createCachedJwtKeyResolver,
+  resolveHttpCacheExpiry,
+  verifySignedJwt,
+} from "../src/providers/signed-jwt.js";
+
+function signedJwt(
+  privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
+  claims: Record<string, unknown>,
+): string {
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "test-key" })).toString(
+    "base64url",
+  );
+  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString(
+    "base64url",
+  );
+  return `${header}.${payload}.${signature}`;
+}
 
 describe("signed JWT remote key cache", () => {
+  it("requires canonical base64url, numeric nbf, and a future expiry boundary", async () => {
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = 1_700_000_000_000;
+    const verify = (token: string) =>
+      verifySignedJwt({
+        audience: "crabline",
+        clockSkewSeconds: 0,
+        issuers: ["issuer"],
+        now: () => now,
+        resolveKey: async () => keys.publicKey,
+        token,
+      });
+    const claims = {
+      aud: "crabline",
+      exp: Math.floor(now / 1000) + 1,
+      iss: "issuer",
+    };
+    const valid = signedJwt(keys.privateKey, claims);
+
+    await expect(verify(valid)).resolves.toMatchObject(claims);
+    const [header, payload, signature] = valid.split(".") as [string, string, string];
+    await expect(verify(`${header}=.${payload}.${signature}`)).rejects.toThrow(/base64url/u);
+    await expect(verify(`${header}.${payload}.${signature}=`)).rejects.toThrow(/base64url/u);
+    await expect(
+      verify(signedJwt(keys.privateKey, { ...claims, nbf: "1700000000" })),
+    ).rejects.toThrow(/nbf claim must be a finite number/u);
+    await expect(
+      verify(
+        signedJwt(keys.privateKey, {
+          ...claims,
+          exp: Math.floor(now / 1000),
+        }),
+      ),
+    ).rejects.toThrow(/expired/u);
+  });
+
   it("does not cache responses marked no-cache or no-store", () => {
     const now = 1_700_000_000_000;
 

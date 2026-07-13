@@ -83,9 +83,11 @@ header before JSON parsing or recorder writes:
 - Google Chat `endpointUrl` verifies Google ID tokens for the configured HTTP
   audience. `googleChatProjectNumber` selects project-number JWT verification
   instead. Authenticated Pub/Sub delivery uses `pubsubAudience` plus
-  `pubsubServiceAccountEmail`; `credentials.client_email` remains the fallback
-  when inline service-account credentials are configured. Wrapped Pub/Sub
-  `message.data` is base64-decoded before Google Chat event normalization.
+  `pubsubServiceAccountEmail`; `pubsubAudience` falls back to `endpointUrl`
+  when omitted, and `credentials.client_email` remains the service-account
+  email fallback when inline credentials are configured. Wrapped Pub/Sub
+  `message.data` must be canonical base64 before Google Chat event
+  normalization.
   Google Workspace add-on `chat.messagePayload` events are rejected until the
   adapter can bind the verified request to a configured add-on deployment
   identity.
@@ -95,13 +97,18 @@ header before JSON parsing or recorder writes:
   unauthenticated webhook remains available only on loopback.
 - Matrix webhook ingress currently has no provider-native authentication mode,
   so it is restricted to loopback hosts and cannot set `publicUrl`.
+- Mattermost and iMessage webhook ingress currently have no provider-native
+  authentication mode, so those adapter webhooks are restricted to loopback
+  hosts and cannot set `publicUrl`. Their API credentials do not authenticate
+  inbound callbacks.
 - Feishu `verificationToken` or `FEISHU_VERIFICATION_TOKEN` verifies plaintext
   callback tokens on loopback and remains an additional check when configured
   with encryption. Externally reachable webhooks require `encryptKey` or
   `FEISHU_ENCRYPT_KEY` to verify `X-Lark-Signature` and decrypt encrypted event
   envelopes before challenge handling or event normalization.
 - Slack `signingSecret` or `SLACK_SIGNING_SECRET` verifies
-  `X-Slack-Request-Timestamp` and `X-Slack-Signature`.
+  `X-Slack-Request-Timestamp` and `X-Slack-Signature`; it is required when the
+  webhook host is non-loopback or `publicUrl` is set.
 - Telegram `secretToken` or `TELEGRAM_WEBHOOK_SECRET_TOKEN` verifies
   `X-Telegram-Bot-Api-Secret-Token`.
 - Zalo `webhookSecret` or `ZALO_WEBHOOK_SECRET` verifies
@@ -172,6 +179,11 @@ Server-backed channels currently include Mattermost, Matrix, Signal, Slack,
 Telegram, WhatsApp, and Zalo. Loopback binds retain stable local credentials for
 fixture compatibility. Non-loopback binds generate fresh provider-shaped
 credentials unless the corresponding token or secret option is supplied.
+
+Serve credential flags take precedence over their optional environment
+fallbacks: `--admin-token` over `CRABLINE_ADMIN_TOKEN`, `--access-token` over
+`CRABLINE_ACCESS_TOKEN`, `--bot-token` over `CRABLINE_BOT_TOKEN`, and
+`--signing-secret` over `CRABLINE_SIGNING_SECRET`.
 
 ### Mattermost
 
@@ -471,6 +483,10 @@ as `telegram:`, `discord:`, or `slack:`.
   `123456789012345678`
 - Google Chat spaces: `spaces/AAAABbbbCCC`
 - Google Chat threads: `spaces/AAAABbbbCCC/threads/BBBBccccDDD`
+- Matrix rooms: scoped ids such as `!abcdef:matrix.org` or Matrix v12
+  domainless room ids
+- Zalo users, OAs, and chats: provider-native non-whitespace string ids such as
+  `user-1` or `group-1`
 
 OpenClaw bridge QA targets reserve the exact forms `dm:<id>`, `group:<id>`,
 `channel:<id>`, and `thread:<id>/<thread-id>`. Reserved forms require non-blank

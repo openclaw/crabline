@@ -212,10 +212,10 @@ describe("registry", () => {
     [
       "zalo",
       {
-        channelId: "123456789012",
-        id: "123456789012",
+        channelId: "user-1",
+        id: "user-1",
         metadata: {},
-        threadId: "987654321012",
+        threadId: "group-1",
       },
     ],
   ] satisfies Array<
@@ -247,6 +247,13 @@ describe("registry", () => {
     expect(registry.resolve(adapter, fixture.id).normalizeTarget(target)).toEqual(
       normalizeBuiltinTarget(adapter, target),
     );
+  });
+
+  it("accepts Matrix v12 domainless room ids in lazy target normalization", () => {
+    const roomId = `!${Buffer.alloc(32, 0xab).toString("base64url")}`;
+    expect(normalizeBuiltinTarget("matrix", { id: roomId, metadata: {} })).toMatchObject({
+      channelId: roomId,
+    });
   });
 
   it("applies provider-specific validation through lazy adapters", () => {
