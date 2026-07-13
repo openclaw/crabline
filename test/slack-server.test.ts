@@ -946,6 +946,7 @@ describe("slack local provider server", () => {
   it("retries a failed Events API delivery without duplicating message state", async () => {
     const deliveries: Array<{
       body: string;
+      contentType: string | undefined;
       reason: string | undefined;
       retry: string | undefined;
       signature: string | undefined;
@@ -958,6 +959,10 @@ describe("slack local provider server", () => {
       }
       deliveries.push({
         body: Buffer.concat(chunks).toString("utf8"),
+        contentType:
+          typeof request.headers["content-type"] === "string"
+            ? request.headers["content-type"]
+            : undefined,
         reason:
           typeof request.headers["x-slack-retry-reason"] === "string"
             ? request.headers["x-slack-retry-reason"]
@@ -1005,6 +1010,10 @@ describe("slack local provider server", () => {
       await vi.waitFor(() => expect(deliveries).toHaveLength(2));
       expect(deliveries).toHaveLength(2);
       expect(deliveries[0]?.body).toBe(deliveries[1]?.body);
+      expect(deliveries.map((delivery) => delivery.contentType)).toEqual([
+        "application/json",
+        "application/json",
+      ]);
       expect(deliveries.map((delivery) => delivery.retry)).toEqual([undefined, "1"]);
       expect(deliveries.map((delivery) => delivery.reason)).toEqual([undefined, "http_error"]);
       for (const delivery of deliveries) {
