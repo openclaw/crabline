@@ -1,3 +1,4 @@
+import { ZALO_UNSUPPORTED_THREAD_TARGET_ERROR } from "../../providers/target-normalizers.js";
 import {
   createAdminInboundRequest,
   createOpenClawCrablineProviderBridge,
@@ -68,14 +69,14 @@ export const ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProv
       },
       createAgentDelivery(parsed) {
         if (parsed.threadId) {
-          throw new Error("Zalo does not support thread targets.");
+          throw new Error(ZALO_UNSUPPORTED_THREAD_TARGET_ERROR);
         }
         const to = nativeId(parsed.id);
         return { channel: "zalo", replyChannel: "zalo", replyTo: to, to };
       },
       createInbound(input) {
         if (input.threadId) {
-          throw new Error("Zalo does not support thread targets.");
+          throw new Error(ZALO_UNSUPPORTED_THREAD_TARGET_ERROR);
         }
         const kind = input.conversation.kind === "direct" ? "direct" : "group";
         const chatId = nativeId(input.conversation.id);
