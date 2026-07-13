@@ -106,7 +106,7 @@ describe("signal local provider server", () => {
     });
     servers.push(server);
     const url = new URL(server.manifest.baseUrl);
-    url.hostname = "127.0.0.1";
+    expect(url.hostname).toBe("127.0.0.1");
 
     const rejected = await requestHttp({
       headers: { host: "attacker.invalid" },
@@ -160,6 +160,15 @@ describe("signal local provider server", () => {
       url: `${url.origin}/api/v1/check`,
     });
     expect(accepted.status).toBe(200);
+  });
+
+  it("advertises IPv6 loopback when bound to the IPv6 wildcard", async () => {
+    const server = await startSignalServer({ host: "::" });
+    servers.push(server);
+
+    expect(new URL(server.manifest.baseUrl).hostname).toBe("[::1]");
+    const check = await fetch(`${server.manifest.baseUrl}/api/v1/check`);
+    expect(check.status).toBe(200);
   });
 
   it("rejects unlisted Host headers on the default loopback binding", async () => {
