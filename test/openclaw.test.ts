@@ -281,6 +281,26 @@ const zaloManifest: CrablineServerManifest = {
 };
 
 describe("OpenClaw local provider bridge", () => {
+  it.each([
+    ["mattermost", mattermostManifest],
+    ["matrix", matrixManifest],
+    ["signal", signalManifest],
+    ["slack", slackManifest],
+    ["telegram", manifest],
+    ["whatsapp", whatsappManifest],
+    ["zalo", zaloManifest],
+  ] as const)("emits canonical streaming config for the %s bridge", (channel, providerManifest) => {
+    const config = createOpenClawCrablineProviderBinding(providerManifest).createGatewayConfig();
+    const channels = isRecord(config.channels) ? config.channels : {};
+    const channelConfig = isRecord(channels[channel]) ? channels[channel] : {};
+
+    expect(channelConfig).not.toHaveProperty("blockStreaming");
+    expect(channelConfig).not.toHaveProperty("blockStreamingCoalesce");
+    expect(channelConfig).not.toHaveProperty("chunkMode");
+    expect(channelConfig).not.toHaveProperty("draftChunk");
+    expect(channelConfig.streaming === undefined || isRecord(channelConfig.streaming)).toBe(true);
+  });
+
   it("keeps legacy fake-provider root aliases", () => {
     const legacyManifest: CrablineFakeProviderManifest = manifest;
     const conversation: OpenClawCrablineConversation = {
@@ -2184,7 +2204,7 @@ describe("OpenClaw local provider bridge", () => {
       requiredPluginIds: ["mattermost"],
     });
     expect(binding.createGatewayConfig()).toMatchObject({
-      channels: { mattermost: { chatmode: "onmessage", streaming: "off" } },
+      channels: { mattermost: { chatmode: "onmessage", streaming: { mode: "off" } } },
     });
 
     const threadInbound = createOpenClawCrablineInbound({
@@ -2431,6 +2451,7 @@ describe("OpenClaw local provider bridge", () => {
           encryption: false,
           homeserver: "http://127.0.0.1:8642",
           network: { dangerouslyAllowPrivateNetwork: true },
+          streaming: { mode: "off", block: { enabled: false } },
           userId: "@openclaw:matrix.test",
         },
       },

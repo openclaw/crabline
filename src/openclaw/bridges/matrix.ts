@@ -129,7 +129,6 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
                 matrix: {
                   ...matrixConfig,
                   accessToken: matrix.accessToken,
-                  blockStreaming: false,
                   dm: {
                     ...dmConfig,
                     allowFrom: ["*"],
@@ -141,7 +140,10 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
                   groupPolicy: "open",
                   homeserver: matrix.baseUrl,
                   network: { dangerouslyAllowPrivateNetwork: true },
-                  streaming: "off",
+                  streaming: {
+                    mode: "off",
+                    block: { enabled: false },
+                  },
                   userId: matrix.botUserId,
                 },
               },
