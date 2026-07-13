@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { isCanonicalHttpPath } from "../core/http-path.js";
 
 export type StartedWebhookServer = {
   close(): Promise<void>;
@@ -118,6 +119,15 @@ async function writeFetchResponse(
   response.end(body);
 }
 
+function clearUnsentResponseHeaders(response: ServerResponse<IncomingMessage>): void {
+  if (response.headersSent) {
+    return;
+  }
+  for (const name of response.getHeaderNames()) {
+    response.removeHeader(name);
+  }
+}
+
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => {
@@ -145,6 +155,9 @@ export async function startWebhookServer(params: {
   path: string;
   port: number;
 }): Promise<StartedWebhookServer> {
+  if (!isCanonicalHttpPath(params.path)) {
+    throw new Error("Webhook path must be a canonical URL pathname.");
+  }
   const methods = new Set(params.methods ?? ["POST"]);
   const maxBodyBytes = params.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const bodyTimeoutMs = params.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
@@ -175,6 +188,7 @@ export async function startWebhookServer(params: {
           // Error reporting must not change the public response.
         }
       }
+      clearUnsentResponseHeaders(response);
       await writeFetchResponse(
         response,
         new Response(

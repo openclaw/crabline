@@ -1,6 +1,7 @@
 import { validateHeaderValue } from "node:http";
 import { BlockList, isIP } from "node:net";
 import { z } from "zod";
+import { isCanonicalHttpPath } from "../core/http-path.js";
 import { inboundRegexSafetyError } from "../core/safe-regex.js";
 
 export const FIXTURE_MODES = ["probe", "send", "roundtrip", "agent"] as const;
@@ -90,7 +91,11 @@ const HeaderValueSchema = z
     }
   }, "secret must be a valid HTTP header value");
 
-const WebhookPathSchema = z.string().min(1).startsWith("/", "webhook path must start with /");
+const WebhookPathSchema = z
+  .string()
+  .min(1)
+  .startsWith("/", "webhook path must start with /")
+  .refine(isCanonicalHttpPath, "webhook path must be a canonical URL pathname");
 
 function isLoopbackHost(host: string): boolean {
   const normalized = host
