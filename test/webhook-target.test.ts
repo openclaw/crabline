@@ -289,41 +289,58 @@ describe("webhook target validation", () => {
     await expect(second).resolves.toEqual([{ address: "93.184.216.35", family: 4 }]);
   });
 
-  it("releases an aborted active lookup without letting its late result release a newer slot", async () => {
+  it("keeps actual DNS concurrency bounded while active callers abort", async () => {
     const started: string[] = [];
+    let active = 0;
+    let maximumActive = 0;
     const releases = new Map<
       string,
       (addresses: Array<{ address: string; family: number }>) => void
     >();
     const pool = new WebhookDnsLookupPool(
-      1,
+      2,
       async (hostname) =>
         await new Promise((resolve) => {
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
           started.push(hostname);
-          releases.set(hostname, resolve);
+          releases.set(hostname, (addresses) => {
+            active -= 1;
+            resolve(addresses);
+          });
         }),
     );
-    const controller = new AbortController();
-    const first = pool.resolve("first.test", controller.signal);
-    const second = pool.resolve("second.test");
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const first = pool.resolve("first.test", firstController.signal);
+    const second = pool.resolve("second.test", secondController.signal);
     const third = pool.resolve("third.test");
+    const fourth = pool.resolve("fourth.test");
 
-    expect(started).toEqual(["first.test"]);
-    controller.abort();
-    await expect(first).rejects.toMatchObject({ name: "AbortError" });
     expect(started).toEqual(["first.test", "second.test"]);
+    firstController.abort();
+    secondController.abort();
+    await Promise.all([
+      expect(first).rejects.toMatchObject({ name: "AbortError" }),
+      expect(second).rejects.toMatchObject({ name: "AbortError" }),
+    ]);
+    expect(started).toEqual(["first.test", "second.test"]);
+    expect(maximumActive).toBe(2);
 
     releases.get("first.test")?.([{ address: "93.184.216.34", family: 4 }]);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(started).toEqual(["first.test", "second.test"]);
+    await vi.waitFor(() => expect(started).toEqual(["first.test", "second.test", "third.test"]));
+    expect(maximumActive).toBe(2);
 
     releases.get("second.test")?.([{ address: "93.184.216.35", family: 4 }]);
-    await expect(second).resolves.toEqual([{ address: "93.184.216.35", family: 4 }]);
-    expect(started).toEqual(["first.test", "second.test", "third.test"]);
+    await vi.waitFor(() =>
+      expect(started).toEqual(["first.test", "second.test", "third.test", "fourth.test"]),
+    );
+    expect(maximumActive).toBe(2);
 
     releases.get("third.test")?.([{ address: "93.184.216.36", family: 4 }]);
+    releases.get("fourth.test")?.([{ address: "93.184.216.37", family: 4 }]);
     await expect(third).resolves.toEqual([{ address: "93.184.216.36", family: 4 }]);
+    await expect(fourth).resolves.toEqual([{ address: "93.184.216.37", family: 4 }]);
   });
 
   it("does not reuse sockets for DNS-pinned webhook delivery", async () => {
