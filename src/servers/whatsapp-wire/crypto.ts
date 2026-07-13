@@ -150,6 +150,14 @@ function requireValidX25519SharedKey(sharedKey: Uint8Array): Buffer {
 
 export const Curve = createCurve();
 
+export function generateSignalKeyPair(): KeyPair {
+  const keyPair = Curve.generateKeyPair();
+  return {
+    private: keyPair.private,
+    public: ensureSignalPublicKey(keyPair.public),
+  };
+}
+
 export function aesEncryptGCM(
   plaintext: Uint8Array,
   key: Uint8Array,
@@ -214,21 +222,26 @@ export function sha256(input: Uint8Array): Buffer {
 }
 
 export function signedKeyPair(identityKeyPair: KeyPair, keyId: number): SignedKeyPair {
-  const keyPair = Curve.generateKeyPair();
-  const publicKey = ensureSignalPublicKey(keyPair.public);
+  const keyPair = generateSignalKeyPair();
   return {
     keyId,
     keyPair,
-    signature: Curve.sign(identityKeyPair.private, publicKey),
+    signature: Curve.sign(identityKeyPair.private, keyPair.public),
   };
 }
 
-function ensureSignalPublicKey(publicKey: Uint8Array): Buffer {
+export function ensureSignalPublicKey(publicKey: Uint8Array): Buffer {
   const buffer = Buffer.from(publicKey);
-  return buffer.length === 33 ? buffer : Buffer.concat([KEY_BUNDLE_TYPE, buffer]);
+  if (buffer.length === 33 && buffer[0] === KEY_BUNDLE_TYPE[0]) {
+    return buffer;
+  }
+  if (buffer.length === 32) {
+    return Buffer.concat([KEY_BUNDLE_TYPE, buffer]);
+  }
+  throw new Error(`Invalid Signal public key length or type: ${buffer.length}.`);
 }
 
-function scrubSignalPublicKey(publicKey: Uint8Array): Buffer {
+export function scrubSignalPublicKey(publicKey: Uint8Array): Buffer {
   const buffer = Buffer.from(publicKey);
   if (buffer.length === 33 && buffer[0] === KEY_BUNDLE_TYPE[0]) {
     return buffer.subarray(1);

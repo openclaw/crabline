@@ -7,11 +7,14 @@ import {
   aesEncryptGCM,
   Curve,
   encodeBigEndian,
+  ensureSignalPublicKey,
+  generateSignalKeyPair,
   hkdf,
   NOISE_MODE,
   NOISE_WA_HEADER,
   sha256,
   signedKeyPair,
+  scrubSignalPublicKey,
   type KeyPair,
   type SignedKeyPair,
 } from "./whatsapp-wire/crypto.js";
@@ -320,7 +323,7 @@ export class WhatsAppSignalBundleStore {
       const replacementPreKey = stagedPreKeyRemovals.has(bundle.preKeyId)
         ? {
             id: bundle.preKeyId === 0xff_ff_ff ? 1 : bundle.preKeyId + 1,
-            keyPair: Curve.generateKeyPair(),
+            keyPair: generateSignalKeyPair(),
           }
         : undefined;
       const accepted = await params.accept(plaintext);
@@ -346,10 +349,10 @@ export class WhatsAppSignalBundleStore {
     if (existing) {
       return existing;
     }
-    const identityKey = Curve.generateKeyPair();
+    const identityKey = generateSignalKeyPair();
     const bundle = {
       identityKey,
-      preKey: Curve.generateKeyPair(),
+      preKey: generateSignalKeyPair(),
       preKeyId: 1,
       registrationId: 1,
       signedPreKey: signedKeyPair(identityKey, 1),
@@ -954,7 +957,11 @@ class WhatsAppBaileysWebSocketSession {
       content: [
         { attrs: {}, content: encodeBigEndian(bundle.registrationId), tag: "registration" },
         { attrs: {}, content: KEY_BUNDLE_TYPE, tag: "type" },
-        { attrs: {}, content: bundle.identityKey.public, tag: "identity" },
+        {
+          attrs: {},
+          content: scrubSignalPublicKey(bundle.identityKey.public),
+          tag: "identity",
+        },
         xmppSignedPreKey(bundle.signedPreKey),
         xmppPreKey(bundle.preKey, bundle.preKeyId),
       ],
@@ -1404,10 +1411,7 @@ function encryptedMessageCandidates(node: BinaryNode): Array<{
 function signalKeyPair(pair: KeyPair): { privKey: Buffer; pubKey: Buffer } {
   return {
     privKey: Buffer.from(pair.private),
-    pubKey:
-      pair.public.length === 33
-        ? Buffer.from(pair.public)
-        : Buffer.concat([KEY_BUNDLE_TYPE, pair.public]),
+    pubKey: ensureSignalPublicKey(pair.public),
   };
 }
 
