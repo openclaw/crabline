@@ -10,8 +10,9 @@ import {
   publishPrivateFileAtomically,
   removeSecuredPrivateDirectory,
   securePrivateDirectory,
-  verifySafeWindowsDirectoryMutationBoundary,
   verifyOwnerOnlyWindowsDirectoryAcl,
+  verifyOwnerOnlyWindowsFileAcl,
+  verifySafeWindowsDirectoryMutationBoundary,
   type WindowsAclRunner,
 } from "../src/openclaw/private-file.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
@@ -756,6 +757,42 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")(
+    "rejects a permissive live directory claim instead of trusting its owner metadata",
+    async () => {
+      const directory = await createTempDir();
+      const linkSpy = vi
+        .spyOn(fs, "link")
+        .mockRejectedValue(Object.assign(new Error("hard links unsupported"), { code: "ENOTSUP" }));
+      try {
+        const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+        await fs.mkdir(claimPath, { mode: 0o777 });
+        await fs.chmod(claimPath, 0o777);
+        await fs.writeFile(
+          path.join(claimPath, "owner.json"),
+          `${JSON.stringify({
+            ownerId: "planted-directory-owner",
+            pid: process.pid,
+            processIdentity: "planted:directory-owner",
+            processStartedAtMs: 100,
+          })}\n`,
+          { mode: 0o600 },
+        );
+
+        await expect(
+          publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n"),
+        ).rejects.toThrow("Private mutation claim directory must be owner-only.");
+
+        await expect(fs.stat(path.join(directory, "manifest.json"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      } finally {
+        linkSpy.mockRestore();
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
   it("rejects a replacement root installed before a nested directory claim", async () => {
     const directory = await createTempDir();
     const claimPath = path.join(directory, ".crabline-private-mutation.claim");
@@ -1167,6 +1204,37 @@ describe("OpenClaw private file publication", () => {
       await disposeTempDir(directory);
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a permissive live mutation claim instead of trusting its owner metadata",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+        await fs.writeFile(
+          claimPath,
+          `${JSON.stringify({
+            ownerId: "planted-file-owner",
+            pid: process.pid,
+            processIdentity: "planted:file-owner",
+            processStartedAtMs: 100,
+          })}\n`,
+          { mode: 0o666 },
+        );
+        await fs.chmod(claimPath, 0o666);
+
+        await expect(
+          publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n"),
+        ).rejects.toThrow("Private mutation claim file must be owner-only.");
+
+        await expect(fs.stat(path.join(directory, "manifest.json"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "rejects a FIFO claim without waiting for a writer",
@@ -2014,6 +2082,56 @@ describe("OpenClaw private file publication", () => {
     expect(script).not.toContain("Set-Acl");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
   });
+
+  it("verifies Windows mutation claim files without changing their ACL", async () => {
+    const calls: Parameters<WindowsAclRunner>[] = [];
+    const run: WindowsAclRunner = async (...args) => {
+      calls.push(args);
+      return "";
+    };
+    const filePath = String.raw`C:\Temp\.crabline-private-mutation.claim`;
+
+    await verifyOwnerOnlyWindowsFileAcl(filePath, run, String.raw`C:\Windows`);
+
+    const [, args, options] = calls[0]!;
+    const script = args.at(-1);
+    expect(script).toContain("AreAccessRulesProtected");
+    expect(script).toContain("Private file DACL is not owner-only full control.");
+    expect(script).not.toContain("Set-Acl");
+    expect(options.env.CRABLINE_PRIVATE_FILE_PATH).toBe(path.resolve(filePath));
+  });
+
+  it.skipIf(process.platform !== "win32")(
+    "rejects a Windows mutation claim writable by another principal",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+        await fs.writeFile(
+          claimPath,
+          `${JSON.stringify({
+            ownerId: "planted-windows-owner",
+            pid: process.pid,
+            processIdentity: "planted:windows-owner",
+            processStartedAtMs: 100,
+          })}\n`,
+        );
+        execFileSync("icacls.exe", [claimPath, "/inheritance:r", "/grant", "*S-1-1-0:(F)"], {
+          stdio: "ignore",
+        });
+
+        await expect(
+          publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n"),
+        ).rejects.toThrow("Private mutation claim must have an owner-only protected Windows ACL.");
+
+        await expect(fs.stat(path.join(directory, "manifest.json"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it("checks generic Windows access masks when verifying mutation ancestry", async () => {
     const calls: Parameters<WindowsAclRunner>[] = [];

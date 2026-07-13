@@ -1,6 +1,6 @@
 import { execFile, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, readFileSync } from "node:fs";
+import { constants as fsConstants, readFileSync, type BigIntStats } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -435,6 +435,46 @@ if (
 }
 `;
 
+const WINDOWS_VERIFY_OWNER_ONLY_FILE_ACL_SCRIPT = String.raw`
+$ErrorActionPreference = "Stop"
+$filePath = $env:CRABLINE_PRIVATE_FILE_PATH
+if ([string]::IsNullOrWhiteSpace($filePath)) {
+  throw "CRABLINE_PRIVATE_FILE_PATH is required."
+}
+
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$sid = $identity.User
+if ($null -eq $sid) {
+  throw "Could not resolve the current Windows user SID."
+}
+
+$actual = Get-Acl -LiteralPath $filePath
+$ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
+$rules = @($actual.GetAccessRules(
+  $true,
+  $true,
+  [System.Security.Principal.SecurityIdentifier]
+))
+if (-not $actual.AreAccessRulesProtected) {
+  throw "Private file DACL still inherits permissions."
+}
+if ($ownerSid.Value -ne $sid.Value) {
+  throw "Private file owner SID does not match the current user."
+}
+if ($rules.Count -ne 1) {
+  throw "Private file DACL must contain exactly one access rule."
+}
+$actualRule = $rules[0]
+if (
+  $actualRule.IsInherited -or
+  $actualRule.IdentityReference.Value -ne $sid.Value -or
+  $actualRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+  (($actualRule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl)
+) {
+  throw "Private file DACL is not owner-only full control."
+}
+`;
+
 const WINDOWS_VERIFY_SAFE_DIRECTORY_MUTATION_BOUNDARY_SCRIPT = String.raw`
 $ErrorActionPreference = "Stop"
 $directoryPath = $env:CRABLINE_PRIVATE_DIRECTORY_PATH
@@ -646,6 +686,37 @@ export async function verifyOwnerOnlyWindowsDirectoryAcl(
     );
   } catch (error) {
     throw new Error("Private mutation parent must have an owner-only protected Windows ACL.", {
+      cause: error,
+    });
+  }
+}
+
+export async function verifyOwnerOnlyWindowsFileAcl(
+  filePath: string,
+  run: WindowsAclRunner = runWindowsAclCommand,
+  systemRoot: string | null | undefined = process.env.SystemRoot,
+): Promise<void> {
+  try {
+    const powershellPath = resolveWindowsPowerShellPath(systemRoot);
+    await run(
+      powershellPath,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        WINDOWS_VERIFY_OWNER_ONLY_FILE_ACL_SCRIPT,
+      ],
+      {
+        env: {
+          ...process.env,
+          CRABLINE_PRIVATE_FILE_PATH: path.resolve(filePath),
+        },
+        windowsHide: true,
+      },
+    );
+  } catch (error) {
+    throw new Error("Private mutation claim must have an owner-only protected Windows ACL.", {
       cause: error,
     });
   }
@@ -1441,6 +1512,16 @@ type PrivateMutationClaimRecord = {
   owner: PrivateMutationClaimOwner;
 };
 
+function assertOwnerOnlyPosixMutationClaim(stats: BigIntStats, kind: "directory" | "file"): void {
+  const currentUserId = process.geteuid?.();
+  if (currentUserId === undefined || !Number.isSafeInteger(currentUserId) || currentUserId < 0) {
+    throw new Error("Could not resolve the current POSIX user for private mutation claims.");
+  }
+  if (stats.uid !== BigInt(currentUserId) || (stats.mode & 0o077n) !== 0n) {
+    throw new Error(`Private mutation claim ${kind} must be owner-only.`);
+  }
+}
+
 async function readPrivateMutationClaim(
   claimPath: string,
 ): Promise<PrivateMutationClaimRecord | null> {
@@ -1461,6 +1542,11 @@ async function readPrivateMutationClaim(
     ) {
       throw new Error("Private path mutation claim metadata size is invalid.");
     }
+    if (process.platform === "win32") {
+      await verifyOwnerOnlyWindowsFileAcl(claimPath);
+    } else {
+      assertOwnerOnlyPosixMutationClaim(stats, "file");
+    }
     const identity = { device: stats.dev, inode: stats.ino };
     const buffer = Buffer.alloc(Number(stats.size));
     let offset = 0;
@@ -1472,6 +1558,11 @@ async function readPrivateMutationClaim(
       offset += bytesRead;
     }
     const finalStats = await handle.stat({ bigint: true });
+    if (process.platform === "win32") {
+      await verifyOwnerOnlyWindowsFileAcl(claimPath);
+    } else {
+      assertOwnerOnlyPosixMutationClaim(finalStats, "file");
+    }
     if (
       !finalStats.isFile() ||
       finalStats.dev !== stats.dev ||
@@ -1884,6 +1975,11 @@ async function readPrivateMutationDirectoryClaim(claimPath: string): Promise<{
   if (!stats.isDirectory() || stats.ino <= 0n) {
     throw new Error("Private mutation directory claim is malformed.");
   }
+  if (process.platform === "win32") {
+    await verifyOwnerOnlyWindowsDirectoryAcl(claimPath);
+  } else {
+    assertOwnerOnlyPosixMutationClaim(stats, "directory");
+  }
   const metadata = await readPrivateMutationClaim(
     path.join(claimPath, PRIVATE_MUTATION_DIRECTORY_OWNER_FILE),
   );
@@ -1891,6 +1987,11 @@ async function readPrivateMutationDirectoryClaim(claimPath: string): Promise<{
     throw new Error("Private mutation directory claim is missing owner metadata.");
   }
   const finalStats = await fs.lstat(claimPath, { bigint: true });
+  if (process.platform === "win32") {
+    await verifyOwnerOnlyWindowsDirectoryAcl(claimPath);
+  } else {
+    assertOwnerOnlyPosixMutationClaim(finalStats, "directory");
+  }
   if (!finalStats.isDirectory() || finalStats.dev !== stats.dev || finalStats.ino !== stats.ino) {
     throw new Error("Private mutation directory claim identity changed.");
   }
