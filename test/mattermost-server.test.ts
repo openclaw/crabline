@@ -15,6 +15,12 @@ const USER_ID = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
 const OTHER_USER_ID = "dddddddddddddddddddddddddd";
 const ROOT_ID = "eeeeeeeeeeeeeeeeeeeeeeeeee";
 
+type MattermostLifecyclePost = {
+  delete_at: number;
+  edit_at: number;
+  update_at: number;
+};
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(directories.splice(0).map(disposeTempDir));
@@ -390,7 +396,11 @@ describe("Mattermost local provider server", () => {
     const sentPost = (await send.json()) as Record<string, unknown>;
     expect(sentPost).toMatchObject({
       channel_id: CHANNEL_ID,
+      create_at: expect.any(Number),
+      delete_at: 0,
+      edit_at: 0,
       message: "assistant nonce-1",
+      update_at: expect.any(Number),
       user_id: server.manifest.botUserId,
     });
     await expect(outboundEvent).resolves.toMatchObject({
@@ -413,7 +423,10 @@ describe("Mattermost local provider server", () => {
       method: "POST",
     });
     expect(direct.status).toBe(201);
-    await expect(direct.json()).resolves.toMatchObject({ type: "D" });
+    await expect(direct.json()).resolves.toMatchObject({
+      name: [server.manifest.botUserId, USER_ID].sort().join("__"),
+      type: "D",
+    });
 
     const postId = sentPost.id;
     expect(postId).toMatch(/^[a-z0-9]{26}$/u);
@@ -427,10 +440,25 @@ describe("Mattermost local provider server", () => {
       method: "PUT",
     });
     expect(edited.status).toBe(200);
-    await expect(editedEvent).resolves.toMatchObject({
+    const editedPost = (await edited.json()) as {
+      edit_at: number;
+      update_at: number;
+    };
+    expect(editedPost.edit_at).toBeGreaterThan(Number(sentPost.update_at));
+    expect(editedPost.update_at).toBe(editedPost.edit_at);
+    const editedMessage = await editedEvent;
+    expect(editedMessage).toMatchObject({
       broadcast: { channel_id: CHANNEL_ID, user_id: "" },
       event: "post_edited",
       seq: 3,
+    });
+    const editedEventPost = JSON.parse(
+      (editedMessage.data as { post: string }).post,
+    ) as MattermostLifecyclePost;
+    expect(editedEventPost).toMatchObject({
+      delete_at: 0,
+      edit_at: editedPost.edit_at,
+      update_at: editedPost.update_at,
     });
 
     const deletedEvent = nextMessage(socket);
@@ -440,11 +468,17 @@ describe("Mattermost local provider server", () => {
     });
     expect(deleted.status).toBe(200);
     await expect(deleted.json()).resolves.toEqual({ status: "OK" });
-    await expect(deletedEvent).resolves.toMatchObject({
+    const deletedMessage = await deletedEvent;
+    expect(deletedMessage).toMatchObject({
       broadcast: { channel_id: CHANNEL_ID, user_id: "" },
       event: "post_deleted",
       seq: 4,
     });
+    const deletedEventPost = JSON.parse(
+      (deletedMessage.data as { post: string }).post,
+    ) as MattermostLifecyclePost;
+    expect(deletedEventPost.delete_at).toBeGreaterThan(editedPost.update_at);
+    expect(deletedEventPost.update_at).toBe(deletedEventPost.delete_at);
     socket.close();
 
     const recorded = await fs.readFile(recorderPath, "utf8");
@@ -1139,7 +1173,7 @@ describe("Mattermost local provider server", () => {
     expect(created.status).toBe(201);
 
     const boundaryEdit = await fetch(`${server.manifest.endpoints.apiRoot}/posts/${post.id}`, {
-      body: JSON.stringify({ message: "x".repeat(655) }),
+      body: JSON.stringify({ message: "x".repeat(573) }),
       headers: {
         authorization: "Bearer fake",
         "content-type": "application/json",
@@ -1213,6 +1247,15 @@ describe("Mattermost local provider server", () => {
   });
 
   it("validates WebSocket resource limits", async () => {
+    await expect(startMattermostServer({ maxCommittedChannels: 0 })).rejects.toThrow(
+      "maxCommittedChannels must be a positive safe integer.",
+    );
+    await expect(startMattermostServer({ maxCommittedPosts: 0 })).rejects.toThrow(
+      "maxCommittedPosts must be a positive safe integer.",
+    );
+    await expect(startMattermostServer({ maxCommittedUsers: 0 })).rejects.toThrow(
+      "maxCommittedUsers must be a positive safe integer.",
+    );
     await expect(startMattermostServer({ maxWebSocketBufferedBytes: 0 })).rejects.toThrow(
       "maxWebSocketBufferedBytes must be a positive safe integer.",
     );
@@ -1222,6 +1265,59 @@ describe("Mattermost local provider server", () => {
     await expect(startMattermostServer({ maxUnauthenticatedWebSocketClients: 0 })).rejects.toThrow(
       "maxUnauthenticatedWebSocketClients must be a positive safe integer.",
     );
+  });
+
+  it("bounds committed users, channels, and posts before mutation", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "fake",
+      maxCommittedChannels: 1,
+      maxCommittedPosts: 1,
+      maxCommittedUsers: 2,
+    });
+    servers.push(server);
+    const sendInbound = (body: Record<string, unknown>) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify(body),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+
+    expect(
+      (
+        await sendInbound({
+          channelId: CHANNEL_ID,
+          senderId: USER_ID,
+          text: "fills committed state",
+        })
+      ).status,
+    ).toBe(200);
+
+    for (const [body, resource] of [
+      [{ channelId: OTHER_CHANNEL_ID, senderId: USER_ID, text: "new channel" }, "channels"],
+      [{ channelId: CHANNEL_ID, senderId: OTHER_USER_ID, text: "new user" }, "users"],
+      [{ channelId: CHANNEL_ID, senderId: USER_ID, text: "new post" }, "posts"],
+    ] as const) {
+      const response = await sendInbound(body);
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({
+        error: `Committed Mattermost ${resource} limit reached`,
+        ok: false,
+      });
+    }
+
+    const missingUser = await fetch(`${server.manifest.endpoints.apiRoot}/users/${OTHER_USER_ID}`, {
+      headers: { authorization: "Bearer fake" },
+    });
+    expect(missingUser.status).toBe(404);
+    const missingChannel = await fetch(
+      `${server.manifest.endpoints.apiRoot}/channels/${OTHER_CHANNEL_ID}`,
+      { headers: { authorization: "Bearer fake" } },
+    );
+    expect(missingChannel.status).toBe(404);
   });
 
   it("drains authorized GET and DELETE request bodies", async () => {
