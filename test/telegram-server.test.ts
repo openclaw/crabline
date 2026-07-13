@@ -128,12 +128,16 @@ describe("telegram local provider server", () => {
         method: "POST",
       },
     );
-    await expect(usernameTopic.json()).resolves.toMatchObject({
+    const usernameTopicBody = (await usernameTopic.json()) as {
+      result: { chat: { id: number; type: string }; message_thread_id: number };
+    };
+    expect(usernameTopicBody).toMatchObject({
       result: {
-        chat: { id: "@crabline_channel", type: "supergroup" },
+        chat: { id: expect.any(Number), type: "supergroup" },
         message_thread_id: 42,
       },
     });
+    expect(usernameTopicBody.result.chat.id).toBeLessThan(-1_000_000_000_000);
 
     const shortUsername = await fetch(
       `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
@@ -148,7 +152,7 @@ describe("telegram local provider server", () => {
     );
     expect(shortUsername.status).toBe(200);
     await expect(shortUsername.json()).resolves.toMatchObject({
-      result: { chat: { id: "@tiny", type: "supergroup" } },
+      result: { chat: { id: expect.any(Number), type: "supergroup" } },
     });
 
     const shorterUsername = await fetch(
@@ -510,6 +514,114 @@ describe("telegram local provider server", () => {
         },
       },
     });
+
+    const metadata = await injectUpdate(server, {
+      chatId: 42,
+      entities: [
+        { length: 4, offset: 0, type: "text_link", url: "https://example.com" },
+        {
+          length: 4,
+          offset: 5,
+          type: "text_mention",
+          user: { first_name: "Alice", id: 100002, is_bot: false },
+        },
+        { language: "typescript", length: 4, offset: 10, type: "pre" },
+        {
+          custom_emoji_id: "emoji-1",
+          length: 2,
+          offset: 14,
+          type: "custom_emoji",
+        },
+      ],
+      text: "link user code😀",
+    });
+    await expect(metadata.json()).resolves.toMatchObject({
+      update: {
+        message: {
+          entities: [
+            { type: "text_link", url: "https://example.com" },
+            {
+              type: "text_mention",
+              user: { first_name: "Alice", id: 100002, is_bot: false },
+            },
+            { language: "typescript", type: "pre" },
+            { custom_emoji_id: "emoji-1", type: "custom_emoji" },
+          ],
+        },
+      },
+    });
+  });
+
+  it("enforces native text and caption types and lengths", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
+
+    for (const text of [123, "", "x".repeat(4097)]) {
+      const response = await fetch(`${apiRoot}/sendMessage`, {
+        body: JSON.stringify({ chat_id: 42, text }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(response.status).toBe(400);
+    }
+
+    for (const caption of [123, "x".repeat(1025)]) {
+      const response = await fetch(`${apiRoot}/sendPhoto`, {
+        body: JSON.stringify({ caption, chat_id: 42, photo: "fixture.png" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(response.status).toBe(400);
+    }
+
+    expect(
+      (
+        await fetch(`${apiRoot}/sendMessage`, {
+          body: JSON.stringify({ chat_id: 42, text: "x".repeat(4096) }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await fetch(`${apiRoot}/sendPhoto`, {
+          body: JSON.stringify({
+            caption: "x".repeat(1024),
+            chat_id: 42,
+            photo: "fixture.png",
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("rejects control characters in webhook secrets", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
+
+    for (const secretToken of [
+      "safe\r\nunsafe",
+      `safe${String.fromCharCode(0)}unsafe`,
+      `safe${String.fromCharCode(1)}unsafe`,
+    ]) {
+      const response = await fetch(`${apiRoot}/setWebhook`, {
+        body: JSON.stringify({
+          secret_token: secretToken,
+          url: "https://93.184.216.34/telegram",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        description: "Bad Request: invalid secret token",
+      });
+    }
   });
 
   it("rejects admin inbound when the update queue is full", async () => {

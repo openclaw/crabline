@@ -213,6 +213,27 @@ describe("manifest schema", () => {
     }
   });
 
+  it("rejects control characters in Telegram webhook secrets", () => {
+    for (const secretToken of [
+      "token\r\nx-injected: yes",
+      `token${String.fromCharCode(0)}`,
+      `token${String.fromCharCode(1)}`,
+    ]) {
+      expect(() =>
+        ManifestSchema.parse({
+          configVersion: 1,
+          fixtures: [],
+          providers: {
+            telegram: {
+              adapter: "telegram",
+              telegram: { secretToken },
+            },
+          },
+        }),
+      ).toThrow(/Telegram secretToken/u);
+    }
+  });
+
   it("caps fixture retries", () => {
     expect(() =>
       ManifestSchema.parse({
