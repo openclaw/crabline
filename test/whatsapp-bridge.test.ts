@@ -21,11 +21,15 @@ describe("WhatsApp OpenClaw bridge", () => {
       });
       expect(inbound).toMatchObject({
         providerBody: {
-          chatJid: "15551234567@s.whatsapp.net",
-          senderJid: "15551234567@s.whatsapp.net",
+          chatJid: "15551234567:2@s.whatsapp.net",
+          senderJid: "15551234567:7@s.whatsapp.net",
         },
         providerTargetKey: "15551234567@s.whatsapp.net",
         qaTarget: "dm:15551234567@s.whatsapp.net",
+        stateConversation: {
+          id: "15551234567:2@s.whatsapp.net",
+          kind: "direct",
+        },
       });
     } finally {
       await adapter.close();
@@ -54,7 +58,11 @@ describe("WhatsApp OpenClaw bridge", () => {
 
       expect(
         adapter.createOutboundFromRecorderEvent({
-          event: { ...base, body, method: "POST" },
+          event: {
+            ...base,
+            body: { text: body.text, to: body.to },
+            method: "POST",
+          },
           targetByProviderTarget,
         }),
       ).toMatchObject({ text: "hello", to: "dm:alice" });
