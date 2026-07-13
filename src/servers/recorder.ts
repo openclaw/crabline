@@ -272,20 +272,26 @@ function isRecorderLockContention(error: unknown): boolean {
 }
 
 async function secureRecorderLockRoot(root: string): Promise<string> {
+  const canonicalRoot = await realpath(root);
+  if (path.relative(root, canonicalRoot) !== "") {
+    throw new Error(
+      `${RECORDER_LOCK_DIRECTORY_ENV} must name a canonical directory without symlink components.`,
+    );
+  }
   if (process.platform === "win32") {
-    const identity = await lstat(root);
+    const identity = await lstat(canonicalRoot);
     if (!identity.isDirectory() || identity.isSymbolicLink()) {
       throw new Error("Server recorder lock directory is not a private directory.");
     }
-    return root;
+    return canonicalRoot;
   }
   const handle = await open(
-    root,
+    canonicalRoot,
     fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
   );
   try {
     const identity = await handle.stat({ bigint: true });
-    const current = await lstat(root, { bigint: true });
+    const current = await lstat(canonicalRoot, { bigint: true });
     if (
       !identity.isDirectory() ||
       !current.isDirectory() ||
@@ -297,10 +303,12 @@ async function secureRecorderLockRoot(root: string): Promise<string> {
   } finally {
     await handle.close();
   }
-  return root;
+  return canonicalRoot;
 }
 
 function recorderIdentityLockPath(root: string, identity: RecorderFileIdentity): string {
+  // st_dev can differ for one shared inode across container mount namespaces.
+  // Scope each configured root to one recorder filesystem to avoid false inode collisions.
   return path.join(root, `recorder-${identity.ino}`);
 }
 

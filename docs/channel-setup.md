@@ -290,7 +290,10 @@ Use one filesystem name per recorder file. When multiple server processes must
 write through hardlinks to the same recorder inode, set
 `CRABLINE_RECORDER_LOCK_DIR` to one absolute writable directory shared by every
 writer and pre-create its ownership, group, or ACLs. Hardlinked server-recorder
-writes fail closed when this shared lock namespace is absent.
+writes fail closed when this shared lock namespace is absent. The path must be
+canonical and contain no symlink components. Use a separate lock directory per
+recorder filesystem; lock identities omit device numbers so containers that
+mount the same inode under different device IDs still coordinate.
 
 Slack:
 

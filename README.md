@@ -182,7 +182,10 @@ write through hardlinks to the same recorder inode, set
 `CRABLINE_RECORDER_LOCK_DIR` to the same absolute writable directory for every
 writer. Pre-create that directory with the ownership, group, or ACLs required
 by those writers. Crabline refuses hardlinked server-recorder writes without
-this shared lock namespace.
+this shared lock namespace. The configured path must be canonical and contain
+no symlink components. Scope each lock directory to one recorder filesystem;
+lock identities omit device numbers so containers that mount the same inode
+under different device IDs still coordinate.
 
 Mattermost:
 
