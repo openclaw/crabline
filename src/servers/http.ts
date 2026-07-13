@@ -256,7 +256,7 @@ export function writeFetchResponseHeaders(response: ServerResponse, fetchRespons
   }
 
   const setCookies = fetchResponse.headers.getSetCookie();
-  if (setCookies.length > 0) {
+  if (setCookies.length > 0 && !connectionHeaders.has("set-cookie")) {
     response.setHeader("set-cookie", setCookies);
   }
 }
