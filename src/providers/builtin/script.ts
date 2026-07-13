@@ -45,7 +45,7 @@ const WINDOWS_PROCESS_TERMINATOR_SOURCE = [
   "try{",
   "long creationTime,exitTime,kernelTime,userTime;",
   "if(!GetProcessTimes(handle,out creationTime,out exitTime,out kernelTime,out userTime)){return false;}",
-  "if(creationTime!=expectedCreationTime){return true;}",
+  "if(creationTime/10!=expectedCreationTime/10){return true;}",
   "uint status=WaitForSingleObject(handle,0);",
   "if(status==WaitObject0){return true;}",
   "if(status!=WaitTimeout){return false;}",
