@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { matchesInbound } from "./matcher.js";
 import { createOutboundText } from "./message-template.js";
 import { createNonce } from "./nonces.js";
@@ -449,13 +450,16 @@ export async function runFixtureCommand(params: {
             });
           }
 
-          const inboundDeadline = Date.now() + fixture.timeoutMs;
+          const inboundDeadline = performance.now() + fixture.timeoutMs;
           const seenInbound = new Set<string>();
           const excludedInboundIds = new Set<string>();
           let inbound;
           try {
-            while (Date.now() < inboundDeadline) {
-              const timeoutMs = inboundDeadline - Date.now();
+            while (true) {
+              const timeoutMs = Math.max(0, Math.ceil(inboundDeadline - performance.now()));
+              if (timeoutMs === 0) {
+                break;
+              }
               const controller = new AbortController();
               const excludeIds = [...excludedInboundIds];
               const waitContext = {
@@ -500,7 +504,9 @@ export async function runFixtureCommand(params: {
 
               const key = JSON.stringify([candidate.provider, candidate.threadId, candidate.id]);
               if (seenInbound.has(key)) {
-                await sleep(Math.min(10, Math.max(0, inboundDeadline - Date.now())));
+                await sleep(
+                  Math.min(10, Math.max(0, Math.ceil(inboundDeadline - performance.now()))),
+                );
                 continue;
               }
 
