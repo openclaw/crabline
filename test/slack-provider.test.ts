@@ -430,7 +430,7 @@ describe("slack provider", () => {
     const endpoint = endpointFromDetails((await provider.probe(context)).details);
     const waiting = provider.waitForInbound({
       ...context,
-      nonce: "inline-nonce",
+      nonce: "inline-https://example.test/nonce-tail",
       since: new Date(Date.now() - 1_000).toISOString(),
       timeoutMs: 500,
     });
@@ -444,7 +444,8 @@ describe("slack provider", () => {
                 {
                   elements: [
                     { text: "inline-", type: "text" },
-                    { style: { bold: true }, text: "nonce", type: "text" },
+                    { type: "link", url: "https://example.test/nonce" },
+                    { style: { bold: true }, text: "-tail", type: "text" },
                   ],
                   type: "rich_text_section",
                 },
@@ -474,7 +475,7 @@ describe("slack provider", () => {
     expect(response.status).toBe(200);
     await expect(waiting).resolves.toMatchObject({
       id: "1700000001.000202",
-      text: "inline-nonce\nrepeat\nrepeat",
+      text: "inline-https://example.test/nonce-tail\nrepeat\nrepeat",
     });
   });
 
@@ -487,7 +488,7 @@ describe("slack provider", () => {
     const endpoint = endpointFromDetails((await provider.probe(context)).details);
     const waiting = provider.waitForInbound({
       ...context,
-      nonce: "card-body",
+      nonce: "card-action",
       since: new Date(Date.now() - 1_000).toISOString(),
       timeoutMs: 500,
     });
@@ -497,7 +498,15 @@ describe("slack provider", () => {
         event: {
           blocks: [
             {
+              actions: [
+                {
+                  text: { text: "card-action", type: "plain_text" },
+                  type: "button",
+                },
+              ],
               body: { text: "card-body", type: "mrkdwn" },
+              hero_image: { alt_text: "hero image", url: "https://example.test/hero.png" },
+              icon: { alt_text: "card icon", url: "https://example.test/icon.png" },
               subtitle: { text: "card subtitle", type: "plain_text" },
               subtext: { text: "card subtext", type: "plain_text" },
               type: "card",
@@ -517,7 +526,43 @@ describe("slack provider", () => {
     expect(response.status).toBe(200);
     await expect(waiting).resolves.toMatchObject({
       id: "1700000001.000203",
-      text: "card-body\ncard subtitle\ncard subtext",
+      text: "card-body\ncard subtitle\ncard subtext\ncard-action\nhero image\ncard icon",
+    });
+  });
+
+  it("records message-shaped app mentions", async () => {
+    const config = await createSlackConfig(0);
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+    const context = createContext(config);
+    context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
+    const endpoint = endpointFromDetails((await provider.probe(context)).details);
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "mention-nonce",
+      since: new Date(Date.now() - 1_000).toISOString(),
+      timeoutMs: 500,
+    });
+
+    const response = await fetch(endpoint, {
+      body: JSON.stringify({
+        event: {
+          channel: "C1234567890",
+          text: "<@UAPP> mention-nonce",
+          ts: "1700000001.000204",
+          type: "app_mention",
+          user: "U1234567890",
+        },
+        type: "event_callback",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(waiting).resolves.toMatchObject({
+      id: "1700000001.000204",
+      text: "<@UAPP> mention-nonce",
     });
   });
 

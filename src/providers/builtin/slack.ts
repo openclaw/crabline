@@ -81,6 +81,9 @@ function slackInlineText(value: unknown): string {
   if (typeof value.text === "string") {
     return value.text;
   }
+  if (value.type === "link" && typeof value.url === "string") {
+    return value.url;
+  }
   return slackInlineText(value.elements);
 }
 
@@ -126,7 +129,16 @@ function collectSlackBlockText(value: unknown, output: string[]): void {
     collectSlackTextValue(value[key], output);
   }
   collectSlackTextValue(value.text, output);
-  for (const key of ["blocks", "elements", "fields", "rows", "tasks"] as const) {
+  for (const key of [
+    "blocks",
+    "elements",
+    "fields",
+    "rows",
+    "tasks",
+    "actions",
+    "hero_image",
+    "icon",
+  ] as const) {
     collectSlackBlockText(value[key], output);
   }
 }
@@ -287,7 +299,7 @@ export function handleSlackWebhookPayload(payload: unknown): Response | undefine
     if (!eventType) {
       return undefined;
     }
-    if (eventType !== "message") {
+    if (eventType !== "message" && eventType !== "app_mention") {
       return new Response(null, { status: 200 });
     }
     const isMessageChanged = payload.event.subtype === "message_changed";
