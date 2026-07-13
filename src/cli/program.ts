@@ -51,6 +51,11 @@ type ProgramDependencies = {
   startServer?: (params: StartCrablineServerParams) => Promise<StartedCrablineServer>;
 };
 
+type RunCliOptions = {
+  dependencies?: ProgramDependencies;
+  forceExit?: (code: number) => never;
+};
+
 type ServeSharedOptions = {
   host: string;
   port: number;
@@ -210,6 +215,8 @@ async function print(value: string): Promise<boolean> {
   return await writeOutput(process.stdout, `${value}\n`);
 }
 
+class WatchShutdownDeadlineError extends CrablineError {}
+
 async function withWatchShutdownDeadline<T>(
   operation: PromiseLike<T>,
   operationName: string,
@@ -218,7 +225,7 @@ async function withWatchShutdownDeadline<T>(
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       reject(
-        new CrablineError(
+        new WatchShutdownDeadlineError(
           `Provider ${operationName} did not settle within ${WATCH_SHUTDOWN_GRACE_MS}ms during watch shutdown.`,
           { kind: "timeout" },
         ),
@@ -232,6 +239,20 @@ async function withWatchShutdownDeadline<T>(
       clearTimeout(timer);
     }
   }
+}
+
+function containsWatchShutdownDeadline(error: unknown, seen = new Set<object>()): boolean {
+  if (error instanceof WatchShutdownDeadlineError) {
+    return true;
+  }
+  if (!error || typeof error !== "object" || seen.has(error)) {
+    return false;
+  }
+  seen.add(error);
+  if (error instanceof AggregateError) {
+    return error.errors.some((entry) => containsWatchShutdownDeadline(entry, seen));
+  }
+  return "cause" in error && containsWatchShutdownDeadline(error.cause, seen);
 }
 
 async function withManifest<T>(
@@ -1255,11 +1276,11 @@ function diagnose(manifest: Awaited<ReturnType<typeof loadManifest>>["manifest"]
   return findings;
 }
 
-export async function runCli(argv: string[]): Promise<number> {
+export async function runCli(argv: string[], options: RunCliOptions = {}): Promise<number> {
   let exitCode = 0;
   const program = createProgram((code) => {
     exitCode = code;
-  });
+  }, options.dependencies);
   const parserErrors: string[] = [];
   const parserOutput: string[] = [];
   const bufferParserErrors = (command: Command): void => {
@@ -1310,6 +1331,9 @@ export async function runCli(argv: string[]): Promise<number> {
       await writeOutput(process.stderr, parserErrors.join(""));
     } else {
       await writeOutput(process.stderr, `${ensureErrorMessage(error)}\n`);
+    }
+    if (options.forceExit && containsWatchShutdownDeadline(error)) {
+      options.forceExit(errorExitCode);
     }
     return errorExitCode;
   }
