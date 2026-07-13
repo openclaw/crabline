@@ -847,6 +847,7 @@ describe("script provider", () => {
           process.env.${headerEnvName},
           "Authorization=Basic sample",
           "API_TOKEN=dummy",
+          "API_TOKEN=Bearer secret-token",
           "--client-secret fake"
         ].join("\\n"));process.exitCode=7;`,
       );
@@ -867,7 +868,14 @@ describe("script provider", () => {
       expect(message).toContain("Authorization=Basic [redacted credential]");
       expect(message).toContain("API_TOKEN=[redacted credential]");
       expect(message).toContain("--client-secret [redacted credential]");
-      for (const secret of ["sample", "test-token-placeholder", "placeholder", "dummy", "fake"]) {
+      for (const secret of [
+        "sample",
+        "test-token-placeholder",
+        "placeholder",
+        "dummy",
+        "secret-token",
+        "fake",
+      ]) {
         expect(message).not.toContain(secret);
       }
     } finally {
