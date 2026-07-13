@@ -12,6 +12,7 @@
 - Reject webhook paths changed by URL normalization and clear stale response headers before fallback errors.
 - Expose synchronous provider cleanup fences and prune inactive LocalMock wait cursors after concurrent waits settle.
 - Tighten Telegram message, entity, username-target, and webhook-secret fidelity; reject malformed Feishu message content; and align Mattermost ingress IDs, REST bodies, and WebSocket post events.
+- Acknowledge authenticated non-message chat callbacks without recording them, and tighten Slack, Google Chat, Teams, Zalo, Matrix, and shared local-mock normalization.
 - Harden provider adapter authentication, target identity, credential redaction, and webhook lifecycle behavior.
 - Harden release provenance retries, provider-native contract tests, cross-platform tooling, cleanup ordering, and channel setup coverage.
 - Stop `serve` after closed-pipe output, withdraw readiness before shutdown, and retain ownership when server close fails.
