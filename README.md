@@ -234,7 +234,9 @@ The server implements an unencrypted Matrix Client-Server API subset including
 `whoami`, filters, push rules, joined rooms and members, room state, `/sync`,
 room event sends, typing, and read receipts. Admin ingress is only the test
 control plane; injected messages are delivered to clients as native
-`m.room.message` events through `/sync`.
+`m.room.message` events through `/sync`. Optional `roomName` sets newly created
+room state, `direct: true` publishes `m.direct` account data, and `threadId`
+accepts the raw Matrix root event ID used in the native thread relation.
 
 Slack:
 
@@ -418,6 +420,8 @@ target:
 Examples:
 
 - Slack conversations: `C1234567890`, `G1234567890`, or `D1234567890`
+- Slack direct sends may also target user IDs such as `U1234567890` or
+  `W1234567890`
 - Slack threads: `1700000000.000100`
 - Telegram chats: `-1001234567890` or `@channelusername`
 - Telegram topics: `42`
@@ -425,6 +429,18 @@ Examples:
 - WhatsApp groups: `120363001234567890@g.us`
 - Discord channels and threads: Discord snowflake ids such as
   `123456789012345678`
+- iMessage recipients: E.164 phone numbers such as `+15551234567`, email
+  addresses such as `user@example.com`, or chat GUIDs such as
+  `iMessage;-;chat-guid` and `SMS;+;chat-guid`
+- Matrix rooms: scoped IDs such as `!abcdef:matrix.org` or Matrix v12
+  domainless room IDs; thread IDs are raw root event IDs such as
+  `$eventid:matrix.org`
+- Mattermost channels, users, and root posts: exactly 26 lowercase alphanumeric
+  characters, such as `abcdefghijklmnopqrstuvwx12`
+- Microsoft Teams: non-empty opaque Bot Connector `conversation.id` values such
+  as `a:opaque-conversation-id` or `19:conversation@thread.v2`
+- Zalo users, OAs, and chats: non-whitespace provider IDs such as `user-1` or
+  `group-1`
 
 ## Webhooks
 
