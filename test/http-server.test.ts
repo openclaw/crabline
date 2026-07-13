@@ -140,33 +140,37 @@ describe("server HTTP body reader", () => {
   });
 
   it.each([
-    ["0.0.0.0", "127.0.0.1"],
-    ["::", "[::1]"],
-  ])("advertises loopback while preserving the %s wildcard bind", async (host, advertisedHost) => {
-    const server = await startHttpJsonServer({
-      async handle() {
-        return Response.json({ ok: true });
-      },
-      host,
-      port: 0,
-      serverName: "test",
-    });
-
-    try {
-      expect(new URL(server.baseUrl).hostname).toBe(advertisedHost);
-      const address = server.server.address();
-      expect(address).not.toBeNull();
-      expect(typeof address).not.toBe("string");
-      expect(typeof address === "string" || address === null ? undefined : address.address).toBe(
+    ["0.0.0.0", "127.0.0.1", "0.0.0.0"],
+    ["::", "[::1]", "::"],
+    ["0:0:0:0:0:0:0:0", "[::1]", "::"],
+  ])(
+    "advertises loopback while preserving the %s wildcard bind",
+    async (host, advertisedHost, boundAddress) => {
+      const server = await startHttpJsonServer({
+        async handle() {
+          return Response.json({ ok: true });
+        },
         host,
-      );
-      await expect(fetch(server.baseUrl).then((response) => response.json())).resolves.toEqual({
-        ok: true,
+        port: 0,
+        serverName: "test",
       });
-    } finally {
-      await server.close();
-    }
-  });
+
+      try {
+        expect(new URL(server.baseUrl).hostname).toBe(advertisedHost);
+        const address = server.server.address();
+        expect(address).not.toBeNull();
+        expect(typeof address).not.toBe("string");
+        expect(typeof address === "string" || address === null ? undefined : address.address).toBe(
+          boundAddress,
+        );
+        await expect(fetch(server.baseUrl).then((response) => response.json())).resolves.toEqual({
+          ok: true,
+        });
+      } finally {
+        await server.close();
+      }
+    },
+  );
 
   it("owns buffered response framing instead of trusting caller Content-Length", async () => {
     const server = await startHttpJsonServer({
