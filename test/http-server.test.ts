@@ -129,6 +129,52 @@ describe("server HTTP body reader", () => {
     }
   });
 
+  it("removes trailer metadata when replacing transfer framing", async () => {
+    const server = await startHttpJsonServer({
+      async handle() {
+        return new Response("complete", {
+          headers: {
+            trailer: "x-checksum",
+            "transfer-encoding": "chunked",
+          },
+        });
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const response = await fetch(server.baseUrl);
+      expect(response.headers.get("trailer")).toBeNull();
+      expect(response.headers.get("content-length")).toBe("8");
+      await expect(response.text()).resolves.toBe("complete");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("preserves representation length metadata for HEAD responses", async () => {
+    const server = await startHttpJsonServer({
+      async handle() {
+        return new Response(null, {
+          headers: { "content-length": "8" },
+        });
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const response = await fetch(server.baseUrl, { method: "HEAD" });
+      expect(response.headers.get("content-length")).toBe("8");
+      await expect(response.text()).resolves.toBe("");
+    } finally {
+      await server.close();
+    }
+  });
+
   it("does not expose unexpected exception details", async () => {
     const server = await startHttpJsonServer({
       async handle() {
