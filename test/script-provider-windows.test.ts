@@ -38,9 +38,12 @@ function createFakeChild(pid: number): FakeChild {
   return child;
 }
 
-function createCleanupChild(code: number): FakeChild {
+function createCleanupChild(code: number, beforeClose?: () => void): FakeChild {
   const child = createFakeChild(9000 + code);
-  void Promise.resolve().then(() => child.emit("close", code, null));
+  void Promise.resolve().then(() => {
+    beforeClose?.();
+    child.emit("close", code, null);
+  });
   return child;
 }
 
@@ -212,5 +215,33 @@ describe("script provider Windows cleanup", () => {
 
     expect(spawnMock.mock.calls[2]?.[0]).toBe("taskkill.exe");
     expect(spawnMock.mock.calls[2]?.[1]).toEqual(["/PID", "7890", "/T", "/F"]);
+  });
+
+  it("does not taskkill after the script exits during PowerShell cleanup", async () => {
+    const scriptChild = createFakeChild(8901);
+    spawnMock.mockReturnValueOnce(scriptChild).mockImplementationOnce(() =>
+      createCleanupChild(1, () => {
+        Object.defineProperty(scriptChild, "exitCode", {
+          configurable: true,
+          value: 0,
+        });
+      }),
+    );
+    const context = createContext();
+    const provider = new ScriptProviderAdapter(context);
+
+    const failurePromise = provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(context.fixture.timeoutMs);
+    await failurePromise;
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(scriptChild.kill).not.toHaveBeenCalledWith("SIGKILL");
   });
 });
