@@ -56,8 +56,11 @@ type Nat64Prefix = {
 };
 
 type PendingWebhookDnsLookup = {
+  detached: boolean;
   hostname: string;
   onAbort: () => void;
+  recoveryReady: boolean;
+  recoveryTimer: NodeJS.Timeout | undefined;
   reject(error: unknown): void;
   resolve(addresses: WebhookDnsLookupResult): void;
   settled: boolean;
@@ -68,21 +71,28 @@ type PendingWebhookDnsLookup = {
 
 export class WebhookDnsLookupPool {
   readonly #pending: PendingWebhookDnsLookup[] = [];
+  readonly #recoverable = new Set<PendingWebhookDnsLookup>();
   #active = 0;
+  #detached = 0;
 
   constructor(
     private readonly maxConcurrent: number,
     private readonly lookupHostname: WebhookDnsLookup = async (hostname) =>
       await lookup(hostname, { all: true, verbatim: true }),
+    private readonly abortedLookupRecoveryMs = 5_000,
   ) {
     if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1) {
       throw new Error("Webhook DNS lookup concurrency must be a positive safe integer.");
+    }
+    if (!Number.isSafeInteger(abortedLookupRecoveryMs) || abortedLookupRecoveryMs < 1) {
+      throw new Error("Webhook DNS lookup recovery must be a positive safe integer.");
     }
   }
 
   resolve(hostname: string, signal?: AbortSignal): Promise<WebhookDnsLookupResult> {
     return new Promise<WebhookDnsLookupResult>((resolve, reject) => {
       const pending: PendingWebhookDnsLookup = {
+        detached: false,
         hostname,
         onAbort: () => {
           if (pending.settled) {
@@ -94,12 +104,16 @@ export class WebhookDnsLookupPool {
             if (index >= 0) {
               this.#pending.splice(index, 1);
             }
+          } else {
+            this.#scheduleRecovery(pending);
           }
           signal?.removeEventListener("abort", pending.onAbort);
           reject(abortSignalError(signal));
           this.#pump();
         },
         reject,
+        recoveryReady: false,
+        recoveryTimer: undefined,
         resolve,
         settled: false,
         signal,
@@ -150,9 +164,52 @@ export class WebhookDnsLookupPool {
           },
         )
         .finally(() => {
+          if (pending.recoveryTimer) {
+            clearTimeout(pending.recoveryTimer);
+            pending.recoveryTimer = undefined;
+          }
+          this.#recoverable.delete(pending);
           pending.signal?.removeEventListener("abort", pending.onAbort);
-          this.#releaseSlot(pending);
+          if (pending.detached) {
+            pending.detached = false;
+            this.#detached -= 1;
+            this.#recoverSlots();
+            this.#pump();
+          } else {
+            this.#releaseSlot(pending);
+          }
         });
+    }
+  }
+
+  #scheduleRecovery(pending: PendingWebhookDnsLookup): void {
+    if (pending.recoveryTimer || pending.detached || !pending.slotHeld) {
+      return;
+    }
+    pending.recoveryTimer = setTimeout(() => {
+      pending.recoveryTimer = undefined;
+      if (!pending.slotHeld) {
+        return;
+      }
+      pending.recoveryReady = true;
+      this.#recoverable.add(pending);
+      this.#recoverSlots();
+    }, this.abortedLookupRecoveryMs);
+    pending.recoveryTimer.unref();
+  }
+
+  #recoverSlots(): void {
+    for (const pending of this.#recoverable) {
+      if (this.#detached >= this.maxConcurrent) {
+        return;
+      }
+      this.#recoverable.delete(pending);
+      if (!pending.recoveryReady || !pending.slotHeld) {
+        continue;
+      }
+      pending.detached = true;
+      this.#detached += 1;
+      this.#releaseSlot(pending);
     }
   }
 
