@@ -344,4 +344,37 @@ describe("WhatsApp provider recorder cursors", () => {
     await expect(provider.waitForInbound(waitContext)).resolves.toMatchObject({ id: "fresh" });
     expect(authorReads).toBe(6);
   });
+
+  it("skips matching inbound records whose IDs are excluded", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    providers.push(provider);
+    const context = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
+    context.fixture.inboundMatch = { author: "any", nonce: "ignore", strategy: "contains" };
+    const recorderPath = path.resolve(config.whatsapp!.recorder.path!);
+    for (const id of ["excluded", "allowed"]) {
+      await appendRecordedInbound(recorderPath, {
+        author: "user",
+        id,
+        provider: "whatsapp",
+        sentAt: new Date().toISOString(),
+        text: "matching inbound",
+        threadId: "15551234567",
+      });
+    }
+
+    await expect(
+      provider.waitForInbound({
+        ...context,
+        excludeIds: ["excluded"],
+        nonce: "excluded-id",
+        since: new Date(0).toISOString(),
+        threadId: "15551234567",
+        timeoutMs: 100,
+      }),
+    ).resolves.toMatchObject({ id: "allowed" });
+  });
 });
