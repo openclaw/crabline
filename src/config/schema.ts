@@ -64,19 +64,42 @@ type BuiltinAdapterName = (typeof BUILTIN_ADAPTERS)[number];
 type ProviderPlatformName = (typeof PROVIDER_PLATFORMS)[number];
 type FixtureModeConstraintInput = {
   inboundMatch: {
+    nonce: (typeof INBOUND_NONCE_MODES)[number];
     pattern?: string | undefined;
     strategy: (typeof INBOUND_STRATEGIES)[number];
   };
   mode: (typeof FIXTURE_MODES)[number];
+  retries: number;
 };
 
-export function fixtureModeValidationError(value: FixtureModeConstraintInput): string | undefined {
+type FixtureModeValidationIssue = {
+  message: string;
+  path: ["inboundMatch", "nonce" | "strategy"];
+};
+
+export function fixtureModeValidationIssue(
+  value: FixtureModeConstraintInput,
+): FixtureModeValidationIssue | undefined {
+  if (
+    (value.mode === "roundtrip" || value.mode === "agent") &&
+    value.retries > 0 &&
+    value.inboundMatch.nonce === "ignore"
+  ) {
+    return {
+      message: `${value.mode} mode cannot retry when inboundMatch.nonce=ignore because a late reply from an earlier attempt could be accepted`,
+      path: ["inboundMatch", "nonce"],
+    };
+  }
   if (
     value.mode === "agent" &&
     value.inboundMatch.strategy === "exact" &&
     value.inboundMatch.pattern
   ) {
-    return "agent mode cannot use inboundMatch.strategy=exact with a static pattern because replies must include the generated ACK nonce";
+    return {
+      message:
+        "agent mode cannot use inboundMatch.strategy=exact with a static pattern because replies must include the generated ACK nonce",
+      path: ["inboundMatch", "strategy"],
+    };
   }
   return undefined;
 }
@@ -750,12 +773,12 @@ export const FixtureSchema = z
     timeoutMs: TimerMsSchema.min(100).default(30_000),
   })
   .superRefine((value, ctx) => {
-    const validationError = fixtureModeValidationError(value);
-    if (validationError) {
+    const validationIssue = fixtureModeValidationIssue(value);
+    if (validationIssue) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: validationError,
-        path: ["inboundMatch", "strategy"],
+        message: validationIssue.message,
+        path: validationIssue.path,
       });
     }
   });
@@ -781,11 +804,7 @@ const StrictManifestSchema = z
   })
   .superRefine((manifest, ctx) => {
     for (const [providerId, provider] of Object.entries(manifest.providers)) {
-      if (
-        provider.adapter !== "matrix" &&
-        provider.adapter !== "mattermost" &&
-        provider.adapter !== "imessage"
-      ) {
+      if (provider.adapter !== "matrix" && provider.adapter !== "imessage") {
         continue;
       }
       const webhook = provider[provider.adapter]?.webhook;

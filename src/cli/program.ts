@@ -684,11 +684,6 @@ export function createProgram(
           kind: "config",
         });
       }
-      const credentials = await resolveServeCredentials(commandOptions.credentialsFd);
-      commandOptions.accessToken = credentials.accessToken;
-      commandOptions.adminToken = credentials.adminToken;
-      commandOptions.botToken = credentials.botToken;
-      commandOptions.signingSecret = credentials.signingSecret;
       if (!/^[0-9]+$/u.test(commandOptions.port)) {
         throw new CrablineError(`Invalid local server port: ${commandOptions.port}`, {
           kind: "config",
@@ -706,6 +701,11 @@ export function createProgram(
           kind: "config",
         });
       }
+      const credentials = await resolveServeCredentials(commandOptions.credentialsFd);
+      commandOptions.accessToken = credentials.accessToken;
+      commandOptions.adminToken = credentials.adminToken;
+      commandOptions.botToken = credentials.botToken;
+      commandOptions.signingSecret = credentials.signingSecret;
       let server: StartedCrablineServer | undefined;
       let startupSettled = false;
       let settleStartup: (() => void) | undefined;

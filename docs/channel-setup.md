@@ -135,9 +135,8 @@ header before JSON parsing or recorder writes:
   so its listener and any advertised callback must remain loopback-only.
 - Mattermost `webhookToken` or `MATTERMOST_TOKEN` verifies the `token` field in
   outgoing webhook form or JSON bodies. The token is removed before recorder
-  persistence. Mattermost webhook ingress is currently loopback-only:
-  non-loopback listener hosts and any `webhook.publicUrl` are rejected even
-  when a token is configured.
+  persistence. Externally reachable callbacks require this token and an HTTPS
+  `webhook.publicUrl`.
 - iMessage webhook ingress currently has no provider-native authentication
   mode, so its listener and any advertised callback must remain loopback-only.
 - Feishu `verificationToken` or `FEISHU_VERIFICATION_TOKEN` verifies plaintext

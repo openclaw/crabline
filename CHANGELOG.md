@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Validate serve options before credential reads, reject retry-unsafe nonce-free roundtrips, and restore authenticated external Mattermost webhook guidance.
 - Ignore inherit-only Windows ACEs for current-directory mutation checks and bind lock-root identity and ACL validation to the same no-follow handle across path replacement.
 - Reject blank Slack and Feishu ingress secrets, confine generated Telegram recorder paths, and compare WhatsApp and Mattermost bearer tokens in constant time.
 - Reject blank Mattermost readiness usernames and non-native Matrix thread IDs while preserving valid legacy smoke-only artifact generations.

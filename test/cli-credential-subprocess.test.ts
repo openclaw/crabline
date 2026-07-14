@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -42,6 +42,59 @@ const spawnPnpmChecked = (args: string[], options: SpawnSyncOptionsWithStringEnc
 };
 
 describe("CLI credential subprocess ingress", () => {
+  it("rejects invalid serve options before reading stdin credentials", async () => {
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "src/bin/crabline.ts",
+        "serve",
+        "slack",
+        "--port",
+        "invalid",
+        "--credentials-fd",
+        "0",
+      ],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, NO_COLOR: "1" },
+        stdio: ["pipe", "ignore", "pipe"],
+      },
+    );
+    const stderr: Buffer[] = [];
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      const result = await Promise.race([
+        new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+          child.once("error", reject);
+          child.once("exit", (code, signal) => resolve({ code, signal }));
+        }),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error("serve blocked reading stdin credentials")),
+            3_000,
+          );
+        }),
+      ]);
+
+      expect(result).toEqual({ code: 10, signal: null });
+      expect(Buffer.concat(stderr).toString("utf8")).toContain(
+        "Invalid local server port: invalid",
+      );
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      child.stdin.destroy();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill();
+      }
+    }
+  });
+
   it("reads package-runner credentials from stdin fd 0", async () => {
     const directory = await createTempDir();
     directories.push(directory);
