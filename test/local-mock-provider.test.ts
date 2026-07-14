@@ -950,6 +950,107 @@ describe("local mock provider", () => {
     await expect(cleanup).resolves.toBeUndefined();
   });
 
+  it("aborts admitted webhook hooks when provider cleanup begins", async () => {
+    let handleRequest: ((request: Request) => Promise<Response>) | undefined;
+    let observedSignal: AbortSignal | undefined;
+    let reportAdmission!: () => void;
+    const admitted = new Promise<void>((resolve) => {
+      reportAdmission = resolve;
+    });
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handleRequest = params.handle;
+      return {
+        async close() {},
+        endpointUrl: "http://127.0.0.1:43210/slack/events",
+      };
+    });
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        async handleWebhookPayload(_payload, request) {
+          observedSignal = request.signal;
+          reportAdmission();
+          await new Promise<void>((resolve, reject) => {
+            const abort = () => reject(request.signal.reason);
+            if (request.signal.aborted) {
+              abort();
+              return;
+            }
+            request.signal.addEventListener("abort", abort, { once: true });
+          });
+          return new Response("unreachable");
+        },
+        platform: "slack",
+      },
+    });
+    providers.push(provider);
+    await provider.probe(createContext(config));
+    const handling = handleRequest!(
+      new Request("http://127.0.0.1:43210/slack/events", {
+        body: "{}",
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+    await admitted;
+
+    const cleanup = provider.cleanup();
+
+    expect(observedSignal?.aborted).toBe(true);
+    await expect(handling).rejects.toThrow(/cleaned up/u);
+    await expect(cleanup).resolves.toBeUndefined();
+  });
+
+  it("bounds cleanup when an admitted webhook hook ignores cancellation", async () => {
+    let handleRequest: ((request: Request) => Promise<Response>) | undefined;
+    let reportAdmission!: () => void;
+    const admitted = new Promise<void>((resolve) => {
+      reportAdmission = resolve;
+    });
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handleRequest = params.handle;
+      return {
+        async close() {},
+        endpointUrl: "http://127.0.0.1:43210/slack/events",
+      };
+    });
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        async handleWebhookPayload() {
+          reportAdmission();
+          return await new Promise<Response>(() => {});
+        },
+        platform: "slack",
+        webhookCleanupGraceMs: 20,
+      },
+    });
+    await provider.probe(createContext(config));
+    void handleRequest!(
+      new Request("http://127.0.0.1:43210/slack/events", {
+        body: "{}",
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+    await admitted;
+
+    await expect(provider.cleanup()).rejects.toMatchObject({
+      kind: "timeout",
+      message: expect.stringContaining("did not settle within 20ms"),
+    });
+  });
+
   it("does not watch events from another provider sharing its recorder", async () => {
     const directory = await createTempDir();
     directories.push(directory);
