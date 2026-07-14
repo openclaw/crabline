@@ -296,11 +296,16 @@ jobs:
 
             const packageName = process.env.PACKAGE_NAME;
             const releaseVersion = process.env.RELEASE_VERSION;
-            const releaseRef = `refs/tags/${process.env.RELEASE_TAG}`;
-            const repository = `${process.env.GITHUB_SERVER_URL.replace(/\/$/u, "")}/${process.env.GITHUB_REPOSITORY}`;
-            const expectedSubject = `pkg:npm/${
-              packageName.startsWith("@") ? `%40${packageName.slice(1)}` : packageName
-            }@${releaseVersion}`;
+            const releaseRef = "refs/tags/" + process.env.RELEASE_TAG;
+            const repository =
+              process.env.GITHUB_SERVER_URL.replace(/\/$/u, "") +
+              "/" +
+              process.env.GITHUB_REPOSITORY;
+            const expectedSubject =
+              "pkg:npm/" +
+              (packageName.startsWith("@") ? "%40" + packageName.slice(1) : packageName) +
+              "@" +
+              releaseVersion;
             const integrityMatch = /^sha512-([A-Za-z0-9+/]+={0,2})$/u.exec(
               process.env.PACKAGE_INTEGRITY,
             );
@@ -346,7 +351,7 @@ jobs:
                   Array.isArray(dependencies) &&
                   dependencies.some(
                     (dependency) =>
-                      dependency?.uri === `git+${repository}@${releaseRef}` &&
+                      dependency?.uri === "git+" + repository + "@" + releaseRef &&
                       dependency?.digest?.gitCommit === process.env.VERIFIED_COMMIT,
                   )
                 );
