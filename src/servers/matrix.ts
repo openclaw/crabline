@@ -205,6 +205,8 @@ function decodeMatrixPathSegment(value: string): string {
 
 function eventId(state: MatrixServerState): string {
   return `$${createHash("sha256")
+    .update(state.serverName)
+    .update("\0")
     .update(`event-${state.nextEvent++}`)
     .digest("base64url")}`;
 }
