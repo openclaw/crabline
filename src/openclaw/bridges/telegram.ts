@@ -15,6 +15,7 @@ import {
   TELEGRAM_NATIVE_CHAT_ID_MAX,
   telegramUsernameChatId,
 } from "../../servers/telegram-identity.js";
+import { throwProbeHttpError } from "./probe-response.js";
 
 const TELEGRAM_SYMBOLIC_ID_BASE = TELEGRAM_NATIVE_CHAT_ID_MAX + 1n;
 const TELEGRAM_SYMBOLIC_ID_RANGE = 1n << 50n;
@@ -140,7 +141,10 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           signal ? { signal } : {},
         );
         if (!response.ok) {
-          throw new Error(`Crabline Telegram getMe probe failed with HTTP ${response.status}.`);
+          await throwProbeHttpError(
+            response,
+            `Crabline Telegram getMe probe failed with HTTP ${response.status}.`,
+          );
         }
         const payload: unknown = await response.json();
         if (!isRecord(payload) || payload.ok !== true) {

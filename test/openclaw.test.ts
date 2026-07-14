@@ -460,6 +460,27 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it.each([
+    ["Mattermost", mattermostManifest],
+    ["Matrix", matrixManifest],
+    ["Signal", signalManifest],
+    ["Slack", slackManifest],
+    ["Telegram", manifest],
+    ["WhatsApp", whatsappManifest],
+    ["Zalo", zaloManifest],
+  ] as const)("cancels failed %s probe response bodies", async (_label, probeManifest) => {
+    const cancel = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new ReadableStream({ cancel }), { status: 503 }),
+    );
+    try {
+      await expect(probeOpenClawCrablineProvider(probeManifest)).rejects.toThrow(/HTTP 503/u);
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it.each([
     { ok: true },
     { ok: true, result: null },
     { ok: true, result: {} },

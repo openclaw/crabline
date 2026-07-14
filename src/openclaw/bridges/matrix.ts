@@ -9,6 +9,7 @@ import {
   readNonBlankString,
   readString,
 } from "../shared.js";
+import { throwProbeHttpError } from "./probe-response.js";
 
 const MAX_MATRIX_IDENTIFIER_BYTES = 255;
 
@@ -105,7 +106,10 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           ...(signal ? { signal } : {}),
         });
         if (!response.ok) {
-          throw new Error(`Crabline Matrix probe failed with HTTP ${response.status}.`);
+          await throwProbeHttpError(
+            response,
+            `Crabline Matrix probe failed with HTTP ${response.status}.`,
+          );
         }
         const payload: unknown = await response.json();
         if (!isRecord(payload) || readString(payload.user_id) !== matrix.botUserId) {

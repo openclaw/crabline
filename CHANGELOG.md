@@ -16,6 +16,7 @@
 - Reject malformed UTF-8 and empty explicit config paths, and require canonical Zalo header credentials.
 - Keep channel setup defaults and secret-handling guidance synchronized with the schema.
 - Escape C1 controls in JSON reports and fail commands whose successful payload cannot be serialized.
+- Reject corrupt retained capability matrices before artifact rotation and cancel failed OpenClaw probe response bodies.
 - Stream Telegram multipart uploads with bounded parser metadata instead of copying complete files through `FormData`.
 - Keep Unix recorder identity locks in one validated private per-user namespace across processes and recorder path changes.
 - Reject non-positive Telegram admin message IDs and enforce native Mattermost channel types and unique normalized usernames.

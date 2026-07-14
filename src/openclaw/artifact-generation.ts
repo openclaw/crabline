@@ -306,7 +306,20 @@ async function assertCurrentGenerationExists(
   };
 
   const manifest = await readArtifactObject(pointer.manifestPath);
+  const capabilityMatrix = await readArtifactObject(pointer.capabilityMatrixPath);
   const readiness = await readArtifactObject(pointer.providerReadinessArtifactPath);
+  if (
+    capabilityMatrix.version !== 1 ||
+    capabilityMatrix.source !== "openclaw/crabline" ||
+    capabilityMatrix.manifestPath !== pointer.manifestPath ||
+    typeof capabilityMatrix.channelDriver !== "string" ||
+    capabilityMatrix.channelDriver.length === 0 ||
+    typeof capabilityMatrix.selectedChannel !== "string" ||
+    capabilityMatrix.selectedChannel.length === 0 ||
+    !Object.hasOwn(capabilityMatrix, "report")
+  ) {
+    throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
+  }
   const manifestRecorderPath =
     typeof manifest.recorderPath === "string" ? manifest.recorderPath : undefined;
   const providerReadinessRecorderPath = readNestedRecorderPath(readiness.providerReadiness);

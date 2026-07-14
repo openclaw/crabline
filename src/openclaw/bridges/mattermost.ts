@@ -9,6 +9,7 @@ import {
   readString,
 } from "../shared.js";
 import { mattermostId } from "../../servers/mattermost.js";
+import { throwProbeHttpError } from "./probe-response.js";
 
 function nativeId(value: string): string {
   const trimmed = value.trim();
@@ -41,7 +42,10 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
           ...(signal ? { signal } : {}),
         });
         if (!response.ok) {
-          throw new Error(`Crabline Mattermost probe failed with HTTP ${response.status}.`);
+          await throwProbeHttpError(
+            response,
+            `Crabline Mattermost probe failed with HTTP ${response.status}.`,
+          );
         }
         const payload: unknown = await response.json();
         if (

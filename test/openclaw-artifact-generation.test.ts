@@ -436,6 +436,34 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("rejects a corrupt current capability matrix without pruning retained generations", async () => {
+    const outputDir = await createTempDir();
+    try {
+      const first = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      });
+      const second = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+      });
+      await fs.writeFile(path.join(outputDir, second.capabilityMatrixPath), "{");
+
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+          createGenerationId: () => "33333333-3333-4333-8333-333333333333",
+        }),
+      ).rejects.toThrow("OpenClaw Crabline current artifact generation is incomplete.");
+
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toMatchObject({
+        generation: second.generation,
+        previousGeneration: first.generation,
+      });
+      await expect(fs.stat(path.join(outputDir, first.manifestPath))).resolves.toBeDefined();
+      await expect(fs.stat(path.join(outputDir, second.manifestPath))).resolves.toBeDefined();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("rejects publication when current recorder references are removed", async () => {
     const outputDir = await createTempDir();
     try {
