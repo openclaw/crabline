@@ -619,12 +619,22 @@ export function normalizeWhatsAppWebhookPayload(
 
   const normalized: NormalizedWhatsAppWebhookMessage[] = [];
   if (Array.isArray(payload.entry)) {
+    if (optionalString(payload, "object") !== "whatsapp_business_account") {
+      throw new CrablineError(
+        'WhatsApp webhook entry payloads require object="whatsapp_business_account"',
+        { kind: "inbound" },
+      );
+    }
     for (const entry of payload.entry) {
       if (!isRecord(entry) || !Array.isArray(entry.changes)) {
         continue;
       }
       for (const change of entry.changes) {
         if (!isRecord(change)) {
+          continue;
+        }
+        const field = optionalString(change, "field");
+        if (field !== undefined && field !== "messages") {
           continue;
         }
         const value = optionalRecord(change, "value");

@@ -367,6 +367,74 @@ describe("whatsapp local provider server", () => {
     }
   });
 
+  it("closes the owning socket and bounds shutdown when acceptance never settles", async () => {
+    let markAcceptanceStarted!: () => void;
+    const acceptanceStarted = new Promise<void>((resolve) => {
+      markAcceptanceStarted = resolve;
+    });
+    const acceptanceBlocked = new Promise<void>(() => undefined);
+    const server = await startWhatsAppServer({
+      messageAcceptanceTimeoutMs: 100,
+      onEvent: async (event) => {
+        if (event.method === "WEBSOCKET" && "accepted" in event && event.accepted === true) {
+          markAcceptanceStarted();
+          await acceptanceBlocked;
+        }
+      },
+      selfJid: "15550000001:0@s.whatsapp.net",
+    });
+    const socket = createBaileysTestSocket(server);
+    const connectionUpdates: unknown[] = [];
+    socket.ev.on("connection.update", (update) => {
+      connectionUpdates.push(update);
+    });
+
+    try {
+      await waitForCondition(
+        () =>
+          connectionUpdates.some(
+            (update) =>
+              !!update &&
+              typeof update === "object" &&
+              (update as { connection?: unknown }).connection === "open",
+          ),
+        "Baileys connection open",
+      );
+      const send = socket
+        .sendMessage("15551234567@s.whatsapp.net", { text: "never settles" })
+        .catch(() => undefined);
+      await acceptanceStarted;
+      await waitForCondition(
+        () =>
+          connectionUpdates.some(
+            (update) =>
+              !!update &&
+              typeof update === "object" &&
+              (update as { connection?: unknown }).connection === "close",
+          ),
+        "acceptance timeout socket close",
+      );
+      expect(
+        connectionUpdates.some(
+          (update) =>
+            !!update &&
+            typeof update === "object" &&
+            (update as { connection?: unknown }).connection === "close",
+        ),
+      ).toBe(true);
+      await Promise.race([
+        server.close(),
+        new Promise<never>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("WhatsApp shutdown exceeded acceptance bound.")), 500);
+        }),
+      ]);
+      await send;
+    } finally {
+      socket.end(undefined);
+      await server.close().catch(() => undefined);
+    }
+  });
+
   it("serves Cloud API sends and injected inbound webhook payloads", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -723,6 +791,90 @@ describe("whatsapp local provider server", () => {
     expect(directBody.message.key).not.toHaveProperty("participant");
   });
 
+  it("reserves explicit and generated message ids atomically", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startWhatsAppServer({
+      accessToken: "fake",
+      adminToken: "admin",
+      recorderPath: path.join(directory, "whatsapp-message-ids.jsonl"),
+    });
+    servers.push(server);
+    const sendInbound = (messageId: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          chatJid: "15551234567@s.whatsapp.net",
+          messageId,
+          senderJid: "15551234567@s.whatsapp.net",
+          text: "reserved inbound",
+        }),
+        headers: {
+          [ADMIN_TOKEN_HEADER]: "admin",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+
+    const duplicateIngress = await Promise.all([
+      sendInbound("wamid.FAKE00000001"),
+      sendInbound("wamid.FAKE00000001"),
+    ]);
+    expect(duplicateIngress.map((response) => response.status).sort()).toEqual([200, 400]);
+
+    const outbound = await fetch(server.manifest.endpoints.messagesUrl, {
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        text: { body: "generated outbound" },
+        to: "15551234567",
+        type: "text",
+      }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    await expect(outbound.json()).resolves.toMatchObject({
+      messages: [{ id: "wamid.FAKE00000002" }],
+    });
+    expect((await sendInbound("wamid.FAKE00000002")).status).toBe(400);
+    expect((await sendInbound("wamid.FAKE9007199254740991")).status).toBe(200);
+    const sendGenerated = async () => {
+      const response = await fetch(server.manifest.endpoints.messagesUrl, {
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          text: { body: "generated beyond safe integer" },
+          to: "15551234567",
+          type: "text",
+        }),
+        headers: {
+          authorization: "Bearer fake",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      return (await response.json()) as { messages: Array<{ id: string }> };
+    };
+    await expect(sendGenerated()).resolves.toMatchObject({
+      messages: [{ id: "wamid.FAKE9007199254740992" }],
+    });
+    await expect(sendGenerated()).resolves.toMatchObject({
+      messages: [{ id: "wamid.FAKE9007199254740993" }],
+    });
+
+    const recorderEvents = (await fs.readFile(server.manifest.recorderPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { body?: { messageId?: string }; path?: string });
+    expect(
+      recorderEvents.filter(
+        (event) =>
+          event.path === "/_crabline/admin/whatsapp/inbound" &&
+          event.body?.messageId === "wamid.FAKE00000001",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("separates PN and LID signal bundle/session keys while normalizing devices", () => {
     const phoneNumberKey = signalBundleIdentityKey("15551234567:2@s.whatsapp.net");
     const lidKey = signalBundleIdentityKey("15551234567:3@lid");
@@ -731,11 +883,14 @@ describe("whatsapp local provider server", () => {
     expect(phoneNumberKey).not.toBe(lidKey);
 
     const store = new WhatsAppSignalBundleStore(2);
-    const [phoneNumber, lid] = store.resolveMany(["15551234567@s.whatsapp.net", "15551234567@lid"]);
+    const phoneNumber = store.resolveMany(["15551234567@s.whatsapp.net"])[0]!;
+    const lid = store.resolveMany(["15551234567@lid"])[0]!;
     expect(phoneNumber).not.toBe(lid);
-    expect(store.resolveMany(["15551234567:2@s.whatsapp.net"])[0]).toBe(phoneNumber);
-    expect(store.resolveMany(["15551234567:0@c.us"])[0]).toBe(phoneNumber);
-    expect(store.resolveMany(["15551234567:3@lid"])[0]).toBe(lid);
+    expect(store.resolveMany(["15551234567:2@s.whatsapp.net"])[0]!.identityKey).toBe(
+      phoneNumber.identityKey,
+    );
+    expect(store.resolveMany(["15551234567:0@c.us"])[0]!.identityKey).toBe(phoneNumber.identityKey);
+    expect(store.resolveMany(["15551234567:3@lid"])[0]!.identityKey).toBe(lid.identityKey);
     expect(store.size).toBe(2);
   });
 
@@ -744,8 +899,8 @@ describe("whatsapp local provider server", () => {
     const receiver = new WhatsAppSignalBundleStore(1, undefined, undefined, undefined, undefined, {
       maxSessionsPerBundle: 1,
     });
-    const bundle = receiver.resolveMany([recipientJid])[0]!;
     const createSender = async (senderJid: string, registrationId: number, message: string) => {
+      const bundle = receiver.resolveMany([recipientJid])[0]!;
       const identity = Curve.generateKeyPair();
       const storage = createSignalTestStorage(identity, registrationId);
       const address = new ProtocolAddress("15551234567", 0);
@@ -922,12 +1077,11 @@ describe("whatsapp local provider server", () => {
     ordering.push("ack");
 
     expect(ordering).toEqual(["persist:start", "persist:done", "ack"]);
-    expect(bundle.preKey).not.toBe(originalPreKey);
-    expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
-    expect(receiver.resolveMany([recipientJid])[0]).toMatchObject({
-      preKey: bundle.preKey,
-      preKeyId: originalPreKeyId + 1,
-    });
+    expect(bundle.preKey).toBe(originalPreKey);
+    expect(bundle.preKeyId).toBe(originalPreKeyId);
+    const replacement = receiver.resolveMany([recipientJid])[0]!;
+    expect(replacement.preKey).not.toBe(originalPreKey);
+    expect(replacement.preKeyId).not.toBe(originalPreKeyId);
     await expect(
       receiver.transactDirectMessage({
         accept: async () => true,
@@ -1008,8 +1162,9 @@ describe("whatsapp local provider server", () => {
       status: "accepted",
       value: "retry recorder failure",
     });
-    expect(bundle.preKey).not.toBe(originalPreKey);
-    expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
+    const replacement = receiver.resolveMany([recipientJid])[0]!;
+    expect(replacement.preKey).not.toBe(originalPreKey);
+    expect(replacement.preKeyId).not.toBe(originalPreKeyId);
   });
 
   it("deduplicates accepted evidence across reconnect acknowledgement retries", async () => {
@@ -1058,8 +1213,9 @@ describe("whatsapp local provider server", () => {
       }),
     ).resolves.toBe(true);
     expect(events).toHaveLength(1);
-    expect(bundle.preKey).not.toBe(originalPreKey);
-    expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
+    const replacement = receiver.resolveMany([recipientJid])[0]!;
+    expect(replacement.preKey).not.toBe(originalPreKey);
+    expect(replacement.preKeyId).not.toBe(originalPreKeyId);
 
     await expect(
       persistAcceptedBaileysMessage({
@@ -1079,7 +1235,7 @@ describe("whatsapp local provider server", () => {
         message: { conversation: "retry" },
       },
     });
-    expect(bundle.preKeyId).toBe(originalPreKeyId + 1);
+    expect(replacement.preKeyId).not.toBe(originalPreKeyId);
     receiver.markMessageAcknowledged("15557654321@s.whatsapp.net", "retry-ack");
 
     await expect(
@@ -1124,6 +1280,265 @@ describe("whatsapp local provider server", () => {
     await expect(
       receiver.acceptMessageOnce("15557654321@s.whatsapp.net\0next", async () => true),
     ).resolves.toBe(true);
+  });
+
+  it("times out stalled acceptance and recovers pending acknowledgement capacity", async () => {
+    vi.useFakeTimers();
+    try {
+      const terminalTimeout = vi.fn();
+      const receiver = new WhatsAppSignalBundleStore(1, 1, 1, undefined, undefined, {
+        messageAcceptanceTimeoutMs: 100,
+      });
+      const stalled = receiver
+        .acceptMessageOnce(
+          "peer\0stalled",
+          async () => await new Promise<boolean>(() => undefined),
+          { onTerminalTimeout: terminalTimeout },
+        )
+        .then(
+          () => ({ error: undefined }),
+          (error: unknown) => ({ error }),
+        );
+      await Promise.resolve();
+
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(stalled).resolves.toEqual({
+        error: expect.objectContaining({ message: "WhatsApp message acceptance timed out." }),
+      });
+      expect(terminalTimeout).toHaveBeenCalledOnce();
+      const duplicateOperation = vi.fn(async () => true);
+      await expect(receiver.acceptMessageOnce("peer\0stalled", duplicateOperation)).rejects.toThrow(
+        "message acceptance timed out",
+      );
+      expect(duplicateOperation).not.toHaveBeenCalled();
+      await expect(receiver.acceptMessageOnce("peer\0recovered", async () => true)).resolves.toBe(
+        true,
+      );
+      const secondStalled = receiver
+        .acceptMessageOnce(
+          "peer\0second-stalled",
+          async () => await new Promise<boolean>(() => undefined),
+        )
+        .catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(100);
+      await secondStalled;
+      await expect(
+        receiver.acceptMessageOnce("peer\0backpressure", async () => true),
+      ).rejects.toThrow("terminal acceptance limit exceeded (2)");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fences duplicate persistence until timed-out recorder work settles", async () => {
+    const receiver = new WhatsAppSignalBundleStore(1, 1, undefined, undefined, undefined, {
+      messageAcceptanceTimeoutMs: 100,
+    });
+    const node: BinaryNode = {
+      attrs: { id: "stalled-recorder", to: "15557654321@s.whatsapp.net" },
+      tag: "message",
+    };
+    let markAppendStarted!: () => void;
+    const appendStarted = new Promise<void>((resolve) => {
+      markAppendStarted = resolve;
+    });
+    let releaseAppend!: () => void;
+    const appendBlocked = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+
+    vi.useFakeTimers();
+    try {
+      const stalled = persistAcceptedBaileysMessage({
+        appendEvent: async () => {
+          markAppendStarted();
+          await appendBlocked;
+        },
+        node,
+        path: "/ws/chat",
+        remoteJid: "15550000001@s.whatsapp.net",
+        signalBundles: receiver,
+      }).then(
+        () => ({ error: undefined }),
+        (error: unknown) => ({ error }),
+      );
+      await appendStarted;
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(stalled).resolves.toEqual({
+        error: expect.objectContaining({ message: "WhatsApp message acceptance timed out." }),
+      });
+
+      const duplicateAppend = vi.fn(async () => undefined);
+      await expect(
+        persistAcceptedBaileysMessage({
+          appendEvent: duplicateAppend,
+          node,
+          path: "/ws/chat",
+          remoteJid: "15550000001@s.whatsapp.net",
+          signalBundles: receiver,
+        }),
+      ).rejects.toThrow("message acceptance timed out");
+      expect(duplicateAppend).not.toHaveBeenCalled();
+
+      releaseAppend();
+      await vi.advanceTimersByTimeAsync(0);
+      const retryAppend = vi.fn(async () => undefined);
+      await expect(
+        persistAcceptedBaileysMessage({
+          appendEvent: retryAppend,
+          node,
+          path: "/ws/chat",
+          remoteJid: "15550000001@s.whatsapp.net",
+          signalBundles: receiver,
+        }),
+      ).resolves.toBe(true);
+      expect(retryAppend).not.toHaveBeenCalled();
+    } finally {
+      releaseAppend();
+      vi.useRealTimers();
+    }
+  });
+
+  it("fences recorder persistence after the owning socket aborts", async () => {
+    const receiver = new WhatsAppSignalBundleStore(1, 1);
+    const node: BinaryNode = {
+      attrs: { id: "owner-abort", to: "15557654321@s.whatsapp.net" },
+      tag: "message",
+    };
+    const controller = new AbortController();
+    let markAppendStarted!: () => void;
+    const appendStarted = new Promise<void>((resolve) => {
+      markAppendStarted = resolve;
+    });
+    let releaseAppend!: () => void;
+    const appendBlocked = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+    const stalled = persistAcceptedBaileysMessage({
+      acceptanceSignal: controller.signal,
+      appendEvent: async () => {
+        markAppendStarted();
+        await appendBlocked;
+      },
+      node,
+      path: "/ws/chat",
+      remoteJid: "15550000001@s.whatsapp.net",
+      signalBundles: receiver,
+    }).then(
+      () => ({ error: undefined }),
+      (error: unknown) => ({ error }),
+    );
+    await appendStarted;
+
+    controller.abort(new Error("owning socket closed"));
+    await expect(stalled).resolves.toEqual({
+      error: expect.objectContaining({ message: "owning socket closed" }),
+    });
+    const duplicateAppend = vi.fn(async () => undefined);
+    await expect(
+      persistAcceptedBaileysMessage({
+        appendEvent: duplicateAppend,
+        node,
+        path: "/ws/chat",
+        remoteJid: "15550000001@s.whatsapp.net",
+        signalBundles: receiver,
+      }),
+    ).rejects.toThrow("owning socket closed");
+    expect(duplicateAppend).not.toHaveBeenCalled();
+
+    releaseAppend();
+    await new Promise((resolve) => setImmediate(resolve));
+    const retryAppend = vi.fn(async () => undefined);
+    await expect(
+      persistAcceptedBaileysMessage({
+        appendEvent: retryAppend,
+        node,
+        path: "/ws/chat",
+        remoteJid: "15550000001@s.whatsapp.net",
+        signalBundles: receiver,
+      }),
+    ).resolves.toBe(true);
+    expect(retryAppend).not.toHaveBeenCalled();
+  });
+
+  it("fences late Signal mutation after acceptance timeout", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const senderJid = "15550000001@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1, 1, undefined, undefined, undefined, {
+      messageAcceptanceTimeoutMs: 100,
+    });
+    const bundle = receiver.resolveMany([recipientJid])[0]!;
+    const senderIdentity = Curve.generateKeyPair();
+    const senderStorage = createSignalTestStorage(senderIdentity, 2);
+    const senderAddress = new ProtocolAddress("15551234567", 0);
+    await new SessionBuilder(senderStorage, senderAddress).initOutgoing({
+      identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+      preKey: {
+        keyId: bundle.preKeyId,
+        publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+      },
+      registrationId: bundle.registrationId,
+      signedPreKey: {
+        keyId: bundle.signedPreKey.keyId,
+        publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+        signature: bundle.signedPreKey.signature,
+      },
+    });
+    const encrypted = await new SessionCipher(senderStorage, senderAddress).encrypt(
+      Buffer.from("late acceptance"),
+    );
+    const node = signalMessageNode({
+      ciphertext: signalCiphertext(encrypted.body),
+      id: "late",
+      recipientJid,
+      type: encrypted.type,
+    });
+    let releaseAppend!: () => void;
+    const appendBlocked = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+
+    vi.useFakeTimers();
+    try {
+      const stalled = persistAcceptedBaileysMessage({
+        appendEvent: async () => {
+          await appendBlocked;
+        },
+        node,
+        path: "/ws/chat",
+        remoteJid: senderJid,
+        signalBundles: receiver,
+      }).then(
+        () => ({ error: undefined }),
+        (error: unknown) => ({ error }),
+      );
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(stalled).resolves.toEqual({
+        error: expect.objectContaining({ message: "WhatsApp message acceptance timed out." }),
+      });
+      expect(receiver.sessionCount).toBe(0);
+
+      releaseAppend();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(receiver.sessionCount).toBe(0);
+      const retryAppend = vi.fn(async () => undefined);
+      await expect(
+        persistAcceptedBaileysMessage({
+          appendEvent: retryAppend,
+          node,
+          path: "/ws/chat",
+          remoteJid: senderJid,
+          signalBundles: receiver,
+        }),
+      ).resolves.toBe(true);
+      expect(retryAppend).toHaveBeenCalledOnce();
+      expect(receiver.sessionCount).toBe(1);
+      expect(receiver.resolveMany([recipientJid])[0]!.preKeyId).toBeGreaterThan(bundle.preKeyId);
+    } finally {
+      releaseAppend();
+      vi.useRealTimers();
+    }
   });
 
   it("bounds aggregate acceptance work without blocking unrelated message keys", async () => {
@@ -1418,11 +1833,11 @@ describe("whatsapp local provider server", () => {
     ).rejects.toThrow("simulated recorder failure");
   });
 
-  it("serializes first-contact Signal transactions by recipient bundle", async () => {
+  it("reserves distinct prekeys so two initiators can establish serialized sessions", async () => {
     const recipientJid = "15551234567@s.whatsapp.net";
     const receiver = new WhatsAppSignalBundleStore(1);
-    const bundle = receiver.resolveMany([recipientJid])[0]!;
     const createSender = async (senderJid: string, registrationId: number) => {
+      const bundle = receiver.resolveMany([recipientJid])[0]!;
       const identity = Curve.generateKeyPair();
       const storage = createSignalTestStorage(identity, registrationId);
       const address = new ProtocolAddress("15551234567", 0);
@@ -1482,7 +1897,82 @@ describe("whatsapp local provider server", () => {
     expect(secondStarted).toBe(false);
     releaseFirst();
     await expect(first).resolves.toEqual({ status: "accepted", value: true });
-    await expect(second).resolves.toMatchObject({ status: "decrypt-failed" });
+    await expect(second).resolves.toEqual({ status: "accepted", value: true });
+    expect(receiver.sessionCount).toBe(2);
+  });
+
+  it("keeps replacement prekey reservations distinct from concurrent bundle fetches", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1);
+    const createSender = async (
+      bundle: ReturnType<WhatsAppSignalBundleStore["resolveMany"]>[number],
+      senderJid: string,
+      registrationId: number,
+      text: string,
+    ) => {
+      const identity = Curve.generateKeyPair();
+      const storage = createSignalTestStorage(identity, registrationId);
+      const address = new ProtocolAddress("15551234567", 0);
+      await new SessionBuilder(storage, address).initOutgoing({
+        identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+        preKey: {
+          keyId: bundle.preKeyId,
+          publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+        },
+        registrationId: bundle.registrationId,
+        signedPreKey: {
+          keyId: bundle.signedPreKey.keyId,
+          publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+          signature: bundle.signedPreKey.signature,
+        },
+      });
+      const encrypted = await new SessionCipher(storage, address).encrypt(Buffer.from(text));
+      return { ciphertext: signalCiphertext(encrypted.body), senderJid };
+    };
+    const firstBundle = receiver.resolveMany([recipientJid])[0]!;
+    const firstSender = await createSender(firstBundle, "15550000001@s.whatsapp.net", 2, "first");
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted!: () => void;
+    const firstAcceptanceStarted = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    const first = receiver.transactDirectMessage({
+      accept: async () => {
+        firstStarted();
+        await firstBlocked;
+        return true;
+      },
+      ciphertext: firstSender.ciphertext,
+      recipientJid,
+      remoteJid: firstSender.senderJid,
+      type: "pkmsg",
+    });
+    await firstAcceptanceStarted;
+
+    const secondBundle = receiver.resolveMany([recipientJid])[0]!;
+    expect(secondBundle.preKeyId).not.toBe(firstBundle.preKeyId + 1);
+    const secondSender = await createSender(
+      secondBundle,
+      "15550000002@s.whatsapp.net",
+      3,
+      "second",
+    );
+    releaseFirst();
+
+    await expect(first).resolves.toEqual({ status: "accepted", value: true });
+    await expect(
+      receiver.transactDirectMessage({
+        accept: async () => true,
+        ciphertext: secondSender.ciphertext,
+        recipientJid,
+        remoteJid: secondSender.senderJid,
+        type: "pkmsg",
+      }),
+    ).resolves.toEqual({ status: "accepted", value: true });
+    expect(receiver.sessionCount).toBe(2);
   });
 
   it("generates replacement prekeys before accepted evidence persists", async () => {

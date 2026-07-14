@@ -423,6 +423,7 @@ describe("WhatsApp provider lifecycle", () => {
 
       request = handle!(
         signedWhatsAppRequest({
+          object: "whatsapp_business_account",
           entry: [
             {
               changes: [
