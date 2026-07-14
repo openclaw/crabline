@@ -14,15 +14,42 @@ import {
 } from "./native-local-mock.js";
 import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
-export function resolveIMessageAdapterConfig(
-  config: ProviderConfig,
-  env: NodeJS.ProcessEnv = process.env,
-) {
+export function resolveIMessageAdapterConfig(config: ProviderConfig, env: NodeJS.ProcessEnv = {}) {
   return {
     apiKey: config.imessage?.apiKey ?? env.IMESSAGE_API_KEY ?? "local-mock-imessage-api-key",
     local: config.imessage?.local ?? true,
     serverUrl: config.imessage?.serverUrl ?? env.IMESSAGE_SERVER_URL,
   };
+}
+
+function isNativeIMessageData(data: Record<string, unknown>): boolean {
+  return [
+    "chat_guid",
+    "chat_identifier",
+    "chatGuid",
+    "chatIdentifier",
+    "guid",
+    "is_from_me",
+    "isFromMe",
+  ].some((key) => key in data);
+}
+
+function iMessageNativeData(payload: Record<string, unknown>): Record<string, unknown> {
+  const data = optionalRecord(payload, "data") ?? payload;
+  const message = optionalRecord(data, "message");
+  if (message && isNativeIMessageData(message)) {
+    return message;
+  }
+  return data;
+}
+
+function iMessageThreadIdentifiers(data: Record<string, unknown>): string[] {
+  return [
+    optionalString(data, "chatGuid"),
+    optionalString(data, "chatIdentifier"),
+    optionalString(data, "chat_guid"),
+    optionalString(data, "chat_identifier"),
+  ].filter((value): value is string => value !== undefined);
 }
 
 export class IMessageProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
@@ -61,15 +88,15 @@ export function matchesIMessageThread(
   raw?: unknown,
 ): boolean {
   const rawPayload = isRecord(raw) ? raw : undefined;
-  const data = rawPayload ? (optionalRecord(rawPayload, "data") ?? rawPayload) : undefined;
-  const recipientAlias = data ? optionalString(data, "chatIdentifier") : undefined;
+  const data = rawPayload ? iMessageNativeData(rawPayload) : undefined;
+  const aliases = data ? iMessageThreadIdentifiers(data) : [];
   const expectedIdentifiers = new Set([target.channelId ?? target.id]);
   if (expectedThreadId !== undefined) {
     expectedIdentifiers.add(expectedThreadId);
   }
   return (
     expectedIdentifiers.has(candidateThreadId) ||
-    (recipientAlias !== undefined && expectedIdentifiers.has(recipientAlias))
+    aliases.some((alias) => expectedIdentifiers.has(alias))
   );
 }
 
@@ -78,7 +105,8 @@ function normalizeIMessageWebhookPayload(payload: unknown) {
     throw new CrablineError("iMessage webhook payload must be an object", { kind: "inbound" });
   }
 
-  if (optionalRecord(payload, "message")) {
+  const message = optionalRecord(payload, "message");
+  if (message && !isNativeIMessageData(message)) {
     return genericMockPayloadWithNativeThread({
       channelRule: IMESSAGE_THREAD_RULE,
       payload,
@@ -86,12 +114,12 @@ function normalizeIMessageWebhookPayload(payload: unknown) {
     });
   }
 
-  const data = optionalRecord(payload, "data") ?? payload;
-  const threadId = optionalString(data, "chatGuid") ?? optionalString(data, "chatIdentifier");
+  const data = iMessageNativeData(payload);
+  const threadId = iMessageThreadIdentifiers(data)[0];
   const text = optionalString(data, "text") ?? optionalString(data, "message");
   if (!threadId || !text) {
     throw new CrablineError(
-      "iMessage webhook payload requires chatGuid or chatIdentifier and text",
+      "iMessage webhook payload requires chatGuid or chatIdentifier (including native snake_case aliases) and text",
       {
         kind: "inbound",
       },
@@ -99,7 +127,7 @@ function normalizeIMessageWebhookPayload(payload: unknown) {
   }
 
   return {
-    author: authorFromBotFlag(data.isFromMe === true),
+    author: authorFromBotFlag(data.isFromMe === true || data.is_from_me === true),
     ...(optionalString(data, "guid") ? { id: optionalString(data, "guid") } : {}),
     raw: payload,
     text,

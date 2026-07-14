@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveIMessageAdapterConfig } from "../src/providers/builtin/imessage.js";
 import type { ProviderConfig } from "../src/config/schema.js";
 
@@ -23,11 +23,31 @@ function createConfig(imessage?: Partial<NonNullable<ProviderConfig["imessage"]>
 }
 
 describe("imessage provider default runtime", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("keeps remote gateway metadata optional for the local mock", () => {
+    vi.stubEnv("IMESSAGE_API_KEY", "ambient-api-key");
+    vi.stubEnv("IMESSAGE_SERVER_URL", "https://ambient-imessage.example.com");
+
     expect(resolveIMessageAdapterConfig(createConfig())).toEqual({
       apiKey: "local-mock-imessage-api-key",
       local: true,
       serverUrl: undefined,
+    });
+  });
+
+  it("accepts an explicitly isolated environment", () => {
+    expect(
+      resolveIMessageAdapterConfig(createConfig(), {
+        IMESSAGE_API_KEY: "isolated-api-key",
+        IMESSAGE_SERVER_URL: "https://isolated-imessage.example.com",
+      }),
+    ).toEqual({
+      apiKey: "isolated-api-key",
+      local: true,
+      serverUrl: "https://isolated-imessage.example.com",
     });
   });
 

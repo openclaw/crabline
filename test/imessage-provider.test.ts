@@ -40,6 +40,22 @@ describe("iMessage thread matching", () => {
     ).toBe(true);
   });
 
+  it("matches native nested notification aliases", () => {
+    expect(
+      matchesIMessageThread(
+        "iMessage;-;chat-guid-1",
+        "+15551234567",
+        { id: "+15551234567" },
+        {
+          message: {
+            chat_guid: "iMessage;-;chat-guid-1",
+            chat_identifier: "+15551234567",
+          },
+        },
+      ),
+    ).toBe(true);
+  });
+
   it("rejects unrelated GUIDs and recipient aliases", () => {
     expect(
       matchesIMessageThread(
@@ -128,6 +144,51 @@ describe("iMessage thread matching", () => {
       ).resolves.toMatchObject({
         id: "imsg-guid-alias",
         text: "recipient alias",
+        threadId: "iMessage;-;chat-guid-1",
+      });
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
+  it("normalizes native nested imsg notifications", async () => {
+    const config = await createLocalMockConfig("imessage", "/imessage/webhook");
+    const provider = new IMessageProviderAdapter("imessage", config, "crabline");
+    const context = createProviderContext("imessage", config, {
+      id: "+15551234567",
+      metadata: {},
+    });
+    context.fixture.inboundMatch.author = "any";
+
+    try {
+      const endpoint = (await provider.probe(context)).details
+        .find((detail) => detail.startsWith("webhook endpoint "))
+        ?.replace("webhook endpoint ", "");
+      const waiting = provider.waitForInbound({
+        ...context,
+        nonce: "native nested envelope",
+        since: new Date(Date.now() - 1000).toISOString(),
+        timeoutMs: 500,
+      });
+      const response = await fetch(endpoint!, {
+        body: JSON.stringify({
+          message: {
+            chat_guid: "iMessage;-;chat-guid-1",
+            chat_identifier: "+15551234567",
+            guid: "imsg-native-nested",
+            is_from_me: false,
+            text: "native nested envelope",
+          },
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(waiting).resolves.toMatchObject({
+        author: "user",
+        id: "imsg-native-nested",
+        text: "native nested envelope",
         threadId: "iMessage;-;chat-guid-1",
       });
     } finally {
