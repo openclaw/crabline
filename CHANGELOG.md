@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Terminate and drain unused Windows script helper bootstrap processes after command timeouts.
 - Keep synthetic Telegram username chat IDs outside the native chat-ID range.
 - Retain Slack event identities across the full delayed-delivery retry horizon with bounded replay state.
 - Retain Feishu replay identities through the full signed-callback validity horizon without evicting live entries.
