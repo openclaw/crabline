@@ -163,10 +163,12 @@ async function writeDepartedExecutionOwner(
 }
 
 function recoveryClaimPath(lockDirectory: string, fingerprint = "coordination"): string {
-  const canonicalDirectory = path.join(
+  const canonical = path.join(
     fs.realpathSync.native(path.dirname(lockDirectory)),
     path.basename(lockDirectory),
   );
+  const canonicalDirectory =
+    process.platform === "win32" ? path.win32.normalize(canonical).toLowerCase() : canonical;
   const digest = createHash("sha256")
     .update(canonicalDirectory)
     .update("\0")
@@ -217,6 +219,32 @@ describe("process-owned lock filesystem", () => {
     ).toThrow("Recorder lock process identity is unavailable.");
     expect(identityReader).toHaveBeenCalledTimes(3);
   });
+
+  it.runIf(process.platform === "darwin")(
+    "uses a coarse process identity when attach-based inspection is unavailable",
+    async () => {
+      const target = await createLockTarget();
+      const lockFs = createProcessOwnedLockFileSystem({
+        processIdentityReader: () => "darwin:1.1:s:123",
+      });
+      const release = await lock(target, {
+        fs: lockFs,
+        realpath: false,
+        retries: 0,
+        stale: 2000,
+        update: 1000,
+      });
+      const owner = JSON.parse(
+        await readFile(path.join(`${target}.lock`, "crabline-owner.json"), "utf8"),
+      ) as { processIdentity: string; version: number };
+
+      expect(owner).toMatchObject({
+        processIdentity: "darwin:1.1:s:123",
+        version: 1,
+      });
+      await release();
+    },
+  );
 
   it("distinguishes dead Linux process states from stopped owners", () => {
     expect(isDeadLinuxProcessState("123 (worker) Z 1 2 3")).toBe(true);
@@ -553,7 +581,7 @@ describe("process-owned lock filesystem", () => {
     expect(fs.existsSync(lockDirectory)).toBe(false);
   });
 
-  it("recovers when release cannot acquire the coordination claim", async () => {
+  it("retries release when a transient coordination claim blocks cleanup", async () => {
     const target = await createLockTarget();
     const lockDirectory = `${target}.lock`;
     const release = await acquire(target);
@@ -582,17 +610,11 @@ describe("process-owned lock filesystem", () => {
     }) as typeof fs.mkdir);
 
     try {
-      await expect(release()).rejects.toMatchObject({ code: "ELOCKED" });
-      await expect(
-        readFile(path.join(lockDirectory, "crabline-owner.json"), "utf8"),
-      ).resolves.toContain('"token"');
+      await expect(release()).resolves.toBeUndefined();
+      expect(fs.existsSync(lockDirectory)).toBe(false);
     } finally {
       mkdirSpy.mockRestore();
     }
-
-    const nextRelease = await acquire(target);
-    await nextRelease();
-    expect(fs.existsSync(lockDirectory)).toBe(false);
   });
 
   it("releases the published directory when owner metadata cannot be parsed", async () => {
@@ -930,13 +952,14 @@ describe("process-owned lock filesystem", () => {
     await rm(ownerTarget, { force: true });
   });
 
-  it("fails closed for ownerless legacy locks that cannot be fenced from old clients", async () => {
+  it("recovers stale ownerless locks left by pre-upgrade clients", async () => {
     const target = await createLockTarget();
     const lockDirectory = `${target}.lock`;
     await mkdir(lockDirectory);
     await utimes(lockDirectory, new Date(0), new Date(0));
 
-    await expect(acquire(target)).rejects.toMatchObject({ code: "ELOCKED" });
-    await rm(lockDirectory, { recursive: true });
+    const release = await acquire(target);
+    expect(release).toBeTypeOf("function");
+    await release();
   });
 });
