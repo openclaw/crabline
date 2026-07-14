@@ -43,7 +43,7 @@ foreach ($Candidate in $Candidates) {
 
     $LauncherArgs = $Candidate.Arguments
     try {
-        & $Command.Source @LauncherArgs -c 'import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)' *> $null
+        & $Command.Source @LauncherArgs -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' *> $null
     }
     catch {
         continue
@@ -56,5 +56,5 @@ foreach ($Candidate in $Candidates) {
     exit $LASTEXITCODE
 }
 
-[Console]::Error.WriteLine('Python 3 is required to run test-review-harness.')
+[Console]::Error.WriteLine('Python 3.10 or newer is required to run test-review-harness.')
 exit 127
