@@ -77,6 +77,7 @@ export function drainRequestBody(request: IncomingMessage): void {
   const ignoreError = () => {};
   request.on("error", ignoreError);
   if (request.destroyed) {
+    // IncomingMessage may emit its terminal error after destroyed becomes true.
     return;
   }
   const cleanup = () => {
@@ -299,6 +300,7 @@ export async function writeResponse(
   fetchResponse: Response,
   maxBytes = DEFAULT_MAX_RESPONSE_BODY_BYTES,
 ): Promise<void> {
+  requirePositiveSafeInteger(maxBytes, "maxResponseBodyBytes");
   const reader = fetchResponse.body?.getReader();
   let cancellation: Promise<void> | undefined;
   let rejectStopped!: (error: Error) => void;
@@ -418,13 +420,17 @@ export async function startHttpJsonServer(params: {
   port: number;
   serverName: string;
 }): Promise<{ baseUrl: string; close(): Promise<void>; server: Server }> {
+  const maxResponseBodyBytes = requirePositiveSafeInteger(
+    params.maxResponseBodyBytes ?? DEFAULT_MAX_RESPONSE_BODY_BYTES,
+    "maxResponseBodyBytes",
+  );
   const handleRequest = async (request: IncomingMessage, response: ServerResponse) => {
     try {
       const result = await params.handle(request, response);
       drainRequestBody(request);
       const handled = result instanceof Response ? { response: result } : result;
       try {
-        await writeResponse(response, handled.response, params.maxResponseBodyBytes);
+        await writeResponse(response, handled.response, maxResponseBodyBytes);
       } catch (error) {
         await handled.onWriteFailure?.();
         throw error;
@@ -453,7 +459,7 @@ export async function startHttpJsonServer(params: {
               },
               500,
             ),
-          params.maxResponseBodyBytes,
+          maxResponseBodyBytes,
         );
       } catch {
         response.destroy();
@@ -490,6 +496,13 @@ export async function startHttpJsonServer(params: {
     },
     server,
   };
+}
+
+function requirePositiveSafeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive safe integer.`);
+  }
+  return value;
 }
 
 export function readString(value: unknown): string | undefined {
