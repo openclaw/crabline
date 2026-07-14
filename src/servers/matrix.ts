@@ -514,6 +514,7 @@ function boundedSyncRoom(
   since: number | undefined,
   timelineLimit: number | undefined,
   maxBytes: number,
+  maxTimelineEvents = Number.POSITIVE_INFINITY,
 ): string | undefined {
   const available = room.timeline.filter((entry) => since === undefined || entry.sequence > since);
   const requestedTimeline =
@@ -531,6 +532,9 @@ function boundedSyncRoom(
   const timeline: Array<{ sequence: number; event: MatrixEvent }> = [];
   let timelineBytes = 0;
   for (let index = requestedTimeline.length - 1; index >= 0; index -= 1) {
+    if (timeline.length >= maxTimelineEvents) {
+      break;
+    }
     const entry = requestedTimeline[index]!;
     const eventBytes = Buffer.byteLength(JSON.stringify(entry.event), "utf8");
     if (timelineBytes + ephemeralBytes + eventBytes > maxBytes) {
@@ -607,26 +611,50 @@ async function handleSync(url: URL, state: MatrixServerState): Promise<Response>
     `s${state.nextSequence - 1}`,
   )},"presence":{"events":[]},"rooms":{"invite":{},"join":{`;
   const suffix = '},"knock":{},"leave":{}},"to_device":{"events":[]}}';
-  const parts: string[] = [];
   let responseBytes = Buffer.byteLength(prefix, "utf8") + Buffer.byteLength(suffix, "utf8");
-  for (const room of state.rooms.values()) {
-    if (!roomHasSyncUpdates(room, since)) {
-      continue;
-    }
-    const separator = parts.length === 0 ? "" : ",";
+  const rooms = [...state.rooms.values()].filter((room) => roomHasSyncUpdates(room, since));
+  const minimumEntries: Array<{
+    framingBytes: number;
+    minimumBytes: number;
+    room: MatrixRoom;
+    roomKey: string;
+    separator: string;
+  }> = [];
+  for (const [index, room] of rooms.entries()) {
+    const separator = index === 0 ? "" : ",";
     const roomKey = JSON.stringify(room.id);
     const framingBytes = Buffer.byteLength(`${separator}${roomKey}:`, "utf8");
-    const roomBody = boundedSyncRoom(
+    const roomBody = boundedSyncRoom(room, since, timelineLimit, state.maxSyncResponseBytes, 1);
+    if (!roomBody) {
+      return matrixResourceLimitError("Sync response exceeds the configured byte limit");
+    }
+    minimumEntries.push({
+      framingBytes,
+      minimumBytes: framingBytes + Buffer.byteLength(roomBody, "utf8"),
       room,
+      roomKey,
+      separator,
+    });
+  }
+  let reservedBytes = minimumEntries.reduce((total, entry) => total + entry.minimumBytes, 0);
+  if (responseBytes + reservedBytes > state.maxSyncResponseBytes) {
+    return matrixResourceLimitError("Sync response exceeds the configured byte limit");
+  }
+
+  const parts: string[] = [];
+  for (const entry of minimumEntries) {
+    reservedBytes -= entry.minimumBytes;
+    const roomBody = boundedSyncRoom(
+      entry.room,
       since,
       timelineLimit,
-      state.maxSyncResponseBytes - responseBytes - framingBytes,
+      state.maxSyncResponseBytes - responseBytes - entry.framingBytes - reservedBytes,
     );
     if (!roomBody) {
       return matrixResourceLimitError("Sync response exceeds the configured byte limit");
     }
-    parts.push(`${separator}${roomKey}:${roomBody}`);
-    responseBytes += framingBytes + Buffer.byteLength(roomBody, "utf8");
+    parts.push(`${entry.separator}${entry.roomKey}:${roomBody}`);
+    responseBytes += entry.framingBytes + Buffer.byteLength(roomBody, "utf8");
   }
   const body = `${prefix}${parts.join("")}${suffix}`;
   if (Buffer.byteLength(body, "utf8") > state.maxSyncResponseBytes) {
