@@ -25,7 +25,7 @@
 - Honor HTTP response age when caching JWT keys, reject unsupported critical JWS headers and malformed provider key metadata, preserve signing-service failure status, and protect webhook routing and framing headers.
 - Enforce Telegram destination prefixes, username canonicalization, topic IDs, and signed 52-bit chat identifier boundaries.
 - Bound GET and HEAD webhook bodies, reject invalid loopback callback exposure, and cancel response streams when clients disconnect.
-- Bound stalled WhatsApp acceptance, reserve message IDs and one-time prekeys atomically, align binary-node encode limits, and require native webhook envelopes.
+- Bound stalled WhatsApp acceptance, reserve message IDs and one-time prekeys atomically, enforce Cloud text limits, align binary-node encode limits, and require native webhook envelopes.
 - Verify downloaded npm tarball integrity, retry transient provenance lookups, and revalidate release tags immediately before publication mutations.
 - Validate effective fixture mode overrides and stop retrying permanent provider send failures.
 - Bound watch iterator return and provider cleanup during CLI shutdown, forcing process exit after deadline failures.
