@@ -108,7 +108,7 @@ describe("channel setup contracts", () => {
     expect(matrixSection).toContain("`X-Crabline-Admin-Token`");
   });
 
-  it("documents ready-file protections and Mattermost ingress limits", async () => {
+  it("documents ready-file protections and Mattermost ingress authentication", async () => {
     const [readme, channelSetup] = await Promise.all([
       fs.readFile("README.md", "utf8"),
       fs.readFile("docs/channel-setup.md", "utf8"),
@@ -120,7 +120,8 @@ describe("channel setup contracts", () => {
       expect(document).toContain("Exclude ready files from version control and CI artifact");
       expect(document).toContain("delete them after use");
     }
-    expect(channelSetup).toContain("Mattermost webhook ingress is currently loopback-only");
-    expect(channelSetup).toContain("any `webhook.publicUrl` are rejected");
+    expect(channelSetup).toContain("Mattermost `webhookToken` or `MATTERMOST_TOKEN`");
+    expect(channelSetup).toContain("Externally reachable callbacks require this token");
+    expect(channelSetup).toContain("an HTTPS\n  `webhook.publicUrl`");
   });
 });

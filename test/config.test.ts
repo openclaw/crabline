@@ -256,7 +256,7 @@ describe("manifest schema", () => {
   });
 
   it("rejects unsupported external ingress in strict manifests", () => {
-    for (const adapter of ["matrix", "mattermost", "imessage"] as const) {
+    for (const adapter of ["matrix", "imessage"] as const) {
       for (const webhook of [
         { host: "0.0.0.0" },
         { publicUrl: `https://${adapter}.example.test/webhook` },
@@ -277,6 +277,44 @@ describe("manifest schema", () => {
         ).toThrow(/does not support external webhook ingress/u);
       }
     }
+  });
+
+  it("accepts token-authenticated HTTPS Mattermost webhook ingress", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          mattermost: {
+            adapter: "mattermost",
+            mattermost: {
+              webhook: {
+                host: "0.0.0.0",
+                publicUrl: "https://mattermost.example.test/webhook",
+              },
+              webhookToken: "sample",
+            },
+          },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it("allows loopback-local HTTP Mattermost webhook ingress", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          mattermost: {
+            adapter: "mattermost",
+            mattermost: {
+              webhook: { publicUrl: "http://127.0.0.1:8793/mattermost/webhook" },
+            },
+          },
+        },
+      }),
+    ).not.toThrow();
   });
 
   it("accepts equivalent IPv6 loopback hosts for local-only ingress", () => {
@@ -362,6 +400,33 @@ describe("manifest schema", () => {
       }),
     ).toThrow(/<=10/u);
   });
+
+  it.each(["roundtrip", "agent"] as const)(
+    "rejects retrying %s fixtures that ignore nonces",
+    (mode) => {
+      expect(() =>
+        ManifestSchema.parse({
+          configVersion: 1,
+          fixtures: [
+            {
+              id: `unsafe-${mode}`,
+              inboundMatch: { nonce: "ignore", strategy: "contains" },
+              mode,
+              provider: "local",
+              retries: 1,
+              target: { id: "echo-bot" },
+            },
+          ],
+          providers: { local: { adapter: "loopback" } },
+        }),
+      ).toThrow(
+        new RegExp(
+          `${mode} mode cannot retry when inboundMatch\\.nonce=ignore because a late reply`,
+          "u",
+        ),
+      );
+    },
+  );
 
   it("requires a service-account identity for Google Chat Pub/Sub audiences", () => {
     expect(() =>

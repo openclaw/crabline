@@ -421,6 +421,41 @@ describe("run behavior", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  it.each(["roundtrip", "agent"] as const)(
+    "rejects retry-unsafe %s mode overrides before resolving the provider",
+    async (modeOverride) => {
+      const resolve = vi.fn();
+      const retryingManifest: ManifestDefinition = {
+        ...manifest,
+        fixtures: [
+          {
+            ...manifest.fixtures[0]!,
+            inboundMatch: { author: "assistant", nonce: "ignore", strategy: "contains" },
+            mode: "send",
+            retries: 1,
+          },
+        ],
+      };
+
+      const result = await runFixtureCommand({
+        fixtureId: "fixture",
+        manifest: retryingManifest,
+        manifestPath: "/tmp/crabline.yaml",
+        modeOverride,
+        registry: {
+          catalog: OPENCLAW_SUPPORT_CATALOG,
+          resolve,
+        },
+      });
+
+      expect(result).toMatchObject({ failureKind: "config", mode: modeOverride, ok: false });
+      expect(result.diagnostics.join("\n")).toContain(
+        `${modeOverride} mode cannot retry when inboundMatch.nonce=ignore`,
+      );
+      expect(resolve).not.toHaveBeenCalled();
+    },
+  );
+
   it("requires an exact ACK and canonical nonce for agent replies", async () => {
     let waitCalls = 0;
     const provider: ProviderAdapter = {

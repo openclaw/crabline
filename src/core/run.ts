@@ -5,7 +5,7 @@ import { createNonce } from "./nonces.js";
 import { compileInboundRegex } from "./safe-regex.js";
 import { type FailureKind, CrablineError, ensureErrorMessage } from "./errors.js";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.js";
-import { fixtureModeValidationError, type ManifestDefinition } from "../config/schema.js";
+import { fixtureModeValidationIssue, type ManifestDefinition } from "../config/schema.js";
 import type { Registry } from "../providers/registry.js";
 
 export type CommandRunResult = {
@@ -297,15 +297,16 @@ export async function runFixtureCommand(params: {
   const mode = params.modeOverride ?? configuredFixture.mode;
   const fixture =
     mode === configuredFixture.mode ? configuredFixture : { ...configuredFixture, mode };
-  const validationError = fixtureModeValidationError(fixture);
-  if (validationError) {
+  const validationIssue = fixtureModeValidationIssue(fixture);
+  if (validationIssue) {
     return toFailure(
       configuredFixture.id,
       configuredFixture.provider,
       mode,
-      new CrablineError(`Invalid effective fixture "${configuredFixture.id}": ${validationError}`, {
-        kind: "config",
-      }),
+      new CrablineError(
+        `Invalid effective fixture "${configuredFixture.id}": ${validationIssue.message}`,
+        { kind: "config" },
+      ),
       "config",
     );
   }
