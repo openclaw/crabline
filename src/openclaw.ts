@@ -104,7 +104,16 @@ function hasStringRecordValues(value: unknown): value is Record<string, string> 
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }
 
-function isOpenClawCrablineRecorderEvent(value: unknown): boolean {
+type OpenClawCrablineRecorderEvent = {
+  accepted: true;
+  at: string;
+  method: string;
+  path: string;
+  query: Record<string, string>;
+  type: "admin" | "api";
+};
+
+function isOpenClawCrablineRecorderEvent(value: unknown): value is OpenClawCrablineRecorderEvent {
   return (
     isRecord(value) &&
     value.accepted === true &&
@@ -119,7 +128,47 @@ function isOpenClawCrablineRecorderEvent(value: unknown): boolean {
   );
 }
 
-function assertOpenClawCrablineRecorderEvidence(contents: string): void {
+function openClawCrablineProviderProbeRequest(
+  manifest: CrablineServerManifest,
+): Pick<OpenClawCrablineRecorderEvent, "method" | "path"> {
+  switch (manifest.provider) {
+    case "mattermost":
+      return {
+        method: "GET",
+        path: new URL(`${manifest.endpoints.apiRoot}/users/me`).pathname,
+      };
+    case "matrix":
+      return {
+        method: "GET",
+        path: new URL(`${manifest.endpoints.clientApiRoot}/account/whoami`).pathname,
+      };
+    case "signal":
+      return {
+        method: "GET",
+        path: new URL("/api/v1/check", manifest.baseUrl).pathname,
+      };
+    case "slack":
+      return {
+        method: "POST",
+        path: new URL("auth.test", manifest.endpoints.apiRoot).pathname,
+      };
+    case "telegram":
+      return { method: "GET", path: "/bot<redacted>/getMe" };
+    case "whatsapp":
+      return {
+        method: "GET",
+        path: new URL(manifest.endpoints.phoneNumberUrl).pathname,
+      };
+    case "zalo":
+      return { method: "POST", path: "/bot<redacted>/getMe" };
+  }
+}
+
+function assertOpenClawCrablineRecorderEvidence(
+  contents: string,
+  manifest: CrablineServerManifest,
+): void {
+  const expectedRequest = openClawCrablineProviderProbeRequest(manifest);
   let recorderEvidence = false;
   for (const line of contents.split(/\r?\n/u)) {
     if (!line.trim()) {
@@ -139,7 +188,13 @@ function assertOpenClawCrablineRecorderEvidence(contents: string): void {
         "OpenClaw Crabline provider probe produced no valid JSONL recorder evidence.",
       );
     }
-    recorderEvidence = true;
+    if (
+      event.type === "api" &&
+      event.method === expectedRequest.method &&
+      event.path === expectedRequest.path
+    ) {
+      recorderEvidence = true;
+    }
   }
   if (!recorderEvidence) {
     throw new Error("OpenClaw Crabline provider probe produced no valid JSONL recorder evidence.");
@@ -550,7 +605,7 @@ export async function runOpenClawCrablineProviderReadiness(
     const recorderSnapshot = await readOwnedRecorderSnapshot(recorderPath, recorderDirectory);
     recorderIdentity = recorderSnapshot.identity;
     const recorderSnapshotContents = recorderSnapshot.contents;
-    assertOpenClawCrablineRecorderEvidence(recorderSnapshotContents);
+    assertOpenClawCrablineRecorderEvidence(recorderSnapshotContents, adapter.manifest);
 
     const capabilityReport = {
       result: {

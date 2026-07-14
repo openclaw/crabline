@@ -125,6 +125,31 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it.each(["manifestPath", "providerReadinessArtifactPath"] as const)(
+    "requires explicit v2 artifact pointer %s",
+    async (field) => {
+      const outputDir = await createTempDir();
+      try {
+        await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+          createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+        });
+        const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
+        const pointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<
+          string,
+          unknown
+        >;
+        delete pointer[field];
+        await fs.writeFile(pointerPath, `${JSON.stringify(pointer, null, 2)}\n`);
+
+        await expect(readOpenClawCrablineArtifactPointer(outputDir)).rejects.toThrow(
+          "OpenClaw Crabline artifact pointer is malformed.",
+        );
+      } finally {
+        await disposeTempDir(outputDir);
+      }
+    },
+  );
+
   it("rejects caller-controlled artifact paths before creating the store", async () => {
     const outputDir = await createTempDir();
     const params = publishParams(outputDir);
@@ -382,6 +407,30 @@ describe("OpenClaw artifact generation publication", () => {
       });
       await expect(fs.stat(path.join(outputDir, first.manifestPath))).resolves.toBeDefined();
       await expect(fs.stat(path.join(outputDir, second.manifestPath))).resolves.toBeDefined();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it.each([
+    ["manifest", "manifestPath"],
+    ["capability matrix", "capabilityMatrixPath"],
+    ["provider readiness", "providerReadinessArtifactPath"],
+  ] as const)("normalizes missing current %s artifact errors", async (_label, field) => {
+    const outputDir = await createTempDir();
+    try {
+      const current = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      });
+      await fs.rm(path.join(outputDir, current[field]));
+
+      const publication = publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+      });
+      await expect(publication).rejects.toMatchObject({
+        message: "OpenClaw Crabline current artifact generation is incomplete.",
+        cause: { code: "ENOENT" },
+      });
     } finally {
       await disposeTempDir(outputDir);
     }

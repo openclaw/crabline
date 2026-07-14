@@ -165,6 +165,8 @@ function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer
     typeof value.capabilityMatrixPath !== "string" ||
     value.capabilityMatrixPath !== expected.capabilityMatrixPath ||
     value.manifestPath !== expected.manifestPath ||
+    (value.version === 2 &&
+      value.providerReadinessArtifactPath !== expected.providerReadinessArtifactPath) ||
     (value.providerReadinessArtifactPath !== undefined &&
       value.providerReadinessArtifactPath !== expected.providerReadinessArtifactPath) ||
     (value.smokeArtifactPath !== undefined &&
@@ -259,7 +261,14 @@ async function assertCurrentGenerationExists(
     pointer.providerReadinessArtifactPath,
   ]) {
     await assertGenerationIdentity();
-    const stats = await fs.lstat(path.join(outputDir, artifactPath));
+    let stats: Awaited<ReturnType<typeof fs.lstat>>;
+    try {
+      stats = await fs.lstat(path.join(outputDir, artifactPath));
+    } catch (error) {
+      throw new Error("OpenClaw Crabline current artifact generation is incomplete.", {
+        cause: error,
+      });
+    }
     if (!stats.isFile()) {
       throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
     }
