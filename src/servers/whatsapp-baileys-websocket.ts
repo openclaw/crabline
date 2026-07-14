@@ -29,7 +29,10 @@ import { KEY_BUNDLE_TYPE, xmppPreKey, xmppSignedPreKey } from "./whatsapp-wire/s
 import { WebSocket, WebSocketServer, type ServerOptions } from "ws";
 import type { ServerRequestEvent } from "./http.js";
 import { closeWebSocketServer } from "./websocket.js";
-import { canonicalizeWhatsAppUserCorrelationJid } from "./whatsapp-jid.js";
+import {
+  canonicalizeWhatsAppChatCorrelationJid,
+  canonicalizeWhatsAppUserCorrelationJid,
+} from "./whatsapp-jid.js";
 
 // Keep the local server independent from Baileys at runtime. Tests use Baileys
 // as a black-box client to verify this narrow WhatsApp Web wire subset.
@@ -310,6 +313,7 @@ export class WhatsAppSignalBundleStore {
         `WhatsApp message acceptance timeout must be a positive integer no greater than ${MAX_NODE_TIMER_DELAY_MS}.`,
       );
     }
+    options.signal?.throwIfAborted();
     const controller = new AbortController();
     const operationPromise = Promise.resolve().then(() => operation(controller.signal));
     let terminalFenced = false;
@@ -391,7 +395,7 @@ export class WhatsAppSignalBundleStore {
   }
 
   markMessageAcknowledged(peerJid: string, messageId: string): void {
-    const peer = canonicalizeWhatsAppUserCorrelationJid(peerJid);
+    const peer = canonicalizeWhatsAppChatCorrelationJid(peerJid);
     if (peer && messageId) {
       const messageKey = `${peer}\0${messageId}`;
       this.#recoverExpiredPendingAcknowledgements();
@@ -1787,7 +1791,7 @@ export async function persistAcceptedBaileysMessage(params: {
   remoteJid: string;
   signalBundles: WhatsAppSignalBundleStore;
 }): Promise<boolean> {
-  const peer = canonicalizeWhatsAppUserCorrelationJid(params.node.attrs.to ?? "");
+  const peer = canonicalizeWhatsAppChatCorrelationJid(params.node.attrs.to ?? "");
   const messageId = params.node.attrs.id;
   if (!peer || !messageId) {
     return false;
@@ -1978,21 +1982,24 @@ function cloneSignalSession(session: SessionRecord): SessionRecord {
 }
 
 export function signalBundleIdentityKey(jid: string): string {
-  return jid.replace(/:\d+(?=@)/u, "");
+  return jid.replace(/(?:_\d+)?(?::\d+)?(?=@)/u, "");
 }
 
 function signalProtocolAddress(jid: string): { deviceId: number; name: string } | undefined {
-  const match = /^(\d{7,15})(?::(\d+))?@(s\.whatsapp\.net|lid)$/iu.exec(jid);
+  const match = /^(\d{7,15})(?:_(\d+))?(?::(\d+))?@(s\.whatsapp\.net|lid)$/iu.exec(jid);
   if (!match) {
     return undefined;
   }
-  const deviceId = Number(match[2] ?? "0");
+  const deviceId = Number(match[3] ?? "0");
   if (!Number.isSafeInteger(deviceId) || deviceId < 0) {
     return undefined;
   }
+  const agent = match[2];
+  const server = match[4]!.toLowerCase();
   return {
     deviceId,
-    name: match[3]!.toLowerCase() === "lid" ? `${match[1]}_1` : match[1]!,
+    name:
+      agent !== undefined ? `${match[1]}_${agent}` : server === "lid" ? `${match[1]}_1` : match[1]!,
   };
 }
 

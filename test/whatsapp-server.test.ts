@@ -4,6 +4,7 @@ import { createServer as createNetServer } from "node:net";
 import path from "node:path";
 import {
   initAuthCreds,
+  jidEncode,
   makeCacheableSignalKeyStore,
   makeWASocket,
   type AuthenticationCreds,
@@ -31,6 +32,10 @@ import {
   signalBundleIdentityKey,
   WhatsAppSignalBundleStore,
 } from "../src/servers/whatsapp-baileys-websocket.js";
+import {
+  canonicalizeWhatsAppUserCorrelationJid,
+  canonicalizeWhatsAppUserJid,
+} from "../src/servers/whatsapp-jid.js";
 import type { BinaryNode } from "../src/servers/whatsapp-wire/binary-node.js";
 import { Curve, ensureSignalPublicKey, type KeyPair } from "../src/servers/whatsapp-wire/crypto.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
@@ -957,6 +962,21 @@ describe("whatsapp local provider server", () => {
     expect(store.size).toBe(2);
   });
 
+  it("accepts Baileys agent-qualified device JIDs while normalizing correlation", () => {
+    const agentDeviceJid = jidEncode("15551234567", "s.whatsapp.net", 2, 7);
+    expect(agentDeviceJid).toBe("15551234567_7:2@s.whatsapp.net");
+    expect(canonicalizeWhatsAppUserJid(agentDeviceJid)).toBe(agentDeviceJid);
+    expect(canonicalizeWhatsAppUserCorrelationJid(agentDeviceJid)).toBe(
+      "15551234567@s.whatsapp.net",
+    );
+    expect(signalBundleIdentityKey(agentDeviceJid)).toBe("15551234567@s.whatsapp.net");
+
+    const store = new WhatsAppSignalBundleStore(1);
+    const base = store.resolveMany(["15551234567@s.whatsapp.net"])[0]!;
+    expect(store.resolveMany([agentDeviceJid])[0]!.identityKey).toBe(base.identityKey);
+    expect(store.size).toBe(1);
+  });
+
   it("rejects new Signal sessions at capacity without evicting established peers", async () => {
     const recipientJid = "15551234567@s.whatsapp.net";
     const receiver = new WhatsAppSignalBundleStore(1, undefined, undefined, undefined, undefined, {
@@ -1343,6 +1363,37 @@ describe("whatsapp local provider server", () => {
     await expect(
       receiver.acceptMessageOnce("15557654321@s.whatsapp.net\0next", async () => true),
     ).resolves.toBe(true);
+  });
+
+  it("retains group acknowledgements for duplicate-message lookup", async () => {
+    const receiver = new WhatsAppSignalBundleStore(1, 1);
+    const messageKey = "120363001234567890@g.us\0group-ack";
+    let releaseAcceptance!: (accepted: boolean) => void;
+    const acceptanceBlocked = new Promise<boolean>((resolve) => {
+      releaseAcceptance = resolve;
+    });
+    const acceptance = receiver.acceptMessageOnce(messageKey, () => acceptanceBlocked);
+    receiver.markMessageAcknowledged("120363001234567890@g.us", "group-ack");
+    releaseAcceptance(true);
+    await expect(acceptance).resolves.toBe(true);
+
+    const duplicateOperation = vi.fn(async () => true);
+    await expect(receiver.acceptMessageOnce(messageKey, duplicateOperation)).resolves.toBe(true);
+    expect(duplicateOperation).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke acceptance work for an already-aborted owner signal", async () => {
+    const receiver = new WhatsAppSignalBundleStore(1);
+    const reason = new Error("request already cancelled");
+    const operation = vi.fn(async () => true);
+
+    await expect(
+      receiver.acceptMessageOnce("peer\0pre-aborted", operation, {
+        signal: AbortSignal.abort(reason),
+      }),
+    ).rejects.toBe(reason);
+    await Promise.resolve();
+    expect(operation).not.toHaveBeenCalled();
   });
 
   it("times out stalled acceptance and recovers pending acknowledgement capacity", async () => {
