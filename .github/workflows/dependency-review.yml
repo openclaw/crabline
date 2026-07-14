@@ -7,6 +7,8 @@ on:
       - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
+      - tools/go.mod
+      - tools/go.sum
       - ".github/actions/**"
       - ".github/workflows/**"
 

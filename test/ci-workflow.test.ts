@@ -80,6 +80,7 @@ describe("CI workflow hardening", () => {
         fs.mkdir(path.join(root, ".github", "workflows"), { recursive: true }),
         fs.mkdir(path.join(root, ".github", "actions", "example"), { recursive: true }),
         fs.mkdir(path.join(root, ".github", "actions", "container"), { recursive: true }),
+        fs.mkdir(path.join(root, "ci", "outside"), { recursive: true }),
       ]);
       await Promise.all([
         fs.writeFile(
@@ -97,6 +98,7 @@ describe("CI workflow hardening", () => {
             "        image: postgres:17",
             "    steps:",
             "      - run: echo ok",
+            "      - uses: ./ci/outside",
           ].join("\n"),
         ),
         fs.writeFile(
@@ -114,6 +116,10 @@ describe("CI workflow hardening", () => {
           path.join(root, ".github", "actions", "container", "action.yml"),
           ["runs:", "  using: docker", "  image: docker://busybox:1.37"].join("\n"),
         ),
+        fs.writeFile(
+          path.join(root, "ci", "outside", "action.yml"),
+          ["runs:", "  using: composite", "  steps:", "    - uses: owner/outside@v2"].join("\n"),
+        ),
       ]);
 
       const actionRefs = await collectExternalActionRefs(root);
@@ -123,6 +129,7 @@ describe("CI workflow hardening", () => {
           "docker://ghcr.io/owner/runtime:latest",
           "docker://postgres:17",
           "owner/action@v1",
+          "owner/outside@v2",
           "docker://alpine:3.20",
           `docker://ghcr.io/owner/action@sha256:${"0".repeat(64)}`,
           "docker://busybox:1.37",
@@ -134,6 +141,7 @@ describe("CI workflow hardening", () => {
           "docker://ghcr.io/owner/runtime:latest",
           "docker://postgres:17",
           "owner/action@v1",
+          "owner/outside@v2",
           "docker://alpine:3.20",
           "docker://busybox:1.37",
         ].toSorted(),
@@ -151,6 +159,8 @@ describe("CI workflow hardening", () => {
 
     expect(codeowners).toContain("/pnpm-workspace.yaml @openclaw/openclaw-secops");
     expect(dependencyReview).toContain("      - pnpm-workspace.yaml");
+    expect(dependencyReview).toContain("      - tools/go.mod");
+    expect(dependencyReview).toContain("      - tools/go.sum");
   });
 
   it("protects and scans local action and executable tool changes", async () => {
@@ -210,22 +220,58 @@ async function collectExternalActionRefs(root: string): Promise<string[]> {
     )
   ).flat();
 
+  const externalRefs = workflowRefs.filter((uses) => !uses.startsWith("./"));
   const actionFiles = await listYamlFiles(path.join(root, ".github", "actions"));
-  const compositeRefs = (
-    await Promise.all(
-      actionFiles.map(async (filePath) => {
-        const action = parse(await fs.readFile(filePath, "utf8")) as CompositeAction;
-        if (action.runs?.using === "composite") {
-          return action.runs.steps?.flatMap((step) => (step.uses ? [step.uses] : [])) ?? [];
-        }
-        return action.runs?.using === "docker" && action.runs.image?.startsWith("docker://")
+  for (const localRef of workflowRefs.filter((uses) => uses.startsWith("./"))) {
+    actionFiles.push(await resolveLocalActionManifest(root, localRef));
+  }
+
+  const pending = [...new Set(actionFiles)];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const filePath = pending.shift()!;
+    if (visited.has(filePath)) {
+      continue;
+    }
+    visited.add(filePath);
+    const action = parse(await fs.readFile(filePath, "utf8")) as CompositeAction;
+    const refs =
+      action.runs?.using === "composite"
+        ? (action.runs.steps?.flatMap((step) => (step.uses ? [step.uses] : [])) ?? [])
+        : action.runs?.using === "docker" && action.runs.image?.startsWith("docker://")
           ? [action.runs.image]
           : [];
-      }),
-    )
-  ).flat();
+    for (const uses of refs) {
+      if (uses.startsWith("./")) {
+        pending.push(await resolveLocalActionManifest(root, uses));
+      } else {
+        externalRefs.push(uses);
+      }
+    }
+  }
 
-  return [...workflowRefs, ...compositeRefs].filter((uses) => !uses.startsWith("./"));
+  return externalRefs;
+}
+
+async function resolveLocalActionManifest(root: string, uses: string): Promise<string> {
+  const resolved = path.resolve(root, uses.slice(2));
+  const relative = path.relative(root, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Local action escapes the repository: ${uses}`);
+  }
+  for (const fileName of ["action.yml", "action.yaml"]) {
+    const manifestPath = path.join(resolved, fileName);
+    try {
+      if ((await fs.stat(manifestPath)).isFile()) {
+        return manifestPath;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+  throw new Error(`Local action manifest is missing: ${uses}`);
 }
 
 function workflowImage(value: string | { image?: string } | undefined): string | undefined {
