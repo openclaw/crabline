@@ -316,7 +316,9 @@ async function assertCurrentGenerationExists(
     capabilityMatrix.channelDriver.length === 0 ||
     typeof capabilityMatrix.selectedChannel !== "string" ||
     capabilityMatrix.selectedChannel.length === 0 ||
-    !Object.hasOwn(capabilityMatrix, "report")
+    capabilityMatrix.report === null ||
+    typeof capabilityMatrix.report !== "object" ||
+    Array.isArray(capabilityMatrix.report)
   ) {
     throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
   }
