@@ -44,13 +44,17 @@ function hasLoneSurrogate(value: string): boolean {
   return false;
 }
 
-function isMatrixScopedIdentifier(value: string, sigil: "!" | "$" | "@"): boolean {
+function isMatrixScopedIdentifier(
+  value: string,
+  sigil: "!" | "$" | "@",
+  allowEmptyLocalpart = false,
+): boolean {
   const separator = value.indexOf(":");
   const localpart = value.slice(1, separator);
   return (
     value.startsWith(sigil) &&
     Buffer.byteLength(value, "utf8") <= MAX_MATRIX_IDENTIFIER_BYTES &&
-    separator >= (sigil === "@" ? 1 : 2) &&
+    separator >= (allowEmptyLocalpart ? 1 : 2) &&
     !localpart.includes("\0") &&
     !hasLoneSurrogate(localpart) &&
     isMatrixServerName(value.slice(separator + 1))
@@ -88,5 +92,13 @@ export function isMatrixEventId(value: string): boolean {
 }
 
 export function isMatrixUserId(value: string): boolean {
-  return isMatrixScopedIdentifier(value, "@");
+  if (!isMatrixScopedIdentifier(value, "@")) {
+    return false;
+  }
+  const localpart = value.slice(1, value.indexOf(":"));
+  return /^[a-z0-9._=/+-]+$/u.test(localpart);
+}
+
+export function isHistoricalMatrixUserId(value: string): boolean {
+  return isMatrixScopedIdentifier(value, "@", true);
 }
