@@ -104,6 +104,8 @@ const HttpsUrlSchema = HttpUrlSchema.refine((value) => {
 const HeaderValueSchema = z
   .string()
   .min(1)
+  .refine((value) => value.trim().length > 0, "secret must not be blank")
+  .refine((value) => value === value.trim(), "secret must not contain surrounding whitespace")
   .refine((value) => {
     try {
       validateHeaderValue("x-crabline-secret", value);

@@ -56,6 +56,19 @@ describe("config load", () => {
     expect(loaded.path).toBe(configPath);
   });
 
+  it.each(["yaml", "json"])("rejects malformed UTF-8 in %s manifests", async (extension) => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, `crabline.${extension}`);
+    const prefix =
+      extension === "json"
+        ? Buffer.from('{"configVersion":1,"providers":{},"fixtures":[],"comment":"')
+        : Buffer.from("configVersion: 1\nproviders: {}\nfixtures: []\ncomment: ");
+    await writeFile(configPath, Buffer.concat([prefix, Buffer.from([0xc3, 0x28])]));
+
+    await expect(loadManifest(configPath)).rejects.toThrow(/not valid for encoding utf-8/u);
+  });
+
   it("rejects duplicate keys in JSON manifests", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -208,6 +221,23 @@ describe("config load", () => {
     process.chdir(directory);
     try {
       expect(await realpath(await resolveConfigPath())).toBe(await realpath(configPath));
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it.each(["", " ", "\t"])("rejects an explicit empty config path: %j", async (configPath) => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    await writeText(
+      path.join(directory, "crabline.yaml"),
+      "configVersion: 1\nproviders: {}\nfixtures: []\n",
+    );
+    const originalCwd = process.cwd();
+
+    process.chdir(directory);
+    try {
+      await expect(loadManifest(configPath)).rejects.toThrow(/Config path must not be empty/u);
     } finally {
       process.chdir(originalCwd);
     }
