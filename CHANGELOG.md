@@ -35,6 +35,7 @@
 - Enforce Telegram native identity and UTF-16 entity boundaries without synthetic chat collisions, while accepting four-character collectible chat usernames and scheduled zero message IDs.
 - Randomize WhatsApp server credentials, canonicalize direct delivery JIDs, restrict read receipts to accepted inbound messages, and bound queued, session, and binary-node resources without evicting live Signal sessions.
 - Reject malformed, unencodable, or non-canonical loopback v2 addresses instead of aliasing thread identities.
+- Reject invalid loopback encoder components and history timestamps while preserving lossless address round trips and monotonic message order.
 - Encode generic local-mock target components without channel or thread identity collisions while preserving canonical target idempotence.
 - Keep fixture-local iMessage target IDs separate from provider-native thread aliases.
 - Case-fold Zalo recorder credential keys and fully redact ambiguous malformed URL authorities.
