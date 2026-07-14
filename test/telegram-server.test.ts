@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { startTelegramServer, type StartedTelegramServer } from "../src/index.js";
 import { handleTelegramGetUpdates, withTelegramWebhookDeadline } from "../src/servers/telegram.js";
 import {
+  isTelegramUsernameChatId,
   TELEGRAM_NATIVE_CHAT_ID_MAX,
   telegramUsernameChatId,
 } from "../src/servers/telegram-identity.js";
@@ -49,6 +50,28 @@ afterEach(async () => {
 });
 
 describe("telegram local provider server", () => {
+  it("assigns deterministic username IDs outside the native chat range", () => {
+    for (const nativeChatId of [
+      -Number(TELEGRAM_NATIVE_CHAT_ID_MAX),
+      -1,
+      1,
+      Number(TELEGRAM_NATIVE_CHAT_ID_MAX),
+    ]) {
+      expect(isTelegramUsernameChatId(nativeChatId)).toBe(false);
+    }
+
+    for (const username of ["@Crabline_Channel", "@another_channel", "@collectible"]) {
+      const chatId = telegramUsernameChatId(username);
+      expect(chatId).toBeDefined();
+      expect(Number.isSafeInteger(chatId)).toBe(true);
+      expect(BigInt(Math.abs(chatId!))).toBeGreaterThan(TELEGRAM_NATIVE_CHAT_ID_MAX);
+      expect(isTelegramUsernameChatId(chatId!)).toBe(true);
+    }
+    expect(telegramUsernameChatId("@Crabline_Channel")).toBe(
+      telegramUsernameChatId("@crabline_channel"),
+    );
+  });
+
   it("accepts only GET and POST and resolves Bot API methods case-insensitively", async () => {
     const server = await startTelegramServer({ botToken: "sample" });
     servers.push(server);
@@ -252,16 +275,6 @@ describe("telegram local provider server", () => {
     });
     expect(secondPayload.result).toMatchObject({ message_id: 2 });
     expect(secondPayload.result.chat.id).toBe(firstPayload.result.chat.id);
-
-    for (const username of ["@Crabline_Channel", "@another_channel", "@collectible"]) {
-      const chatId = telegramUsernameChatId(username);
-      expect(chatId).toBeDefined();
-      expect(Number.isSafeInteger(chatId)).toBe(true);
-      expect(BigInt(Math.abs(chatId!)) <= TELEGRAM_NATIVE_CHAT_ID_MAX).toBe(true);
-    }
-    expect(telegramUsernameChatId("@Crabline_Channel")).toBe(
-      telegramUsernameChatId("@crabline_channel"),
-    );
   });
 
   it("preserves registered channel and supergroup types for username destinations", async () => {

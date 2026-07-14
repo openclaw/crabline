@@ -5,7 +5,8 @@ export const TELEGRAM_BOT_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{4,31}$/u;
 export const TELEGRAM_CHAT_USERNAME_PATTERN = /^@[A-Za-z][A-Za-z0-9_]{3,31}$/u;
 
 const TELEGRAM_SYNTHETIC_ID_RANGE = 1n << 50n;
-const TELEGRAM_USERNAME_ID_BASE = TELEGRAM_NATIVE_CHAT_ID_MAX - TELEGRAM_SYNTHETIC_ID_RANGE + 1n;
+const TELEGRAM_USERNAME_ID_BASE = TELEGRAM_NATIVE_CHAT_ID_MAX + 1n;
+const TELEGRAM_USERNAME_ID_MAX = TELEGRAM_USERNAME_ID_BASE + TELEGRAM_SYNTHETIC_ID_RANGE - 1n;
 
 export function canonicalizeTelegramUsername(value: string): string | undefined {
   const username = value.trim();
@@ -28,5 +29,5 @@ export function isTelegramUsernameChatId(value: number): boolean {
     return false;
   }
   const magnitude = BigInt(-value);
-  return magnitude >= TELEGRAM_USERNAME_ID_BASE && magnitude <= TELEGRAM_NATIVE_CHAT_ID_MAX;
+  return magnitude >= TELEGRAM_USERNAME_ID_BASE && magnitude <= TELEGRAM_USERNAME_ID_MAX;
 }
