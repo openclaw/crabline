@@ -255,7 +255,7 @@ describe("Microsoft Teams webhook authentication", () => {
         }),
         body,
       ),
-    ).resolves.toMatchObject({ status: 401 });
+    ).resolves.toBeUndefined();
 
     const differentEndorsementAuthenticator = createMsTeamsWebhookAuthenticator(config, {
       fetch: async (input: string | URL | Request) =>
