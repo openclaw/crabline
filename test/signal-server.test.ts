@@ -314,6 +314,7 @@ describe("signal local provider server", () => {
         headers: { "content-type": "application/json" },
         method: "POST",
       });
+      expect(invalid.status).toBe(200);
       await expect(invalid.json()).resolves.toEqual({
         error: { code: -32602, message: "Invalid params" },
         id: `invalid-${method}`,
@@ -401,6 +402,7 @@ describe("signal local provider server", () => {
         headers: { "content-type": "application/json" },
         method: "POST",
       });
+      expect(response.status).toBe(200);
       return await response.json();
     }
 
