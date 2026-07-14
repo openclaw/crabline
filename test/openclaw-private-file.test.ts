@@ -2420,7 +2420,7 @@ describe("OpenClaw private file publication", () => {
 
     const script = calls[0]![1].at(-1);
     expect(script).toContain("$genericMutationRights = [uint32]0x50000000");
-    expect(script).toContain("$ruleAccessMask = [uint32][int32]$rule.FileSystemRights");
+    expect(script).toContain("[BitConverter]::GetBytes([int32]$rule.FileSystemRights)");
     expect(script).toContain(
       "$ruleAccessMask -band ($mutationAccessMask -bor $genericMutationRights)",
     );
@@ -2441,6 +2441,7 @@ describe("OpenClaw private file publication", () => {
     expect(script).toContain("TakeOwnership");
     expect(script).toContain("$ancestorReplacementMask");
     expect(script).toContain("$genericAll = [uint32]0x10000000");
+    expect(script).toContain("[BitConverter]::GetBytes([int32]$rule.FileSystemRights)");
     expect(script).toContain("$appliesToDirectory");
     expect(script).not.toContain("Set-Acl");
   });
