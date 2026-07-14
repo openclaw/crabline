@@ -279,16 +279,98 @@ jobs:
           }
           NODE
 
+          verify_package_provenance() {
+            local audit_dir audit_path
+            audit_dir="$(mktemp -d "$RUNNER_TEMP/crabline-provenance.XXXXXX")"
+            audit_path="$audit_dir/audit.json"
+            if ! (
+              cd "$audit_dir"
+              npm install --ignore-scripts --no-audit --no-fund "$PACKAGE_NAME@$RELEASE_VERSION" >/dev/null 2>&1
+              npm audit signatures --json --include-attestations=true > "$audit_path" 2>/dev/null
+            ); then
+              rm -rf "$audit_dir"
+              return 3
+            fi
+            if ! PACKAGE_AUDIT_PATH="$audit_path" node --input-type=module 2>/dev/null -e '
+            import fs from "node:fs";
+
+            const packageName = process.env.PACKAGE_NAME;
+            const releaseVersion = process.env.RELEASE_VERSION;
+            const releaseRef = `refs/tags/${process.env.RELEASE_TAG}`;
+            const repository = `${process.env.GITHUB_SERVER_URL.replace(/\/$/u, "")}/${process.env.GITHUB_REPOSITORY}`;
+            const expectedSubject = `pkg:npm/${
+              packageName.startsWith("@") ? `%40${packageName.slice(1)}` : packageName
+            }@${releaseVersion}`;
+            const integrityMatch = /^sha512-([A-Za-z0-9+/]+={0,2})$/u.exec(
+              process.env.PACKAGE_INTEGRITY,
+            );
+            if (!integrityMatch) {
+              process.exit(1);
+            }
+            const expectedDigest = Buffer.from(integrityMatch[1], "base64").toString("hex");
+            const audit = JSON.parse(fs.readFileSync(process.env.PACKAGE_AUDIT_PATH, "utf8"));
+            const verified = Array.isArray(audit.verified)
+              ? audit.verified.find(
+                  (entry) => entry?.name === packageName && entry?.version === releaseVersion,
+                )
+              : undefined;
+            const bundles = Array.isArray(verified?.attestationBundles)
+              ? verified.attestationBundles
+              : [];
+            const valid = bundles.some((attestation) => {
+              if (attestation?.predicateType !== "https://slsa.dev/provenance/v1") {
+                return false;
+              }
+              try {
+                const statement = JSON.parse(
+                  Buffer.from(attestation.bundle.dsseEnvelope.payload, "base64").toString("utf8"),
+                );
+                const workflow =
+                  statement.predicate?.buildDefinition?.externalParameters?.workflow;
+                const dependencies =
+                  statement.predicate?.buildDefinition?.resolvedDependencies;
+                return (
+                  statement._type === "https://in-toto.io/Statement/v1" &&
+                  statement.predicateType === "https://slsa.dev/provenance/v1" &&
+                  statement.predicate?.buildDefinition?.buildType ===
+                    "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1" &&
+                  Array.isArray(statement.subject) &&
+                  statement.subject.some(
+                    (subject) =>
+                      subject?.name === expectedSubject &&
+                      subject?.digest?.sha512 === expectedDigest,
+                  ) &&
+                  workflow?.repository === repository &&
+                  workflow?.path === ".github/workflows/release.yml" &&
+                  workflow?.ref === releaseRef &&
+                  Array.isArray(dependencies) &&
+                  dependencies.some(
+                    (dependency) =>
+                      dependency?.uri === `git+${repository}@${releaseRef}` &&
+                      dependency?.digest?.gitCommit === process.env.VERIFIED_COMMIT,
+                  )
+                );
+              } catch {
+                return false;
+              }
+            });
+            process.exit(valid ? 0 : 1);
+            '; then
+              rm -rf "$audit_dir"
+              echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION has provenance that does not match the repository, workflow, tag, commit, or package integrity."
+              return 2
+            fi
+            rm -rf "$audit_dir"
+            return 0
+          }
+
           check_existing_package() {
-            local actual_integrity actual_provenance actual_version
+            local actual_integrity actual_version provenance_status
             if ! actual_integrity="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity 2>/dev/null)"; then
               return 1
             fi
             if ! actual_version="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version 2>/dev/null)"; then
               return 1
-            fi
-            if ! actual_provenance="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.attestations.provenance.predicateType 2>/dev/null)"; then
-              return 3
             fi
             if [[ "$actual_version" != "$RELEASE_VERSION" ]]; then
               echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION reports version $actual_version."
@@ -298,15 +380,12 @@ jobs:
               echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION has integrity $actual_integrity, expected $PACKAGE_INTEGRITY."
               return 2
             fi
-            if [[ -z "$actual_provenance" ]]; then
-              echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION is missing npm provenance."
-              return 2
+            if verify_package_provenance; then
+              return 0
+            else
+              provenance_status=$?
+              return "$provenance_status"
             fi
-            if [[ "$actual_provenance" != "https://slsa.dev/provenance/v1" ]]; then
-              echo "::error::Published $PACKAGE_NAME@$RELEASE_VERSION has unsupported provenance predicate $actual_provenance."
-              return 2
-            fi
-            return 0
           }
 
           verify_published_package() {

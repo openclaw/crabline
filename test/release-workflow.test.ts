@@ -14,6 +14,9 @@ const PUBLISH_TARBALL_CONTENTS = "package";
 const PUBLISH_PACKAGE_INTEGRITY = `sha512-${createHash("sha512")
   .update(PUBLISH_TARBALL_CONTENTS)
   .digest("base64")}`;
+const PUBLISH_PACKAGE_DIGEST = createHash("sha512").update(PUBLISH_TARBALL_CONTENTS).digest("hex");
+const PROVENANCE_MISMATCH_ERROR =
+  "::error::Published @openclaw/crabline@1.2.3 has provenance that does not match the repository, workflow, tag, commit, or package integrity.";
 
 type WorkflowStep = {
   id?: string;
@@ -39,6 +42,70 @@ type ReleaseWorkflow = {
     }
   >;
 };
+
+function createAuditResult(
+  overrides: {
+    commit?: string;
+    predicateType?: string;
+    ref?: string;
+    repository?: string;
+    subjectDigest?: string;
+    workflowPath?: string;
+  } = {},
+): Record<string, unknown> {
+  const predicateType = overrides.predicateType ?? "https://slsa.dev/provenance/v1";
+  const repository = overrides.repository ?? "https://github.com/openclaw/crabline";
+  const ref = overrides.ref ?? "refs/tags/v1.2.3";
+  const statement = {
+    _type: "https://in-toto.io/Statement/v1",
+    predicateType,
+    subject: [
+      {
+        digest: { sha512: overrides.subjectDigest ?? PUBLISH_PACKAGE_DIGEST },
+        name: "pkg:npm/%40openclaw/crabline@1.2.3",
+      },
+    ],
+    predicate: {
+      buildDefinition: {
+        buildType: "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1",
+        externalParameters: {
+          workflow: {
+            path: overrides.workflowPath ?? ".github/workflows/release.yml",
+            ref,
+            repository,
+          },
+        },
+        resolvedDependencies: [
+          {
+            digest: {
+              gitCommit: overrides.commit ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            },
+            uri: `git+${repository}@${ref}`,
+          },
+        ],
+      },
+    },
+  };
+  return {
+    verified: [
+      {
+        attestationBundles: [
+          {
+            bundle: {
+              dsseEnvelope: {
+                payload: Buffer.from(JSON.stringify(statement)).toString("base64"),
+              },
+            },
+            predicateType,
+          },
+        ],
+        attestations: { provenance: { predicateType } },
+        name: "@openclaw/crabline",
+        version: "1.2.3",
+      },
+    ],
+  };
+}
 
 describe("release workflow", () => {
   it("only accepts stable tags and checks out the exact tag ref", async () => {
@@ -138,9 +205,10 @@ describe("release workflow", () => {
     expect(uploadStep?.with?.path).toBe("${{ steps.package.outputs.tarball }}");
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.integrity');
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@$RELEASE_VERSION" version');
-    expect(publishStep).toContain(
-      'npm view "$PACKAGE_NAME@$RELEASE_VERSION" dist.attestations.provenance.predicateType',
-    );
+    expect(publishStep).toContain("npm audit signatures --json --include-attestations=true");
+    expect(publishStep).toContain('workflow?.path === ".github/workflows/release.yml"');
+    expect(publishStep).toContain("dependency?.digest?.gitCommit === process.env.VERIFIED_COMMIT");
+    expect(publishStep).toContain("subject?.digest?.sha512 === expectedDigest");
     expect(publishStep).toContain('npm view "$PACKAGE_NAME@latest" version');
     expect(publishStep).toContain('"Refusing to publish " +');
     expect(publishStep).toContain('" because npm latest is newer at " +');
@@ -279,7 +347,7 @@ describe("release workflow", () => {
     expect(
       publishCommands
         .filter((command) => command !== "npm install -g npm@12.0.1")
-        .some((command) => /\b(?:pnpm|install|build|test|pack)\b/u.test(command)),
+        .some((command) => /\b(?:pnpm|build|test|pack)\b/u.test(command)),
     ).toBe(false);
   });
 
@@ -346,10 +414,12 @@ describe("release workflow", () => {
     expect(matchingCalls).toEqual([
       "view @openclaw/crabline@1.2.3 dist.integrity",
       "view @openclaw/crabline@1.2.3 version",
-      "view @openclaw/crabline@1.2.3 dist.attestations.provenance.predicateType",
+      "install --ignore-scripts --no-audit --no-fund @openclaw/crabline@1.2.3",
+      "audit signatures --json --include-attestations=true",
       "view @openclaw/crabline@1.2.3 dist.integrity",
       "view @openclaw/crabline@1.2.3 version",
-      "view @openclaw/crabline@1.2.3 dist.attestations.provenance.predicateType",
+      "install --ignore-scripts --no-audit --no-fund @openclaw/crabline@1.2.3",
+      "audit signatures --json --include-attestations=true",
       expect.stringContaining("git ls-remote --exit-code"),
     ]);
 
@@ -365,15 +435,27 @@ describe("release workflow", () => {
         MOCK_PROVENANCE_RESULT: "missing",
         MOCK_VIEW_RESULT: "matching",
       }),
-    ).rejects.toThrow("::error::Published @openclaw/crabline@1.2.3 is missing npm provenance.");
+    ).rejects.toThrow(PROVENANCE_MISMATCH_ERROR);
     await expect(
       runPublishStep(publishStep, {
         MOCK_PROVENANCE_RESULT: "unsupported",
         MOCK_VIEW_RESULT: "matching",
       }),
-    ).rejects.toThrow(
-      "::error::Published @openclaw/crabline@1.2.3 has unsupported provenance predicate https://example.invalid/provenance.",
-    );
+    ).rejects.toThrow(PROVENANCE_MISMATCH_ERROR);
+    for (const provenanceResult of [
+      "wrong-commit",
+      "wrong-repository",
+      "wrong-workflow",
+      "wrong-ref",
+      "wrong-subject",
+    ]) {
+      await expect(
+        runPublishStep(publishStep, {
+          MOCK_PROVENANCE_RESULT: provenanceResult,
+          MOCK_VIEW_RESULT: "matching",
+        }),
+      ).rejects.toThrow(PROVENANCE_MISMATCH_ERROR);
+    }
     const transientProvenanceCalls = await runPublishStep(publishStep, {
       MOCK_PROVENANCE_RESULT: "transient-once",
       MOCK_VIEW_RESULT: "matching",
@@ -400,7 +482,8 @@ describe("release workflow", () => {
       ),
       "view @openclaw/crabline@1.2.3 dist.integrity",
       "view @openclaw/crabline@1.2.3 version",
-      "view @openclaw/crabline@1.2.3 dist.attestations.provenance.predicateType",
+      "install --ignore-scripts --no-audit --no-fund @openclaw/crabline@1.2.3",
+      "audit signatures --json --include-attestations=true",
       expect.stringContaining("git ls-remote --exit-code"),
     ];
     expect(publishedCalls).toEqual(expectedPublishCalls);
@@ -423,7 +506,7 @@ describe("release workflow", () => {
     ).rejects.toThrow(
       "::error::Unable to resolve the current npm latest version for @openclaw/crabline.",
     );
-  });
+  }, 20_000);
 
   it("rejects a downloaded tarball whose bytes do not match the verified SRI", async () => {
     const workflow = await readWorkflow();
@@ -463,7 +546,7 @@ describe("release workflow", () => {
         MOCK_PROVENANCE_RESULT: "missing",
         MOCK_VIEW_RESULT: "after-publish",
       }),
-    ).rejects.toThrow("::error::Published @openclaw/crabline@1.2.3 is missing npm provenance.");
+    ).rejects.toThrow(PROVENANCE_MISMATCH_ERROR);
     await expect(
       runPublishStep(publishStep, {
         MOCK_VERSION_RESULT: "mismatch",
@@ -682,12 +765,34 @@ async function runPublishStep(
   const logPath = path.join(tempDir, "npm.log");
   const publishedPath = path.join(tempDir, "published");
   const provenanceCountPath = path.join(tempDir, "provenance-count");
+  const provenanceDir = path.join(tempDir, "provenance");
   const racePath = path.join(tempDir, "tag-raced");
   const releaseDir = path.join(tempDir, "release");
 
   try {
-    await Promise.all([fs.mkdir(binDir), fs.mkdir(releaseDir)]);
+    await Promise.all([fs.mkdir(binDir), fs.mkdir(provenanceDir), fs.mkdir(releaseDir)]);
     await fs.writeFile(path.join(releaseDir, "crabline-1.2.3.tgz"), PUBLISH_TARBALL_CONTENTS);
+    const provenanceResults = {
+      matching: createAuditResult(),
+      missing: { verified: [] },
+      unsupported: createAuditResult({
+        predicateType: "https://example.invalid/provenance",
+      }),
+      "wrong-commit": createAuditResult({
+        commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      }),
+      "wrong-ref": createAuditResult({ ref: "refs/tags/v1.2.2" }),
+      "wrong-repository": createAuditResult({
+        repository: "https://github.com/example/crabline",
+      }),
+      "wrong-subject": createAuditResult({ subjectDigest: "0".repeat(128) }),
+      "wrong-workflow": createAuditResult({ workflowPath: ".github/workflows/other.yml" }),
+    };
+    await Promise.all(
+      Object.entries(provenanceResults).map(([name, result]) =>
+        fs.writeFile(path.join(provenanceDir, `${name}.json`), JSON.stringify(result)),
+      ),
+    );
     await Promise.all([
       writeExecutable(
         path.join(binDir, "npm"),
@@ -697,6 +802,30 @@ echo "$*" >> "$MOCK_LOG"
 if [[ "$1" == "publish" ]]; then
   touch "$MOCK_PUBLISHED"
   exit "\${MOCK_PUBLISH_STATUS:-0}"
+fi
+if [[ "$1" == "install" ]]; then
+  exit 0
+fi
+if [[ "$1 $2" == "audit signatures" ]]; then
+  provenance_result="\${MOCK_PROVENANCE_RESULT:-matching}"
+  if [[ "$provenance_result" == "transient-once" ]]; then
+    provenance_count=0
+    if [[ -f "$MOCK_PROVENANCE_COUNT" ]]; then
+      provenance_count="$(cat "$MOCK_PROVENANCE_COUNT")"
+    fi
+    echo "$((provenance_count + 1))" > "$MOCK_PROVENANCE_COUNT"
+    if [[ "$provenance_count" -eq 0 ]]; then
+      exit 1
+    fi
+    provenance_result="matching"
+  elif [[ "$provenance_result" == "transient" ]]; then
+    exit 1
+  fi
+  cat "$MOCK_PROVENANCE_DIR/$provenance_result.json"
+  if [[ "\${MOCK_TAG_RACE_AFTER_EXISTING:-0}" -eq 1 ]]; then
+    touch "$MOCK_TAG_RACE"
+  fi
+  exit 0
 fi
 if [[ "$2" == "$PACKAGE_NAME@latest" ]]; then
   if [[ "\${MOCK_TAG_RACE_AFTER_LOOKUP:-0}" -eq 1 ]]; then
@@ -718,29 +847,6 @@ if [[ "$3" == "version" ]]; then
     mismatch) echo "1.2.4" ;;
     *) exit 1 ;;
   esac
-  exit 0
-fi
-if [[ "$3" == "dist.attestations.provenance.predicateType" ]]; then
-  case "\${MOCK_PROVENANCE_RESULT:-matching}" in
-    matching) echo "https://slsa.dev/provenance/v1" ;;
-    missing) exit 0 ;;
-    unsupported) echo "https://example.invalid/provenance" ;;
-    transient-once)
-      provenance_count=0
-      if [[ -f "$MOCK_PROVENANCE_COUNT" ]]; then
-        provenance_count="$(cat "$MOCK_PROVENANCE_COUNT")"
-      fi
-      echo "$((provenance_count + 1))" > "$MOCK_PROVENANCE_COUNT"
-      if [[ "$provenance_count" -eq 0 ]]; then
-        exit 1
-      fi
-      echo "https://slsa.dev/provenance/v1"
-      ;;
-    *) exit 1 ;;
-  esac
-  if [[ "\${MOCK_TAG_RACE_AFTER_EXISTING:-0}" -eq 1 ]]; then
-    touch "$MOCK_TAG_RACE"
-  fi
   exit 0
 fi
 case "$view_result" in
@@ -776,6 +882,7 @@ printf '%s\\trefs/tags/v1.2.3^{}\\n' "$remote_commit"
         MOCK_LOG: logPath,
         MOCK_PUBLISHED: publishedPath,
         MOCK_PROVENANCE_COUNT: provenanceCountPath,
+        MOCK_PROVENANCE_DIR: provenanceDir,
         MOCK_TAG_RACE: racePath,
         PACKAGE_INTEGRITY: PUBLISH_PACKAGE_INTEGRITY,
         PACKAGE_NAME: "@openclaw/crabline",
