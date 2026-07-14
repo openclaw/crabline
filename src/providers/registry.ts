@@ -225,7 +225,7 @@ export class LazyProviderAdapter implements ProviderAdapter {
           }
           let result = await source.return();
           while (!result.done) {
-            result = await source.return();
+            result = await source.next();
           }
           finish();
           return result;
