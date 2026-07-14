@@ -436,17 +436,20 @@ describe("production package", () => {
   });
 
   it("lints repository tooling with the type-aware gate", async () => {
-    const [pkgContents, launcher] = await Promise.all([
+    const [pkgContents, launcher, tsconfigContents] = await Promise.all([
       fs.readFile("package.json", "utf8"),
       fs.readFile("tools/run-autoreview-tests.mjs", "utf8"),
+      fs.readFile("tsconfig.test.json", "utf8"),
     ]);
     const pkg = JSON.parse(pkgContents) as { scripts?: Record<string, string> };
+    const tsconfig = JSON.parse(tsconfigContents) as { include?: string[] };
 
     expect(pkg.scripts?.lint).toBe(
       "pnpm format:check && pnpm typecheck && oxlint --deny-warnings " +
         "--allow vitest/require-mock-type-parameters --type-aware " +
-        "--tsconfig tsconfig.test.json src test tools",
+        "--tsconfig tsconfig.test.json src test tools vitest.config.ts",
     );
+    expect(tsconfig.include).toEqual(["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]);
     expect(launcher).toContain(
       "oxlint-disable-next-line no-console -- This CLI failure must be visible on stderr.",
     );
