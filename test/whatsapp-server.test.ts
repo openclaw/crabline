@@ -1567,6 +1567,23 @@ describe("whatsapp local provider server", () => {
       releaseAppend();
       await vi.advanceTimersByTimeAsync(0);
       expect(receiver.sessionCount).toBe(0);
+      const abortedRetry = new AbortController();
+      abortedRetry.abort(new Error("retry owner already closed"));
+      const abortedRetryAppend = vi.fn(async () => undefined);
+      await expect(
+        persistAcceptedBaileysMessage({
+          acceptanceSignal: abortedRetry.signal,
+          appendEvent: abortedRetryAppend,
+          node,
+          path: "/ws/chat",
+          remoteJid: senderJid,
+          signalBundles: receiver,
+        }),
+      ).rejects.toThrow("retry owner already closed");
+      expect(abortedRetryAppend).not.toHaveBeenCalled();
+      expect(receiver.sessionCount).toBe(0);
+      await vi.advanceTimersByTimeAsync(0);
+
       const retryAppend = vi.fn(async () => undefined);
       await expect(
         persistAcceptedBaileysMessage({
