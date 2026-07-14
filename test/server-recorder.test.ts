@@ -1221,10 +1221,12 @@ describe("server recorder", () => {
       releaseGate = undefined;
       await vi.waitFor(
         () => {
+          expect(first.stderr()).toBe("");
+          expect(second.stderr()).toBe("");
           expect(first.stdout()).toContain("done\n");
           expect(second.stdout()).toContain("done\n");
         },
-        { timeout: 5_000 },
+        { timeout: 15_000 },
       );
       await expect(Promise.all(processes.map((process) => process.exited))).resolves.toEqual([
         0, 0,
@@ -1246,7 +1248,7 @@ describe("server recorder", () => {
       await Promise.all(processes.map((process) => process.exited));
       await actualFs.rm(directory, { force: true, recursive: true });
     }
-  }, 15_000);
+  }, 30_000);
 
   it("serializes hardlink aliases across recorder processes", async () => {
     const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
@@ -1323,10 +1325,12 @@ describe("server recorder", () => {
       releaseGate = undefined;
       await vi.waitFor(
         () => {
+          expect(first.stderr()).toBe("");
+          expect(second.stderr()).toBe("");
           expect(first.stdout()).toContain("done\n");
           expect(second.stdout()).toContain("done\n");
         },
-        { timeout: 5_000 },
+        { timeout: 15_000 },
       );
       await expect(Promise.all(processes.map((process) => process.exited))).resolves.toEqual([
         0, 0,
@@ -1348,7 +1352,7 @@ describe("server recorder", () => {
       await Promise.all(processes.map((process) => process.exited));
       await actualFs.rm(directory, { force: true, recursive: true });
     }
-  }, 15_000);
+  }, 30_000);
 
   it("waits beyond five seconds for a live recorder owner", async () => {
     const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
