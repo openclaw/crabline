@@ -1007,6 +1007,48 @@ describe("server recorder", () => {
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
   });
 
+  it.runIf(process.platform === "win32")(
+    "retries Windows torn-tail repair when the publication path disappears",
+    async () => {
+      const recorderPath = path.join("/tmp", "crabline-server-recorder-repair-race.jsonl");
+      const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
+      const contents = Buffer.from(`${completed}{"type":"api","path":"/torn"`);
+      let repairAttempts = 0;
+      fsMocks.file.stat.mockResolvedValue({
+        dev: 1,
+        ino: 1,
+        nlink: 1,
+        size: contents.length,
+      });
+      fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
+        const source = contents.subarray(position, position + length);
+        source.copy(buffer, offset);
+        return { buffer, bytesRead: source.length };
+      });
+      fsMocks.open.mockImplementation(async (_filePath, flags) => {
+        if (flags === "ax+") {
+          throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
+        }
+        if (flags === "r+" && repairAttempts++ === 0) {
+          throw Object.assign(new Error("Recorder rotated"), { code: "ENOENT" });
+        }
+        return typeof flags === "number" || flags === "r" ? fsMocks.directory : fsMocks.file;
+      });
+
+      await expect(
+        recordServerEvent({
+          event: serverEvent("/after-repair-race"),
+          onEvent: undefined,
+          recorderPath,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(repairAttempts).toBe(2);
+      expect(fsMocks.file.truncate).toHaveBeenCalledWith(Buffer.byteLength(completed));
+      expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    },
+  );
+
   it("appends server records larger than four MiB", async () => {
     const event = {
       ...serverEvent("/oversized"),
