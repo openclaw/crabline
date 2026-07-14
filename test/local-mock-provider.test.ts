@@ -667,6 +667,54 @@ describe("local mock provider", () => {
     expect(settleWebhookRequest).toHaveBeenCalledWith(expect.objectContaining({ accepted: false }));
   });
 
+  it("cancels an uncommitted success response when recorder persistence fails", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    let handleRequest: ((request: Request) => Promise<Response>) | undefined;
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handleRequest = params.handle;
+      return {
+        async close() {},
+        endpointUrl: "http://127.0.0.1:43210/slack/events",
+      };
+    });
+    const cancelled = vi.fn();
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        createWebhookSuccessResponse: () =>
+          new Response(
+            new ReadableStream({
+              cancel: cancelled,
+              start(controller) {
+                controller.enqueue(Buffer.from("uncommitted"));
+              },
+            }),
+          ),
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+        recorderPath: directory,
+      },
+    });
+    providers.push(provider);
+    await provider.probe(createContext(config));
+
+    await expect(
+      handleRequest!(
+        new Request("http://127.0.0.1:43210/slack/events", {
+          body: JSON.stringify({ id: "event-1", text: "hello", threadId: "C1234567890" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      ),
+    ).rejects.toThrow(/not a regular file/u);
+    await vi.waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
+  });
+
   it("preserves accepted webhook success when post-commit settlement fails", async () => {
     const directory = await createTempDir();
     directories.push(directory);

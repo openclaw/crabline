@@ -605,6 +605,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       settle(response.ok);
       return response;
     };
+    let uncommittedResponse: Response | undefined;
     const settleCommittedAcceptance = () => {
       if (settled) {
         return;
@@ -660,6 +661,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
           headers: { "content-type": "application/json" },
           status: 200,
         });
+      uncommittedResponse = successResponse;
       await appendRecordedInbound(this.#recorderPath, {
         author: authorFromPayload(payload),
         id,
@@ -671,8 +673,10 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         threadId,
       });
       settleCommittedAcceptance();
+      uncommittedResponse = undefined;
       return successResponse;
     } catch (error) {
+      void uncommittedResponse?.body?.cancel(error).catch(() => undefined);
       settle(false);
       throw error;
     }
