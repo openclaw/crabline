@@ -162,6 +162,38 @@ if ([string]::IsNullOrWhiteSpace($directoryPath)) {
 }
 
 $acl = Get-Acl -LiteralPath $directoryPath
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$sid = $identity.User
+if ($null -eq $sid) {
+  throw "Could not resolve the current Windows user SID."
+}
+$ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+$rules = @($acl.GetAccessRules(
+  $true,
+  $true,
+  [System.Security.Principal.SecurityIdentifier]
+))
+$requiredInheritance = (
+  [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+  [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+)
+if (
+  -not $acl.AreAccessRulesProtected -or
+  $ownerSid.Value -ne $sid.Value -or
+  $rules.Count -ne 1
+) {
+  throw "Windows directory security descriptor is not owner-only."
+}
+$rule = $rules[0]
+if (
+  $rule.IsInherited -or
+  $rule.IdentityReference.Value -ne $sid.Value -or
+  $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+  (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) -or
+  (($rule.InheritanceFlags -band $requiredInheritance) -ne $requiredInheritance)
+) {
+  throw "Windows directory security descriptor is not owner-only."
+}
 $descriptor = $acl.GetSecurityDescriptorBinaryForm()
 [Convert]::ToBase64String($descriptor)
 `;
