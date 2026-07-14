@@ -2,9 +2,12 @@ import { get, type IncomingMessage } from "node:http";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
+  adminAuthError,
+  ADMIN_TOKEN_HEADER,
   assertLoopbackBindAddress,
   DEFAULT_MAX_REQUEST_BODY_BYTES,
   drainRequestBody,
+  hasAdminToken,
   InvalidJsonBodyError,
   isLoopbackAddress,
   isLoopbackHost,
@@ -27,6 +30,54 @@ function expectLateErrorHandled(request: IncomingMessage): void {
   request.emit("close");
   expect(request.listenerCount("error")).toBe(0);
 }
+
+describe("server admin authentication", () => {
+  const expectedToken = "test-auth-token";
+  const cases: Array<[string, IncomingMessage["headers"], boolean]> = [
+    ["custom header", { [ADMIN_TOKEN_HEADER]: expectedToken }, true],
+    ["Bearer authorization", { authorization: `Bearer ${expectedToken}` }, true],
+    ["case-insensitive Bearer authorization", { authorization: `bEaReR ${expectedToken}` }, true],
+    ["missing credentials", {}, false],
+    ["incorrect token", { [ADMIN_TOKEN_HEADER]: "token-oversized" }, false],
+    ["unequal token length", { [ADMIN_TOKEN_HEADER]: "dummy" }, false],
+    ["malformed authorization", { authorization: `Basic ${expectedToken}` }, false],
+    ["first duplicate header", { [ADMIN_TOKEN_HEADER]: [expectedToken, "wrong"] }, true],
+    ["later duplicate header", { [ADMIN_TOKEN_HEADER]: ["wrong", expectedToken] }, false],
+  ];
+
+  it.each(cases)("handles %s", (_name, headers, expected) => {
+    expect(hasAdminToken(createRequest(headers), expectedToken)).toBe(expected);
+  });
+
+  it("gives the custom header precedence over Bearer authorization", () => {
+    expect(
+      hasAdminToken(
+        createRequest({
+          [ADMIN_TOKEN_HEADER]: "wrong",
+          authorization: `Bearer ${expectedToken}`,
+        }),
+        expectedToken,
+      ),
+    ).toBe(false);
+    expect(
+      hasAdminToken(
+        createRequest({
+          [ADMIN_TOKEN_HEADER]: expectedToken,
+          authorization: "Bearer wrong",
+        }),
+        expectedToken,
+      ),
+    ).toBe(true);
+  });
+
+  it("returns a Bearer challenge for rejected requests", async () => {
+    const response = adminAuthError();
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toBe("Bearer");
+    await expect(response.text()).resolves.toBe("unauthorized");
+  });
+});
 
 describe("server HTTP body reader", () => {
   it("keeps rejected request streams error-handled until close", async () => {
