@@ -988,7 +988,7 @@ describe("lazy provider lifecycle", () => {
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
-  it("keeps a lazy watch active when the source return reports done false", async () => {
+  it("drains lazy watch cleanup yields when a for-await loop breaks", async () => {
     const { context } = createTelegramManifest("/tmp/unused.jsonl");
     const event = (id: string) => ({
       author: "assistant" as const,
@@ -1043,17 +1043,81 @@ describe("lazy provider lifecycle", () => {
       status: "ready",
       supports: ["agent"],
     });
-    const iterator = provider.watch(context)[Symbol.asyncIterator]();
+    for await (const value of provider.watch(context)) {
+      expect(value.id).toBe("watch-event");
+      break;
+    }
 
-    await expect(iterator.next()).resolves.toMatchObject({
-      done: false,
-      value: { id: "watch-event" },
+    expect(returnCalls).toBe(2);
+    await provider.cleanup();
+  });
+
+  it("preserves lazy watch errors after cleanup yields on for-await break", async () => {
+    const { context } = createTelegramManifest("/tmp/unused.jsonl");
+    const cleanupError = new Error("watch cleanup failed");
+    const event = {
+      author: "assistant" as const,
+      id: "watch-event",
+      provider: "test",
+      sentAt: new Date().toISOString(),
+      text: "watch event",
+      threadId: "thread",
+    };
+    let returnCalls = 0;
+    const concrete: ProviderAdapter = {
+      id: "test",
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      async waitForInbound() {
+        return null;
+      },
+      watch() {
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              async next() {
+                return { done: false as const, value: event };
+              },
+              async return() {
+                returnCalls += 1;
+                if (returnCalls === 1) {
+                  return { done: false as const, value: event };
+                }
+                throw cleanupError;
+              },
+            };
+          },
+        };
+      },
+    };
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory: async () => concrete,
+      id: "test",
+      normalizeTarget: concrete.normalizeTarget.bind(concrete),
+      platform: "loopback",
+      status: "ready",
+      supports: ["agent"],
     });
-    await expect(iterator.return!()).resolves.toMatchObject({
-      done: false,
-      value: { id: "return-value" },
-    });
-    await expect(iterator.return!()).resolves.toEqual({ done: true, value: undefined });
+
+    await expect(
+      (async () => {
+        for await (const value of provider.watch(context)) {
+          expect(value.id).toBe("watch-event");
+          break;
+        }
+      })(),
+    ).rejects.toBe(cleanupError);
     expect(returnCalls).toBe(2);
     await provider.cleanup();
   });
