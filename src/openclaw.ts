@@ -24,6 +24,7 @@ import {
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
+  getUnsettledOpenClawCrablineProviderProbe,
   isRecord,
   parseQaTarget,
   runOpenClawCrablineProviderProbe,
@@ -94,6 +95,7 @@ const RECORDER_TEMP_NAME_PATTERN =
   /^\.([a-z]+)-fake-provider\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl\.tmp$/iu;
 const RECORDER_LOCK_REMOVAL_TOMBSTONE_PATTERN =
   /^\.(.+)\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove$/iu;
+const OPENCLAW_CRABLINE_PROVIDER_PROBE_CLEANUP_GRACE_MS = 250;
 
 function isOpenClawCrablineRecorderTemporary(name: string): boolean {
   const channel = RECORDER_TEMP_NAME_PATTERN.exec(name)?.[1]?.toLowerCase();
@@ -516,6 +518,43 @@ type ProviderReadinessDependencies = {
   syncParent?: typeof syncParentDirectory;
 };
 
+function attachOpenClawCrablineProbeCleanupFailure(
+  probeFailure: Error,
+  cleanupError: unknown,
+): void {
+  const existingCause = probeFailure.cause;
+  try {
+    Object.defineProperty(probeFailure, "cause", {
+      configurable: true,
+      value:
+        existingCause === undefined
+          ? cleanupError
+          : new AggregateError(
+              [existingCause, cleanupError],
+              "OpenClaw Crabline provider probe cleanup also failed.",
+            ),
+    });
+  } catch {
+    // Some provider errors are frozen; preserving the primary failure is authoritative.
+  }
+}
+
+async function waitForOpenClawCrablineProbeCleanup(probeSettlement: Promise<void>): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      probeSettlement,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, OPENCLAW_CRABLINE_PROVIDER_PROBE_CLEANUP_GRACE_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
 export function runOpenClawCrablineProviderReadiness(params: {
   outputDir: string;
   selection: OpenClawCrablineChannelDriverSelection;
@@ -561,43 +600,47 @@ export async function runOpenClawCrablineProviderReadiness(
     let probe: unknown;
     let probeFailed = false;
     let probeFailure: unknown;
+    let probeSettlement: Promise<void> | undefined;
     try {
       probe = await adapter.probe();
     } catch (error) {
       probeFailed = true;
       probeFailure = error;
+      probeSettlement = getUnsettledOpenClawCrablineProviderProbe(error);
     }
-    try {
-      await adapter.close();
-    } catch (cleanupError) {
-      if (!probeFailed) {
-        throw cleanupError;
-      }
-      if (probeFailure instanceof Error) {
-        const existingCause = probeFailure.cause;
+    if (probeSettlement) {
+      const primaryFailure = probeFailure;
+      void waitForOpenClawCrablineProbeCleanup(probeSettlement).then(async () => {
         try {
-          Object.defineProperty(probeFailure, "cause", {
-            configurable: true,
-            value:
-              existingCause === undefined
-                ? cleanupError
-                : new AggregateError(
-                    [existingCause, cleanupError],
-                    "OpenClaw Crabline provider probe cleanup also failed.",
-                  ),
-          });
-        } catch {
-          // Some provider errors are frozen; preserving the primary failure is authoritative.
+          await adapter.close();
+        } catch (cleanupError) {
+          if (primaryFailure instanceof Error) {
+            attachOpenClawCrablineProbeCleanupFailure(primaryFailure, cleanupError);
+          }
         }
-        throw probeFailure;
+      });
+    } else {
+      try {
+        await adapter.close();
+      } catch (cleanupError) {
+        if (!probeFailed) {
+          throw cleanupError;
+        }
+        if (probeFailure instanceof Error) {
+          attachOpenClawCrablineProbeCleanupFailure(probeFailure, cleanupError);
+          throw probeFailure;
+        }
+        const combinedError = new Error(
+          "OpenClaw Crabline provider probe and cleanup both failed.",
+          {
+            cause: cleanupError,
+          },
+        );
+        Object.defineProperty(combinedError, "errors", {
+          value: [probeFailure, cleanupError],
+        });
+        throw combinedError;
       }
-      const combinedError = new Error("OpenClaw Crabline provider probe and cleanup both failed.", {
-        cause: cleanupError,
-      });
-      Object.defineProperty(combinedError, "errors", {
-        value: [probeFailure, cleanupError],
-      });
-      throw combinedError;
     }
     if (probeFailed) {
       throw probeFailure;

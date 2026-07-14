@@ -14,6 +14,7 @@ export const OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH = `${OPENCLAW_CRABLINE_ARTI
 export const OPENCLAW_CRABLINE_DEFAULT_CHANNEL = "telegram";
 
 const OPENCLAW_CRABLINE_PROVIDER_PROBE_TIMEOUT_MS = 5_000;
+const OPENCLAW_CRABLINE_PROVIDER_PROBE_ABORT_GRACE_MS = 250;
 const OPENCLAW_CRABLINE_PROVIDER_PROBE_LABELS = {
   mattermost: "Mattermost users.me",
   matrix: "Matrix whoami",
@@ -23,6 +24,7 @@ const OPENCLAW_CRABLINE_PROVIDER_PROBE_LABELS = {
   whatsapp: "WhatsApp phone number",
   zalo: "Zalo getMe",
 } satisfies Record<CrablineServerManifest["provider"], string>;
+const unsettledProviderProbeSettlements = new WeakMap<Error, Promise<void>>();
 
 export type OpenClawCrablineChannelDriverSelection = {
   channel: CrablineServerChannel;
@@ -209,30 +211,64 @@ export async function runOpenClawCrablineProviderProbe<T>(
       `Crabline ${OPENCLAW_CRABLINE_PROVIDER_PROBE_LABELS[provider]} probe timed out after ${OPENCLAW_CRABLINE_PROVIDER_PROBE_TIMEOUT_MS} ms.`,
       { cause },
     );
+  const operation = Promise.resolve().then(() => probe(signal));
+  const settled = operation.then(
+    () => undefined,
+    () => undefined,
+  );
   let onAbort: (() => void) | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    onAbort = () => reject(timeoutError(signal.reason));
+  const timeout = new Promise<{ kind: "timeout" }>((resolve) => {
+    onAbort = () => resolve({ kind: "timeout" });
     if (signal.aborted) {
       onAbort();
       return;
     }
     signal.addEventListener("abort", onAbort, { once: true });
   });
-  const probeResult = Promise.resolve()
-    .then(() => probe(signal))
-    .catch((error: unknown) => {
-      if (signal.aborted) {
-        throw timeoutError(error);
-      }
-      throw error;
-    });
   try {
-    return await Promise.race([probeResult, timeout]);
+    const outcome = await Promise.race([
+      operation.then(
+        (value) => ({ kind: "result" as const, value }),
+        (error: unknown) => ({ error, kind: "error" as const }),
+      ),
+      timeout,
+    ]);
+    if (outcome.kind === "result") {
+      return outcome.value;
+    }
+    if (outcome.kind === "error" && !signal.aborted) {
+      throw outcome.error;
+    }
+
+    const failure = timeoutError(outcome.kind === "error" ? outcome.error : signal.reason);
+    let abortGrace: ReturnType<typeof setTimeout> | undefined;
+    const drained = await Promise.race([
+      settled.then(() => true as const),
+      new Promise<false>((resolve) => {
+        abortGrace = setTimeout(
+          () => resolve(false),
+          OPENCLAW_CRABLINE_PROVIDER_PROBE_ABORT_GRACE_MS,
+        );
+      }),
+    ]);
+    if (abortGrace) {
+      clearTimeout(abortGrace);
+    }
+    if (!drained) {
+      unsettledProviderProbeSettlements.set(failure, settled);
+    }
+    throw failure;
   } finally {
     if (onAbort) {
       signal.removeEventListener("abort", onAbort);
     }
   }
+}
+
+export function getUnsettledOpenClawCrablineProviderProbe(
+  error: unknown,
+): Promise<void> | undefined {
+  return error instanceof Error ? unsettledProviderProbeSettlements.get(error) : undefined;
 }
 
 export function readString(value: unknown): string | undefined {
