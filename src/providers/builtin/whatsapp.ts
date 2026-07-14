@@ -193,12 +193,22 @@ function cursorHasAdvanced(
 }
 
 function pruneInactiveWaitCursors(cursors: Map<string, WaitCursorState>): void {
-  for (const [key, state] of cursors) {
-    if (cursors.size <= MAX_WAIT_CURSORS) {
-      return;
+  let inactiveCount = 0;
+  for (const state of cursors.values()) {
+    if (state.active === 0) {
+      inactiveCount++;
     }
+  }
+  if (inactiveCount <= MAX_WAIT_CURSORS) {
+    return;
+  }
+  for (const [key, state] of cursors) {
     if (state.active === 0) {
       cursors.delete(key);
+      inactiveCount--;
+      if (inactiveCount <= MAX_WAIT_CURSORS) {
+        return;
+      }
     }
   }
 }
