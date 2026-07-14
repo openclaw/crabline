@@ -22,8 +22,18 @@ export function resolveSlackAdapterConfig(
   config: ProviderConfig,
   env: SlackEnvironment = process.env,
 ) {
+  const configuredSigningSecret = config.slack?.signingSecret;
+  const signingSecret = configuredSigningSecret ?? env.SLACK_SIGNING_SECRET;
+  if (signingSecret !== undefined && !signingSecret.trim()) {
+    throw new CrablineError(
+      configuredSigningSecret === undefined
+        ? "SLACK_SIGNING_SECRET must not be empty or whitespace-only."
+        : "Slack signingSecret must not be empty or whitespace-only.",
+      { kind: "config" },
+    );
+  }
   return {
-    signingSecret: config.slack?.signingSecret ?? env.SLACK_SIGNING_SECRET,
+    signingSecret,
   };
 }
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import {
   adminAuthError,
+  constantTimeTokenEqual,
   drainRequestBody,
   hasAdminToken,
   InvalidJsonBodyError,
@@ -159,7 +160,8 @@ async function appendEvent(
 }
 
 function authorized(request: IncomingMessage, token: string): boolean {
-  return /^Bearer ([^\s]+)$/iu.exec(request.headers.authorization ?? "")?.[1] === token;
+  const providedToken = /^Bearer ([^\s]+)$/iu.exec(request.headers.authorization ?? "")?.[1];
+  return providedToken ? constantTimeTokenEqual(providedToken, token) : false;
 }
 
 function mattermostError(
@@ -909,7 +911,8 @@ function attachWebSocketServer(params: {
         }
         if (
           message.action !== "authentication_challenge" ||
-          message.data?.token !== params.state.botToken
+          typeof message.data?.token !== "string" ||
+          !constantTimeTokenEqual(message.data.token, params.state.botToken)
         ) {
           sendControlMessage(params.state, client, {
             error: { id: "api.context.unauthorized", message: "Authentication failed" },

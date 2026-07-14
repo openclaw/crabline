@@ -255,6 +255,23 @@ afterEach(async () => {
 });
 
 describe("whatsapp local provider server", () => {
+  it("accepts only the exact Cloud API bearer token", async () => {
+    const server = await startWhatsAppServer({ accessToken: "fake" });
+    servers.push(server);
+
+    for (const token of ["fakf", "x"]) {
+      const rejected = await fetch(server.manifest.endpoints.phoneNumberUrl, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(rejected.status).toBe(401);
+    }
+
+    const accepted = await fetch(server.manifest.endpoints.phoneNumberUrl, {
+      headers: { authorization: "Bearer fake" },
+    });
+    expect(accepted.status).toBe(200);
+  });
+
   it("validates inbound queue limits before binding the HTTP port", async () => {
     await expect(startWhatsAppServer({ accessToken: "" })).rejects.toThrow(
       "accessToken must not be empty",

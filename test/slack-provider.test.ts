@@ -6,6 +6,7 @@ import type { ProviderConfig } from "../src/config/schema.js";
 import {
   handleSlackWebhookPayload,
   normalizeSlackEventsPayload,
+  resolveSlackAdapterConfig,
   SlackProviderAdapter,
 } from "../src/providers/builtin/slack.js";
 import { appendRecordedInbound } from "../src/providers/recorder.js";
@@ -127,6 +128,19 @@ describe("slack provider", () => {
     config.slack!.signingSecret = "test-token-placeholder";
     const provider = new SlackProviderAdapter("slack", config, "crabline");
     providers.push(provider);
+  });
+
+  it("rejects whitespace-only signing secrets from config and env", async () => {
+    const config = await createSlackConfig(0);
+    config.slack!.signingSecret = " \t ";
+    expect(() => resolveSlackAdapterConfig(config, {})).toThrow(
+      "Slack signingSecret must not be empty or whitespace-only.",
+    );
+
+    delete config.slack!.signingSecret;
+    expect(() => resolveSlackAdapterConfig(config, { SLACK_SIGNING_SECRET: "\n" })).toThrow(
+      "SLACK_SIGNING_SECRET must not be empty or whitespace-only.",
+    );
   });
 
   it("keeps native Slack conversation and thread timestamp ids", async () => {

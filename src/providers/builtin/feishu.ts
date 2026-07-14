@@ -50,9 +50,19 @@ export function resolveFeishuAdapterConfig(
   config: ProviderConfig,
   env: FeishuEnvironment = process.env,
 ) {
+  const configuredEncryptKey = config.feishu?.encryptKey;
+  const encryptKey = configuredEncryptKey ?? env.FEISHU_ENCRYPT_KEY;
+  if (encryptKey !== undefined && !encryptKey.trim()) {
+    throw new CrablineError(
+      configuredEncryptKey === undefined
+        ? "FEISHU_ENCRYPT_KEY must not be empty or whitespace-only."
+        : "Feishu encryptKey must not be empty or whitespace-only.",
+      { kind: "config" },
+    );
+  }
   return {
     appId: config.feishu?.appId ?? "local-mock-feishu-app",
-    encryptKey: config.feishu?.encryptKey ?? env.FEISHU_ENCRYPT_KEY,
+    encryptKey,
     userName: config.feishu?.userName,
     verificationToken: config.feishu?.verificationToken ?? env.FEISHU_VERIFICATION_TOKEN,
   };
