@@ -1849,17 +1849,11 @@ describe("OpenClaw local provider bridge", () => {
               id: "3EB0AABBCCDDEEFF0022",
               remoteJid: "120363001234567890@g.us",
             },
-            message: { conversation: "group send" },
+            message: { conversation: "unsupported group send" },
           },
         },
       }),
-    ).toEqual({
-      accountId: "default",
-      senderId: "openclaw",
-      senderName: "OpenClaw QA",
-      text: "group send",
-      to: "group:120363001234567890@g.us",
-    });
+    ).toBeNull();
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
         manifest: whatsappManifest,
@@ -2544,16 +2538,13 @@ describe("OpenClaw local provider bridge", () => {
           ...whatsappWebSocketEvent,
           body: {
             key: { remoteJid: "120363001234567890@g.us" },
-            message: { conversation: "group reply" },
+            message: { conversation: "unsupported group reply" },
           },
         },
         manifest: whatsappManifest,
         targetByProviderTarget: new Map(),
       }),
-    ).toMatchObject({
-      text: "group reply",
-      to: "120363001234567890@g.us",
-    });
+    ).toBeNull();
   });
 
   it("maps Mattermost QA targets, inbound messages, and recorder events", () => {
