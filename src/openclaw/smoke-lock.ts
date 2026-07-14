@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import fsSync, { readFileSync } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -62,6 +62,7 @@ type BeforeRecoveryDeleteClaim = () => Promise<void>;
 type BeforeCompatibilityMarkerRenew = () => Promise<void>;
 type BeforeReleaseClaim = () => Promise<void>;
 type BeforeReleaseRename = () => Promise<void>;
+type BeforeReleaseRemove = () => Promise<void>;
 type BeforeCommitClaim = () => Promise<void>;
 type BeforeCommitFileRename = () => Promise<void>;
 type BeforeCommitRename = () => Promise<void>;
@@ -93,6 +94,8 @@ type SmokeLockRuntime = {
 
 const LOCK_OWNER_FILE = "owner.json";
 const LOCK_LEASE_FILE_PREFIX = "lease.";
+const LOCK_COMMIT_STAGE_FILE_PREFIX = "commit-stage.";
+const LOCK_STAGED_FILE_PREFIX = ".commit-file.";
 const LEGACY_RECOVERY_SUFFIX = ".recovering";
 const COMMIT_CLAIM_SUFFIX = ".commit";
 const OWNED_CLAIM_SUFFIX = ".owned";
@@ -113,10 +116,6 @@ export function processStartedAtMsFromTimeOrigin(timeOrigin: number): number {
   }
   return Math.trunc(timeOrigin);
 }
-
-const removeLockDirectory: RemoveLockDirectory = async (lockDirectory) => {
-  await fs.rm(lockDirectory, { force: true, recursive: true });
-};
 
 const sleep: Sleep = async (delayMs) => {
   await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
@@ -222,6 +221,101 @@ function hasSameDirectoryIdentity(
   return (
     left !== null && right !== null && left.device === right.device && left.inode === right.inode
   );
+}
+
+function isOwnedLockArtifactName(name: string, token: string): boolean {
+  const leaseName = leaseFileName(token);
+  const commitStageName = `${LOCK_COMMIT_STAGE_FILE_PREFIX}${token}.json`;
+  return (
+    name === LOCK_OWNER_FILE ||
+    name === leaseName ||
+    (name.startsWith(`.${leaseName}.`) && name.endsWith(".tmp")) ||
+    name === commitStageName ||
+    (name.startsWith(`.${LOCK_COMMIT_STAGE_FILE_PREFIX}${token}.`) && name.endsWith(".tmp")) ||
+    (name.startsWith(`${LOCK_STAGED_FILE_PREFIX}${token}.`) && name.endsWith(".tmp"))
+  );
+}
+
+async function removeVerifiedLockDirectory(params: {
+  beforeRemove?: BeforeReleaseRemove;
+  directoryPath: string;
+  expectedIdentity: DirectoryIdentity;
+  token: string;
+}): Promise<void> {
+  if (
+    !hasSameDirectoryIdentity(
+      params.expectedIdentity,
+      await readDirectoryIdentity(params.directoryPath),
+    )
+  ) {
+    throw new Error("OpenClaw Crabline smoke lock cleanup target changed.");
+  }
+  await params.beforeRemove?.();
+  const quarantinePath = `${params.directoryPath}.cleanup.${randomUUID()}`;
+  fsSync.renameSync(params.directoryPath, quarantinePath);
+  let quarantinedIdentity: DirectoryIdentity | null = null;
+  const stats = fsSync.lstatSync(quarantinePath, { bigint: true });
+  if (stats.isDirectory() && !stats.isSymbolicLink() && stats.ino > 0n) {
+    quarantinedIdentity = { device: stats.dev, inode: stats.ino };
+  }
+  if (!hasSameDirectoryIdentity(params.expectedIdentity, quarantinedIdentity)) {
+    throw new Error("OpenClaw Crabline smoke lock cleanup target changed.");
+  }
+
+  const entries = fsSync.readdirSync(quarantinePath);
+  const artifacts: Array<{ identity: FileIdentity; path: string }> = [];
+  for (const entry of entries) {
+    if (!isOwnedLockArtifactName(entry, params.token)) {
+      throw new Error("OpenClaw Crabline smoke lock cleanup found an unexpected artifact.");
+    }
+    const artifactPath = path.join(quarantinePath, entry);
+    const artifactStats = fsSync.lstatSync(artifactPath, { bigint: true });
+    if (
+      !artifactStats.isFile() ||
+      artifactStats.isSymbolicLink() ||
+      artifactStats.nlink !== 1n ||
+      artifactStats.ino <= 0n
+    ) {
+      throw new Error("OpenClaw Crabline smoke lock cleanup found an unsafe artifact.");
+    }
+    artifacts.push({
+      identity: { device: artifactStats.dev, inode: artifactStats.ino },
+      path: artifactPath,
+    });
+  }
+  artifacts.sort(
+    (left, right) =>
+      Number(path.basename(left.path) === LOCK_OWNER_FILE) -
+      Number(path.basename(right.path) === LOCK_OWNER_FILE),
+  );
+  for (const artifact of artifacts) {
+    const directoryStats = fsSync.lstatSync(quarantinePath, { bigint: true });
+    const artifactStats = fsSync.lstatSync(artifact.path, { bigint: true });
+    if (
+      !directoryStats.isDirectory() ||
+      directoryStats.isSymbolicLink() ||
+      directoryStats.dev !== params.expectedIdentity.device ||
+      directoryStats.ino !== params.expectedIdentity.inode ||
+      !artifactStats.isFile() ||
+      artifactStats.isSymbolicLink() ||
+      artifactStats.nlink !== 1n ||
+      artifactStats.dev !== artifact.identity.device ||
+      artifactStats.ino !== artifact.identity.inode
+    ) {
+      throw new Error("OpenClaw Crabline smoke lock cleanup artifact changed.");
+    }
+    fsSync.unlinkSync(artifact.path);
+  }
+  const finalStats = fsSync.lstatSync(quarantinePath, { bigint: true });
+  if (
+    !finalStats.isDirectory() ||
+    finalStats.isSymbolicLink() ||
+    finalStats.dev !== params.expectedIdentity.device ||
+    finalStats.ino !== params.expectedIdentity.inode
+  ) {
+    throw new Error("OpenClaw Crabline smoke lock cleanup target changed.");
+  }
+  fsSync.rmdirSync(quarantinePath);
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {
@@ -682,6 +776,7 @@ async function resolveConfinedPath(
 async function removeOwnedLock(params: {
   beforeClaim?: () => Promise<void>;
   beforeRename?: () => Promise<void>;
+  beforeRemove?: BeforeReleaseRemove;
   lockDirectory: string;
   onOwnedDirectoryChange?: (directoryPath: string) => void;
   ownedDirectory: string;
@@ -742,7 +837,16 @@ async function removeOwnedLock(params: {
     return false;
   }
 
-  await (params.removeDirectory ?? removeLockDirectory)(releaseClaim);
+  if (params.removeDirectory) {
+    await params.removeDirectory(releaseClaim);
+  } else {
+    await removeVerifiedLockDirectory({
+      ...(params.beforeRemove ? { beforeRemove: params.beforeRemove } : {}),
+      directoryPath: releaseClaim,
+      expectedIdentity: observedIdentity,
+      token: params.token,
+    });
+  }
   return true;
 }
 
@@ -1162,6 +1266,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     beforeRecoveryClaim?: BeforeRecoveryClaim;
     beforeReleaseClaim?: BeforeReleaseClaim;
     beforeReleaseRename?: BeforeReleaseRename;
+    beforeReleaseRemove?: BeforeReleaseRemove;
     removeDirectory?: RemoveLockDirectory;
     sleep?: Sleep;
     startHeartbeat?: StartHeartbeat;
@@ -1729,6 +1834,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(
             : {}),
           ...(dependencies.beforeReleaseRename
             ? { beforeRename: dependencies.beforeReleaseRename }
+            : {}),
+          ...(dependencies.beforeReleaseRemove
+            ? { beforeRemove: dependencies.beforeReleaseRemove }
             : {}),
           lockDirectory,
           onOwnedDirectoryChange: (directoryPath) => {
