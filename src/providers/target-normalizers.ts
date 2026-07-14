@@ -1,7 +1,10 @@
 import type { BuiltinAdapterId, FixtureDefinition, ProviderPlatform } from "../config/schema.js";
 import { CrablineError } from "../core/errors.js";
 import { isMatrixEventId, isMatrixRoomId } from "../matrix-ids.js";
-import { TELEGRAM_NATIVE_CHAT_ID_MAX } from "../servers/telegram-identity.js";
+import {
+  canonicalizeTelegramUsername,
+  TELEGRAM_NATIVE_CHAT_ID_MAX,
+} from "../servers/telegram-identity.js";
 import type { LocalMockTargetCodec } from "./local-mock.js";
 import { matchesNativeId, type NativeIdRule } from "./native-ids.js";
 import { slackTargetKey, SLACK_SEND_TARGET_ID_RULE, SLACK_TS_RULE } from "./slack-ids.js";
@@ -263,13 +266,6 @@ const SLACK_TARGET_CODEC: LocalMockTargetCodec = {
   },
 };
 
-const TELEGRAM_BASE_CODEC = createNativeTargetCodec({
-  channel: TELEGRAM_CHAT_ID_RULE,
-  channelLabel: "Telegram chat_id",
-  thread: TELEGRAM_MESSAGE_THREAD_ID_RULE,
-  threadLabel: "Telegram message_thread_id",
-});
-
 export function parseCanonicalTelegramTopic(
   value: string,
 ): { chatId: string; topicId: string } | undefined {
@@ -298,7 +294,11 @@ function parseCanonicalTelegramTopicWithRule(
   ) {
     return undefined;
   }
-  return { chatId, topicId };
+  const canonicalChatId =
+    chatId.startsWith("@") && chatRule === TELEGRAM_CHAT_ID_RULE
+      ? canonicalizeTelegramUsername(chatId)
+      : chatId;
+  return canonicalChatId ? { chatId: canonicalChatId, topicId } : undefined;
 }
 
 const TELEGRAM_TARGET_CODEC: LocalMockTargetCodec = {
@@ -306,21 +306,24 @@ const TELEGRAM_TARGET_CODEC: LocalMockTargetCodec = {
     const canonicalTopic = target.threadId
       ? parseCanonicalTelegramTopic(target.threadId)
       : undefined;
-    const targetChatId = target.channelId ?? target.id;
-    if (
-      canonicalTopic &&
-      requireNativeId(targetChatId, TELEGRAM_CHAT_ID_RULE, "Telegram chat_id") !==
-        canonicalTopic.chatId
-    ) {
+    const targetChatIdValue = requireNativeId(
+      target.channelId ?? target.id,
+      TELEGRAM_CHAT_ID_RULE,
+      "Telegram chat_id",
+    );
+    const targetChatId = targetChatIdValue.startsWith("@")
+      ? canonicalizeTelegramUsername(targetChatIdValue)!
+      : targetChatIdValue;
+    if (canonicalTopic && targetChatId !== canonicalTopic.chatId) {
       throw new CrablineError("Telegram canonical topic chat_id must match the target chat_id.", {
         kind: "config",
       });
     }
-    const normalized = TELEGRAM_BASE_CODEC.normalize({
-      ...target,
-      ...(canonicalTopic ? { channelId: canonicalTopic.chatId } : {}),
-      threadId: undefined,
-    });
+    const normalized: NormalizedTarget = {
+      channelId: canonicalTopic?.chatId ?? targetChatId,
+      id: target.id,
+      metadata: target.metadata,
+    };
     if (!target.threadId) {
       return normalized;
     }

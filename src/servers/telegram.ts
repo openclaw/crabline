@@ -388,8 +388,15 @@ function telegramNumericChatId(value: unknown): number | undefined {
   if (!stringValue || !/^-?\d+$/u.test(stringValue)) {
     return undefined;
   }
-  const integerValue = toIntegerValue(stringValue);
-  return integerValue === 0 ? undefined : integerValue;
+  const integerValue = BigInt(stringValue);
+  if (
+    integerValue === 0n ||
+    integerValue < -TELEGRAM_NATIVE_CHAT_ID_MAX ||
+    integerValue > TELEGRAM_NATIVE_CHAT_ID_MAX
+  ) {
+    return undefined;
+  }
+  return Number(integerValue);
 }
 
 async function appendEvent(state: TelegramServerState, event: TelegramServerEvent) {
@@ -448,12 +455,19 @@ function createChat(chatId: number): TelegramChat {
   };
 }
 
-function telegramChatUsername(value: unknown): string | undefined {
+function telegramDestinationUsername(value: unknown): string | undefined {
+  const username = toStringValue(value);
+  return username ? canonicalizeTelegramUsername(username) : undefined;
+}
+
+function telegramStoredUsername(value: unknown): string | undefined {
   const username = toStringValue(value)?.trim();
   if (!username) {
     return undefined;
   }
-  return canonicalizeTelegramUsername(username.startsWith("@") ? username : `@${username}`);
+  return canonicalizeTelegramUsername(username.startsWith("@") ? username : `@${username}`)?.slice(
+    1,
+  );
 }
 
 function telegramChatType(value: unknown): TelegramChat["type"] | undefined {
@@ -464,13 +478,18 @@ function telegramChatType(value: unknown): TelegramChat["type"] | undefined {
 
 function registerTelegramChat(state: TelegramServerState, chat: TelegramChat): void {
   const previous = state.chatsById.get(chat.id);
-  const previousUsername = telegramChatUsername(previous?.username);
+  const previousUsername = telegramStoredUsername(previous?.username);
   if (previousUsername && state.chatsByUsername.get(previousUsername)?.id === chat.id) {
     state.chatsByUsername.delete(previousUsername);
   }
-  const stored = { ...chat };
+  const username = telegramStoredUsername(chat.username);
+  const stored: TelegramChat = {
+    id: chat.id,
+    ...(chat.title ? { title: chat.title } : {}),
+    type: chat.type,
+    ...(username ? { username } : {}),
+  };
   state.chatsById.set(chat.id, stored);
-  const username = telegramChatUsername(chat.username);
   if (username) {
     state.chatsByUsername.set(username, stored);
   }
@@ -488,11 +507,12 @@ function resolveTelegramChat(state: TelegramServerState, value: unknown): Telegr
     }
     return state.chatsById.get(chatId) ?? createChat(chatId);
   }
-  const username = telegramChatUsername(stringValue);
+  const username = telegramDestinationUsername(stringValue);
   if (!username) {
     return undefined;
   }
-  const registered = state.chatsByUsername.get(username);
+  const storedUsername = username.slice(1);
+  const registered = state.chatsByUsername.get(storedUsername);
   if (registered) {
     return registered;
   }
@@ -502,7 +522,7 @@ function resolveTelegramChat(state: TelegramServerState, value: unknown): Telegr
     : {
         id: chatId,
         type: inferTelegramChatType(chatId),
-        username: username.slice(1),
+        username: storedUsername,
       };
 }
 
@@ -515,13 +535,13 @@ function telegramChatFromRecord(value: unknown): TelegramChat | undefined {
   if (id === undefined || !type) {
     return undefined;
   }
-  const username = telegramChatUsername(value.username);
+  const username = telegramStoredUsername(value.username);
   const title = toStringValue(value.title);
   return {
     id,
     ...(title ? { title } : {}),
     type,
-    ...(username ? { username: username.slice(1) } : {}),
+    ...(username ? { username } : {}),
   };
 }
 
@@ -581,7 +601,7 @@ function createOutboundMessage(
   if (!chat) {
     return undefined;
   }
-  const parsedThreadId = toIntegerValue(body.message_thread_id);
+  const parsedThreadId = telegramMessageThreadId(body.message_thread_id);
   if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
@@ -589,13 +609,12 @@ function createOutboundMessage(
   if (messageId === undefined) {
     return undefined;
   }
-  const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
   return {
     chat,
     date: Math.floor(Date.now() / 1000),
     from: createBotUser(state),
     message_id: messageId,
-    ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
+    ...(parsedThreadId !== undefined ? { message_thread_id: parsedThreadId } : {}),
     text,
   };
 }
@@ -613,7 +632,7 @@ function createOutboundMediaMessage(
   if (!chat || !fileName) {
     return undefined;
   }
-  const parsedThreadId = toIntegerValue(body.message_thread_id);
+  const parsedThreadId = telegramMessageThreadId(body.message_thread_id);
   if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
@@ -621,7 +640,6 @@ function createOutboundMediaMessage(
   if (messageId === undefined) {
     return undefined;
   }
-  const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
   const duration = Math.max(0, toIntegerValue(body.duration) ?? 0);
   const height = Math.max(1, toIntegerValue(body.height) ?? 1);
   const width = Math.max(1, toIntegerValue(body.width) ?? 1);
@@ -671,7 +689,7 @@ function createOutboundMediaMessage(
             mime_type: "application/octet-stream",
           },
     message_id: messageId,
-    ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
+    ...(parsedThreadId !== undefined ? { message_thread_id: parsedThreadId } : {}),
   };
 }
 
@@ -685,17 +703,16 @@ function createEditedMessage(
   if (!chat || messageId === undefined || messageId < 1) {
     return undefined;
   }
-  const parsedThreadId = toIntegerValue(body.message_thread_id);
+  const parsedThreadId = telegramMessageThreadId(body.message_thread_id);
   if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
-  const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
   return {
     chat,
     date: Math.floor(Date.now() / 1000),
     from: createBotUser(state),
     message_id: messageId,
-    ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
+    ...(parsedThreadId !== undefined ? { message_thread_id: parsedThreadId } : {}),
     text,
   };
 }
@@ -719,10 +736,9 @@ function createInboundUpdate(
   const messageIdValue = body.messageId ?? body.message_id;
   const updateIdValue = body.updateId ?? body.update_id;
   const fromId = toIntegerValue(fromIdValue);
-  const parsedThreadId = toIntegerValue(threadIdValue);
-  const threadId = parsedThreadId !== undefined && parsedThreadId > 0 ? parsedThreadId : undefined;
+  const threadId = telegramMessageThreadId(threadIdValue);
   const fromUsernameValue = body.fromUsername ?? body.from_username;
-  const fromUsername = telegramChatUsername(fromUsernameValue);
+  const fromUsername = telegramStoredUsername(fromUsernameValue);
   const messageId = toIntegerValue(messageIdValue);
   const updateId = toIntegerValue(updateIdValue);
   const explicitChatType = telegramChatType(body.chatType ?? body.chat_type);
@@ -730,7 +746,7 @@ function createInboundUpdate(
     ((body.chatType !== undefined || body.chat_type !== undefined) && !explicitChatType) ||
     (fromIdValue !== undefined && (fromId === undefined || fromId < 1)) ||
     (fromUsernameValue !== undefined && !fromUsername) ||
-    (threadIdValue !== undefined && parsedThreadId === undefined) ||
+    (threadIdValue !== undefined && threadId === undefined) ||
     (messageIdValue !== undefined && (messageId === undefined || messageId < 0)) ||
     (updateIdValue !== undefined && (updateId === undefined || updateId < 1))
   ) {
@@ -748,7 +764,7 @@ function createInboundUpdate(
         first_name: toStringValue(body.fromName ?? body.from_name) ?? "QA User",
         id: fromId ?? 100001,
         is_bot: false,
-        ...(fromUsername ? { username: fromUsername.slice(1) } : {}),
+        ...(fromUsername ? { username: fromUsername } : {}),
       },
       message_id: messageId ?? nextTelegramMessageId(state, chat.id),
       ...(entities && entities.length > 0 ? { entities } : {}),
@@ -822,6 +838,31 @@ function isTelegramUtf16Boundary(text: string, index: number): boolean {
 
 function hasTelegramMedia(value: Record<string, unknown>): boolean {
   return TELEGRAM_MEDIA_FIELDS.some((field) => value[field] !== undefined);
+}
+
+function telegramMessageThreadId(value: unknown): number | undefined {
+  const threadId = toIntegerValue(value);
+  return threadId !== undefined && threadId > 0 ? threadId : undefined;
+}
+
+function hasValidTelegramMessageThreadIds(body: Record<string, unknown>): boolean {
+  const values = [
+    body.messageThreadId,
+    body.message_thread_id,
+    ...TELEGRAM_MESSAGE_UPDATE_FIELDS.flatMap((field) => {
+      const message = body[field];
+      return isJsonObject(message) ? [message.message_thread_id] : [];
+    }),
+  ];
+  const callbackQuery = isJsonObject(body.callback_query) ? body.callback_query : undefined;
+  const callbackMessage =
+    callbackQuery && isJsonObject(callbackQuery.message) ? callbackQuery.message : undefined;
+  if (callbackMessage) {
+    values.push(callbackMessage.message_thread_id);
+  }
+  return values.every(
+    (value) => value === undefined || telegramMessageThreadId(value) !== undefined,
+  );
 }
 
 function explicitTelegramId(
@@ -1042,8 +1083,6 @@ function hasValidExplicitTelegramIdentities(body: Record<string, unknown>): bool
       body.from_id,
       body.messageId,
       body.message_id,
-      body.messageThreadId,
-      body.message_thread_id,
       body.updateId,
       body.update_id,
     ].every((value) => value === undefined || toIntegerValue(value) !== undefined)
@@ -1068,7 +1107,7 @@ function isValidIgnoredTelegramUpdate(body: Record<string, unknown>): boolean {
       (message.from !== undefined &&
         (!isJsonObject(message.from) || (toIntegerValue(message.from.id) ?? 0) < 1)) ||
       (message.message_thread_id !== undefined &&
-        toIntegerValue(message.message_thread_id) === undefined)
+        telegramMessageThreadId(message.message_thread_id) === undefined)
     ) {
       return false;
     }
@@ -1130,6 +1169,7 @@ async function handleTelegramAdminInbound(params: {
     const nextMessageId =
       messageChatId === undefined ? undefined : nextTelegramMessageId(params.state, messageChatId);
     if (
+      !hasValidTelegramMessageThreadIds(params.body) ||
       explicitMessageId === undefined ||
       explicitMessageChatId === false ||
       explicitUpdateId === undefined ||

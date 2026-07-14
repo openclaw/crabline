@@ -172,7 +172,7 @@ describe("telegram local provider server", () => {
       result: { chat: { id: expect.any(Number), type: "supergroup" } },
     });
 
-    for (const chatId of ["@abc"]) {
+    for (const chatId of ["abcd", "@abc"]) {
       const shortUsername = await fetch(
         `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
         {
@@ -232,7 +232,7 @@ describe("telegram local provider server", () => {
               id: -1001111111111,
               title: "Announcements",
               type: "channel",
-              username: "  @Crabline_News  ",
+              username: "  Crabline_News  ",
             },
           },
           update_id: 1,
@@ -319,50 +319,62 @@ describe("telegram local provider server", () => {
     expect(staleUsername.result.chat.type).toBe("supergroup");
   });
 
-  it("normalizes non-positive topic ids while preserving private-chat topics", async () => {
+  it("rejects non-positive topic ids across text, media, edit, and admin paths", async () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
-    const sendMessage = (messageThreadId: number) =>
-      fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`, {
-        body: JSON.stringify({
-          chat_id: 42,
-          message_thread_id: messageThreadId,
-          text: "private topic",
-        }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
+    const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
 
     for (const messageThreadId of [0, -1]) {
-      const response = await sendMessage(messageThreadId);
-      const payload = (await response.json()) as {
-        result: { message_thread_id?: number };
-      };
-      expect(response.status).toBe(200);
-      expect(payload.result).not.toHaveProperty("message_thread_id");
+      for (const [method, body] of [
+        [
+          "sendMessage",
+          { chat_id: 42, message_thread_id: messageThreadId, text: "invalid text topic" },
+        ],
+        ["sendPhoto", { chat_id: 42, message_thread_id: messageThreadId, photo: "fixture.png" }],
+        [
+          "editMessageText",
+          {
+            chat_id: 42,
+            message_id: 1,
+            message_thread_id: messageThreadId,
+            text: "invalid edit topic",
+          },
+        ],
+      ] as const) {
+        const response = await fetch(`${apiRoot}/${method}`, {
+          body: JSON.stringify(body),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+        expect(response.status).toBe(400);
+      }
+
+      for (const body of [
+        { chatId: 42, messageThreadId, text: "invalid admin text topic" },
+        { chatId: 42, messageThreadId, photo: [] },
+        {
+          message: {
+            chat: { id: 42, type: "private" },
+            message_id: 1,
+            message_thread_id: messageThreadId,
+            photo: [{ file_id: "photo", file_unique_id: "unique", height: 1, width: 1 }],
+          },
+          update_id: 1,
+        },
+      ]) {
+        const response = await injectUpdate(server, body);
+        expect(response.status).toBe(400);
+      }
     }
 
-    const privateTopic = await sendMessage(42);
-    await expect(privateTopic.json()).resolves.toMatchObject({
-      result: {
-        chat: { id: 42, type: "private" },
-        message_thread_id: 42,
-      },
+    const privateTopic = await fetch(`${apiRoot}/sendMessage`, {
+      body: JSON.stringify({ chat_id: 42, message_thread_id: 42, text: "private topic" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
     });
-
-    for (const messageThreadId of [0, -1]) {
-      const response = await injectUpdate(server, {
-        chatId: 42,
-        messageThreadId,
-        text: "private inbound",
-      });
-      const payload = (await response.json()) as {
-        update: { message: { message_thread_id?: number } };
-      };
-      expect(response.status).toBe(200);
-      expect(payload.update.message).not.toHaveProperty("message_thread_id");
-    }
-
+    await expect(privateTopic.json()).resolves.toMatchObject({
+      result: { chat: { id: 42, type: "private" }, message_thread_id: 42 },
+    });
     const privateInboundTopic = await injectUpdate(server, {
       chatId: 42,
       messageThreadId: 42,
@@ -2376,6 +2388,32 @@ describe("telegram local provider server", () => {
     ]) {
       const response = await injectUpdate(server, body);
       expect(response.status).toBe(400);
+    }
+
+    const maxNativeChatId = String((1n << 52n) - 1n);
+    for (const chatId of [maxNativeChatId, `-${maxNativeChatId}`]) {
+      const response = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+        {
+          body: JSON.stringify({ chat_id: chatId, text: "native boundary" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(response.status).toBe(200);
+    }
+    for (const chatId of [String(1n << 52n), String(-(1n << 52n))]) {
+      const outbound = await fetch(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+        {
+          body: JSON.stringify({ chat_id: chatId, text: "out of range chat" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(outbound.status).toBe(400);
+      const inbound = await injectUpdate(server, { chatId, text: "out of range chat" });
+      expect(inbound.status).toBe(400);
     }
 
     const outbound = await fetch(
