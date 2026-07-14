@@ -43,9 +43,7 @@ describe("Mattermost webhook normalizer", () => {
     );
 
     config.mattermost!.webhookToken = "\t";
-    expect(() =>
-      resolveMattermostAdapterConfig(config, { MATTERMOST_TOKEN: "environment-token" }),
-    ).toThrow(
+    expect(() => resolveMattermostAdapterConfig(config, { MATTERMOST_TOKEN: "sample" })).toThrow(
       expect.objectContaining({
         kind: "config",
         message: "Mattermost webhookToken must not be empty or whitespace-only.",
