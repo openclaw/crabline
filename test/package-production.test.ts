@@ -165,6 +165,13 @@ describe("production package", () => {
         import: "./dist/src/index.js",
       },
     });
+    expect(pkg.files).toEqual([
+      "assets/crabline-banner.svg",
+      "dist/src",
+      "README.md",
+      "docs/channel-setup.md",
+      "fixtures/examples/crabline.example.yaml",
+    ]);
 
     for (const packageName of DEV_ONLY_RUNTIME_PACKAGES) {
       expect(pkg.dependencies?.[packageName]).toBeUndefined();
@@ -201,7 +208,7 @@ describe("production package", () => {
     const packedFixtures = files.filter(
       (file) => file.startsWith("fixtures/") && /\.ya?ml$/u.test(file),
     );
-    expect(packedFixtures).not.toEqual([]);
+    expect(packedFixtures).toEqual(["fixtures/examples/crabline.example.yaml"]);
     for (const fixturePath of packedFixtures) {
       const fixture = parse(await fs.readFile(path.join(root, fixturePath), "utf8")) as {
         providers?: Record<string, { adapter?: string }>;
