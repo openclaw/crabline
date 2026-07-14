@@ -600,6 +600,135 @@ describe("Feishu webhook normalizer", () => {
     ).resolves.toMatchObject({ status: 401 });
   });
 
+  it("retains future-skewed callback identities until their signatures expire", async () => {
+    const config = await createLocalMockConfig("feishu", "/feishu/webhook");
+    const encryptKey = "encrypt-key";
+    let now = 1_700_000_000_000;
+    config.feishu!.encryptKey = encryptKey;
+    const provider = new FeishuProviderAdapter("feishu", config, "crabline", {
+      env: {},
+      now: () => now,
+    });
+    const context = createProviderContext("feishu", config, {
+      id: "oc_abc123",
+      metadata: {},
+    });
+    const endpoint = (await provider.probe(context)).details
+      .find((detail) => detail.startsWith("webhook endpoint "))
+      ?.replace("webhook endpoint ", "");
+    expect(endpoint).toBeDefined();
+    const nativePayload = {
+      event: {
+        message: {
+          chat_id: "oc_abc123",
+          content: JSON.stringify({ text: "future skew" }),
+          message_id: "om_future123",
+          message_type: "text",
+        },
+      },
+      header: { event_id: "event-future" },
+      schema: "2.0",
+    };
+    const rawBody = JSON.stringify({
+      encrypt: encryptFeishuPayload(nativePayload, encryptKey),
+    });
+    const timestamp = String(now / 1_000 + 300);
+    const nonce = "future-skew";
+    const signature = createHash("sha256")
+      .update(timestamp + nonce + encryptKey + rawBody)
+      .digest("hex");
+    const send = () =>
+      fetch(endpoint!, {
+        body: rawBody,
+        headers: {
+          "content-type": "application/json",
+          "x-lark-request-nonce": nonce,
+          "x-lark-request-timestamp": timestamp,
+          "x-lark-signature": signature,
+        },
+        method: "POST",
+      });
+
+    try {
+      expect((await send()).status).toBe(200);
+      now += 5 * 60_000 + 1;
+      expect((await send()).status).toBe(200);
+      expect(
+        (await readFile(config.feishu!.recorder.path!, "utf8")).trim().split("\n"),
+      ).toHaveLength(1);
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
+  it("rejects new callbacks instead of evicting unexpired replay identities", async () => {
+    const config = await createLocalMockConfig("feishu", "/feishu/webhook");
+    const encryptKey = "encrypt-key";
+    const now = 1_700_000_000_000;
+    config.feishu!.encryptKey = encryptKey;
+    const provider = new FeishuProviderAdapter("feishu", config, "crabline", {
+      env: {},
+      now: () => now,
+      replayCacheLimit: 2,
+    });
+    const context = createProviderContext("feishu", config, {
+      id: "oc_abc123",
+      metadata: {},
+    });
+    const endpoint = (await provider.probe(context)).details
+      .find((detail) => detail.startsWith("webhook endpoint "))
+      ?.replace("webhook endpoint ", "");
+    expect(endpoint).toBeDefined();
+    const send = async (index: number): Promise<Response> => {
+      const rawBody = JSON.stringify({
+        encrypt: encryptFeishuPayload(
+          {
+            event: {
+              message: {
+                chat_id: "oc_abc123",
+                content: JSON.stringify({ text: `capacity ${index}` }),
+                message_id: `om_capacity${index}`,
+                message_type: "text",
+              },
+            },
+            header: { event_id: `event-capacity-${index}` },
+            schema: "2.0",
+          },
+          encryptKey,
+        ),
+      });
+      const timestamp = String(now / 1_000);
+      const nonce = `capacity-${index}`;
+      const signature = createHash("sha256")
+        .update(timestamp + nonce + encryptKey + rawBody)
+        .digest("hex");
+      return await fetch(endpoint!, {
+        body: rawBody,
+        headers: {
+          "content-type": "application/json",
+          "x-lark-request-nonce": nonce,
+          "x-lark-request-timestamp": timestamp,
+          "x-lark-signature": signature,
+        },
+        method: "POST",
+      });
+    };
+
+    try {
+      expect((await send(1)).status).toBe(200);
+      expect((await send(2)).status).toBe(200);
+      expect((await send(3)).status).toBe(503);
+      expect((await send(1)).status).toBe(200);
+      const records = (await readFile(config.feishu!.recorder.path!, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { id: string });
+      expect(records.map((record) => record.id)).toEqual(["om_capacity1", "om_capacity2"]);
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
   it("suppresses retries only after successful recorder persistence", async () => {
     const config = await createLocalMockConfig("feishu", "/feishu/webhook");
     const encryptKey = "encrypt-key";
