@@ -4,7 +4,6 @@ import {
   DEFAULT_ACCOUNT_ID,
   isRecord,
   qaTargetForInbound,
-  readNonBlankString,
   readString,
 } from "../shared.js";
 import {
@@ -68,6 +67,12 @@ function slackConversationKind(channel: string): "direct" | "group" {
   return channel.startsWith("D") ? "direct" : "group";
 }
 
+function pushSlackText(value: unknown, output: string[]): void {
+  if (typeof value === "string" && value.trim()) {
+    output.push(value);
+  }
+}
+
 function structuredSlackValues(value: unknown): unknown[] {
   if (Array.isArray(value)) {
     return value;
@@ -125,10 +130,22 @@ function slackInlineText(value: unknown): string {
   return slackInlineText(value.elements);
 }
 
-function collectSlackFallbackText(value: unknown, output: string[]): void {
+function collectSlackTextValue(value: unknown, output: string[]): void {
+  if (typeof value === "string") {
+    pushSlackText(value, output);
+    return;
+  }
+  if (isRecord(value) && typeof value.text === "string") {
+    pushSlackText(value.text, output);
+    return;
+  }
+  collectSlackBlockText(value, output);
+}
+
+function collectSlackBlockText(value: unknown, output: string[]): void {
   if (Array.isArray(value)) {
     for (const entry of value) {
-      collectSlackFallbackText(entry, output);
+      collectSlackBlockText(entry, output);
     }
     return;
   }
@@ -140,27 +157,58 @@ function collectSlackFallbackText(value: unknown, output: string[]): void {
     value.type === "rich_text_preformatted" ||
     value.type === "rich_text_quote"
   ) {
-    const text = slackInlineText(value.elements);
-    if (text.trim()) {
-      output.push(text);
+    pushSlackText(slackInlineText(value.elements), output);
+    return;
+  }
+  for (const key of [
+    "alt_text",
+    "title",
+    "body",
+    "subtitle",
+    "subtext",
+    "details",
+    "output",
+  ] as const) {
+    collectSlackTextValue(value[key], output);
+  }
+  collectSlackTextValue(value.text, output);
+  for (const key of [
+    "blocks",
+    "elements",
+    "fields",
+    "rows",
+    "tasks",
+    "actions",
+    "hero_image",
+    "icon",
+  ] as const) {
+    collectSlackBlockText(value[key], output);
+  }
+}
+
+function collectSlackAttachmentText(value: unknown, output: string[]): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectSlackAttachmentText(entry, output);
     }
     return;
   }
-  for (const key of ["fallback", "title", "alt_text"] as const) {
-    const text = readNonBlankString(value[key]);
-    if (text) {
-      output.push(text);
+  if (!isRecord(value)) {
+    return;
+  }
+  for (const key of ["fallback", "pretext", "author_name", "title", "text", "footer"] as const) {
+    pushSlackText(value[key], output);
+  }
+  if (Array.isArray(value.fields)) {
+    for (const field of value.fields) {
+      if (!isRecord(field)) {
+        continue;
+      }
+      pushSlackText(field.title, output);
+      pushSlackText(field.value, output);
     }
   }
-  const text = value.text;
-  if (typeof text === "string" && text.trim()) {
-    output.push(text);
-  } else if (isRecord(text)) {
-    collectSlackFallbackText(text, output);
-  }
-  for (const key of ["blocks", "elements", "fields"] as const) {
-    collectSlackFallbackText(value[key], output);
-  }
+  collectSlackBlockText(value.blocks, output);
 }
 
 function slackOutboundText(body: Record<string, unknown>): string | undefined {
@@ -170,8 +218,8 @@ function slackOutboundText(body: Record<string, unknown>): string | undefined {
     }
   }
   const fallback: string[] = [];
-  collectSlackFallbackText(structuredSlackValues(body.blocks), fallback);
-  collectSlackFallbackText(structuredSlackValues(body.attachments), fallback);
+  collectSlackBlockText(structuredSlackValues(body.blocks), fallback);
+  collectSlackAttachmentText(structuredSlackValues(body.attachments), fallback);
   return fallback.length > 0 ? fallback.join("\n") : undefined;
 }
 

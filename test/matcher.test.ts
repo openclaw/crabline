@@ -74,6 +74,28 @@ describe("nonce + matcher", () => {
         nonce,
       ),
     ).toBe(false);
+    for (const suffix of ["\u0301", "\u200d", "\u203f"]) {
+      expect(
+        matchesInbound(
+          {
+            ...envelope,
+            text: `ACK ${otherNonce} then malformed ${nonce}${suffix}`,
+          },
+          config,
+          nonce,
+        ),
+      ).toBe(false);
+    }
+    expect(
+      matchesInbound(
+        {
+          ...envelope,
+          text: `malformed ${nonce}\u0301 then ${nonce}`,
+        },
+        config,
+        nonce,
+      ),
+    ).toBe(true);
   });
 
   it("requires a standalone ACK token and the expected canonical nonce for replies", () => {
@@ -104,6 +126,9 @@ describe("nonce + matcher", () => {
     expect(matchesReply(`ACK ${otherNonce} then ${nonce}`)).toBe(false);
     expect(matchesReply(`ACK ${nonce}-suffix`)).toBe(false);
     expect(matchesReply(`ACK ${nonce}-suffix then ${nonce}`)).toBe(false);
+    expect(matchesReply(`ACK ${nonce}\u0301`)).toBe(false);
+    expect(matchesReply(`ACK ${nonce}\u200d`)).toBe(false);
+    expect(matchesReply(`ACK ${nonce}\u203f`)).toBe(false);
     expect(matchesReply(`\u0301ACK ${nonce}`)).toBe(false);
     expect(matchesReply(`ACK\u0301 ${nonce}`)).toBe(false);
     expect(matchesReply(`\u20ddACK ${nonce}`)).toBe(false);

@@ -222,6 +222,38 @@ function requireExternalMsTeamsWebhookAuthentication(
   });
 }
 
+function msTeamsAttachmentPlaceholder(payload: Record<string, unknown>): string | undefined {
+  if (!Array.isArray(payload.attachments)) {
+    return undefined;
+  }
+  let attachmentCount = 0;
+  let imageCount = 0;
+  for (const attachment of payload.attachments) {
+    if (!isRecord(attachment)) {
+      continue;
+    }
+    const contentType = optionalString(attachment, "contentType");
+    const hasContent =
+      contentType !== undefined ||
+      optionalString(attachment, "contentUrl") !== undefined ||
+      optionalString(attachment, "name") !== undefined ||
+      (attachment.content !== undefined && attachment.content !== null);
+    if (!hasContent) {
+      continue;
+    }
+    attachmentCount += 1;
+    if (contentType?.toLowerCase().startsWith("image/")) {
+      imageCount += 1;
+    }
+  }
+  if (attachmentCount === 0) {
+    return undefined;
+  }
+  return imageCount > 0
+    ? `<media:image>${imageCount > 1 ? ` (${imageCount} images)` : ""}`
+    : `<media:document>${attachmentCount > 1 ? ` (${attachmentCount} files)` : ""}`;
+}
+
 export function normalizeMsTeamsWebhookPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("Microsoft Teams webhook payload must be an object", {
@@ -247,10 +279,11 @@ export function normalizeMsTeamsWebhookPayload(payload: unknown) {
   const from = optionalRecord(payload, "from");
   const channelId = optionalString(payload, "channelId");
   const conversationId = conversation ? optionalString(conversation, "id") : undefined;
-  const text = optionalString(payload, "text");
+  const activityText = optionalString(payload, "text");
+  const text = activityText?.trim() ? activityText : msTeamsAttachmentPlaceholder(payload);
   if (channelId !== "msteams" || !conversationId || !text) {
     throw new CrablineError(
-      "Microsoft Teams activity payload requires channelId=msteams, conversation.id, and text",
+      "Microsoft Teams activity payload requires channelId=msteams, conversation.id, and text or attachments",
       {
         kind: "inbound",
       },

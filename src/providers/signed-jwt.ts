@@ -46,6 +46,14 @@ function requireSafeDuration(value: number, name: string, allowZero = false): nu
   return value;
 }
 
+function readJwtClock(now: () => number): number {
+  const value = now();
+  if (!Number.isFinite(value)) {
+    throw new RangeError("JWT clock must return a finite number.");
+  }
+  return value;
+}
+
 function decodeBase64UrlPart(value: string, label: string): Buffer {
   if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
     throw new Error(`${label} must use unpadded base64url encoding.`);
@@ -251,7 +259,8 @@ export function createCachedJwtKeyResolver<T>(params: {
   timeoutMs?: number | undefined;
   unknownKeyMessage: string;
 }) {
-  const now = params.now ?? Date.now;
+  const clock = params.now ?? Date.now;
+  const now = () => readJwtClock(clock);
   const refreshCooldownMs = requireSafeDuration(
     params.refreshCooldownMs ?? DEFAULT_UNKNOWN_KEY_COOLDOWN_MS,
     "refreshCooldownMs",
@@ -463,7 +472,7 @@ export async function verifySignedJwt(params: {
     throw new Error("JWT audience is invalid.");
   }
 
-  const now = Math.floor((params.now?.() ?? Date.now()) / 1000);
+  const now = Math.floor(readJwtClock(params.now ?? Date.now) / 1000);
   const skew = params.clockSkewSeconds ?? 300;
   if (!Number.isFinite(skew) || skew < 0) {
     throw new Error("JWT clock skew must be a finite non-negative number.");

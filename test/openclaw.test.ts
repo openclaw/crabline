@@ -2111,6 +2111,49 @@ describe("OpenClaw local provider bridge", () => {
     ).toMatchObject({
       text: "<@U1234567890> in <#C1234567890>:wave:\nrepeat\nrepeat",
     });
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: slackManifest,
+        targetByProviderTarget: new Map([["C1234567890", "group:qa"]]),
+        event: {
+          type: "api",
+          method: "POST",
+          path: "/api/chat.postMessage",
+          body: {
+            attachments: [
+              {
+                fields: [{ title: "field title", value: "field value" }],
+                pretext: "attachment pretext",
+              },
+            ],
+            blocks: [
+              {
+                rows: [
+                  [
+                    {
+                      elements: [{ text: "table cell", type: "text" }],
+                      type: "rich_text",
+                    },
+                  ],
+                ],
+                type: "table",
+              },
+              {
+                details: { text: "task details", type: "plain_text" },
+                tasks: [{ title: "nested task" }],
+                title: "task title",
+                type: "task_card",
+              },
+            ],
+            channel: "C1234567890",
+            text: "",
+          },
+        },
+      }),
+    ).toMatchObject({
+      text: "table cell\ntask title\ntask details\nnested task\nattachment pretext\nfield title\nfield value",
+      to: "group:qa",
+    });
   });
 
   it("maps Signal QA targets, inbound messages, and recorder events", () => {

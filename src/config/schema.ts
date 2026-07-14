@@ -200,6 +200,15 @@ const InboundMatchSchema = z
     if (value.strategy !== "regex" || !value.pattern) {
       return;
     }
+    const safetyError = inboundRegexSafetyError(value.pattern);
+    if (safetyError?.startsWith("must contain at most ")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `inboundMatch.pattern ${safetyError}`,
+        path: ["pattern"],
+      });
+      return;
+    }
     try {
       RegExp(value.pattern, "u");
     } catch {
@@ -210,7 +219,6 @@ const InboundMatchSchema = z
       });
       return;
     }
-    const safetyError = inboundRegexSafetyError(value.pattern);
     if (safetyError) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

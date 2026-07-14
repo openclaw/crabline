@@ -156,6 +156,48 @@ describe("iMessage thread matching", () => {
     }
   });
 
+  it("uses the first valid native thread alias", async () => {
+    const config = await createLocalMockConfig("imessage", "/imessage/webhook");
+    const provider = new IMessageProviderAdapter("imessage", config, "crabline");
+    const context = createProviderContext("imessage", config, {
+      id: "+15551234567",
+      metadata: {},
+    });
+    context.fixture.inboundMatch.author = "any";
+
+    try {
+      const endpoint = (await provider.probe(context)).details
+        .find((detail) => detail.startsWith("webhook endpoint "))
+        ?.replace("webhook endpoint ", "");
+      const since = new Date(Date.now() - 1000).toISOString();
+      const response = await fetch(endpoint!, {
+        body: JSON.stringify({
+          chatGuid: "not-a-native-thread",
+          chatIdentifier: "+15551234567",
+          guid: "imsg-valid-alias",
+          text: "valid alias",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(
+        provider.waitForInbound({
+          ...context,
+          nonce: "valid alias",
+          since,
+          timeoutMs: 500,
+        }),
+      ).resolves.toMatchObject({
+        id: "imsg-valid-alias",
+        threadId: "+15551234567",
+      });
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
   it("normalizes native nested imsg notifications", async () => {
     const config = await createLocalMockConfig("imessage", "/imessage/webhook");
     const provider = new IMessageProviderAdapter("imessage", config, "crabline");
