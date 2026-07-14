@@ -325,6 +325,24 @@ function readMachineIdentity(): string | null {
 
 let cachedLinuxClockTicks: number | undefined;
 
+function processStartedAtMsFromIdentity(identity: string | null): number | null {
+  const darwinStart = /^darwin:\d+\.\d+:us:(\d+)$/u.exec(identity ?? "")?.[1];
+  if (darwinStart) {
+    return Number(BigInt(darwinStart) / 1000n);
+  }
+  const coarseDarwinStart = DARWIN_COARSE_IDENTITY_PATTERN.exec(identity ?? "")?.[1];
+  if (coarseDarwinStart) {
+    return Number(coarseDarwinStart) * 1000;
+  }
+  const windowsStart = /^windows:(\d+)$/u.exec(identity ?? "")?.[1];
+  if (windowsStart) {
+    const unixEpochTicks = 621_355_968_000_000_000n;
+    const ticks = BigInt(windowsStart);
+    return ticks >= unixEpochTicks ? Number((ticks - unixEpochTicks) / 10_000n) : null;
+  }
+  return null;
+}
+
 function readLegacyProcessStartedAtMs(pid: number): number | null {
   if (process.platform === "linux") {
     try {
@@ -357,22 +375,7 @@ function readLegacyProcessStartedAtMs(pid: number): number | null {
       return null;
     }
   }
-  const identity = readProcessIdentity(pid);
-  const darwinStart = /^darwin:\d+\.\d+:us:(\d+)$/u.exec(identity ?? "")?.[1];
-  if (darwinStart) {
-    return Number(BigInt(darwinStart) / 1000n);
-  }
-  const coarseDarwinStart = DARWIN_COARSE_IDENTITY_PATTERN.exec(identity ?? "")?.[1];
-  if (coarseDarwinStart) {
-    return Number(coarseDarwinStart) * 1000;
-  }
-  const windowsStart = /^windows:(\d+)$/u.exec(identity ?? "")?.[1];
-  if (windowsStart) {
-    const unixEpochTicks = 621_355_968_000_000_000n;
-    const ticks = BigInt(windowsStart);
-    return ticks >= unixEpochTicks ? Number((ticks - unixEpochTicks) / 10_000n) : null;
-  }
-  return null;
+  return processStartedAtMsFromIdentity(readProcessIdentity(pid));
 }
 
 function legacyProcessStartMatches(expected: number, observed: number): boolean {
@@ -389,19 +392,6 @@ function isExactProcessIdentity(identity: string): boolean {
     DARWIN_PRECISE_IDENTITY_PATTERN.test(identity) ||
     /^windows:\d+$/u.test(identity)
   );
-}
-
-function isExactProcessIdentityForCurrentPlatform(identity: string): boolean {
-  if (process.platform === "linux") {
-    return /^linux:[0-9a-f-]{16,64}:\d+$/iu.test(identity);
-  }
-  if (process.platform === "darwin") {
-    return DARWIN_PRECISE_IDENTITY_PATTERN.test(identity);
-  }
-  if (process.platform === "win32") {
-    return /^windows:\d+$/u.test(identity);
-  }
-  return false;
 }
 
 function directoryIdentity(stats: Pick<fs.Stats, "dev" | "ino">): DirectoryIdentity {
@@ -519,8 +509,8 @@ function parseOpenedOwner(ownerHandle: number): ParsedLockOwner | undefined {
   if (
     (value.version === 2 || value.version === 3 || value.version === 4) &&
     (value.processIdentity === null ||
-      !isExactProcessIdentityForCurrentPlatform(value.processIdentity) ||
-      (process.platform === "linux" &&
+      !isExactProcessIdentity(value.processIdentity) ||
+      (/^linux:/u.test(value.processIdentity) &&
         (value.processNamespace === null ||
           value.processNamespace === undefined ||
           !LINUX_PID_NAMESPACE_PATTERN.test(value.processNamespace))))
@@ -826,12 +816,15 @@ export function createProcessOwnedLockFileSystem(
       cachedForeignIdentity.ownerGenerationKey !== claim.token ||
       now - cachedForeignIdentity.checkedAt >= IDENTITY_CACHE_MS
     ) {
+      const observedIdentity = identityReader(claim.pid);
       cachedForeignIdentity = {
         checkedAt: now,
-        identity: readProcessIdentity(claim.pid),
+        identity: observedIdentity,
         ownerGenerationKey: claim.token,
         pid: claim.pid,
-        startedAtMs: readLegacyProcessStartedAtMs(claim.pid),
+        startedAtMs:
+          processStartedAtMsFromIdentity(observedIdentity) ??
+          readLegacyProcessStartedAtMs(claim.pid),
       };
     }
     if (
@@ -846,11 +839,17 @@ export function createProcessOwnedLockFileSystem(
         ? "active"
         : "superseded";
     }
-    return cachedForeignIdentity.identity === null
-      ? "unknown"
-      : cachedForeignIdentity.identity === claim.processIdentity
-        ? "active"
-        : "dead";
+    if (cachedForeignIdentity.identity === null) {
+      return "unknown";
+    }
+    if (process.platform === "darwin" && isCoarseDarwinIdentity(cachedForeignIdentity.identity)) {
+      return cachedForeignIdentity.startedAtMs === null
+        ? "unknown"
+        : legacyProcessStartMatches(claim.processStartedAtMs, cachedForeignIdentity.startedAtMs)
+          ? "active"
+          : "superseded";
+    }
+    return cachedForeignIdentity.identity === claim.processIdentity ? "active" : "dead";
   };
 
   const createRecoveryClaim = (
@@ -881,7 +880,8 @@ export function createProcessOwnedLockFileSystem(
             const status = ownerStatus(existingClaim);
             const recoverableForeign =
               status === "foreign" && isRecoverableForeignOwner(existingClaim, status, stats);
-            if (status === "dead" || recoverableForeign) {
+            const recoverableUnverifiable = isRecoverableUnverifiableOwner(existingClaim, status);
+            if (status === "dead" || recoverableForeign || recoverableUnverifiable) {
               existingFingerprint = `owner:${existingClaim.owner.token}`;
             }
           } else if (isRecoverableOwnerlessClaim(stats)) {
