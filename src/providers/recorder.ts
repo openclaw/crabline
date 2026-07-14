@@ -671,7 +671,19 @@ export async function secureProviderRecorderLockRoot(
         void secured.catch(() => securedWindowsLockRoots.delete(cacheKey));
       }
       const expected = await secured;
-      const current = await lstat(root, { bigint: true });
+      let current: Awaited<ReturnType<typeof lstat>>;
+      try {
+        current = await lstat(root, { bigint: true });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "ENOTDIR") {
+          throw error;
+        }
+        if (securedWindowsLockRoots.get(cacheKey) === secured) {
+          securedWindowsLockRoots.delete(cacheKey);
+        }
+        continue;
+      }
       if (
         current.isDirectory() &&
         !current.isSymbolicLink() &&
