@@ -26,6 +26,7 @@ describe("WhatsApp webhook normalizer", () => {
       timestamp: "1700000000",
     };
     const payload = {
+      object: "whatsapp_business_account",
       entry: [
         {
           changes: [
@@ -65,6 +66,7 @@ describe("WhatsApp webhook normalizer", () => {
       type: "text",
     };
     const payload = {
+      object: "whatsapp_business_account",
       entry: [{ changes: [{ value: { messages: [first, second] } }] }],
     };
 
@@ -76,6 +78,7 @@ describe("WhatsApp webhook normalizer", () => {
 
   it("does not filter inbound messages when phoneNumberId is omitted", () => {
     const payload = {
+      object: "whatsapp_business_account",
       entry: [
         {
           changes: [
@@ -109,9 +112,16 @@ describe("WhatsApp webhook normalizer", () => {
 
   it.each([
     ["not-an-object", "WhatsApp webhook payload must be an object"],
-    [{ entry: [{ changes: [{ value: { messages: [{ from: "15551234567" }] } }] }] }, "requires"],
     [
       {
+        object: "whatsapp_business_account",
+        entry: [{ changes: [{ value: { messages: [{ from: "15551234567" }] } }] }],
+      },
+      "requires",
+    ],
+    [
+      {
+        object: "whatsapp_business_account",
         entry: [
           {
             changes: [
@@ -133,6 +143,7 @@ describe("WhatsApp webhook normalizer", () => {
   it("requires provider message ids for native webhook deliveries", () => {
     expect(() =>
       normalizeWhatsAppWebhookPayload({
+        object: "whatsapp_business_account",
         entry: [
           {
             changes: [
@@ -146,6 +157,33 @@ describe("WhatsApp webhook normalizer", () => {
         ],
       }),
     ).toThrow("messages[].id");
+  });
+
+  it("requires the native account envelope and skips non-message change fields", () => {
+    expect(() =>
+      normalizeWhatsAppWebhookPayload({
+        entry: [],
+        object: "page",
+      }),
+    ).toThrow('object="whatsapp_business_account"');
+
+    expect(
+      normalizeWhatsAppWebhookPayload({
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            changes: [
+              {
+                field: "statuses",
+                value: {
+                  messages: [{ from: "invalid", text: { body: "must be ignored" } }],
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([]);
   });
 
   it("preserves generic fallback thread payloads", () => {
@@ -213,6 +251,7 @@ describe("WhatsApp webhook normalizer", () => {
         ?.replace("webhook endpoint ", "");
       expect(endpoint).toBeDefined();
       const body = JSON.stringify({
+        object: "whatsapp_business_account",
         entry: [
           {
             changes: [
@@ -285,6 +324,7 @@ describe("WhatsApp webhook normalizer", () => {
       expect(forbidden.status).toBe(403);
 
       const body = JSON.stringify({
+        object: "whatsapp_business_account",
         entry: [
           {
             changes: [
@@ -312,6 +352,46 @@ describe("WhatsApp webhook normalizer", () => {
         method: "POST",
       });
       expect(unsigned.status).toBe(401);
+      await expect(readFile(config.whatsapp!.recorder.path!, "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      const foreignEnvelopeBody = JSON.stringify({ entry: [], object: "page" });
+      const foreignEnvelope = await fetch(endpoint!, {
+        body: foreignEnvelopeBody,
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": whatsappSignature(foreignEnvelopeBody, signingKey),
+        },
+        method: "POST",
+      });
+      expect(foreignEnvelope.status).toBe(400);
+
+      const nonMessageBody = JSON.stringify({
+        entry: [
+          {
+            changes: [
+              {
+                field: "statuses",
+                value: {
+                  messages: [{ from: "invalid", text: { body: "must be ignored" } }],
+                },
+              },
+            ],
+          },
+        ],
+        object: "whatsapp_business_account",
+      });
+      const nonMessage = await fetch(endpoint!, {
+        body: nonMessageBody,
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": whatsappSignature(nonMessageBody, signingKey),
+        },
+        method: "POST",
+      });
+      expect(nonMessage.status).toBe(200);
+      await expect(nonMessage.json()).resolves.toEqual({ ids: [], ok: true });
       await expect(readFile(config.whatsapp!.recorder.path!, "utf8")).rejects.toMatchObject({
         code: "ENOENT",
       });
@@ -395,6 +475,7 @@ describe("WhatsApp webhook normalizer", () => {
       );
 
       const body = JSON.stringify({
+        object: "whatsapp_business_account",
         entry: [
           {
             changes: [
@@ -468,6 +549,7 @@ describe("WhatsApp webhook normalizer", () => {
       expect((await fetch(verificationUrl)).status).toBe(200);
 
       const body = JSON.stringify({
+        object: "whatsapp_business_account",
         entry: [
           {
             changes: [
@@ -689,6 +771,7 @@ runLocalMockProviderContract({
     text: `reply ${contractNonces.webhook}`,
   },
   webhookPayload: {
+    object: "whatsapp_business_account",
     entry: [
       {
         changes: [
@@ -720,6 +803,7 @@ runLocalMockProviderContract({
   },
   webhookThreadId: "15551234567",
   userWebhookPayload: (nonce) => ({
+    object: "whatsapp_business_account",
     entry: [
       {
         changes: [

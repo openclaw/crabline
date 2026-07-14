@@ -9,6 +9,7 @@ export type BinaryNode = {
 
 export const WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES = 1024 * 1024;
 export const WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES = 8 * 1024 * 1024;
+export const WHATSAPP_BINARY_NODE_MAX_FRAME_BYTES = WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES + 1;
 export const WHATSAPP_BINARY_NODE_MAX_DEPTH = 128;
 export const WHATSAPP_BINARY_NODE_MAX_NODES = 32_768;
 export const WHATSAPP_BINARY_NODE_MAX_LIST_ITEMS = 131_072;
@@ -499,12 +500,22 @@ function writeBudgetedListStart(buffer: number[], size: number, budget: BinaryNo
 }
 
 function pushByte(buffer: number[], value: number): void {
+  assertEncodedCapacity(buffer, 1);
   buffer.push(value & 0xff);
 }
 
 function pushBytes(buffer: number[], bytes: Uint8Array): void {
+  assertEncodedCapacity(buffer, bytes.length);
   for (const byte of bytes) {
-    pushByte(buffer, byte);
+    buffer.push(byte & 0xff);
+  }
+}
+
+function assertEncodedCapacity(buffer: number[], additionalBytes: number): void {
+  if (buffer.length + additionalBytes > WHATSAPP_BINARY_NODE_MAX_FRAME_BYTES) {
+    throw new Error(
+      `WhatsApp binary node frame exceeds ${WHATSAPP_BINARY_NODE_MAX_FRAME_BYTES} bytes.`,
+    );
   }
 }
 

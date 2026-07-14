@@ -47,10 +47,14 @@ const MAX_PENDING_WEBSOCKET_MESSAGES = 32;
 const MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENTS = 10_000;
 const MAX_WHATSAPP_PENDING_ACKNOWLEDGEMENT_AGE_MS = 5 * 60 * 1_000;
 const MAX_WHATSAPP_RECENT_ACKNOWLEDGEMENTS = 10_000;
+const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
 export const MAX_WHATSAPP_WEBSOCKET_FRAGMENTS = 1_024;
 export const MAX_WHATSAPP_SIGNAL_BUNDLES = 1_024;
+export const MAX_WHATSAPP_SIGNAL_PREKEYS_PER_BUNDLE = 32;
 export const MAX_WHATSAPP_SIGNAL_SESSIONS_PER_BUNDLE = 32;
 export const MAX_WHATSAPP_WEBSOCKET_CLOSE_REASON_BYTES = 123;
+export const WHATSAPP_MESSAGE_ACCEPTANCE_TIMEOUT_MS = 5_000;
+export const WHATSAPP_SIGNAL_PREKEY_RESERVATION_TTL_MS = 5 * 60 * 1_000;
 type NodeBuffer = Buffer<ArrayBufferLike>;
 type WhatsAppWebSocketRawData = NodeBuffer | ArrayBuffer | NodeBuffer[];
 type WhatsAppWebSocketSendTarget = {
@@ -76,6 +80,7 @@ export type WhatsAppBaileysWebSocketServerParams = {
   appendEvent(event: ServerRequestEvent): Promise<void>;
   httpServer: Server;
   maxPendingInboundMessages?: number | undefined;
+  messageAcceptanceTimeoutMs?: number | undefined;
   path: string;
   selfJid: string;
 };
@@ -122,7 +127,10 @@ export type WhatsAppSignalDecryptResult<T> =
   | { status: "rejected" };
 
 export type WhatsAppSignalBundleStoreOptions = {
+  maxPreKeysPerBundle?: number | undefined;
   maxSessionsPerBundle?: number | undefined;
+  messageAcceptanceTimeoutMs?: number | undefined;
+  preKeyReservationTtlMs?: number | undefined;
 };
 
 type PendingWhatsAppAcknowledgement = {
@@ -131,14 +139,59 @@ type PendingWhatsAppAcknowledgement = {
   acknowledged: boolean;
 };
 
+type StoredSignalBundle = Omit<MockSignalBundle, "preKey" | "preKeyId"> & {
+  availablePreKeyIds: number[];
+  nextPreKeyId: number;
+  pendingPreKeyIds: Set<number>;
+  preKeyReservations: Map<number, number>;
+  preKeys: Map<number, KeyPair>;
+};
+
+type WhatsAppMessageAcceptanceOptions = {
+  onTerminalTimeout?: (() => void) | undefined;
+  signal?: AbortSignal | undefined;
+  terminalDrain?: (() => Promise<"acknowledged" | "retryable">) | undefined;
+  timeoutMs?: number | undefined;
+};
+
+type TerminalWhatsAppAcceptance = {
+  error: Error;
+};
+
+async function awaitWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return await operation;
+  }
+  signal.throwIfAborted();
+  return await new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    void operation.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
+
 export class WhatsAppSignalBundleStore {
   readonly #acknowledgedMessageIds = new Map<string, true>();
-  readonly #bundles = new Map<string, MockSignalBundle>();
+  readonly #bundles = new Map<string, StoredSignalBundle>();
   readonly #lidByPhoneNumber = new Map<string, string>();
+  readonly #maxPreKeysPerBundle: number;
   readonly #maxSessionsPerBundle: number;
+  readonly #maxTerminalAcceptances: number;
+  readonly #messageAcceptanceTimeoutMs: number;
   readonly #pendingAcknowledgements = new Map<string, PendingWhatsAppAcknowledgement>();
   readonly #pendingTransactions = new Map<string, Promise<void>>();
+  readonly #preKeyReservationTtlMs: number;
   readonly #sessions = new Map<string, Map<string, SessionRecord>>();
+  readonly #terminalAcceptances = new Map<string, TerminalWhatsAppAcceptance>();
 
   constructor(
     private readonly maxBundles = MAX_WHATSAPP_SIGNAL_BUNDLES,
@@ -148,13 +201,34 @@ export class WhatsAppSignalBundleStore {
     private readonly now: () => number = Date.now,
     options: WhatsAppSignalBundleStoreOptions = {},
   ) {
+    const maxPreKeysPerBundle =
+      options.maxPreKeysPerBundle ?? MAX_WHATSAPP_SIGNAL_PREKEYS_PER_BUNDLE;
     const maxSessionsPerBundle =
       options.maxSessionsPerBundle ?? MAX_WHATSAPP_SIGNAL_SESSIONS_PER_BUNDLE;
+    const messageAcceptanceTimeoutMs =
+      options.messageAcceptanceTimeoutMs ?? WHATSAPP_MESSAGE_ACCEPTANCE_TIMEOUT_MS;
+    const preKeyReservationTtlMs =
+      options.preKeyReservationTtlMs ?? WHATSAPP_SIGNAL_PREKEY_RESERVATION_TTL_MS;
     if (!Number.isSafeInteger(maxBundles) || maxBundles < 1) {
       throw new Error("WhatsApp maxSignalBundles must be a positive safe integer.");
     }
     if (!Number.isSafeInteger(maxSessionsPerBundle) || maxSessionsPerBundle < 1) {
       throw new Error("WhatsApp maxSignalSessionsPerBundle must be a positive safe integer.");
+    }
+    if (!Number.isSafeInteger(maxPreKeysPerBundle) || maxPreKeysPerBundle < 1) {
+      throw new Error("WhatsApp maxSignalPreKeysPerBundle must be a positive safe integer.");
+    }
+    if (
+      !Number.isSafeInteger(messageAcceptanceTimeoutMs) ||
+      messageAcceptanceTimeoutMs < 1 ||
+      messageAcceptanceTimeoutMs > MAX_NODE_TIMER_DELAY_MS
+    ) {
+      throw new Error(
+        `WhatsApp messageAcceptanceTimeoutMs must be a positive integer no greater than ${MAX_NODE_TIMER_DELAY_MS}.`,
+      );
+    }
+    if (!Number.isSafeInteger(preKeyReservationTtlMs) || preKeyReservationTtlMs < 1) {
+      throw new Error("WhatsApp preKeyReservationTtlMs must be a positive safe integer.");
     }
     if (!Number.isSafeInteger(maxPendingAcknowledgements) || maxPendingAcknowledgements < 1) {
       throw new Error("WhatsApp maxPendingAcknowledgements must be a positive safe integer.");
@@ -168,7 +242,14 @@ export class WhatsAppSignalBundleStore {
     ) {
       throw new Error("WhatsApp maxPendingAcknowledgementAgeMs must be a positive safe integer.");
     }
+    this.#maxPreKeysPerBundle = maxPreKeysPerBundle;
     this.#maxSessionsPerBundle = maxSessionsPerBundle;
+    this.#maxTerminalAcceptances = Math.min(
+      Number.MAX_SAFE_INTEGER,
+      maxPendingAcknowledgements + maxRecentAcknowledgements,
+    );
+    this.#messageAcceptanceTimeoutMs = messageAcceptanceTimeoutMs;
+    this.#preKeyReservationTtlMs = preKeyReservationTtlMs;
   }
 
   get size(): number {
@@ -187,39 +268,112 @@ export class WhatsAppSignalBundleStore {
     return count;
   }
 
-  async acceptMessageOnce(messageKey: string, operation: () => Promise<boolean>): Promise<boolean> {
+  async acceptMessageOnce(
+    messageKey: string,
+    operation: (signal: AbortSignal) => Promise<boolean>,
+    options: WhatsAppMessageAcceptanceOptions = {},
+  ): Promise<boolean> {
     this.#recoverExpiredPendingAcknowledgements();
     const pendingAcceptance = this.#pendingAcknowledgements.get(messageKey);
     if (pendingAcceptance) {
       return await pendingAcceptance.acceptance;
     }
+    const terminalAcceptance = this.#terminalAcceptances.get(messageKey);
+    if (terminalAcceptance) {
+      this.#terminalAcceptances.delete(messageKey);
+      this.#terminalAcceptances.set(messageKey, terminalAcceptance);
+      throw terminalAcceptance.error;
+    }
     if (this.#acknowledgedMessageIds.delete(messageKey)) {
       this.#acknowledgedMessageIds.set(messageKey, true);
       return true;
+    }
+    if (
+      this.#terminalAcceptances.size + this.#pendingAcknowledgements.size >=
+      this.#maxTerminalAcceptances
+    ) {
+      throw new Error(
+        `WhatsApp terminal acceptance limit exceeded (${this.#maxTerminalAcceptances}).`,
+      );
     }
     if (this.#pendingAcknowledgements.size >= this.maxPendingAcknowledgements) {
       throw new Error(
         `WhatsApp pending acknowledgement limit exceeded (${this.maxPendingAcknowledgements}).`,
       );
     }
+    const timeoutMs = options.timeoutMs ?? this.#messageAcceptanceTimeoutMs;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_NODE_TIMER_DELAY_MS) {
+      throw new Error(
+        `WhatsApp message acceptance timeout must be a positive integer no greater than ${MAX_NODE_TIMER_DELAY_MS}.`,
+      );
+    }
+    const controller = new AbortController();
+    const operationPromise = Promise.resolve().then(() => operation(controller.signal));
+    let terminalFenced = false;
+    const fenceTerminalAcceptance = (error: Error) => {
+      if (terminalFenced) {
+        return;
+      }
+      terminalFenced = true;
+      controller.abort(error);
+      const terminalDrain = Promise.all([
+        operationPromise.then(
+          () => undefined,
+          () => undefined,
+        ),
+        Promise.resolve()
+          .then(() => options.terminalDrain?.())
+          .then(
+            (disposition) => disposition ?? "retryable",
+            () => "retryable" as const,
+          ),
+      ]).then(([, disposition]) => disposition);
+      this.#rememberTerminalAcceptance(messageKey, error, terminalDrain);
+    };
+    const abortFromOwner = () => {
+      const reason = options.signal?.reason;
+      fenceTerminalAcceptance(
+        reason instanceof Error ? reason : new Error("WhatsApp message acceptance cancelled."),
+      );
+    };
+    if (options.signal?.aborted) {
+      abortFromOwner();
+    } else {
+      options.signal?.addEventListener("abort", abortFromOwner, { once: true });
+    }
+    const timeout = setTimeout(() => {
+      const error = new Error("WhatsApp message acceptance timed out.");
+      fenceTerminalAcceptance(error);
+      options.onTerminalTimeout?.();
+    }, timeoutMs);
+    timeout.unref();
     let pendingAcknowledgement: PendingWhatsAppAcknowledgement;
     const acceptance = Promise.resolve().then(async () => {
       try {
-        const accepted = await operation();
+        const accepted = await awaitWithAbort(operationPromise, controller.signal);
         if (!accepted) {
-          this.#pendingAcknowledgements.delete(messageKey);
+          if (this.#pendingAcknowledgements.get(messageKey) === pendingAcknowledgement) {
+            this.#pendingAcknowledgements.delete(messageKey);
+          }
           return false;
         }
         if (pendingAcknowledgement.acknowledged) {
-          this.#pendingAcknowledgements.delete(messageKey);
+          if (this.#pendingAcknowledgements.get(messageKey) === pendingAcknowledgement) {
+            this.#pendingAcknowledgements.delete(messageKey);
+          }
           this.#rememberAcknowledgedMessage(messageKey);
         } else {
           pendingAcknowledgement.acceptedAt = this.now();
         }
         return true;
       } catch (error) {
-        this.#pendingAcknowledgements.delete(messageKey);
+        if (this.#pendingAcknowledgements.get(messageKey) === pendingAcknowledgement) {
+          this.#pendingAcknowledgements.delete(messageKey);
+        }
         throw error;
+      } finally {
+        clearTimeout(timeout);
+        options.signal?.removeEventListener("abort", abortFromOwner);
       }
     });
     pendingAcknowledgement = {
@@ -292,7 +446,99 @@ export class WhatsAppSignalBundleStore {
       // Published bundle identities stay stable for the store lifetime.
       throw new Error(`WhatsApp signal bundle limit exceeded (${this.maxBundles}).`);
     }
-    return identityKeys.map((identityKey) => this.#resolve(identityKey));
+    const stagedNewBundles = new Map<string, StoredSignalBundle>();
+    const stagedReservations = new Map<
+      string,
+      {
+        availablePreKeyIds: number[];
+        bundle: StoredSignalBundle;
+        nextPreKeyId: number;
+        preKeyReservations: Map<number, number>;
+        preKeys: Map<number, KeyPair>;
+      }
+    >();
+    const reservationNow = this.now();
+    const stagedForIdentity = (identityKey: string) => {
+      let bundle = this.#bundles.get(identityKey) ?? stagedNewBundles.get(identityKey);
+      if (!bundle) {
+        bundle = this.#createBundle();
+        stagedNewBundles.set(identityKey, bundle);
+      }
+      let staged = stagedReservations.get(identityKey);
+      if (!staged) {
+        const preKeys = new Map(bundle.preKeys);
+        const preKeyReservations = new Map(bundle.preKeyReservations);
+        for (const [preKeyId, reservedAt] of preKeyReservations) {
+          if (reservationNow - reservedAt >= this.#preKeyReservationTtlMs) {
+            preKeyReservations.delete(preKeyId);
+            preKeys.delete(preKeyId);
+          }
+        }
+        staged = {
+          availablePreKeyIds: bundle.availablePreKeyIds.filter((id) => preKeys.has(id)),
+          bundle,
+          nextPreKeyId: bundle.nextPreKeyId,
+          preKeyReservations,
+          preKeys,
+        };
+        stagedReservations.set(identityKey, staged);
+      }
+      return staged;
+    };
+    const requestedPreKeys = new Map<string, number>();
+    for (const identityKey of identityKeys) {
+      requestedPreKeys.set(identityKey, (requestedPreKeys.get(identityKey) ?? 0) + 1);
+    }
+    for (const [identityKey, requested] of requestedPreKeys) {
+      const staged = stagedForIdentity(identityKey);
+      const available = staged.availablePreKeyIds.length;
+      const creatable = Math.max(
+        0,
+        this.#maxPreKeysPerBundle - staged.preKeys.size - staged.bundle.pendingPreKeyIds.size,
+      );
+      if (requested > available + creatable) {
+        throw new Error(
+          `WhatsApp Signal prekey reservation limit exceeded (${this.#maxPreKeysPerBundle}).`,
+        );
+      }
+    }
+    const reservedBundles = identityKeys.map((identityKey) => {
+      const staged = stagedForIdentity(identityKey);
+      const { bundle } = staged;
+      let preKeyId = staged.availablePreKeyIds.shift();
+      if (preKeyId === undefined) {
+        const created = this.#createPreKey(
+          staged.preKeys,
+          staged.nextPreKeyId,
+          staged.bundle.pendingPreKeyIds,
+        );
+        preKeyId = created.id;
+        staged.preKeys.set(created.id, created.keyPair);
+        staged.nextPreKeyId = created.nextPreKeyId;
+      }
+      const preKey = staged.preKeys.get(preKeyId);
+      if (!preKey) {
+        throw new Error("WhatsApp Signal prekey reservation is unavailable.");
+      }
+      staged.preKeyReservations.set(preKeyId, reservationNow);
+      return {
+        identityKey: bundle.identityKey,
+        preKey,
+        preKeyId,
+        registrationId: bundle.registrationId,
+        signedPreKey: bundle.signedPreKey,
+      };
+    });
+    for (const [identityKey, bundle] of stagedNewBundles) {
+      this.#bundles.set(identityKey, bundle);
+    }
+    for (const staged of stagedReservations.values()) {
+      staged.bundle.availablePreKeyIds = staged.availablePreKeyIds;
+      staged.bundle.nextPreKeyId = staged.nextPreKeyId;
+      staged.bundle.preKeyReservations = staged.preKeyReservations;
+      staged.bundle.preKeys = staged.preKeys;
+    }
+    return reservedBundles;
   }
 
   async decryptDirectMessage(params: {
@@ -316,8 +562,10 @@ export class WhatsAppSignalBundleStore {
     ciphertext: Uint8Array;
     recipientJid: string;
     remoteJid: string;
+    signal?: AbortSignal | undefined;
     type: "msg" | "pkmsg";
   }): Promise<WhatsAppSignalDecryptResult<T>> {
+    params.signal?.throwIfAborted();
     const recipientJid = canonicalizeWhatsAppUserCorrelationJid(params.recipientJid);
     const recipientIdentityKey = recipientJid ? signalBundleIdentityKey(recipientJid) : undefined;
     const mappedLidIdentityKey = recipientIdentityKey
@@ -338,6 +586,7 @@ export class WhatsAppSignalBundleStore {
     const address = new ProtocolAddress(remoteAddress.name, remoteAddress.deviceId);
     // Capacity checks, staged writes, and commits stay atomic per recipient bundle.
     return await this.#runTransaction(identityKey, async () => {
+      params.signal?.throwIfAborted();
       const sessions = this.#sessions.get(identityKey) ?? new Map<string, SessionRecord>();
       const sessionLimitError = new Error("WhatsApp Signal session limit exceeded.");
       const maxSessionsPerBundle = this.#maxSessionsPerBundle;
@@ -360,10 +609,8 @@ export class WhatsAppSignalBundleStore {
         },
         isTrustedIdentity: () => true,
         async loadPreKey(id) {
-          if (String(id) !== String(bundle.preKeyId)) {
-            return undefined;
-          }
-          return signalKeyPair(bundle.preKey);
+          const preKey = bundle.preKeys.get(Number(id));
+          return preKey ? signalKeyPair(preKey) : undefined;
         },
         removePreKey(id) {
           stagedPreKeyRemovals.add(id);
@@ -385,45 +632,85 @@ export class WhatsAppSignalBundleStore {
         }
         return { error, status: "decrypt-failed" };
       }
-      const replacementPreKey = stagedPreKeyRemovals.has(bundle.preKeyId)
-        ? {
-            id: bundle.preKeyId === 0xff_ff_ff ? 1 : bundle.preKeyId + 1,
-            keyPair: generateSignalKeyPair(),
-          }
-        : undefined;
-      const accepted = await params.accept(plaintext);
-      if (accepted === undefined) {
-        return { status: "rejected" };
+      params.signal?.throwIfAborted();
+      let stagedNextPreKeyId = bundle.nextPreKeyId;
+      const stagedPreKeyIds = new Set<number>();
+      const replacementPreKeys = [...stagedPreKeyRemovals]
+        .filter((id) => bundle.preKeys.has(id))
+        .map(() => {
+          const unavailableIds = new Set([...bundle.pendingPreKeyIds, ...stagedPreKeyIds]);
+          const created = this.#createPreKey(bundle.preKeys, stagedNextPreKeyId, unavailableIds);
+          stagedNextPreKeyId = created.nextPreKeyId;
+          stagedPreKeyIds.add(created.id);
+          return created;
+        });
+      for (const replacementPreKey of replacementPreKeys) {
+        bundle.pendingPreKeyIds.add(replacementPreKey.id);
       }
-      for (const [id, session] of stagedSessions) {
-        sessions.set(id, session);
+      bundle.nextPreKeyId = stagedNextPreKeyId;
+      try {
+        const accepted = await awaitWithAbort(
+          Promise.resolve().then(() => params.accept(plaintext)),
+          params.signal,
+        );
+        if (accepted === undefined) {
+          return { status: "rejected" };
+        }
+        params.signal?.throwIfAborted();
+        for (const [id, session] of stagedSessions) {
+          sessions.set(id, session);
+        }
+        if (stagedSessions.size > 0) {
+          this.#sessions.set(identityKey, sessions);
+        }
+        for (const id of stagedPreKeyRemovals) {
+          bundle.preKeyReservations.delete(id);
+          bundle.preKeys.delete(id);
+        }
+        for (const replacementPreKey of replacementPreKeys) {
+          bundle.preKeys.set(replacementPreKey.id, replacementPreKey.keyPair);
+          bundle.availablePreKeyIds.push(replacementPreKey.id);
+        }
+        return { status: "accepted", value: accepted };
+      } finally {
+        for (const replacementPreKey of replacementPreKeys) {
+          bundle.pendingPreKeyIds.delete(replacementPreKey.id);
+        }
       }
-      if (stagedSessions.size > 0) {
-        this.#sessions.set(identityKey, sessions);
-      }
-      if (replacementPreKey) {
-        bundle.preKey = replacementPreKey.keyPair;
-        bundle.preKeyId = replacementPreKey.id;
-      }
-      return { status: "accepted", value: accepted };
     });
   }
 
-  #resolve(bundleKey: string): MockSignalBundle {
-    const existing = this.#bundles.get(bundleKey);
-    if (existing) {
-      return existing;
-    }
+  #createBundle(): StoredSignalBundle {
     const identityKey = generateSignalKeyPair();
-    const bundle = {
+    return {
+      availablePreKeyIds: [],
       identityKey,
-      preKey: generateSignalKeyPair(),
-      preKeyId: 1,
+      nextPreKeyId: 1,
+      pendingPreKeyIds: new Set<number>(),
+      preKeyReservations: new Map<number, number>(),
+      preKeys: new Map<number, KeyPair>(),
       registrationId: 1,
       signedPreKey: signedKeyPair(identityKey, 1),
     };
-    this.#bundles.set(bundleKey, bundle);
-    return bundle;
+  }
+
+  #createPreKey(
+    preKeys: ReadonlyMap<number, KeyPair>,
+    startingId: number,
+    stagedIds: ReadonlySet<number> = new Set(),
+  ): { id: number; keyPair: KeyPair; nextPreKeyId: number } {
+    let id = startingId;
+    while (preKeys.has(id) || stagedIds.has(id)) {
+      id = id === 0xff_ff_ff ? 1 : id + 1;
+      if (id === startingId) {
+        throw new Error("WhatsApp Signal prekey identifier space exhausted.");
+      }
+    }
+    return {
+      id,
+      keyPair: generateSignalKeyPair(),
+      nextPreKeyId: id === 0xff_ff_ff ? 1 : id + 1,
+    };
   }
 
   #recoverExpiredPendingAcknowledgements(): void {
@@ -450,6 +737,23 @@ export class WhatsAppSignalBundleStore {
         this.#acknowledgedMessageIds.delete(oldestMessageKey);
       }
     }
+  }
+
+  #rememberTerminalAcceptance(
+    messageKey: string,
+    error: Error,
+    drain: Promise<"acknowledged" | "retryable">,
+  ): void {
+    const terminalAcceptance = { error };
+    this.#terminalAcceptances.set(messageKey, terminalAcceptance);
+    void drain.then((disposition) => {
+      if (this.#terminalAcceptances.get(messageKey) === terminalAcceptance) {
+        this.#terminalAcceptances.delete(messageKey);
+      }
+      if (disposition === "acknowledged") {
+        this.#rememberAcknowledgedMessage(messageKey);
+      }
+    });
   }
 
   async #runTransaction<T>(key: string, operation: () => Promise<T>): Promise<T> {
@@ -772,6 +1076,7 @@ class BaileysNoiseServer {
 }
 
 class WhatsAppBaileysWebSocketSession {
+  readonly #acceptanceAbort = new AbortController();
   #handshakeState: "client-finish" | "client-hello" | "open" = "client-hello";
   readonly #handleSerializedMessage: (data: WhatsAppWebSocketRawData) => Promise<void>;
   readonly #noise = new BaileysNoiseServer();
@@ -804,6 +1109,12 @@ class WhatsAppBaileysWebSocketSession {
 
   handleMessage(data: WhatsAppWebSocketRawData): Promise<void> {
     return this.#handleSerializedMessage(data);
+  }
+
+  abortAcceptance(reason: unknown): void {
+    if (!this.#acceptanceAbort.signal.aborted) {
+      this.#acceptanceAbort.abort(reason);
+    }
   }
 
   async deliverInboundMessage(message: WhatsAppBaileysInboundMessage): Promise<boolean> {
@@ -858,8 +1169,15 @@ class WhatsAppBaileysWebSocketSession {
       const peer = requireAttr(node, "to");
       const messageId = requireAttr(node, "id");
       const accepted = await persistAcceptedBaileysMessage({
+        acceptanceSignal: this.#acceptanceAbort.signal,
         appendEvent: this.params.appendEvent,
         node,
+        onAcceptanceTimeout: () => {
+          const close = resolveWhatsAppWebSocketClose(
+            new Error("WhatsApp message acceptance timed out."),
+          );
+          this.socket.close(close.code, close.reason);
+        },
         path: this.params.path,
         remoteJid: this.params.selfJid,
         signalBundles: this.params.signalBundles,
@@ -1167,7 +1485,14 @@ function truncateWebSocketCloseReason(reason: string): string {
 export function attachWhatsAppBaileysWebSocketServer(
   params: WhatsAppBaileysWebSocketServerParams,
 ): WhatsAppBaileysWebSocketServer {
-  const signalBundles = new WhatsAppSignalBundleStore();
+  const signalBundles = new WhatsAppSignalBundleStore(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { messageAcceptanceTimeoutMs: params.messageAcceptanceTimeoutMs },
+  );
   const sessions = new Set<WhatsAppBaileysWebSocketSession>();
   const pendingSessionMessages = new Set<Promise<void>>();
   const pendingMessages: WhatsAppBaileysInboundMessage[] = [];
@@ -1242,8 +1567,12 @@ export function attachWhatsAppBaileysWebSocketServer(
       signalBundles,
     });
     sessions.add(session);
-    socket.once("close", () => sessions.delete(session));
+    socket.once("close", () => {
+      session.abortAcceptance(new Error("WhatsApp WebSocket closed."));
+      sessions.delete(session);
+    });
     socket.on("error", () => {
+      session.abortAcceptance(new Error("WhatsApp WebSocket failed."));
       sessions.delete(session);
       socket.terminate();
     });
@@ -1261,6 +1590,9 @@ export function attachWhatsAppBaileysWebSocketServer(
       closing = true;
       params.httpServer.off("upgrade", handleUpgrade);
       pendingMessages.length = 0;
+      for (const session of sessions) {
+        session.abortAcceptance(new Error("WhatsApp WebSocket server is shutting down."));
+      }
       await closeWebSocketServer(wss);
       const messageResults = await Promise.allSettled([...pendingSessionMessages]);
       await flushPromise;
@@ -1368,8 +1700,10 @@ function children(node: BinaryNode): BinaryNode[] {
 }
 
 export async function persistAcceptedBaileysMessage(params: {
+  acceptanceSignal?: AbortSignal | undefined;
   appendEvent(event: ServerRequestEvent): Promise<void>;
   node: BinaryNode;
+  onAcceptanceTimeout?: (() => void) | undefined;
   path: string;
   remoteJid: string;
   signalBundles: WhatsAppSignalBundleStore;
@@ -1379,70 +1713,124 @@ export async function persistAcceptedBaileysMessage(params: {
   if (!peer || !messageId) {
     return false;
   }
-  return await params.signalBundles.acceptMessageOnce(`${peer}\0${messageId}`, async () => {
-    const candidates = encryptedMessageCandidates(params.node);
-    if (candidates.length === 0) {
-      await params.appendEvent({
-        accepted: true,
-        at: new Date().toISOString(),
-        body: sanitizeNodeForJson(params.node),
-        method: "WEBSOCKET",
-        path: params.path,
-        query: {},
-        type: "api",
-      } as ServerRequestEvent & { accepted: true });
-      return true;
-    }
-    const remoteCorrelationJid = canonicalizeWhatsAppUserCorrelationJid(params.remoteJid);
-    candidates.sort((left, right) => {
-      const leftIsSelf =
-        canonicalizeWhatsAppUserCorrelationJid(left.recipientJid) === remoteCorrelationJid;
-      const rightIsSelf =
-        canonicalizeWhatsAppUserCorrelationJid(right.recipientJid) === remoteCorrelationJid;
-      return Number(leftIsSelf) - Number(rightIsSelf);
-    });
-    for (const candidate of candidates) {
-      const result = await params.signalBundles.transactDirectMessage({
-        accept: async (decrypted) => {
-          let text: string | undefined;
-          try {
-            text = readWhatsAppConversation(unpadRandomMax16(decrypted));
-          } catch {
-            text = undefined;
-          }
-          const message: WhatsAppBaileysInboundMessage | undefined = text
-            ? {
-                key: {
-                  fromMe: true,
-                  id: messageId,
-                  remoteJid: peer,
-                },
-                message: { conversation: text },
-                messageTimestamp: Math.floor(Date.now() / 1000),
-              }
-            : undefined;
-          await params.appendEvent({
-            accepted: true,
-            at: new Date().toISOString(),
-            body: message ?? sanitizeNodeForJson(params.node),
-            method: "WEBSOCKET",
-            path: params.path,
-            query: {},
-            type: "api",
-          } as ServerRequestEvent & { accepted: true });
-          return true;
-        },
-        ciphertext: candidate.ciphertext,
-        recipientJid: candidate.recipientJid,
-        remoteJid: params.remoteJid,
-        type: candidate.type,
-      });
-      if (result.status === "accepted") {
-        return true;
-      }
-    }
-    return false;
+  let persistenceSucceeded = false;
+  let operationSettled!: () => void;
+  const operationSettlement = new Promise<void>((resolve) => {
+    operationSettled = resolve;
   });
+  let requiresSignalCommit = false;
+  let signalCommitSucceeded = false;
+  const pendingAcceptanceOperations = new Set<Promise<unknown>>();
+  const trackAcceptanceOperation = <T>(operation: Promise<T>): Promise<T> => {
+    pendingAcceptanceOperations.add(operation);
+    void operation.then(
+      () => {
+        persistenceSucceeded = true;
+        pendingAcceptanceOperations.delete(operation);
+      },
+      () => pendingAcceptanceOperations.delete(operation),
+    );
+    return operation;
+  };
+  const drainAcceptanceOperations = async (): Promise<"acknowledged" | "retryable"> => {
+    while (pendingAcceptanceOperations.size > 0) {
+      await Promise.allSettled([...pendingAcceptanceOperations]);
+    }
+    await operationSettlement;
+    return persistenceSucceeded && (!requiresSignalCommit || signalCommitSucceeded)
+      ? "acknowledged"
+      : "retryable";
+  };
+  return await params.signalBundles.acceptMessageOnce(
+    `${peer}\0${messageId}`,
+    async (acceptanceSignal) => {
+      try {
+        acceptanceSignal.throwIfAborted();
+        const candidates = encryptedMessageCandidates(params.node);
+        requiresSignalCommit = candidates.length > 0;
+        if (candidates.length === 0) {
+          await awaitWithAbort(
+            trackAcceptanceOperation(
+              params.appendEvent({
+                accepted: true,
+                at: new Date().toISOString(),
+                body: sanitizeNodeForJson(params.node),
+                method: "WEBSOCKET",
+                path: params.path,
+                query: {},
+                type: "api",
+              } as ServerRequestEvent & { accepted: true }),
+            ),
+            acceptanceSignal,
+          );
+          return true;
+        }
+        const remoteCorrelationJid = canonicalizeWhatsAppUserCorrelationJid(params.remoteJid);
+        candidates.sort((left, right) => {
+          const leftIsSelf =
+            canonicalizeWhatsAppUserCorrelationJid(left.recipientJid) === remoteCorrelationJid;
+          const rightIsSelf =
+            canonicalizeWhatsAppUserCorrelationJid(right.recipientJid) === remoteCorrelationJid;
+          return Number(leftIsSelf) - Number(rightIsSelf);
+        });
+        for (const candidate of candidates) {
+          const result = await params.signalBundles.transactDirectMessage({
+            accept: async (decrypted) => {
+              let text: string | undefined;
+              try {
+                text = readWhatsAppConversation(unpadRandomMax16(decrypted));
+              } catch {
+                text = undefined;
+              }
+              const message: WhatsAppBaileysInboundMessage | undefined = text
+                ? {
+                    key: {
+                      fromMe: true,
+                      id: messageId,
+                      remoteJid: peer,
+                    },
+                    message: { conversation: text },
+                    messageTimestamp: Math.floor(Date.now() / 1000),
+                  }
+                : undefined;
+              await awaitWithAbort(
+                trackAcceptanceOperation(
+                  params.appendEvent({
+                    accepted: true,
+                    at: new Date().toISOString(),
+                    body: message ?? sanitizeNodeForJson(params.node),
+                    method: "WEBSOCKET",
+                    path: params.path,
+                    query: {},
+                    type: "api",
+                  } as ServerRequestEvent & { accepted: true }),
+                ),
+                acceptanceSignal,
+              );
+              return true;
+            },
+            ciphertext: candidate.ciphertext,
+            recipientJid: candidate.recipientJid,
+            remoteJid: params.remoteJid,
+            signal: acceptanceSignal,
+            type: candidate.type,
+          });
+          if (result.status === "accepted") {
+            signalCommitSucceeded = true;
+            return true;
+          }
+        }
+        return false;
+      } finally {
+        operationSettled();
+      }
+    },
+    {
+      onTerminalTimeout: params.onAcceptanceTimeout,
+      signal: params.acceptanceSignal,
+      terminalDrain: drainAcceptanceOperations,
+    },
+  );
 }
 
 function encryptedMessageCandidates(node: BinaryNode): Array<{

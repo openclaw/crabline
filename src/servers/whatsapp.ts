@@ -32,8 +32,10 @@ import {
 
 const WHATSAPP_CLOUD_RECIPIENT_RE = /^\d{7,15}$/u;
 const WHATSAPP_GRAPH_VERSION_RE = /^v\d+\.\d+$/u;
+const WHATSAPP_GENERATED_MESSAGE_ID_RE = /^wamid\.FAKE(\d{8,})$/u;
 const DEFAULT_GRAPH_VERSION = "v25.0";
 const MAX_WHATSAPP_READABLE_MESSAGE_IDS = 10_000;
+const MAX_WHATSAPP_RECENT_MESSAGE_IDS = 10_000;
 
 function createDefaultAccessToken(): string {
   return `EAA${randomBytes(24).toString("base64url")}`;
@@ -48,7 +50,9 @@ type WhatsAppServerState = {
   ): PreparedWhatsAppBaileysInboundDelivery | undefined;
   graphVersion: string;
   inboundMessageIds: Set<string>;
-  nextMessageId: number;
+  pendingMessageIds: Set<string>;
+  recentMessageIds: Map<string, true>;
+  nextMessageId: bigint;
   onEvent: ServerEventObserver | undefined;
   phoneNumberId: string;
   recorderPath: string;
@@ -95,6 +99,7 @@ export type StartWhatsAppServerParams = {
   graphVersion?: string | undefined;
   host?: string | undefined;
   maxPendingInboundMessages?: number | undefined;
+  messageAcceptanceTimeoutMs?: number | undefined;
   onEvent?: ServerEventObserver | undefined;
   phoneNumberId?: string | undefined;
   port?: number | undefined;
@@ -104,6 +109,7 @@ export type StartWhatsAppServerParams = {
 
 type WhatsAppAdminInboundResult = {
   message?: WhatsAppBaileysMessage | undefined;
+  messageIdReservation?: WhatsAppMessageIdReservation | undefined;
   response?: Response | undefined;
   webhook?: Record<string, unknown> | undefined;
 };
@@ -205,8 +211,62 @@ function requireAuth(request: IncomingMessage, state: WhatsAppServerState): bool
   return match?.[1] === state.accessToken;
 }
 
-function nextMessageId(state: WhatsAppServerState): string {
-  return `wamid.FAKE${String(state.nextMessageId++).padStart(8, "0")}`;
+type WhatsAppMessageIdReservation = {
+  cancel(): void;
+  commit(): void;
+  id: string;
+};
+
+function reserveMessageId(
+  state: WhatsAppServerState,
+  requestedId?: string,
+): WhatsAppMessageIdReservation | Response {
+  let id = requestedId;
+  if (id) {
+    if (state.pendingMessageIds.has(id) || state.recentMessageIds.has(id)) {
+      return graphParameterError(
+        "(#100) Invalid parameter: messageId",
+        "messageId must be unique within this WhatsApp server.",
+      );
+    }
+  } else {
+    do {
+      id = `wamid.FAKE${String(state.nextMessageId++).padStart(8, "0")}`;
+    } while (state.pendingMessageIds.has(id) || state.recentMessageIds.has(id));
+  }
+  state.pendingMessageIds.add(id);
+  let settled = false;
+  return {
+    cancel() {
+      if (!settled) {
+        settled = true;
+        state.pendingMessageIds.delete(id);
+      }
+    },
+    commit() {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      state.pendingMessageIds.delete(id);
+      state.recentMessageIds.delete(id);
+      state.recentMessageIds.set(id, true);
+      if (state.recentMessageIds.size > MAX_WHATSAPP_RECENT_MESSAGE_IDS) {
+        const oldestId = state.recentMessageIds.keys().next().value;
+        if (oldestId !== undefined) {
+          state.recentMessageIds.delete(oldestId);
+        }
+      }
+      const generatedSequence = WHATSAPP_GENERATED_MESSAGE_ID_RE.exec(id)?.[1];
+      if (generatedSequence) {
+        const sequence = BigInt(generatedSequence);
+        if (sequence >= state.nextMessageId) {
+          state.nextMessageId = sequence + 1n;
+        }
+      }
+    },
+    id,
+  };
 }
 
 function waIdFromJid(jid: string): string {
@@ -308,9 +368,14 @@ function prepareSendMessage(params: {
   }
   return {
     commit() {
+      const reservation = reserveMessageId(params.state);
+      if (reservation instanceof Response) {
+        return reservation;
+      }
+      reservation.commit();
       const message = createWhatsAppMessage({
         fromMe: true,
-        id: nextMessageId(params.state),
+        id: reservation.id,
         remoteJid: `${to}@s.whatsapp.net`,
         text,
       });
@@ -396,9 +461,16 @@ async function handleAdminInbound(params: {
       ),
     };
   }
+  const messageIdReservation = reserveMessageId(
+    params.state,
+    readTrimmedString(params.body.messageId),
+  );
+  if (messageIdReservation instanceof Response) {
+    return { response: messageIdReservation };
+  }
   const message = createWhatsAppMessage({
     fromMe: false,
-    id: readTrimmedString(params.body.messageId) ?? nextMessageId(params.state),
+    id: messageIdReservation.id,
     pushName: readTrimmedString(params.body.pushName) ?? "Test User",
     remoteJid: isGroupChat ? chatJid : directPeerIdentity(chatJid),
     senderJid: isGroupChat ? senderJid : undefined,
@@ -440,7 +512,7 @@ async function handleAdminInbound(params: {
     ],
     object: "whatsapp_business_account",
   };
-  return { message, webhook };
+  return { message, messageIdReservation, webhook };
 }
 
 async function handleRequest(params: { request: IncomingMessage; state: WhatsAppServerState }) {
@@ -478,6 +550,7 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       ? params.state.prepareInboundMessage(result.message)
       : undefined;
     if (result.message && !preparedDelivery) {
+      result.messageIdReservation?.cancel();
       return graphError({
         code: 4,
         details: "The pending WhatsApp inbound queue is full.",
@@ -493,13 +566,21 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
       await appendEvent(params.state, event);
     } catch (error) {
       preparedDelivery?.cancel();
+      result.messageIdReservation?.cancel();
       throw error;
     }
     if (result.message && preparedDelivery) {
-      const delivery = await preparedDelivery.commit();
-      rememberInboundMessageId(params.state, result.message.key.id);
-      return whatsappOk({ delivery, message: result.message, webhook: result.webhook });
+      try {
+        const delivery = await preparedDelivery.commit();
+        result.messageIdReservation?.commit();
+        rememberInboundMessageId(params.state, result.message.key.id);
+        return whatsappOk({ delivery, message: result.message, webhook: result.webhook });
+      } catch (error) {
+        result.messageIdReservation?.cancel();
+        throw error;
+      }
     }
+    result.messageIdReservation?.cancel();
     return graphParameterError("(#100) Invalid inbound WhatsApp event");
   }
 
@@ -611,7 +692,9 @@ export async function startWhatsAppServer(
     displayPhoneNumber: params.displayPhoneNumber ?? "15550000000",
     graphVersion,
     inboundMessageIds: new Set(),
-    nextMessageId: 1,
+    pendingMessageIds: new Set(),
+    recentMessageIds: new Map(),
+    nextMessageId: 1n,
     onEvent: params.onEvent,
     phoneNumberId,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "whatsapp.jsonl"),
@@ -653,6 +736,7 @@ export async function startWhatsAppServer(
     appendEvent: (event: ServerRequestEvent) => appendEvent(state, event),
     httpServer: httpServer.server,
     maxPendingInboundMessages,
+    messageAcceptanceTimeoutMs: params.messageAcceptanceTimeoutMs,
     path: "/ws/chat",
     selfJid: state.selfJid,
   };

@@ -7,6 +7,7 @@ import {
   encodeBinaryNode,
   WHATSAPP_BINARY_NODE_MAX_DEPTH,
   WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES,
+  WHATSAPP_BINARY_NODE_MAX_FRAME_BYTES,
   WHATSAPP_BINARY_NODE_MAX_LIST_ITEMS,
   WHATSAPP_BINARY_NODE_MAX_NODES,
   type BinaryNode,
@@ -628,6 +629,22 @@ describe("WhatsApp binary nodes", () => {
     );
   });
 
+  it("round trips the largest decodable frame and rejects one byte more", async () => {
+    const payloadBytes = WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES - 16;
+    const largest = {
+      attrs: {},
+      content: Buffer.alloc(payloadBytes),
+      tag: "message",
+    };
+    const encoded = encodeBinaryNode(largest);
+
+    expect(encoded).toHaveLength(WHATSAPP_BINARY_NODE_MAX_FRAME_BYTES);
+    await expect(decodeBinaryNode(encoded)).resolves.toEqual(largest);
+    expect(() => encodeBinaryNode({ ...largest, content: Buffer.alloc(payloadBytes + 1) })).toThrow(
+      `exceeds ${WHATSAPP_BINARY_NODE_MAX_FRAME_BYTES} bytes`,
+    );
+  }, 20_000);
+
   it("rejects trailing bytes after a compressed node stream", async () => {
     const compressed = deflateSync(encodeBinaryNode({ attrs: {}, tag: "message" }).subarray(1));
 
@@ -708,8 +725,11 @@ describe("WhatsApp signal bundle store", () => {
     const store = new WhatsAppSignalBundleStore(1);
     const first = store.resolveMany(["15551234567@s.whatsapp.net"]);
     expect(first).toHaveLength(1);
-    expect(store.resolveMany(["15551234567@s.whatsapp.net"])[0]).toBe(first[0]);
-    expect(store.resolveMany(["15551234567@c.us"])[0]).toBe(first[0]);
+    const second = store.resolveMany(["15551234567@s.whatsapp.net"])[0]!;
+    const legacy = store.resolveMany(["15551234567@c.us"])[0]!;
+    expect(second.identityKey).toBe(first[0]!.identityKey);
+    expect(legacy.identityKey).toBe(first[0]!.identityKey);
+    expect(new Set([first[0]!.preKeyId, second.preKeyId, legacy.preKeyId]).size).toBe(3);
     expect(first[0]!.identityKey.public).toHaveLength(33);
     expect(first[0]!.identityKey.public[0]).toBe(KEY_BUNDLE_TYPE[0]);
     expect(first[0]!.preKey.public).toHaveLength(33);
@@ -725,9 +745,111 @@ describe("WhatsApp signal bundle store", () => {
     expect(
       () =>
         new WhatsAppSignalBundleStore(undefined, undefined, undefined, undefined, undefined, {
+          maxPreKeysPerBundle: 0,
+        }),
+    ).toThrow(/maxSignalPreKeysPerBundle/u);
+    expect(
+      () =>
+        new WhatsAppSignalBundleStore(undefined, undefined, undefined, undefined, undefined, {
           maxSessionsPerBundle: 0,
         }),
     ).toThrow(/maxSignalSessionsPerBundle/u);
+    expect(
+      () =>
+        new WhatsAppSignalBundleStore(undefined, undefined, undefined, undefined, undefined, {
+          messageAcceptanceTimeoutMs: 2_147_483_648,
+        }),
+    ).toThrow(/no greater than 2147483647/u);
+    expect(
+      () =>
+        new WhatsAppSignalBundleStore(undefined, undefined, undefined, undefined, undefined, {
+          preKeyReservationTtlMs: 0,
+        }),
+    ).toThrow(/preKeyReservationTtlMs/u);
+  });
+
+  it("bounds outstanding one-time prekey reservations per identity", () => {
+    const atomicStore = new WhatsAppSignalBundleStore(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { maxPreKeysPerBundle: 2 },
+    );
+    expect(() =>
+      atomicStore.resolveMany([
+        "15551234567@c.us",
+        "15551234567:2@s.whatsapp.net",
+        "15551234567@s.whatsapp.net",
+      ]),
+    ).toThrow("prekey reservation limit exceeded (2)");
+    expect(atomicStore.resolveMany(["15551234567@s.whatsapp.net"])[0]!.preKeyId).toBe(1);
+
+    const failureAtomicStore = new WhatsAppSignalBundleStore(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { maxPreKeysPerBundle: 2 },
+    );
+    const originalGenerateKeyPair = Curve.generateKeyPair.bind(Curve);
+    const generateKeyPair = vi.spyOn(Curve, "generateKeyPair");
+    let keyPairCalls = 0;
+    generateKeyPair.mockImplementation(() => {
+      keyPairCalls += 1;
+      if (keyPairCalls === 3) {
+        throw new Error("simulated prekey generation failure");
+      }
+      return originalGenerateKeyPair();
+    });
+    expect(() =>
+      failureAtomicStore.resolveMany([
+        "15551234567@s.whatsapp.net",
+        "15551234567:2@s.whatsapp.net",
+      ]),
+    ).toThrow("simulated prekey generation failure");
+    generateKeyPair.mockRestore();
+    expect(failureAtomicStore.resolveMany(["15551234567@s.whatsapp.net"])[0]!.preKeyId).toBe(1);
+
+    const store = new WhatsAppSignalBundleStore(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { maxPreKeysPerBundle: 2 },
+    );
+    const first = store.resolveMany(["15551234567@s.whatsapp.net"])[0]!;
+    const second = store.resolveMany(["15551234567@s.whatsapp.net"])[0]!;
+
+    expect(first.preKeyId).not.toBe(second.preKeyId);
+    expect(() => store.resolveMany(["15551234567@s.whatsapp.net"])).toThrow(
+      "prekey reservation limit exceeded (2)",
+    );
+
+    let now = 0;
+    const expiringStore = new WhatsAppSignalBundleStore(
+      1,
+      undefined,
+      undefined,
+      undefined,
+      () => now,
+      {
+        maxPreKeysPerBundle: 2,
+        preKeyReservationTtlMs: 100,
+      },
+    );
+    const abandoned = expiringStore.resolveMany([
+      "15551234567@s.whatsapp.net",
+      "15551234567@s.whatsapp.net",
+    ]);
+    now = 100;
+    const reclaimed = expiringStore.resolveMany(["15551234567@s.whatsapp.net"])[0]!;
+    expect(abandoned.map((bundle) => bundle.preKeyId)).toEqual([1, 2]);
+    expect(reclaimed.preKeyId).toBe(3);
+    expect(reclaimed.preKey).not.toBe(abandoned[0]!.preKey);
   });
 
   it("bounds PN-to-LID associations and evicts the least recently associated entry", () => {
