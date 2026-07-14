@@ -9,6 +9,8 @@ import {
 } from "../matrix-ids.js";
 import {
   adminAuthError,
+  constantTimeTokenEqual,
+  DEFAULT_MAX_RESPONSE_BODY_BYTES,
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
@@ -72,6 +74,7 @@ type MatrixServerState = {
   filters: Map<string, { body: Record<string, unknown>; bytes: number }>;
   maxCommittedRooms: number;
   maxCommittedUsers: number;
+  maxSyncResponseBytes: number;
   nextEvent: number;
   nextFilter: number;
   nextSequence: number;
@@ -96,6 +99,7 @@ const MATRIX_TRANSACTION_RETENTION_MS = 10 * 60_000;
 const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
 const DEFAULT_MAX_MATRIX_COMMITTED_ROOMS = 1_000;
 const DEFAULT_MAX_MATRIX_COMMITTED_USERS = 1_000;
+const DEFAULT_MAX_MATRIX_SYNC_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 class InvalidMatrixPathEncodingError extends Error {
   constructor() {
@@ -138,6 +142,7 @@ export type StartMatrixServerParams = {
   host?: string | undefined;
   maxCommittedRooms?: number | undefined;
   maxCommittedUsers?: number | undefined;
+  maxSyncResponseBytes?: number | undefined;
   onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
@@ -161,7 +166,8 @@ async function appendEvent(
 
 function authorized(request: IncomingMessage, token: string): boolean {
   const match = /^Bearer\s+(\S+)$/iu.exec(request.headers.authorization ?? "");
-  return match?.[1] === token;
+  const providedToken = match?.[1];
+  return providedToken ? constantTimeTokenEqual(providedToken, token) : false;
 }
 
 function matrixError(errcode: string, error: string, status: number): Response {
@@ -352,21 +358,40 @@ function publishDirectRoom(state: MatrixServerState, userId: string, roomId: str
   state.directRoomsSequence = state.nextSequence++;
 }
 
-function syncAccountData(state: MatrixServerState, since: number | undefined) {
+function serializeSyncAccountData(
+  state: MatrixServerState,
+  since: number | undefined,
+  maxBytes: number,
+): string | undefined {
   const sequence = state.directRoomsSequence;
   if (sequence === undefined || (since !== undefined && sequence <= since)) {
-    return { events: [] };
+    return '{"events":[]}';
   }
-  return {
-    events: [
-      {
-        content: Object.fromEntries(
-          [...state.directRooms].map(([userId, roomIds]) => [userId, [...roomIds]]),
-        ),
-        type: "m.direct",
-      },
-    ],
-  };
+  const prefix = '{"events":[{"content":{';
+  const suffix = '},"type":"m.direct"}]}';
+  const parts: string[] = [];
+  let bytes = Buffer.byteLength(prefix, "utf8") + Buffer.byteLength(suffix, "utf8");
+  for (const [userId, roomIds] of state.directRooms) {
+    const roomParts: string[] = [];
+    let roomBytes = 2;
+    for (const roomId of roomIds) {
+      const separator = roomParts.length === 0 ? "" : ",";
+      const roomPart = `${separator}${JSON.stringify(roomId)}`;
+      roomBytes += Buffer.byteLength(roomPart, "utf8");
+      if (bytes + roomBytes > maxBytes) {
+        return undefined;
+      }
+      roomParts.push(roomPart);
+    }
+    const separator = parts.length === 0 ? "" : ",";
+    const part = `${separator}${JSON.stringify(userId)}:[${roomParts.join("")}]`;
+    bytes += Buffer.byteLength(part, "utf8");
+    if (bytes > maxBytes) {
+      return undefined;
+    }
+    parts.push(part);
+  }
+  return `${prefix}${parts.join("")}${suffix}`;
 }
 
 function rememberTransaction(
@@ -429,12 +454,12 @@ function resolveSyncFilter(
   }
 }
 
-function syncRoom(room: MatrixRoom, since: number | undefined, timelineLimit: number | undefined) {
-  const available = room.timeline.filter((entry) => since === undefined || entry.sequence > since);
-  const timeline =
-    timelineLimit === undefined
-      ? available
-      : available.slice(Math.max(0, available.length - timelineLimit));
+function createSyncRoom(
+  room: MatrixRoom,
+  since: number | undefined,
+  available: Array<{ sequence: number; event: MatrixEvent }>,
+  timeline: Array<{ sequence: number; event: MatrixEvent }>,
+) {
   const firstSequence = timeline[0]?.sequence;
   const historyWasTrimmed =
     room.lastDroppedTimelineSequence !== undefined &&
@@ -471,6 +496,68 @@ function syncRoom(room: MatrixRoom, since: number | undefined, timelineLimit: nu
     },
     unread_notifications: { highlight_count: 0, notification_count: 0 },
   };
+}
+
+function jsonItemsByteLength(items: readonly unknown[], maxBytes: number): number | undefined {
+  let bytes = 0;
+  for (const item of items) {
+    bytes += Buffer.byteLength(JSON.stringify(item), "utf8");
+    if (bytes > maxBytes) {
+      return undefined;
+    }
+  }
+  return bytes;
+}
+
+function boundedSyncRoom(
+  room: MatrixRoom,
+  since: number | undefined,
+  timelineLimit: number | undefined,
+  maxBytes: number,
+): string | undefined {
+  const available = room.timeline.filter((entry) => since === undefined || entry.sequence > since);
+  const requestedTimeline =
+    timelineLimit === undefined
+      ? available
+      : available.slice(Math.max(0, available.length - timelineLimit));
+  const ephemeral = room.ephemeral
+    .filter((entry) => since === undefined || entry.sequence > since)
+    .map((entry) => entry.event);
+  const ephemeralBytes = jsonItemsByteLength(ephemeral, maxBytes);
+  if (ephemeralBytes === undefined) {
+    return undefined;
+  }
+
+  const timeline: Array<{ sequence: number; event: MatrixEvent }> = [];
+  let timelineBytes = 0;
+  for (let index = requestedTimeline.length - 1; index >= 0; index -= 1) {
+    const entry = requestedTimeline[index]!;
+    const eventBytes = Buffer.byteLength(JSON.stringify(entry.event), "utf8");
+    if (timelineBytes + ephemeralBytes + eventBytes > maxBytes) {
+      break;
+    }
+    timeline.unshift(entry);
+    timelineBytes += eventBytes;
+  }
+  if (requestedTimeline.length > 0 && timelineLimit !== 0 && timeline.length === 0) {
+    return undefined;
+  }
+
+  while (true) {
+    const body = createSyncRoom(room, since, available, timeline);
+    const stateBytes = jsonItemsByteLength(body.state.events, maxBytes);
+    if (stateBytes !== undefined && stateBytes + ephemeralBytes + timelineBytes <= maxBytes) {
+      const serialized = JSON.stringify(body);
+      if (Buffer.byteLength(serialized, "utf8") <= maxBytes) {
+        return serialized;
+      }
+    }
+    const dropped = timeline.shift();
+    if (!dropped) {
+      return undefined;
+    }
+    timelineBytes -= Buffer.byteLength(JSON.stringify(dropped.event), "utf8");
+  }
 }
 
 function roomHasSyncUpdates(room: MatrixRoom, since: number | undefined): boolean {
@@ -512,19 +599,42 @@ async function handleSync(url: URL, state: MatrixServerState): Promise<Response>
   if (since !== undefined && !hasNewEvents && timeout > 0) {
     await waitForSyncEvent(state, timeout);
   }
-  const join = Object.fromEntries(
-    [...state.rooms.values()]
-      .filter((room) => roomHasSyncUpdates(room, since))
-      .map((room) => [room.id, syncRoom(room, since, timelineLimit)]),
-  );
-  return jsonResponse({
-    account_data: syncAccountData(state, since),
-    device_lists: { changed: [], left: [] },
-    device_one_time_keys_count: {},
-    next_batch: `s${state.nextSequence - 1}`,
-    presence: { events: [] },
-    rooms: { invite: {}, join, knock: {}, leave: {} },
-    to_device: { events: [] },
+  const accountData = serializeSyncAccountData(state, since, state.maxSyncResponseBytes);
+  if (!accountData) {
+    return matrixResourceLimitError("Sync response exceeds the configured byte limit");
+  }
+  const prefix = `{"account_data":${accountData},"device_lists":{"changed":[],"left":[]},"device_one_time_keys_count":{},"next_batch":${JSON.stringify(
+    `s${state.nextSequence - 1}`,
+  )},"presence":{"events":[]},"rooms":{"invite":{},"join":{`;
+  const suffix = '},"knock":{},"leave":{}},"to_device":{"events":[]}}';
+  const parts: string[] = [];
+  let responseBytes = Buffer.byteLength(prefix, "utf8") + Buffer.byteLength(suffix, "utf8");
+  for (const room of state.rooms.values()) {
+    if (!roomHasSyncUpdates(room, since)) {
+      continue;
+    }
+    const separator = parts.length === 0 ? "" : ",";
+    const roomKey = JSON.stringify(room.id);
+    const framingBytes = Buffer.byteLength(`${separator}${roomKey}:`, "utf8");
+    const roomBody = boundedSyncRoom(
+      room,
+      since,
+      timelineLimit,
+      state.maxSyncResponseBytes - responseBytes - framingBytes,
+    );
+    if (!roomBody) {
+      return matrixResourceLimitError("Sync response exceeds the configured byte limit");
+    }
+    parts.push(`${separator}${roomKey}:${roomBody}`);
+    responseBytes += framingBytes + Buffer.byteLength(roomBody, "utf8");
+  }
+  const body = `${prefix}${parts.join("")}${suffix}`;
+  if (Buffer.byteLength(body, "utf8") > state.maxSyncResponseBytes) {
+    return matrixResourceLimitError("Sync response exceeds the configured byte limit");
+  }
+  return new Response(body, {
+    headers: { "content-type": "application/json" },
+    status: 200,
   });
 }
 
@@ -924,6 +1034,11 @@ export async function startMatrixServer(
       "maxCommittedUsers",
       DEFAULT_MAX_MATRIX_COMMITTED_USERS,
     ),
+    maxSyncResponseBytes: resolvePositiveLimit(
+      params.maxSyncResponseBytes,
+      "maxSyncResponseBytes",
+      DEFAULT_MAX_MATRIX_SYNC_RESPONSE_BYTES,
+    ),
     nextEvent: 1,
     nextFilter: 1,
     nextSequence: 1,
@@ -962,6 +1077,7 @@ export async function startMatrixServer(
       return matrixError("M_UNKNOWN", "Internal server error", 500);
     },
     host,
+    maxResponseBodyBytes: Math.max(DEFAULT_MAX_RESPONSE_BODY_BYTES, state.maxSyncResponseBytes),
     port: params.port ?? 0,
     serverName: "Matrix",
     async handle(request) {
