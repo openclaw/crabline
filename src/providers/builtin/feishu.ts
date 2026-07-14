@@ -26,9 +26,11 @@ type FeishuEnvironment = Partial<
 
 type FeishuAuthRuntime = {
   now?: (() => number) | undefined;
+  replayCacheLimit?: number | undefined;
 };
 
 type FeishuReplayReservation = {
+  expiresAt: number;
   keys: Set<string>;
   promise: Promise<boolean>;
   resolve: (accepted: boolean) => void;
@@ -176,6 +178,7 @@ function createFeishuWebhookAuthenticatorWithReplay(
     if (!replayState) {
       return undefined;
     }
+    const callbackExpiresAt = (callbackTimestamp ?? now) + FEISHU_MAX_CALLBACK_AGE_MS;
     pruneFeishuReplayCache(replayState.accepted, now);
     while (callbackKeys.length > 0) {
       if (callbackKeys.some((key) => replayState.accepted.has(key))) {
@@ -185,7 +188,16 @@ function createFeishuWebhookAuthenticatorWithReplay(
         .map((key) => replayState.inFlight.get(key))
         .find((candidate) => candidate !== undefined);
       if (!reservation) {
-        reserveFeishuCallback(replayState, callbackKeys);
+        if (
+          !reserveFeishuCallback(
+            replayState,
+            callbackKeys,
+            callbackExpiresAt,
+            runtime.replayCacheLimit ?? FEISHU_REPLAY_CACHE_LIMIT,
+          )
+        ) {
+          return feishuReplayCapacityResponse();
+        }
         break;
       }
       if (await reservation.promise) {
@@ -473,12 +485,23 @@ function readFeishuCallbackKeys(payload: unknown, encryptedEnvelope: unknown): s
   return encrypted ? [`encrypted:${createHash("sha256").update(encrypted).digest("hex")}`] : [];
 }
 
-function reserveFeishuCallback(replayState: FeishuReplayState, callbackKeys: string[]): void {
+function reserveFeishuCallback(
+  replayState: FeishuReplayState,
+  callbackKeys: string[],
+  expiresAt: number,
+  cacheLimit: number,
+): boolean {
+  const occupiedKeys = new Set([...replayState.accepted.keys(), ...replayState.inFlight.keys()]);
+  const newKeys = new Set(callbackKeys.filter((key) => !occupiedKeys.has(key)));
+  if (occupiedKeys.size + newKeys.size > cacheLimit) {
+    return false;
+  }
   let resolveReservation!: (accepted: boolean) => void;
   const promise = new Promise<boolean>((resolve) => {
     resolveReservation = resolve;
   });
   const reservation: FeishuReplayReservation = {
+    expiresAt,
     keys: new Set(callbackKeys),
     promise,
     resolve: resolveReservation,
@@ -486,6 +509,7 @@ function reserveFeishuCallback(replayState: FeishuReplayState, callbackKeys: str
   for (const key of callbackKeys) {
     replayState.inFlight.set(key, reservation);
   }
+  return true;
 }
 
 function acceptFeishuCallback(
@@ -497,7 +521,14 @@ function acceptFeishuCallback(
   const callbackKeys = readFeishuCallbackKeys(payload, encryptedEnvelope);
   pruneFeishuReplayCache(replayState.accepted, now);
   for (const key of callbackKeys) {
-    replayState.accepted.set(key, now);
+    const reservation = replayState.inFlight.get(key);
+    replayState.accepted.set(
+      key,
+      Math.max(
+        replayState.accepted.get(key) ?? 0,
+        reservation?.expiresAt ?? now + FEISHU_MAX_CALLBACK_AGE_MS,
+      ),
+    );
   }
   const reservations = new Set(
     callbackKeys
@@ -539,14 +570,18 @@ function releaseFeishuReservation(
 }
 
 function pruneFeishuReplayCache(recentCallbacks: Map<string, number>, now: number): void {
-  for (const [key, acceptedAt] of recentCallbacks) {
-    if (
-      now - acceptedAt > FEISHU_MAX_CALLBACK_AGE_MS ||
-      recentCallbacks.size > FEISHU_REPLAY_CACHE_LIMIT
-    ) {
+  for (const [key, expiresAt] of recentCallbacks) {
+    if (now > expiresAt) {
       recentCallbacks.delete(key);
     }
   }
+}
+
+function feishuReplayCapacityResponse(): Response {
+  return new Response("service unavailable", {
+    headers: { "cache-control": "no-store" },
+    status: 503,
+  });
 }
 
 function unauthorizedFeishuWebhook(): Response {

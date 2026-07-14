@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Retain Feishu replay identities through the full signed-callback validity horizon without evicting live entries.
 - Accept unrestricted Microsoft Bot Connector signing keys with empty endorsement lists.
 - Keep Slack MPIM allocation separate from existing private-conversation state.
 - Deduplicate Slack Events API retries by outer event identity and correlate threaded DMs through their native D-channel.
