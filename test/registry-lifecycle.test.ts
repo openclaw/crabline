@@ -462,7 +462,7 @@ describe("lazy provider lifecycle", () => {
     }
   });
 
-  it("deduplicates concurrent cleanup after the synchronous fence", async () => {
+  it("forwards the synchronous cleanup fence to a materialized provider once", async () => {
     const beginCleanup = vi.fn();
     const cleanup = vi.fn(async () => undefined);
     const concrete: ProviderAdapter = {
@@ -498,6 +498,8 @@ describe("lazy provider lifecycle", () => {
     await provider.probe(context);
 
     provider.beginCleanup();
+    expect(beginCleanup).toHaveBeenCalledOnce();
+
     await Promise.all([provider.cleanup(), provider.cleanup()]);
 
     expect(beginCleanup).toHaveBeenCalledOnce();

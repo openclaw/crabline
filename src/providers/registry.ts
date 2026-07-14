@@ -142,8 +142,10 @@ export class LazyProviderAdapter implements ProviderAdapter {
   readonly #normalizeTarget: ProviderAdapter["normalizeTarget"];
   readonly #activeWatches = new Set<ActiveWatch>();
   readonly #inFlightOperations = new Set<AdmittedOperation>();
+  readonly #providerCleanupErrors: unknown[] = [];
   #cleanedUp = false;
   #cleanupPromise: Promise<void> | null = null;
+  #providerCleanupBegun = false;
   #providerInstance: ProviderAdapter | null = null;
   #providerPromise: Promise<ProviderAdapter> | null = null;
 
@@ -306,6 +308,9 @@ export class LazyProviderAdapter implements ProviderAdapter {
     for (const watch of this.#activeWatches) {
       watch.abort();
     }
+    if (this.#providerInstance) {
+      this.#beginProviderCleanup(this.#providerInstance);
+    }
   }
 
   async cleanup(): Promise<void> {
@@ -406,12 +411,8 @@ export class LazyProviderAdapter implements ProviderAdapter {
     if (!provider) {
       return;
     }
-    const errors: unknown[] = [];
-    try {
-      provider.beginCleanup?.();
-    } catch (error) {
-      errors.push(error);
-    }
+    this.#beginProviderCleanup(provider);
+    const errors = [...this.#providerCleanupErrors];
     try {
       await provider.cleanup?.();
     } catch (error) {
@@ -422,6 +423,18 @@ export class LazyProviderAdapter implements ProviderAdapter {
     }
     if (errors.length > 1) {
       throw new AggregateError(errors, "Provider teardown failed.");
+    }
+  }
+
+  #beginProviderCleanup(provider: ProviderAdapter): void {
+    if (this.#providerCleanupBegun) {
+      return;
+    }
+    this.#providerCleanupBegun = true;
+    try {
+      provider.beginCleanup?.();
+    } catch (error) {
+      this.#providerCleanupErrors.push(error);
     }
   }
 
