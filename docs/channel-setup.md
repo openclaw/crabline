@@ -124,7 +124,9 @@ header before JSON parsing or recorder writes:
   when omitted, and `credentials.client_email` remains the service-account
   email fallback when inline credentials are configured. Wrapped Pub/Sub
   `message.data` must be canonical base64 before Google Chat event
-  normalization.
+  normalization. Direct and wrapped Pub/Sub callbacks are POST-only. Successful
+  direct callbacks receive an empty `200` acknowledgement instead of a
+  synthetic chat message.
   Google Workspace add-on `chat.messagePayload` events are rejected until the
   adapter can bind the verified request to a configured add-on deployment
   identity.
@@ -136,7 +138,7 @@ header before JSON parsing or recorder writes:
 - Mattermost `webhookToken` or `MATTERMOST_TOKEN` verifies the `token` field in
   outgoing webhook form or JSON bodies. The token is removed before recorder
   persistence. Externally reachable callbacks require this token and an HTTPS
-  `webhook.publicUrl`.
+  `webhook.publicUrl`. Outgoing webhook ingress is POST-only.
 - iMessage webhook ingress currently has no provider-native authentication
   mode, so its listener and any advertised callback must remain loopback-only.
 - Feishu `verificationToken` or `FEISHU_VERIFICATION_TOKEN` verifies plaintext
@@ -599,11 +601,12 @@ as `telegram:`, `discord:`, or `slack:`.
 - Slack threads: `1700000000.000100`
 - Telegram chats: `-1001234567890` or `@channelusername`
 - Telegram topics: `42`
-- Telegram username targets require `@`, contain 4-32 letters, digits, or
+- Telegram username targets require `@`, contain 5-32 letters, digits, or
   underscores, and normalize to lowercase. Numeric chat IDs must be nonzero and
   have an absolute value no greater than `2^52 - 1`.
 - Built-in WhatsApp Cloud API users: digits-only `wa_id` values such as
   `15551234567`
+- Built-in WhatsApp Cloud API fixtures do not support `threadId` targets.
 - OpenClaw WhatsApp bridge users: `15551234567@s.whatsapp.net`
   (legacy `15551234567@c.us` inputs are accepted and canonicalized)
 - OpenClaw WhatsApp bridge groups: `120363001234567890@g.us`

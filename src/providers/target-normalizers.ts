@@ -81,7 +81,7 @@ export const MSTEAMS_CONVERSATION_ID_RULE: NativeIdRule = {
 export const TELEGRAM_CHAT_ID_RULE: NativeIdRule = {
   example: "-1001234567890 or @channelusername",
   name: "Telegram chat id",
-  pattern: /^(?:-?[1-9]\d*|@[A-Za-z][A-Za-z0-9_]{3,31})$/u,
+  pattern: /^(?:-?[1-9]\d*|@[A-Za-z][A-Za-z0-9_]{4,31})$/u,
   validate: (value) =>
     value.startsWith("@") || BigInt(value.replace(/^-/u, "")) <= TELEGRAM_NATIVE_CHAT_ID_MAX,
 };
@@ -113,6 +113,7 @@ export const ZALO_ID_RULE: NativeIdRule = {
 };
 
 export const ZALO_UNSUPPORTED_THREAD_TARGET_ERROR = "Zalo does not support thread targets.";
+export const WHATSAPP_UNSUPPORTED_THREAD_TARGET_ERROR = "WhatsApp does not support thread targets.";
 
 function requireNativeId(value: string, rule: NativeIdRule, label: string): string {
   if (!matchesNativeId(value, rule)) {
@@ -427,6 +428,24 @@ const ZALO_TARGET_CODEC: LocalMockTargetCodec = {
   },
 };
 
+const WHATSAPP_BASE_TARGET_CODEC = createNativeTargetCodec({
+  channel: WHATSAPP_WA_ID_RULE,
+  channelLabel: "WhatsApp wa_id",
+});
+
+const WHATSAPP_TARGET_CODEC: LocalMockTargetCodec = {
+  normalize(target) {
+    if (target.threadId) {
+      throw new CrablineError(WHATSAPP_UNSUPPORTED_THREAD_TARGET_ERROR, { kind: "config" });
+    }
+    return WHATSAPP_BASE_TARGET_CODEC.normalize(target);
+  },
+  resolveThreadId(target) {
+    const normalized = this.normalize(target);
+    return normalized.channelId ?? normalized.id;
+  },
+};
+
 const BUILTIN_TARGET_CODECS = {
   discord: createNativeTargetCodec({
     channel: DISCORD_SNOWFLAKE_RULE,
@@ -457,10 +476,7 @@ const BUILTIN_TARGET_CODECS = {
   }),
   slack: SLACK_TARGET_CODEC,
   telegram: TELEGRAM_TARGET_CODEC,
-  whatsapp: createNativeTargetCodec({
-    channel: WHATSAPP_WA_ID_RULE,
-    channelLabel: "WhatsApp wa_id",
-  }),
+  whatsapp: WHATSAPP_TARGET_CODEC,
   zalo: ZALO_TARGET_CODEC,
 } satisfies Record<BuiltinProviderAdapterId, LocalMockTargetCodec>;
 
