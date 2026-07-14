@@ -609,6 +609,146 @@ describe("process-owned lock filesystem", () => {
     }
   }, 10_000);
 
+  it("does not bind a stale owner to a replacement coordination claim", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const claimPath = recoveryClaimPath(lockDirectory);
+    const originalClaimPath = `${claimPath}.original`;
+    await mkdir(claimPath);
+    const staleOwnerPath = await writeOwner(claimPath, {
+      pid: 2_000_000_000,
+      processStartedAtMs: 1,
+    });
+    await utimes(staleOwnerPath, new Date(0), new Date(0));
+    await utimes(claimPath, new Date(0), new Date(0));
+    const replacementOwner = await currentOwnerRecord();
+    const replacementGenerationKey = String(replacementOwner.token);
+    const openSync = fs.openSync.bind(fs);
+    const closeSync = fs.closeSync.bind(fs);
+    let staleOwnerHandle: number | undefined;
+    let replaced = false;
+    const openSpy = vi.spyOn(fs, "openSync").mockImplementation(((filePath, flags, mode) => {
+      const handle = openSync(filePath, flags, mode);
+      if (String(filePath) === staleOwnerPath && staleOwnerHandle === undefined) {
+        staleOwnerHandle = handle;
+      }
+      return handle;
+    }) as typeof fs.openSync);
+    const closeSpy = vi.spyOn(fs, "closeSync").mockImplementation((handle) => {
+      closeSync(handle);
+      if (handle === staleOwnerHandle && !replaced) {
+        replaced = true;
+        fs.renameSync(claimPath, originalClaimPath);
+        fs.mkdirSync(claimPath);
+        fs.writeFileSync(
+          path.join(claimPath, "crabline-owner.json"),
+          `${JSON.stringify(replacementOwner)}\n`,
+          { mode: 0o600 },
+        );
+      }
+    });
+
+    try {
+      await expect(acquire(target)).rejects.toMatchObject({ code: "ELOCKED" });
+      await expect(
+        readFile(path.join(claimPath, "crabline-owner.json"), "utf8"),
+      ).resolves.toContain(replacementGenerationKey);
+    } finally {
+      closeSpy.mockRestore();
+      openSpy.mockRestore();
+    }
+  });
+
+  it("releases an active claim when a superseded claim disappears during inspection", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const claimPath = recoveryClaimPath(lockDirectory);
+    const detachedClaimPath = `${claimPath}.detached`;
+    await mkdir(claimPath);
+    await writeOwner(claimPath, {
+      pid: 2_000_000_000,
+      processStartedAtMs: 1,
+    });
+    await utimes(claimPath, new Date(0), new Date(0));
+    const staleGenerationKey = "test-token-placeholder";
+    const takeoverPath = recoveryClaimPath(claimPath, `owner:${staleGenerationKey}`);
+    const lstatSync = fs.lstatSync.bind(fs);
+    let detached = false;
+    const lstatSpy = vi.spyOn(fs, "lstatSync").mockImplementation(((filePath, options) => {
+      const stats = lstatSync(filePath, options as never);
+      if (String(filePath) === claimPath && fs.existsSync(takeoverPath) && !detached) {
+        detached = true;
+        fs.renameSync(claimPath, detachedClaimPath);
+      }
+      return stats;
+    }) as typeof fs.lstatSync);
+
+    try {
+      const release = await acquire(target);
+      expect(detached).toBe(true);
+      expect(fs.existsSync(claimPath)).toBe(false);
+      expect(fs.existsSync(takeoverPath)).toBe(false);
+      await release();
+    } finally {
+      lstatSpy.mockRestore();
+    }
+  });
+
+  it("preserves another wrapper's retained coordination claim", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const claimPath = recoveryClaimPath(lockDirectory);
+    const ownerFileSystem = createProcessOwnedLockFileSystem();
+    const foreignFileSystem = createProcessOwnedLockFileSystem();
+    const readdirSync = fs.readdirSync.bind(fs);
+    const openSync = fs.openSync.bind(fs);
+    let cleanupFailed = false;
+    let abandonmentFailed = false;
+    const readdirSpy = vi.spyOn(fs, "readdirSync").mockImplementation(((directoryPath, options) => {
+      if (String(directoryPath) === claimPath && !cleanupFailed) {
+        cleanupFailed = true;
+        throw Object.assign(new Error("claim cleanup failed"), { code: "EACCES" });
+      }
+      return readdirSync(directoryPath, options as never);
+    }) as typeof fs.readdirSync);
+    const openSpy = vi.spyOn(fs, "openSync").mockImplementation(((filePath, flags, mode) => {
+      if (
+        /^\.crabline-abandoned-[0-9a-f]{64}$/u.test(path.basename(String(filePath))) &&
+        !abandonmentFailed
+      ) {
+        abandonmentFailed = true;
+        throw Object.assign(new Error("claim abandonment failed"), { code: "EACCES" });
+      }
+      return openSync(filePath, flags, mode);
+    }) as typeof fs.openSync);
+    let release: (() => Promise<void>) | undefined;
+
+    try {
+      release = await lock(target, {
+        fs: ownerFileSystem,
+        realpath: false,
+        retries: 0,
+        stale: 2000,
+        update: 1000,
+      });
+    } finally {
+      openSpy.mockRestore();
+      readdirSpy.mockRestore();
+    }
+
+    await expect(
+      lock(target, {
+        fs: foreignFileSystem,
+        realpath: false,
+        retries: 0,
+        stale: 2000,
+        update: 1000,
+      }),
+    ).rejects.toMatchObject({ code: "ELOCKED" });
+    await expect(release()).resolves.toBeUndefined();
+    expect(fs.existsSync(claimPath)).toBe(false);
+  }, 15_000);
+
   it("preserves a replacement tree at a release tombstone path", async () => {
     const target = await createLockTarget();
     const lockDirectory = `${target}.lock`;

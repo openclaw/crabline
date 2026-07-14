@@ -27,6 +27,7 @@ type ParsedLockOwner = {
 type RecoveryClaim = {
   activeIdentity: DirectoryIdentity;
   activePath: string;
+  ownerGenerationKey: string;
   supersededPaths: SupersededRecoveryClaim[];
 };
 
@@ -37,6 +38,7 @@ type DirectoryIdentity = {
 
 type SupersededRecoveryClaim = {
   identity: DirectoryIdentity & { mtimeMs: bigint };
+  ownerFingerprint: string;
   path: string;
 };
 
@@ -1162,6 +1164,7 @@ export function createProcessOwnedLockFileSystem(
           callback(null, {
             activeIdentity: directoryIdentity(published),
             activePath: claimPath,
+            ownerGenerationKey: token,
             supersededPaths: [],
           });
         } catch (ownerError) {
@@ -1180,12 +1183,22 @@ export function createProcessOwnedLockFileSystem(
         callback(claimError);
         return;
       }
-      const existingClaim = parseOwner(claimPath);
       let existingFingerprint: string | undefined;
       let existingIdentity: SupersededRecoveryClaim["identity"] | undefined;
+      let existingOwnerFingerprint: string | undefined;
       try {
-        const stats = fs.lstatSync(claimPath, { bigint: true });
-        if (stats.isDirectory() && !stats.isSymbolicLink()) {
+        const initialStats = fs.lstatSync(claimPath, { bigint: true });
+        if (initialStats.isDirectory() && !initialStats.isSymbolicLink()) {
+          const initialIdentity = directoryIdentity(initialStats);
+          const existingClaim = parseOwner(claimPath);
+          const stats = verifiedLockDirectoryStats(
+            claimPath,
+            initialIdentity,
+            initialStats.mtimeMs,
+          );
+          if (!stats) {
+            throw lockCleanupError("Recorder lock recovery claim disappeared during inspection.");
+          }
           if (existingClaim) {
             const status = ownerStatus(existingClaim);
             const recoverableForeign =
@@ -1201,11 +1214,11 @@ export function createProcessOwnedLockFileSystem(
               recoverableUnknown
             ) {
               existingFingerprint = `owner:${existingClaim.owner.token}`;
+              existingOwnerFingerprint = existingFingerprint;
             }
           } else if (isRecoverableOwnerlessClaim(stats)) {
-            existingFingerprint = `${
-              existingClaim === undefined ? "ownerless" : "malformed"
-            }:${stats.dev}:${stats.ino}:${stats.mtimeMs}`;
+            existingOwnerFingerprint = existingClaim === undefined ? "ownerless" : "malformed";
+            existingFingerprint = `${existingOwnerFingerprint}:${stats.dev}:${stats.ino}:${stats.mtimeMs}`;
           }
           if (existingFingerprint) {
             existingIdentity = {
@@ -1217,7 +1230,7 @@ export function createProcessOwnedLockFileSystem(
       } catch {
         // Treat a concurrently changing claim as active.
       }
-      if (!existingFingerprint || !existingIdentity) {
+      if (!existingFingerprint || !existingIdentity || !existingOwnerFingerprint) {
         callback(
           Object.assign(new Error("Recorder lock recovery is already in progress."), {
             code: "ELOCKED",
@@ -1238,8 +1251,13 @@ export function createProcessOwnedLockFileSystem(
           callback(null, {
             activeIdentity: takeoverClaim.activeIdentity,
             activePath: takeoverClaim.activePath,
+            ownerGenerationKey: takeoverClaim.ownerGenerationKey,
             supersededPaths: [
-              { identity: existingIdentity, path: claimPath },
+              {
+                identity: existingIdentity,
+                ownerFingerprint: existingOwnerFingerprint,
+                path: claimPath,
+              },
               ...takeoverClaim.supersededPaths,
             ],
           });
@@ -1302,6 +1320,39 @@ export function createProcessOwnedLockFileSystem(
         removeSuperseded(index + 1);
         return;
       }
+      const currentOwner = parseOwner(superseded.path);
+      try {
+        current = verifiedLockDirectoryStats(
+          superseded.path,
+          superseded.identity,
+          superseded.identity.mtimeMs,
+        );
+      } catch {
+        if (!removedSupersededPath) {
+          preserveActiveClaim();
+          return;
+        }
+        removeActiveClaim();
+        return;
+      }
+      if (!current) {
+        removedSupersededPath = true;
+        removeSuperseded(index + 1);
+        return;
+      }
+      const currentFingerprint = currentOwner
+        ? `owner:${currentOwner.owner.token}`
+        : currentOwner === undefined
+          ? "ownerless"
+          : "malformed";
+      if (currentFingerprint !== superseded.ownerFingerprint) {
+        if (!removedSupersededPath) {
+          preserveActiveClaim();
+          return;
+        }
+        removeActiveClaim();
+        return;
+      }
       try {
         removeVerifiedLockDirectorySync(
           superseded.path,
@@ -1329,7 +1380,6 @@ export function createProcessOwnedLockFileSystem(
     const coordinationKey = canonicalLockDirectoryPath(directory);
     const retainedClaim = retainedCoordinationClaims.get(coordinationKey);
     if (retainedClaim) {
-      retainedCoordinationClaims.delete(coordinationKey);
       let retainedClaimIsOwned = false;
       try {
         const current = verifiedLockDirectoryStats(
@@ -1340,17 +1390,25 @@ export function createProcessOwnedLockFileSystem(
         retainedClaimIsOwned =
           retainedOwner !== undefined &&
           retainedOwner !== null &&
-          retainedOwner.owner.token === token &&
+          retainedOwner.owner.token === retainedClaim.ownerGenerationKey &&
           ownerStatus(retainedOwner) === "active";
       } catch {
         retainedClaimIsOwned = false;
       }
       if (retainedClaimIsOwned) {
+        if (retainedClaim.ownerGenerationKey !== token) {
+          callback(
+            lockCleanupError("Recorder lock retained coordination claim is owned elsewhere."),
+          );
+          return;
+        }
+        retainedCoordinationClaims.delete(coordinationKey);
         callback(null, retainedClaim);
         return;
       }
-      callback(lockCleanupError("Recorder lock retained coordination claim changed."));
-      return;
+      if (retainedCoordinationClaims.get(coordinationKey) === retainedClaim) {
+        retainedCoordinationClaims.delete(coordinationKey);
+      }
     }
     createRecoveryClaim(recoveryClaimPath(directory), callback);
   };
@@ -1796,6 +1854,7 @@ export function createProcessOwnedLockFileSystem(
     const coordinationClaim: RecoveryClaim = {
       activeIdentity: directoryIdentity(createdClaim),
       activePath: claimPath,
+      ownerGenerationKey: token,
       supersededPaths: [],
     };
     try {
