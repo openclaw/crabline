@@ -39,7 +39,7 @@
     "fixtures": "tsx src/bin/crabline.ts fixtures",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "lint": "pnpm format:check && pnpm typecheck && oxlint --deny-warnings --allow vitest/require-mock-type-parameters --type-aware --tsconfig tsconfig.test.json src test tools",
+    "lint": "pnpm format:check && pnpm typecheck && oxlint --deny-warnings --allow vitest/require-mock-type-parameters --type-aware --tsconfig tsconfig.test.json src test tools vitest.config.ts",
     "prepare": "npm run build",
     "run": "tsx src/bin/crabline.ts run",
     "test": "vitest run",
