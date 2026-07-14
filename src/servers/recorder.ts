@@ -891,6 +891,7 @@ async function appendRecorderAttempt(params: {
           }
         }
         if (result === undefined) {
+          // Repair and truncation change EOF; refresh it before a positional Windows append.
           stats = await file.stat({ bigint: true });
           identity = requireRecorderIdentity(stats);
         }

@@ -67,12 +67,14 @@ it.skipIf(process.platform === "win32")(
 );
 
 it.runIf(process.platform === "win32")(
-  "appends through a validated existing Windows handle",
+  "repairs a missing newline before appending through a validated Windows handle",
   async () => {
     const directory = await createTempDir();
     directories.push(directory);
     const recorderPath = path.join(directory, "server.jsonl");
-    await writeFile(recorderPath, JSON.stringify(serverEvent("/existing")), "utf8");
+    const existingLine = JSON.stringify(serverEvent("/existing"));
+    const appendedLine = JSON.stringify(serverEvent("/appended"));
+    await writeFile(recorderPath, existingLine, "utf8");
 
     await recordServerEvent({
       event: serverEvent("/appended"),
@@ -80,7 +82,9 @@ it.runIf(process.platform === "win32")(
       recorderPath,
     });
 
-    const events = (await readFile(recorderPath, "utf8"))
+    const contents = await readFile(recorderPath, "utf8");
+    expect(contents).toBe(`${existingLine}\n${appendedLine}\n`);
+    const events = contents
       .trimEnd()
       .split("\n")
       .map((line) => JSON.parse(line) as { path: string });
