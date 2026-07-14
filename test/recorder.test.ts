@@ -6,6 +6,7 @@ import {
   mkdir,
   open,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -102,6 +103,91 @@ describe("recorder", () => {
       await chmod(filePath, 0o640);
       await appendRecordedInbound(filePath, { ...event, id: "preserve-mode" });
       expect((await stat(filePath)).mode & 0o777).toBe(0o640);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "accepts trusted private and sticky shared lock-root parents",
+    async () => {
+      const currentUserId = process.geteuid?.();
+      if (currentUserId === undefined) {
+        throw new Error("Expected a current user id on Unix.");
+      }
+      for (const mode of [0o700, 0o1777]) {
+        const directory = await realpath(await createTempDir());
+        directories.push(directory);
+        const parent = path.join(directory, `parent-${mode.toString(8)}`);
+        const lockRoot = path.join(parent, "locks");
+        await mkdir(parent, { mode });
+        await chmod(parent, mode);
+
+        const secured = await secureProviderRecorderLockRoot(lockRoot, currentUserId);
+        expect(secured).toBe(await realpath(lockRoot));
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a peer-writable non-sticky lock-root parent",
+    async () => {
+      const currentUserId = process.geteuid?.();
+      if (currentUserId === undefined) {
+        throw new Error("Expected a current user id on Unix.");
+      }
+      const directory = await realpath(await createTempDir());
+      directories.push(directory);
+      const parent = path.join(directory, "untrusted-parent");
+      const lockRoot = path.join(parent, "locks");
+      await mkdir(parent, { mode: 0o777 });
+      await chmod(parent, 0o777);
+
+      await expect(secureProviderRecorderLockRoot(lockRoot, currentUserId)).rejects.toThrow(
+        "Provider recorder lock directory parent namespace is not trusted.",
+      );
+      await expect(stat(lockRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "creates and validates missing private lock-root ancestry",
+    async () => {
+      const currentUserId = process.geteuid?.();
+      if (currentUserId === undefined) {
+        throw new Error("Expected a current user id on Unix.");
+      }
+      const directory = await realpath(await createTempDir());
+      directories.push(directory);
+      const lockRoot = path.join(directory, "missing", "private", "locks");
+
+      const secured = await secureProviderRecorderLockRoot(lockRoot, currentUserId);
+      expect(secured).toBe(await realpath(lockRoot));
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "revalidates trust after the lock-root parent is replaced",
+    async () => {
+      const currentUserId = process.geteuid?.();
+      if (currentUserId === undefined) {
+        throw new Error("Expected a current user id on Unix.");
+      }
+      const directory = await realpath(await createTempDir());
+      directories.push(directory);
+      const namespace = path.join(directory, "replaceable-namespace");
+      const displaced = `${namespace}.displaced`;
+      const parent = path.join(namespace, "private-parent");
+      const lockRoot = path.join(parent, "locks");
+      await mkdir(parent, { mode: 0o700, recursive: true });
+      const secured = await secureProviderRecorderLockRoot(lockRoot, currentUserId);
+      expect(secured).toBe(await realpath(lockRoot));
+
+      await rename(namespace, displaced);
+      await mkdir(lockRoot, { mode: 0o700, recursive: true });
+      await chmod(namespace, 0o777);
+
+      await expect(secureProviderRecorderLockRoot(lockRoot, currentUserId)).rejects.toThrow(
+        "Provider recorder lock directory parent namespace is not trusted.",
+      );
     },
   );
 

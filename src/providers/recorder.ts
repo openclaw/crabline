@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, open, readFile, readlink, realpath } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readlink, realpath } from "node:fs/promises";
 import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
@@ -460,6 +460,9 @@ async function syncRecorderPathAncestry(
       }
       throw error;
     }
+    if (syncThroughPath === undefined) {
+      return;
+    }
     if (currentPath === syncThroughPath) {
       return;
     }
@@ -652,6 +655,82 @@ function reportRecorderLockReleaseFailure(filePath: string, releaseError: unknow
   }
 }
 
+async function verifyProviderRecorderLockAncestry(
+  directory: string,
+  currentUserId: number,
+): Promise<void> {
+  let currentPath = path.resolve(directory);
+  for (;;) {
+    const current = await lstat(currentPath, { bigint: true });
+    const ownerIsTrusted = current.uid === BigInt(currentUserId) || current.uid === 0n;
+    if (current.isSymbolicLink()) {
+      if (!ownerIsTrusted) {
+        throw new Error("Provider recorder lock directory parent namespace is not trusted.");
+      }
+    } else {
+      const peerWritable = (current.mode & 0o022n) !== 0n;
+      const sticky = (current.mode & 0o1000n) !== 0n;
+      if (!current.isDirectory() || !ownerIsTrusted || (peerWritable && !sticky)) {
+        throw new Error("Provider recorder lock directory parent namespace is not trusted.");
+      }
+    }
+    const parent = path.dirname(currentPath);
+    if (parent === currentPath) {
+      return;
+    }
+    currentPath = parent;
+  }
+}
+
+async function prepareProviderRecorderLockRoot(
+  root: string,
+  currentUserId: number,
+): Promise<string> {
+  let existingPath = path.resolve(root);
+  const missingComponents: string[] = [];
+  for (;;) {
+    try {
+      await lstat(existingPath);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+      const parent = path.dirname(existingPath);
+      if (parent === existingPath) {
+        throw error;
+      }
+      missingComponents.unshift(path.basename(existingPath));
+      existingPath = parent;
+    }
+  }
+  await verifyProviderRecorderLockAncestry(existingPath, currentUserId);
+  let canonicalPath = await realpath(existingPath);
+  if (canonicalPath !== existingPath) {
+    await verifyProviderRecorderLockAncestry(canonicalPath, currentUserId);
+  }
+  for (const component of missingComponents) {
+    canonicalPath = path.join(canonicalPath, component);
+    try {
+      await mkdir(canonicalPath, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+    }
+    const identity = await lstat(canonicalPath, { bigint: true });
+    if (
+      !identity.isDirectory() ||
+      identity.isSymbolicLink() ||
+      identity.uid !== BigInt(currentUserId)
+    ) {
+      throw new Error("Provider recorder lock directory is not privately owned.");
+    }
+    await chmod(canonicalPath, 0o700);
+  }
+  return canonicalPath;
+}
+
 export async function secureProviderRecorderLockRoot(
   root: string,
   currentUserId: number | undefined,
@@ -679,18 +758,19 @@ export async function secureProviderRecorderLockRoot(
     });
   }
 
-  await mkdir(root, { mode: 0o700, recursive: true });
   if (currentUserId === undefined) {
     throw new Error("Provider recorder identity locking requires a current user id.");
   }
 
+  const canonicalRoot = await prepareProviderRecorderLockRoot(root, currentUserId);
+
   const handle = await open(
-    root,
+    canonicalRoot,
     fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
   );
   try {
     const identity = await handle.stat({ bigint: true });
-    const current = await lstat(root, { bigint: true });
+    const current = await lstat(canonicalRoot, { bigint: true });
     if (
       !identity.isDirectory() ||
       !current.isDirectory() ||
@@ -711,7 +791,7 @@ export async function secureProviderRecorderLockRoot(
   } finally {
     await handle.close();
   }
-  return root;
+  return canonicalRoot;
 }
 
 function recorderLockRootUnavailable(error: unknown): boolean {

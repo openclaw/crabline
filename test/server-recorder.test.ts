@@ -202,15 +202,6 @@ function serverEvent(pathname: string): ServerRequestEvent {
   };
 }
 
-function directoryAncestryCount(directory: string): number {
-  let count = 1;
-  while (path.dirname(directory) !== directory) {
-    count += 1;
-    directory = path.dirname(directory);
-  }
-  return count;
-}
-
 beforeEach(() => {
   readWindowsDirectorySecurityDescriptor.mockClear();
   lockMocks.release.mockReset();
@@ -270,6 +261,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.useRealTimers();
 });
 
@@ -566,12 +558,12 @@ describe("server recorder", () => {
         update: 10_000,
       }),
     );
-    expect(lockMocks.release).toHaveBeenCalledOnce();
+    expect(lockMocks.release).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.chmod.mock.invocationCallOrder[0]).toBeLessThan(
       fsMocks.file.appendFile.mock.invocationCallOrder[0]!,
     );
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
-    expect(fsMocks.directory.close).toHaveBeenCalledTimes(3);
+    expect(fsMocks.directory.close).toHaveBeenCalledTimes(4);
   });
 
   it("resyncs recorder ancestry after an interrupted first-append attempt", async () => {
@@ -629,7 +621,7 @@ describe("server recorder", () => {
 
     expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
-    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(3);
+    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(2);
     expect(fsMocks.open).not.toHaveBeenCalledWith(path.parse(recorderPath).root, "r");
     expect(observer).toHaveBeenCalledOnce();
     expect(observer).toHaveBeenCalledWith(retryEvent);
@@ -756,7 +748,7 @@ describe("server recorder", () => {
     });
 
     expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
-    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(4);
+    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(3);
     expect(observer).toHaveBeenCalledOnce();
     expect(observer).toHaveBeenCalledWith(retryEvent);
   });
@@ -773,9 +765,9 @@ describe("server recorder", () => {
       recorderPath: path.join("/tmp", "crabline-server-recorder-contention.jsonl"),
     });
 
-    expect(lockMocks.lock).toHaveBeenCalledTimes(2);
+    expect(lockMocks.lock).toHaveBeenCalledTimes(3);
     expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
-    expect(lockMocks.release).toHaveBeenCalledOnce();
+    expect(lockMocks.release).toHaveBeenCalledTimes(2);
   });
 
   it("repairs managed directories without chmodding existing recorder files or parents", async () => {
@@ -923,11 +915,10 @@ describe("server recorder", () => {
       recorderPath,
     });
 
-    expect(
-      fsMocks.open.mock.calls.filter(
-        ([openedPath, flags]) => openedPath === canonicalParent && flags === "r",
-      ),
-    ).toHaveLength(2);
+    expect(fsMocks.open.mock.calls.filter(([, flags]) => flags === "r")).toEqual([
+      [canonicalParent, "r"],
+      [canonicalParent, "r"],
+    ]);
     expect(fsMocks.directory.sync).toHaveBeenCalledTimes(2);
   });
 
@@ -1075,9 +1066,7 @@ describe("server recorder", () => {
     expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
     expect(fsMocks.file.truncate).not.toHaveBeenCalled();
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
-    expect(fsMocks.directory.sync).toHaveBeenCalledTimes(
-      directoryAncestryCount(await realpath("/tmp")),
-    );
+    expect(fsMocks.directory.sync).toHaveBeenCalledOnce();
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
   });
 

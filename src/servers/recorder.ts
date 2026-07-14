@@ -247,6 +247,9 @@ async function syncRecorderPathAncestry(
       }
       throw error;
     }
+    if (syncThroughPath === undefined) {
+      return;
+    }
     if (currentPath === syncThroughPath) {
       return;
     }
@@ -344,6 +347,41 @@ function isRecorderLockContention(error: unknown): boolean {
   );
 }
 
+async function securePrivateServerRecorderLockRoot(
+  root: string,
+  currentUserId: number,
+): Promise<string> {
+  await mkdir(root, { mode: 0o700, recursive: true });
+  const handle = await open(
+    root,
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+  );
+  try {
+    const identity = await handle.stat({ bigint: true });
+    const current = await lstat(root, { bigint: true });
+    if (
+      !identity.isDirectory() ||
+      !current.isDirectory() ||
+      identity.dev !== current.dev ||
+      identity.ino !== current.ino ||
+      identity.uid !== BigInt(currentUserId) ||
+      current.uid !== BigInt(currentUserId)
+    ) {
+      throw new Error("Server recorder lock directory is not privately owned.");
+    }
+    if ((identity.mode & 0o777n) !== 0o700n) {
+      await handle.chmod(0o700);
+      const secured = await handle.stat({ bigint: true });
+      if ((secured.mode & 0o777n) !== 0o700n) {
+        throw new Error("Server recorder lock directory permissions are not private.");
+      }
+    }
+  } finally {
+    await handle.close();
+  }
+  return root;
+}
+
 async function secureRecorderLockRoot(root: string): Promise<string> {
   const canonicalRoot = await realpath(root);
   if (path.relative(root, canonicalRoot) !== "") {
@@ -380,8 +418,11 @@ async function secureRecorderLockRoot(root: string): Promise<string> {
 }
 
 function recorderIdentityLockPath(root: string, identity: RecorderFileIdentity): string {
-  // st_dev can differ for one shared inode across container mount namespaces.
-  // Scope each configured root to one recorder filesystem to avoid false inode collisions.
+  return path.join(root, `recorder-${identity.dev}-${identity.ino}`);
+}
+
+function recorderSharedIdentityLockPath(root: string, identity: RecorderFileIdentity): string {
+  // A shared inode can report different device numbers across mount namespaces.
   return path.join(root, `recorder-${identity.ino}`);
 }
 
@@ -430,23 +471,41 @@ async function recorderProcessLockTarget(filePath: string): Promise<string> {
   return serverRecorderWindowsLockPath(root, filePath);
 }
 
-async function recorderIdentityLockTarget(
-  identity: RecorderFileIdentity,
-): Promise<string | undefined> {
+async function recorderIdentityLockTarget(fileIdentity: RecorderFileIdentity): Promise<string> {
   const configuredRoot = process.env[RECORDER_LOCK_DIRECTORY_ENV]?.trim();
   if (!configuredRoot) {
-    if (identity.nlink > 1n) {
+    if (fileIdentity.nlink > 1n) {
       throw new Error(
         `Server recorder hardlinks require ${RECORDER_LOCK_DIRECTORY_ENV} to name one shared writable lock directory for every writer.`,
       );
     }
-    return undefined;
+    if (process.platform === "win32") {
+      const root = await secureServerRecorderWindowsLockRoot(serverRecorderWindowsLockRoot());
+      return recorderIdentityLockPath(root, fileIdentity);
+    }
+    const currentUserId = process.geteuid?.();
+    if (currentUserId === undefined) {
+      throw new Error("Server recorder identity locking requires a current user id.");
+    }
+    let privateRoot: string;
+    try {
+      privateRoot = path.join(userInfo().homedir, ".cache", "crabline", "locks", "server-recorder");
+    } catch (error) {
+      throw new Error(
+        `Server recorder identity locking requires a private home directory or ${RECORDER_LOCK_DIRECTORY_ENV}.`,
+        { cause: error },
+      );
+    }
+    return recorderIdentityLockPath(
+      await securePrivateServerRecorderLockRoot(privateRoot, currentUserId),
+      fileIdentity,
+    );
   }
   if (!path.isAbsolute(configuredRoot)) {
     throw new Error(`${RECORDER_LOCK_DIRECTORY_ENV} must be an absolute path.`);
   }
   const sharedRoot = await secureRecorderLockRoot(configuredRoot);
-  return recorderIdentityLockPath(sharedRoot, identity);
+  return recorderSharedIdentityLockPath(sharedRoot, fileIdentity);
 }
 
 async function acquireSingleRecorderLock(filePath: string): Promise<() => Promise<void>> {
@@ -515,9 +574,8 @@ async function acquireRecorderLock(
 
 async function acquireRecorderIdentityLock(
   identity: RecorderFileIdentity,
-): Promise<(() => Promise<void>) | undefined> {
-  const target = await recorderIdentityLockTarget(identity);
-  return target === undefined ? undefined : await acquireRecorderLock(target, false);
+): Promise<() => Promise<void>> {
+  return await acquireRecorderLock(await recorderIdentityLockTarget(identity), false);
 }
 
 async function withRecorderLock(

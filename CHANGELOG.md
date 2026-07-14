@@ -5,6 +5,7 @@
 - Reject non-positive Telegram admin message IDs and enforce native Mattermost channel types and unique normalized usernames.
 - Preserve local-mock webhook acceptance when clients disconnect or post-commit settlement hooks fail.
 - Scope iMessage direct waits and Matrix and Mattermost thread correlation to their native conversations.
+- Coordinate recorder repair by file identity, limit existing-file durability syncs to the immediate parent, and reject provider lock roots beneath unsafe Unix namespaces.
 - Escape visually unsafe Unicode controls in JSON reports, return a stable error document for unserializable values, and preserve Node write encoding semantics in test captures.
 - Ignore typeless Slack callbacks and redact URL fragments from Zalo recorder evidence.
 - Redact Feishu verification tokens from recorder payloads and release replay reservations after recorder failures.

@@ -327,6 +327,116 @@ it.skipIf(process.platform === "win32")("preserves an existing recorder file mod
   expect((await stat(recorderPath)).mode & 0o777).toBe(0o640);
 });
 
+it.skipIf(process.platform === "win32")(
+  "serializes torn-tail repair with a writer through the rotated pathname",
+  async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "server.jsonl");
+    const rotatedPath = `${recorderPath}.rotated`;
+    const completed = `${JSON.stringify({
+      at: new Date().toISOString(),
+      method: "POST",
+      path: "/completed",
+      query: {},
+      type: "api",
+    })}\n`;
+    await writeFile(recorderPath, `${completed}{"path":"/torn"`, "utf8");
+
+    const probe = await open(recorderPath, "a+");
+    const prototype = Object.getPrototypeOf(probe) as {
+      appendFile(data: string, options: { encoding: "utf8" }): Promise<void>;
+      truncate(length: number): Promise<void>;
+    };
+    await probe.close();
+    const originalAppendFile = prototype.appendFile;
+    const originalTruncate = prototype.truncate;
+    let releaseRepair!: () => void;
+    let reportRepair!: () => void;
+    const repairReported = new Promise<void>((resolve) => {
+      reportRepair = resolve;
+    });
+    const repairReleased = new Promise<void>((resolve) => {
+      releaseRepair = resolve;
+    });
+    let releaseSecondAppend!: () => void;
+    const secondAppendReleased = new Promise<void>((resolve) => {
+      releaseSecondAppend = resolve;
+    });
+    let secondAppendStarted = false;
+    let pauseRepair = true;
+    prototype.appendFile = async function (this: FileHandle, data, options) {
+      if (data.includes('"path":"/second-through-rotated-path"')) {
+        secondAppendStarted = true;
+        await secondAppendReleased;
+      }
+      await originalAppendFile.call(this, data, options);
+    };
+    prototype.truncate = async function (this: FileHandle, length) {
+      if (pauseRepair) {
+        pauseRepair = false;
+        reportRepair();
+        await repairReleased;
+      }
+      await originalTruncate.call(this, length);
+    };
+
+    const first = recordServerEvent({
+      event: {
+        at: new Date().toISOString(),
+        method: "POST",
+        path: "/first-after-repair",
+        query: {},
+        type: "api",
+      },
+      onEvent: undefined,
+      recorderPath,
+    });
+    try {
+      await repairReported;
+      await rename(recorderPath, rotatedPath);
+      const second = recordServerEvent({
+        event: {
+          at: new Date().toISOString(),
+          method: "POST",
+          path: "/second-through-rotated-path",
+          query: {},
+          type: "api",
+        },
+        onEvent: undefined,
+        recorderPath: rotatedPath,
+      });
+      await expect
+        .poll(async () => {
+          try {
+            await stat(`${rotatedPath}.lock`);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .toBe(true);
+      expect(secondAppendStarted).toBe(false);
+
+      releaseRepair();
+      releaseSecondAppend();
+      await Promise.all([first, second]);
+    } finally {
+      releaseRepair();
+      releaseSecondAppend();
+      prototype.appendFile = originalAppendFile;
+      prototype.truncate = originalTruncate;
+    }
+
+    const recordedPaths = (await readFile(rotatedPath, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((line) => (JSON.parse(line) as { path: string }).path);
+    expect(recordedPaths).toEqual(["/completed", "/second-through-rotated-path"]);
+    expect(await readFile(recorderPath, "utf8")).toContain('"path":"/first-after-repair"');
+  },
+);
+
 it("never truncates a rotated inode after a later writer appends", async () => {
   const directory = await createTempDir();
   directories.push(directory);
