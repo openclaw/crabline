@@ -23,7 +23,10 @@ const lockMocks = vi.hoisted(() => {
   };
 });
 
-const readWindowsDirectorySecurityDescriptor = vi.fn(async () => "owner-only");
+const readWindowsDirectorySecuritySnapshot = vi.fn(async () => ({
+  identity: "10:00000000000000000000000000000014",
+  securityDescriptor: "owner-only",
+}));
 
 const fsMocks = vi.hoisted(() => {
   const directory = {
@@ -205,7 +208,7 @@ function serverEvent(pathname: string): ServerRequestEvent {
 }
 
 beforeEach(() => {
-  readWindowsDirectorySecurityDescriptor.mockClear();
+  readWindowsDirectorySecuritySnapshot.mockClear();
   lockMocks.release.mockReset();
   lockMocks.release.mockResolvedValue();
   lockMocks.lock.mockReset();
@@ -275,13 +278,13 @@ describe("server recorder", () => {
     await expect(
       secureServerRecorderWindowsLockRoot(lockRoot, {
         createWindowsDirectory,
-        readWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot,
       }),
     ).resolves.toBe(lockRoot);
     await expect(
       secureServerRecorderWindowsLockRoot(lockRoot, {
         createWindowsDirectory,
-        readWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot,
       }),
     ).resolves.toBe(lockRoot);
 
@@ -298,13 +301,13 @@ describe("server recorder", () => {
 
     await secureServerRecorderWindowsLockRoot(lockRoot, {
       createWindowsDirectory,
-      readWindowsDirectorySecurityDescriptor,
+      readWindowsDirectorySecuritySnapshot,
     });
     fsMocks.lstat.mockRejectedValueOnce(missing).mockRejectedValueOnce(missing);
     await expect(
       secureServerRecorderWindowsLockRoot(lockRoot, {
         createWindowsDirectory,
-        readWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot,
       }),
     ).resolves.toBe(lockRoot);
 
@@ -317,7 +320,7 @@ describe("server recorder", () => {
 
     await secureServerRecorderWindowsLockRoot(lockRoot, {
       createWindowsDirectory,
-      readWindowsDirectorySecurityDescriptor,
+      readWindowsDirectorySecuritySnapshot,
     });
     fsMocks.lstat.mockResolvedValue({
       dev: 10n,
@@ -330,11 +333,11 @@ describe("server recorder", () => {
     await Promise.all([
       secureServerRecorderWindowsLockRoot(lockRoot, {
         createWindowsDirectory,
-        readWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot,
       }),
       secureServerRecorderWindowsLockRoot(lockRoot, {
         createWindowsDirectory,
-        readWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot,
       }),
     ]);
 
@@ -413,7 +416,7 @@ describe("server recorder", () => {
     await expect(
       secureServerRecorderWindowsLockRoot(lockRoot, {
         createWindowsDirectory,
-        readWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot,
       }),
     ).rejects.toThrow("Server recorder Windows lock root could not be stabilized.");
     expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
@@ -493,7 +496,7 @@ describe("server recorder", () => {
     await expect(
       secureServerRecorderWindowsLockRoot(lockRoot, {
         createWindowsDirectory,
-        readWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot,
       }),
     ).resolves.toBe(lockRoot);
 

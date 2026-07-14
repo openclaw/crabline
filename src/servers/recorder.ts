@@ -7,7 +7,8 @@ import { lock } from "proper-lockfile";
 import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
 import {
   createOwnerOnlyWindowsDirectory,
-  readWindowsDirectorySecurityDescriptor,
+  readWindowsDirectorySecuritySnapshot,
+  type WindowsDirectorySecuritySnapshot,
 } from "../platform/windows-acl.js";
 import {
   secureCachedWindowsLockRoot,
@@ -535,7 +536,9 @@ export async function secureServerRecorderWindowsLockRoot(
   root: string,
   options: {
     createWindowsDirectory?: (directoryPath: string) => Promise<void>;
-    readWindowsDirectorySecurityDescriptor?: (directoryPath: string) => Promise<string>;
+    readWindowsDirectorySecuritySnapshot?: (
+      directoryPath: string,
+    ) => Promise<WindowsDirectorySecuritySnapshot>;
   } = {},
 ): Promise<string> {
   const cacheKey = path.win32.normalize(path.resolve(root)).toLowerCase();
@@ -545,10 +548,8 @@ export async function secureServerRecorderWindowsLockRoot(
     createDirectory: () =>
       (options.createWindowsDirectory ?? createOwnerOnlyWindowsDirectory)(root),
     errorPrefix: "Server recorder Windows lock root",
-    readSecurityDescriptor: () =>
-      (options.readWindowsDirectorySecurityDescriptor ?? readWindowsDirectorySecurityDescriptor)(
-        root,
-      ),
+    readSecuritySnapshot: () =>
+      (options.readWindowsDirectorySecuritySnapshot ?? readWindowsDirectorySecuritySnapshot)(root),
     root,
   });
 }
