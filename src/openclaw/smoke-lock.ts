@@ -329,14 +329,18 @@ function isValidProcessId(value: unknown): value is number {
 const LOCK_TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
 function parseLockOwner(contents: string): SmokeLockOwner {
-  let owner: Partial<RenewableSmokeLockOwner>;
+  let parsed: unknown;
   try {
-    owner = JSON.parse(contents) as Partial<RenewableSmokeLockOwner>;
+    parsed = JSON.parse(contents);
   } catch (error) {
     throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.", {
       cause: error,
     });
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.");
+  }
+  const owner = parsed as Partial<RenewableSmokeLockOwner>;
   if (
     typeof owner.channel !== "string" ||
     !isCrablineServerChannel(owner.channel) ||

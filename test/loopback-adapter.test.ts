@@ -63,6 +63,7 @@ describe("loopback chat adapter", () => {
     await expect(adapter.fetchThread(threadId)).resolves.toMatchObject({
       channelId: address.channelId,
       id: threadId,
+      isDM: false,
     });
 
     const legacyThreadId = "loopback:legacy::topic";
@@ -70,8 +71,15 @@ describe("loopback chat adapter", () => {
     await expect(adapter.fetchThread(legacyThreadId)).resolves.toMatchObject({
       channelId: "legacy",
       id: legacyThreadId,
+      isDM: false,
     });
     expect(adapter.channelIdFromThreadId("plain-id::topic")).toBe("plain-id");
+    await expect(
+      adapter.fetchThread(adapter.encodeThreadId({ id: "direct-user" })),
+    ).resolves.toMatchObject({
+      channelId: "direct-user",
+      isDM: true,
+    });
   });
 
   it("preserves legacy percent-encoded-looking thread ids", () => {

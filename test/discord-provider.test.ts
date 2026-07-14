@@ -371,6 +371,14 @@ describe("discord provider", () => {
 
     expect(
       provider.normalizeTarget({
+        id: "1",
+        metadata: {},
+      }),
+    ).toMatchObject({
+      channelId: "1",
+    });
+    expect(
+      provider.normalizeTarget({
         id: "123456789012345678",
         metadata: { guildId: "987654321098765432" },
       }),
@@ -422,6 +430,16 @@ describe("discord provider", () => {
         ),
       ).toBe(false);
     }
+  });
+
+  it("validates native channel ids even when a thread id is present", () => {
+    expect(() =>
+      normalizeDiscordWebhookPayload({
+        channel_id: "invalid",
+        content: "hello",
+        thread_id: "123456789012345678",
+      }),
+    ).toThrow(/Discord channel_id/u);
   });
 
   it("only accepts POST requests at the interactions endpoint", async () => {

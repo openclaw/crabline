@@ -72,6 +72,7 @@ function authenticateSlackWebhook(
   request: Request,
   rawBody: string,
   signingSecret: string,
+  now: () => number = Date.now,
 ): Response | undefined {
   const timestamp = request.headers.get("x-slack-request-timestamp");
   const signature = request.headers.get("x-slack-signature");
@@ -80,7 +81,7 @@ function authenticateSlackWebhook(
     !timestamp ||
     !signature ||
     !Number.isSafeInteger(timestampSeconds) ||
-    Math.abs(Date.now() / 1000 - timestampSeconds) > SLACK_SIGNATURE_TOLERANCE_SECONDS
+    Math.abs(now() / 1000 - timestampSeconds) > SLACK_SIGNATURE_TOLERANCE_SECONDS
   ) {
     return new Response("unauthorized", { status: 401 });
   }
@@ -532,7 +533,7 @@ export class SlackProviderAdapter extends LocalMockProviderAdapter implements Pr
       expiryHead: 0,
       expiryQueue: [],
       inFlight: new Map(),
-      now: slackRuntime.now ?? Date.now,
+      now: slackRuntime.now ?? (() => Date.now()),
     };
     super({
       codec: getBuiltinTargetCodec("slack"),
@@ -542,7 +543,12 @@ export class SlackProviderAdapter extends LocalMockProviderAdapter implements Pr
         ...(resolvedConfig.signingSecret
           ? {
               authenticateWebhookRequest(request: Request, rawBody: string) {
-                return authenticateSlackWebhook(request, rawBody, resolvedConfig.signingSecret!);
+                return authenticateSlackWebhook(
+                  request,
+                  rawBody,
+                  resolvedConfig.signingSecret!,
+                  replayState.now,
+                );
               },
             }
           : {}),
