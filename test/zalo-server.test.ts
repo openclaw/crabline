@@ -857,15 +857,25 @@ describe("Zalo local provider server", () => {
 
         if (firstOutcome === "success") {
           Reflect.apply(originalEnd, heldResponse!, heldArgs!) as ServerResponse;
-          const firstResponse = await firstPoll;
-          expect(JSON.parse(firstResponse.body)).toMatchObject({
-            ok: true,
-            result: { message: { text: "first" } },
-          });
         } else {
           heldResponse!.destroy(new Error("simulated response failure"));
-          await expect(firstPoll).rejects.toThrow();
         }
+
+        const firstResult = await firstPoll.then(
+          (response) => ({ body: JSON.parse(response.body) as unknown, kind: "success" as const }),
+          () => ({ body: undefined, kind: "failure" as const }),
+        );
+        expect(firstResult).toMatchObject(
+          firstOutcome === "success"
+            ? {
+                body: {
+                  ok: true,
+                  result: { message: { text: "first" } },
+                },
+                kind: "success",
+              }
+            : { body: undefined, kind: "failure" },
+        );
 
         const secondResponse = await secondPoll;
         expect(JSON.parse(secondResponse.body)).toMatchObject({
@@ -876,13 +886,19 @@ describe("Zalo local provider server", () => {
         responsePrototype.end = originalEnd;
       }
 
-      if (firstOutcome === "failure") {
-        const update = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`);
-        await expect(update.json()).resolves.toMatchObject({
-          ok: true,
-          result: { message: { text: "second" } },
-        });
-      }
+      const remaining = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`);
+      await expect(remaining.json()).resolves.toMatchObject(
+        firstOutcome === "failure"
+          ? {
+              ok: true,
+              result: { message: { text: "second" } },
+            }
+          : {
+              description: "Request timeout",
+              error_code: 408,
+              ok: false,
+            },
+      );
     },
   );
 
