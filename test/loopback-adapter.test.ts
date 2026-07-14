@@ -64,7 +64,14 @@ describe("loopback chat adapter", () => {
       channelId: address.channelId,
       id: threadId,
     });
-    expect(adapter.channelIdFromThreadId("loopback:legacy::topic")).toBe("loopback:legacy");
+
+    const legacyThreadId = "loopback:legacy::topic";
+    expect(adapter.channelIdFromThreadId(legacyThreadId)).toBe("legacy");
+    await expect(adapter.fetchThread(legacyThreadId)).resolves.toMatchObject({
+      channelId: "legacy",
+      id: legacyThreadId,
+    });
+    expect(adapter.channelIdFromThreadId("plain-id::topic")).toBe("plain-id");
   });
 
   it("preserves legacy percent-encoded-looking thread ids", () => {
@@ -260,7 +267,7 @@ describe("loopback chat adapter", () => {
 
     const threadId = adapter.encodeThreadId({ id: "user-1", threadId: "dm-1" });
     expect(adapter.decodeThreadId(threadId).threadId).toBe("dm-1");
-    expect(adapter.channelIdFromThreadId(threadId)).toContain("loopback");
+    expect(adapter.channelIdFromThreadId(threadId)).toBe("user-1");
 
     const posted = await adapter.postMessage(threadId, "hello");
     await adapter.editMessage(threadId, posted.id, { markdown: "**hello**" });
