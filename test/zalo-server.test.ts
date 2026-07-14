@@ -28,6 +28,12 @@ function adminHeaders(server: StartedZaloServer) {
 }
 
 describe("Zalo local provider server", () => {
+  it("validates pending polling byte limits before binding", async () => {
+    await expect(startZaloServer({ maxPendingInboundBytes: 0 })).rejects.toThrow(
+      "maxPendingInboundBytes must be a positive safe integer.",
+    );
+  });
+
   it("serves the Bot API over GET and POST and delivers admin inbound", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -1373,6 +1379,63 @@ describe("Zalo local provider server", () => {
       error_code: 429,
       ok: false,
     });
+  });
+
+  it("retains polling byte reservations across delivery failure and releases them on success", async () => {
+    const server = await startZaloServer({
+      adminToken: "admin",
+      botToken: "sample",
+      maxPendingInboundBytes: 1_000,
+      maxPendingInboundEvents: 10,
+    });
+    servers.push(server);
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text }),
+        headers: adminHeaders(server),
+        method: "POST",
+      });
+
+    expect((await sendInbound("x".repeat(400))).status).toBe(200);
+
+    const responsePrototype = ServerResponse.prototype as unknown as {
+      end: (...args: unknown[]) => ServerResponse;
+    };
+    const originalEnd = responsePrototype.end;
+    let heldResponse: ServerResponse | undefined;
+    let reportHeldResponse!: () => void;
+    const heldResponseObserved = new Promise<void>((resolve) => {
+      reportHeldResponse = resolve;
+    });
+    responsePrototype.end = function (this: ServerResponse, ...args: unknown[]) {
+      if (this.req?.url?.includes("/getUpdates") && !heldResponse) {
+        heldResponse = this;
+        reportHeldResponse();
+        return this;
+      }
+      return Reflect.apply(originalEnd, this, args) as ServerResponse;
+    };
+
+    const failedPoll = requestHttp({
+      method: "GET",
+      url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`,
+    });
+    try {
+      await heldResponseObserved;
+      expect((await sendInbound("y".repeat(400))).status).toBe(429);
+      heldResponse!.destroy(new Error("simulated response failure"));
+      await expect(failedPoll).rejects.toBeInstanceOf(Error);
+    } finally {
+      responsePrototype.end = originalEnd;
+      heldResponse?.destroy();
+    }
+
+    expect((await sendInbound("z".repeat(400))).status).toBe(429);
+    const restored = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`);
+    await expect(restored.json()).resolves.toMatchObject({
+      result: { message: { text: "x".repeat(400) } },
+    });
+    expect((await sendInbound("released")).status).toBe(200);
   });
 
   it("rejects invalid bot tokens and unauthenticated admin ingress", async () => {

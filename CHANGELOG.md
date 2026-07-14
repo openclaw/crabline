@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Preserve native identity boundaries across Discord, Slack, loopback threads, and malformed smoke-lock records.
+- Preserve active WhatsApp inbound identities across replay-cache eviction, reject self-authored admin ingress, canonicalize Cloud webhook senders, and bound retained Zalo polling updates by bytes.
 - Recognize server-generated Telegram username IDs in injected update state.
 - Require Telegram readiness responses to identify the bot encoded in the configured token.
 - Terminate and drain unused Windows script helper bootstrap processes after command timeouts.
