@@ -1386,10 +1386,10 @@ describe("whatsapp local provider server", () => {
           },
         },
       );
-      const rejection = expect(stalled).rejects.toThrow("WhatsApp message acceptance timed out.");
-
-      await vi.advanceTimersByTimeAsync(100);
-      await rejection;
+      await Promise.all([
+        expect(stalled).rejects.toThrow("WhatsApp message acceptance timed out."),
+        vi.advanceTimersByTimeAsync(100),
+      ]);
     } finally {
       vi.useRealTimers();
     }
