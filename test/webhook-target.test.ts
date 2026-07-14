@@ -122,6 +122,30 @@ describe("webhook target validation", () => {
     ).resolves.toEqual({ error: "private-address" });
   });
 
+  it("verifies loopback HTTP DNS answers when private-address filtering is disabled", async () => {
+    await expect(
+      validateWebhookTarget({
+        allowLoopbackHttp: true,
+        dnsLookupPool: new WebhookDnsLookupPool(1, async () => [
+          { address: "93.184.216.34", family: 4 },
+        ]),
+        restrictPrivateAddresses: false,
+        url: new URL("http://hook.localhost/webhook"),
+      }),
+    ).resolves.toEqual({ error: "private-address" });
+
+    await expect(
+      validateWebhookTarget({
+        allowLoopbackHttp: true,
+        dnsLookupPool: new WebhookDnsLookupPool(1, async () => [
+          { address: "127.0.0.1", family: 4 },
+        ]),
+        restrictPrivateAddresses: false,
+        url: new URL("http://hook.localhost/webhook"),
+      }),
+    ).resolves.toEqual({ addresses: [{ address: "127.0.0.1", family: 4 }] });
+  });
+
   it.each(["ftp://93.184.216.34/webhook", "ws://93.184.216.34/webhook"])(
     "rejects unsupported webhook protocol %s",
     async (url) => {

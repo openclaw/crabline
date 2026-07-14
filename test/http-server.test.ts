@@ -336,21 +336,68 @@ describe("server HTTP body reader", () => {
   });
 
   it("preserves representation length metadata for HEAD responses", async () => {
+    let cancelled = false;
     const server = await startHttpJsonServer({
       async handle() {
-        return new Response(null, {
-          headers: { "content-length": "8" },
-        });
+        return new Response(
+          new ReadableStream({
+            cancel() {
+              cancelled = true;
+            },
+            start(controller) {
+              controller.enqueue(Buffer.alloc(65, 0x78));
+            },
+          }),
+          {
+            headers: { "content-length": "65" },
+          },
+        );
       },
       host: "127.0.0.1",
+      maxResponseBodyBytes: 64,
       port: 0,
       serverName: "test",
     });
 
     try {
       const response = await fetch(server.baseUrl, { method: "HEAD" });
-      expect(response.headers.get("content-length")).toBe("8");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-length")).toBe("65");
       await expect(response.text()).resolves.toBe("");
+      expect(cancelled).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("does not wait for an unfinished HEAD representation body", async () => {
+    let cancelled = false;
+    const server = await startHttpJsonServer({
+      async handle() {
+        return new Response(
+          new ReadableStream({
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          {
+            headers: { "content-length": "123" },
+            status: 202,
+          },
+        );
+      },
+      host: "127.0.0.1",
+      maxResponseBodyBytes: 1,
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const response = await fetch(server.baseUrl, { method: "HEAD" });
+      expect(response.status).toBe(202);
+      expect(response.headers.get("content-length")).toBe("123");
+      await expect(response.text()).resolves.toBe("");
+      expect(cancelled).toBe(true);
     } finally {
       await server.close();
     }

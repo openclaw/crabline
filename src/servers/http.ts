@@ -346,6 +346,24 @@ export async function writeResponse(
       throw new Error("HTTP response closed before delivery completed.");
     }
 
+    if (response.req?.method === "HEAD") {
+      cancelBody(new Error("HEAD response body is not transferred."));
+      response.statusCode = fetchResponse.status;
+      writeFetchResponseHeaders(response, fetchResponse);
+      let onFinish!: () => void;
+      const finished = new Promise<void>((resolve) => {
+        onFinish = resolve;
+        response.once("finish", onFinish);
+      });
+      try {
+        response.end();
+        await Promise.race([finished, stopped]);
+      } finally {
+        response.off("finish", onFinish);
+      }
+      return;
+    }
+
     const chunks: Buffer[] = [];
     let bodyLength = 0;
     if (reader) {
