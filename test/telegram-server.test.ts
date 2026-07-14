@@ -2249,11 +2249,11 @@ describe("telegram local provider server", () => {
       Buffer.from(
         [
           `--${boundary}`,
-          'Content-Disposition: form-data; name="chat_id"',
+          'Content-Disposition: form-data; name="chat\\_id"',
           "",
           "700",
           `--${boundary} \t`,
-          'Content-Disposition: form-data; name="document"; filename=" split%22name%20\\folder.bin "',
+          'Content-Disposition: form-data; name="document"; filename=" split%22name%20\\\"quoted\\\"\\\\folder.bin "',
           "Content-Type: application/octet-stream",
           "",
           "",
@@ -2304,7 +2304,7 @@ describe("telegram local provider server", () => {
     const payload = JSON.parse(response.body) as {
       result: { document: { file_name: string; file_unique_id: string } };
     };
-    expect(payload.result.document.file_name).toBe(' split"name%20\\folder.bin ');
+    expect(payload.result.document.file_name).toBe(' split"name%20"quoted"\\folder.bin ');
     expect(payload.result.document.file_unique_id).toBe(
       `crabline-document-unique-${createHash("sha256").update(fileBytes).digest("base64url").slice(0, 32)}`,
     );
