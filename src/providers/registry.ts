@@ -112,7 +112,7 @@ function createDispatchBarrier(): DispatchBarrier {
 }
 
 function isLazyAdapter(adapter: BuiltinAdapterId): adapter is LazyAdapterId {
-  return adapter in LAZY_PROVIDER_FACTORIES;
+  return Object.hasOwn(LAZY_PROVIDER_FACTORIES, adapter);
 }
 
 function createLazyProvider(params: {
@@ -485,7 +485,9 @@ export function createRegistry(manifest: ManifestDefinition, manifestPath: strin
       if (!fixture) {
         throw new CrablineError(`Unknown fixture: ${fixtureId}`, { kind: "config" });
       }
-      const config = manifest.providers[providerId];
+      const config = Object.hasOwn(manifest.providers, providerId)
+        ? manifest.providers[providerId]
+        : undefined;
       if (!config) {
         throw new CrablineError(`Unknown provider: ${providerId}`, { kind: "config" });
       }
