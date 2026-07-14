@@ -56,6 +56,7 @@ const fsMocks = vi.hoisted(() => {
       (options?: { bigint?: boolean }) => Promise<{
         dev?: bigint | number;
         ino?: bigint | number;
+        isFile?: () => boolean;
         nlink?: bigint | number;
         size: bigint | number;
       }>
@@ -101,6 +102,7 @@ const fsMocks = vi.hoisted(() => {
       ) => Promise<{
         dev?: bigint | number;
         ino?: bigint | number;
+        isFile?: () => boolean;
         nlink?: bigint | number;
         size: bigint | number;
       }>
@@ -1024,6 +1026,49 @@ describe("server recorder", () => {
 
     expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a non-regular recorder handle before append or observer notification", async () => {
+    const observer = vi.fn<(event: ServerRequestEvent) => void>();
+    fsMocks.file.stat.mockResolvedValue({
+      dev: 1,
+      ino: 1,
+      isFile: () => false,
+      nlink: 1,
+      size: 0,
+    });
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/non-regular"),
+        onEvent: observer,
+        recorderPath: path.join("/tmp", "crabline-server-recorder-special.jsonl"),
+      }),
+    ).rejects.toThrow("Server recorder path is not a regular file.");
+
+    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+    expect(fsMocks.file.sync).not.toHaveBeenCalled();
+    expect(observer).not.toHaveBeenCalled();
+  });
+
+  it("rejects a recorder whose link count changes while acquiring its identity lock", async () => {
+    fsMocks.file.stat
+      .mockResolvedValueOnce({ dev: 1, ino: 1, nlink: 1, size: 0 })
+      .mockResolvedValue({ dev: 1, ino: 1, nlink: 2, size: 0 });
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/hardlink-transition"),
+        onEvent: undefined,
+        recorderPath: path.join("/tmp", "crabline-server-recorder-hardlink-transition.jsonl"),
+      }),
+    ).rejects.toThrow(
+      "Server recorder hardlinks require CRABLINE_RECORDER_LOCK_DIR to name one shared writable lock directory for every writer.",
+    );
+
+    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+    expect(lockMocks.lock).toHaveBeenCalledTimes(2);
+    expect(lockMocks.release).toHaveBeenCalledTimes(2);
   });
 
   it("reports a committed append without truncating a rotated inode", async () => {

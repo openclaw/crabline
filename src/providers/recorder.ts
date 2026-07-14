@@ -383,6 +383,22 @@ function sameRecorderLockIdentity(
   return sameRecorderFileIdentity(left, right) && left?.nlink === right?.nlink;
 }
 
+function requireRecorderHandleIdentity(stats: {
+  dev: bigint;
+  ino: bigint;
+  isFile?: () => boolean;
+  nlink: bigint;
+}): RecorderFileIdentity {
+  if (stats.isFile?.() === false) {
+    throw new Error("Recorder path is not a regular file.");
+  }
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    nlink: stats.nlink,
+  };
+}
+
 async function resolveRecorderPublicationPath(filePath: string): Promise<string> {
   try {
     return await realpath(filePath);
@@ -546,8 +562,7 @@ async function prepareRecorderPathForAppend(
 ): Promise<{ created: boolean; identity: RecorderFileIdentity }> {
   const opened = await openRecorderForAppend(publicationPath);
   const { handle } = opened;
-  const identity = await handle.stat({ bigint: true });
-  const recorderIdentity = { dev: identity.dev, ino: identity.ino, nlink: identity.nlink };
+  const recorderIdentity = requireRecorderHandleIdentity(await handle.stat({ bigint: true }));
   try {
     if (
       expectedIdentity !== undefined &&
@@ -596,8 +611,7 @@ async function appendCommittedLine(
 ): Promise<void> {
   const opened = await openRecorderForAppend(publicationPath);
   const { handle } = opened;
-  const identity = await handle.stat({ bigint: true });
-  const recorderIdentity = { dev: identity.dev, ino: identity.ino, nlink: identity.nlink };
+  const recorderIdentity = requireRecorderHandleIdentity(await handle.stat({ bigint: true }));
   let published = false;
   let operationError: unknown;
   try {
