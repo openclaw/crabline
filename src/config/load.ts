@@ -1,12 +1,14 @@
 import { constants as fsConstants } from "node:fs";
 import { open, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
+import { TextDecoder } from "node:util";
 import YAML from "yaml";
 import { CrablineError, ensureErrorMessage } from "../core/errors.js";
 import { type ManifestDefinition, ManifestSchema } from "./schema.js";
 
 const DEFAULT_CONFIG_CANDIDATES = ["crabline.yaml", "crabline.yml", "crabline.json"] as const;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 class DuplicateJsonKeyError extends SyntaxError {}
 
@@ -81,14 +83,17 @@ async function readManifestFile(resolvedPath: string): Promise<string> {
     if (offset > MAX_MANIFEST_BYTES) {
       throw new Error(`Config file exceeds the ${MAX_MANIFEST_BYTES}-byte limit.`);
     }
-    return buffer.toString("utf8", 0, offset);
+    return UTF8_DECODER.decode(buffer.subarray(0, offset));
   } finally {
     await handle?.close();
   }
 }
 
 export async function resolveConfigPath(explicitPath?: string): Promise<string> {
-  if (explicitPath) {
+  if (explicitPath !== undefined) {
+    if (explicitPath.trim().length === 0) {
+      throw new CrablineError("Config path must not be empty.", { kind: "config" });
+    }
     return path.resolve(explicitPath);
   }
 

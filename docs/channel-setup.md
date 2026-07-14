@@ -135,8 +135,9 @@ header before JSON parsing or recorder writes:
   so its listener and any advertised callback must remain loopback-only.
 - Mattermost `webhookToken` or `MATTERMOST_TOKEN` verifies the `token` field in
   outgoing webhook form or JSON bodies. The token is removed before recorder
-  persistence. Externally reachable callbacks require this token and an HTTPS
-  `webhook.publicUrl`.
+  persistence. Mattermost webhook ingress is currently loopback-only:
+  non-loopback listener hosts and any `webhook.publicUrl` are rejected even
+  when a token is configured.
 - iMessage webhook ingress currently has no provider-native authentication
   mode, so its listener and any advertised callback must remain loopback-only.
 - Feishu `verificationToken` or `FEISHU_VERIFICATION_TOKEN` verifies plaintext
@@ -255,6 +256,12 @@ values, and overrides environment fallbacks field by field. Do not pass
 descriptors above 2 through package runners such as `pnpm`; use fd 0 instead.
 Keep credential files owner-readable or pipe the JSON directly from a secret
 manager.
+
+Ready files contain generated provider and admin credentials. Crabline creates
+or replaces them with POSIX mode `0600`, but the parent directory still needs
+to be private. Exclude ready files from version control and CI artifact
+collection, and delete them after use. On non-POSIX or shared filesystems,
+verify the effective ACLs before publishing one.
 
 ### Mattermost
 

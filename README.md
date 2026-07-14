@@ -172,6 +172,12 @@ pass descriptors above 2 through package runners such as `pnpm`; use fd 0
 instead. Keep credential files owner-readable or pipe the JSON directly from a
 secret manager.
 
+Ready files contain generated provider and admin credentials. Crabline creates
+or replaces them with POSIX mode `0600`, but the parent directory still needs
+to be private. Exclude ready files from version control and CI artifact
+collection, and delete them after use. On non-POSIX or shared filesystems,
+verify the effective ACLs before publishing one.
+
 Library callers can pass `onEvent` to `startCrablineServer`, an individual
 provider server, or `startOpenClawCrablineAdapter`. Crabline awaits the callback
 after appending each API/admin event to `recorderPath`, so callers can react in

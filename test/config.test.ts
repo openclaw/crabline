@@ -180,6 +180,41 @@ describe("manifest schema", () => {
     ).toThrow(/webhook path must start with \//u);
   });
 
+  it.each([" ", "\t", " secret "])(
+    "rejects non-canonical Zalo header credentials: %j",
+    (secret) => {
+      for (const field of ["botToken", "webhookSecret"] as const) {
+        expect(() =>
+          ManifestSchema.parse({
+            configVersion: 1,
+            fixtures: [],
+            providers: {
+              zalo: {
+                adapter: "zalo",
+                zalo: { [field]: secret },
+              },
+            },
+          }),
+        ).toThrow(/secret must/u);
+      }
+    },
+  );
+
+  it("accepts canonical Zalo header credentials", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [],
+        providers: {
+          zalo: {
+            adapter: "zalo",
+            zalo: { botToken: "bot-token", webhookSecret: "webhook-secret" },
+          },
+        },
+      }),
+    ).not.toThrow();
+  });
+
   it.each([
     "/slack/../events",
     "/slack\\events",
