@@ -264,6 +264,64 @@ describe("slack local provider server", () => {
     });
   });
 
+  it("does not alias MPIM allocation with an existing private conversation", async () => {
+    const server = await startTestSlackServer();
+    await postMessage(server, {
+      channel: "G000000001",
+      text: "existing private conversation",
+    });
+
+    const opened = await slackApi(server, "conversations.open", {
+      users: "U111,U222",
+    });
+    await expect(opened.json()).resolves.toMatchObject({
+      channel: {
+        id: "G000000002",
+        is_mpim: true,
+      },
+      ok: true,
+    });
+    await postMessage(server, {
+      channel: "G000000002",
+      text: "new MPIM conversation",
+    });
+
+    await expect(
+      (
+        await slackApi(server, "conversations.info", {
+          channel: "G000000001",
+        })
+      ).json(),
+    ).resolves.toMatchObject({
+      channel: {
+        id: "G000000001",
+        is_group: true,
+        is_mpim: false,
+      },
+      ok: true,
+    });
+    await expect(
+      (
+        await slackApi(server, "conversations.history", {
+          channel: "G000000001",
+        })
+      ).json(),
+    ).resolves.toMatchObject({
+      messages: [{ text: "existing private conversation" }],
+      ok: true,
+    });
+    await expect(
+      (
+        await slackApi(server, "conversations.history", {
+          channel: "G000000002",
+        })
+      ).json(),
+    ).resolves.toMatchObject({
+      messages: [{ text: "new MPIM conversation" }],
+      ok: true,
+    });
+  });
+
   it("paginates conversations.list with stable cursors", async () => {
     const server = await startTestSlackServer();
     for (const channel of ["C1111111111", "C2222222222"]) {
