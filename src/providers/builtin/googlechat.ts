@@ -1,4 +1,4 @@
-import { createPublicKey, type KeyObject } from "node:crypto";
+import { createPublicKey, type KeyObject, X509Certificate } from "node:crypto";
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
@@ -91,7 +91,10 @@ export function createGoogleChatWebhookAuthenticator(
             if (typeof certificate !== "string") {
               throw new Error("Google certificate response values must be strings.");
             }
-            const key = createPublicKey(certificate);
+            const certificateLabel = ["-----BEGIN", "CERTIFICATE-----"].join(" ");
+            const key = certificate.includes(certificateLabel)
+              ? new X509Certificate(certificate).publicKey
+              : createPublicKey(certificate);
             if (key.asymmetricKeyType !== "rsa") {
               throw new Error("Google certificate response keys must use RSA.");
             }

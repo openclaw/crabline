@@ -110,6 +110,22 @@ describe("Discord interaction responses", () => {
     });
   });
 
+  it("redacts interaction tokens from normalized recorder payloads", () => {
+    const normalized = normalizeDiscordWebhookPayload({
+      channel_id: "123456789012345678",
+      data: { name: "deploy" },
+      id: "444456789012345678",
+      token: "placeholder",
+      type: 2,
+    });
+
+    expect(normalized.raw).toMatchObject({
+      channel_id: "123456789012345678",
+      id: "444456789012345678",
+    });
+    expect(normalized.raw).not.toHaveProperty("token");
+  });
+
   it.each([
     [
       {

@@ -3,7 +3,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProviderConfig } from "../src/config/schema.js";
-import { handleSlackWebhookPayload, SlackProviderAdapter } from "../src/providers/builtin/slack.js";
+import {
+  handleSlackWebhookPayload,
+  normalizeSlackEventsPayload,
+  SlackProviderAdapter,
+} from "../src/providers/builtin/slack.js";
 import { appendRecordedInbound } from "../src/providers/recorder.js";
 import type { ProviderContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
@@ -20,6 +24,22 @@ describe("Slack URL verification", () => {
 
     expect(response?.status).toBe(200);
     await expect(response?.json()).resolves.toEqual({ challenge: "challenge-token" });
+  });
+
+  it("redacts verification tokens from normalized recorder payloads", () => {
+    const normalized = normalizeSlackEventsPayload({
+      event: {
+        channel: "C1234567890",
+        text: "authenticated callback",
+        ts: "1700000001.000200",
+        type: "message",
+      },
+      token: "placeholder",
+      type: "event_callback",
+    });
+
+    expect(normalized.raw).toMatchObject({ type: "event_callback" });
+    expect(normalized.raw).not.toHaveProperty("token");
   });
 });
 
