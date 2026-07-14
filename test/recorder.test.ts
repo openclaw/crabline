@@ -562,13 +562,15 @@ describe("recorder", () => {
     expect(script).toContain("[System.IO.Directory]::Exists($current)");
     expect(script).toContain("$directoryPath.TrimEnd(");
     expect(script).toContain("NtCreateFile(");
+    expect(script).toContain("FileTraverse = 0x00000020");
+    expect(script).toContain("if (traverse) {\n            access |= FileTraverse;");
     expect(script).toContain("FileCreate");
     expect(script).toContain("FileDirectoryFile");
     expect(script).toContain("FileOpenReparsePoint");
-    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Create(");
-    expect(script.indexOf('StartsWith(@"\\\\?\\",')).toBeLessThan(
-      script.indexOf('StartsWith(@"\\\\",'),
-    );
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::CreateRelative(");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::OpenRelative(");
+    expect(script).toContain("RootDirectory = parent.DangerousGetHandle()");
+    expect(script).toContain("parent.DangerousAddRef(ref parentAddRef)");
     expect(script).toContain("FileFlagOpenReparsePoint");
     expect(script).toContain("DirectoryAttribute");
     expect(script).toContain("ReparsePointAttribute");
@@ -593,16 +595,17 @@ describe("recorder", () => {
     expect(script).toContain("WriteAttributes");
     expect(script).toContain("[int64]0x40000000");
     expect(script).toContain("DeleteSubdirectoriesAndFiles");
-    expect(script).toContain("Assert-SafeNamespaceChain $current ($missing.Count -gt 0)");
+    expect(script).toContain("Assert-SafeNamespaceChain $current $true");
     expect(script).toContain("Private directory parent namespace permits untrusted replacement.");
-    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Create(");
     expect(script).toContain("catch [System.ComponentModel.Win32Exception]");
     expect(script).toContain("$_.Exception.NativeErrorCode -ne 80");
     expect(script).toContain("$_.Exception.NativeErrorCode -ne 183");
-    expect(script).toContain(
-      "[void][CrablineWindowsDirectoryHandle]::ReadIdentity($createdDirectory)",
-    );
+    expect(script).toContain("$existingParentIdentity");
+    expect(script).toContain("$childIdentity");
+    expect(script).toContain("$current,\n      $false,\n      $false,\n      $true");
     expect(script).toContain("[CrablineWindowsDirectoryHandle]::WriteSecurityDescriptor(");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::MarkDelete(");
+    expect(script).toContain("Private directory ancestry creation and rollback cleanup failed.");
     expect(script).toContain("AssertSamePathIdentity");
     expect(script).not.toContain("[System.IO.Directory]::CreateDirectory(");
     expect(script).not.toContain("$directory.SetAccessControl($acl)");
@@ -627,7 +630,10 @@ describe("recorder", () => {
     expect(script).toContain("DirectoryAttribute");
     expect(script).toContain("GetFileInformationByHandleEx(");
     expect(script).toContain("FileIdInfoClass");
-    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Open($directoryPath, $true)");
+    expect(script).toContain("$writeOwner = $currentOwner.Value -ne $sid.Value");
+    expect(script).toContain("$true,\n    $writeOwner");
+    expect(script).toContain("if (writeOwner) {\n            access |= WriteOwner;");
+    expect(script).toContain("if (writeOwner) {\n                securityInformation |=");
     expect(script).toContain("[CrablineWindowsDirectoryHandle]::WriteSecurityDescriptor(");
     expect(script).toContain("[CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(");
     expect(script).not.toContain("Set-Acl");
@@ -655,7 +661,7 @@ describe("recorder", () => {
     const script = args.at(-1);
     expect(script).toContain("AreAccessRulesProtected");
     expect(script).toContain("$rules.Count -ne 1");
-    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Open($directoryPath, $false)");
+    expect(script).toContain("$directoryPath,\n  $false,\n  $false");
     expect(script).toContain("[CrablineWindowsDirectoryHandle]::ReadIdentity($directory)");
     expect(script).toContain(
       "[CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($directory)",
@@ -696,7 +702,7 @@ describe("recorder", () => {
     const [, args, options] = calls[0]!;
     const script = args.at(-1);
     expect(script).toContain("Assert-SafeNamespaceChain $directoryPath $true");
-    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Open($directoryPath, $false)");
+    expect(script).toContain("$directoryPath,\n  $false,\n  $false");
     expect(script).toContain(
       "$pathIdentity = [CrablineWindowsDirectoryHandle]::ReadPathIdentity($directoryPath)",
     );
@@ -802,6 +808,58 @@ describe("recorder", () => {
       await expect(stat(lockRoot)).resolves.toMatchObject({
         isDirectory: expect.any(Function),
       });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "repairs an owner-correct Windows directory without requesting WRITE_OWNER",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const lockRoot = path.join(directory, "dacl-only-repair");
+      await mkdir(lockRoot);
+      const powershellPath = path.join(
+        process.env.SystemRoot ?? String.raw`C:\Windows`,
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      execFileSync(
+        powershellPath,
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          [
+            "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+            "$acl = [System.Security.AccessControl.DirectorySecurity]::new()",
+            "$acl.SetOwner($sid)",
+            "$acl.SetAccessRuleProtection($true, $false)",
+            [
+              "$rights = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute -bor",
+              "[System.Security.AccessControl.FileSystemRights]::ChangePermissions",
+            ].join(" "),
+            [
+              "$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(",
+              "$sid, $rights,",
+              "[System.Security.AccessControl.AccessControlType]::Allow)",
+            ].join(" "),
+            "$acl.SetAccessRule($rule)",
+            "Set-Acl -LiteralPath $env:CRABLINE_TEST_DACL_ONLY -AclObject $acl",
+          ].join("; "),
+        ],
+        {
+          env: { ...process.env, CRABLINE_TEST_DACL_ONLY: lockRoot },
+          windowsHide: true,
+        },
+      );
+
+      await expect(applyOwnerOnlyWindowsDirectoryAcl(lockRoot)).resolves.toBeUndefined();
+      await expect(readWindowsDirectorySecurityDescriptor(lockRoot)).resolves.toEqual(
+        expect.any(String),
+      );
     },
   );
 

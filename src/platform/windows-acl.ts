@@ -16,6 +16,8 @@ using Microsoft.Win32.SafeHandles;
 public static class CrablineWindowsDirectoryHandle
 {
     private const uint FileReadAttributes = 0x00000080;
+    private const uint FileTraverse = 0x00000020;
+    private const uint Delete = 0x00010000;
     private const uint ReadControl = 0x00020000;
     private const uint WriteDac = 0x00040000;
     private const uint WriteOwner = 0x00080000;
@@ -25,6 +27,7 @@ public static class CrablineWindowsDirectoryHandle
     private const uint OpenExisting = 3;
     private const uint FileFlagBackupSemantics = 0x02000000;
     private const uint FileFlagOpenReparsePoint = 0x00200000;
+    private const uint FileOpen = 1;
     private const uint FileCreate = 2;
     private const uint FileDirectoryFile = 0x00000001;
     private const uint FileSynchronousIoNonAlert = 0x00000020;
@@ -34,6 +37,7 @@ public static class CrablineWindowsDirectoryHandle
     private const uint DirectoryAttribute = 0x00000010;
     private const uint ReparsePointAttribute = 0x00000400;
     private const int FileIdInfoClass = 18;
+    private const int FileDispositionInfoClass = 4;
     private const uint OwnerSecurityInformation = 0x00000001;
     private const uint DaclSecurityInformation = 0x00000004;
     private const uint ProtectedDaclSecurityInformation = 0x80000000;
@@ -73,6 +77,13 @@ public static class CrablineWindowsDirectoryHandle
     {
         public ulong VolumeSerialNumber;
         public FileId128 FileId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileDispositionInfo
+    {
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool DeleteFile;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -150,6 +161,15 @@ public static class CrablineWindowsDirectoryHandle
         uint bufferSize
     );
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetFileInformationByHandle(
+        SafeFileHandle file,
+        int informationClass,
+        ref FileDispositionInfo information,
+        uint bufferSize
+    );
+
     [DllImport("advapi32.dll")]
     private static extern uint GetSecurityInfo(
         SafeFileHandle file,
@@ -200,15 +220,35 @@ public static class CrablineWindowsDirectoryHandle
         IntPtr memory
     );
 
-    public static SafeFileHandle Open(string path, bool writable)
+    private static uint AccessMask(
+        bool writeDacl,
+        bool writeOwner,
+        bool traverse
+    )
     {
         uint access = FileReadAttributes | ReadControl;
-        if (writable) {
-            access |= WriteDac | WriteOwner;
+        if (traverse) {
+            access |= FileTraverse;
         }
+        if (writeDacl) {
+            access |= WriteDac;
+        }
+        if (writeOwner) {
+            access |= WriteOwner;
+        }
+        return access;
+    }
+
+    public static SafeFileHandle Open(
+        string path,
+        bool writeDacl,
+        bool writeOwner,
+        bool traverse
+    )
+    {
         SafeFileHandle file = CreateFile(
             path,
-            access,
+            AccessMask(writeDacl, writeOwner, traverse),
             ShareRead | ShareWrite,
             IntPtr.Zero,
             OpenExisting,
@@ -227,30 +267,47 @@ public static class CrablineWindowsDirectoryHandle
         }
     }
 
-    public static SafeFileHandle Create(string path, byte[] securityDescriptor)
+    private static SafeFileHandle OpenRelativeCore(
+        SafeFileHandle parent,
+        string name,
+        bool writeDacl,
+        bool writeOwner,
+        bool traverse,
+        uint createDisposition,
+        byte[] securityDescriptor,
+        bool deleteAccess
+    )
     {
-        string fullPath = Path.GetFullPath(path);
-        string nativePath;
-        if (fullPath.StartsWith(@"\\?\", StringComparison.Ordinal)) {
-            nativePath = @"\??\" + fullPath.Substring(4);
-        } else if (fullPath.StartsWith(@"\\", StringComparison.Ordinal)) {
-            nativePath = @"\??\UNC\" + fullPath.Substring(2);
-        } else {
-            nativePath = @"\??\" + fullPath;
+        if (
+            String.IsNullOrEmpty(name) ||
+            name == "." ||
+            name == ".." ||
+            name.IndexOf(Path.DirectorySeparatorChar) >= 0 ||
+            name.IndexOf(Path.AltDirectorySeparatorChar) >= 0
+        ) {
+            throw new ArgumentException(
+                "Private directory child name must be one path component.",
+                "name"
+            );
         }
-        int pathBytes = nativePath.Length * 2;
+        int pathBytes = name.Length * 2;
         if (pathBytes > UInt16.MaxValue - 2) {
             throw new PathTooLongException();
         }
 
-        GCHandle descriptorHandle = GCHandle.Alloc(
-            securityDescriptor,
-            GCHandleType.Pinned
-        );
+        GCHandle descriptorHandle = default(GCHandle);
         IntPtr pathBuffer = IntPtr.Zero;
         IntPtr objectNameBuffer = IntPtr.Zero;
+        bool parentAddRef = false;
         try {
-            pathBuffer = Marshal.StringToHGlobalUni(nativePath);
+            if (securityDescriptor != null) {
+                descriptorHandle = GCHandle.Alloc(
+                    securityDescriptor,
+                    GCHandleType.Pinned
+                );
+            }
+            parent.DangerousAddRef(ref parentAddRef);
+            pathBuffer = Marshal.StringToHGlobalUni(name);
             UnicodeString objectName = new UnicodeString {
                 Length = (ushort)pathBytes,
                 MaximumLength = (ushort)(pathBytes + 2),
@@ -262,27 +319,27 @@ public static class CrablineWindowsDirectoryHandle
             Marshal.StructureToPtr(objectName, objectNameBuffer, false);
             ObjectAttributes attributes = new ObjectAttributes {
                 Length = Marshal.SizeOf(typeof(ObjectAttributes)),
-                RootDirectory = IntPtr.Zero,
+                RootDirectory = parent.DangerousGetHandle(),
                 ObjectName = objectNameBuffer,
                 Attributes = ObjectCaseInsensitive,
-                SecurityDescriptor = descriptorHandle.AddrOfPinnedObject(),
+                SecurityDescriptor = securityDescriptor == null
+                    ? IntPtr.Zero
+                    : descriptorHandle.AddrOfPinnedObject(),
                 SecurityQualityOfService = IntPtr.Zero
             };
             IoStatusBlock ioStatus;
             SafeFileHandle file;
             int status = NtCreateFile(
                 out file,
-                FileReadAttributes |
-                    ReadControl |
-                    WriteDac |
-                    WriteOwner |
+                AccessMask(writeDacl, writeOwner, traverse) |
+                    (deleteAccess ? Delete : 0) |
                     Synchronize,
                 ref attributes,
                 out ioStatus,
                 IntPtr.Zero,
                 FileAttributeNormal,
                 ShareRead | ShareWrite,
-                FileCreate,
+                createDisposition,
                 FileDirectoryFile |
                     FileSynchronousIoNonAlert |
                     FileOpenReparsePoint,
@@ -296,7 +353,7 @@ public static class CrablineWindowsDirectoryHandle
             }
             if (file == null || file.IsInvalid) {
                 throw new InvalidOperationException(
-                    "Windows did not return the created directory handle."
+                    "Windows did not return the directory handle."
                 );
             }
             try {
@@ -313,7 +370,65 @@ public static class CrablineWindowsDirectoryHandle
             if (pathBuffer != IntPtr.Zero) {
                 Marshal.FreeHGlobal(pathBuffer);
             }
-            descriptorHandle.Free();
+            if (parentAddRef) {
+                parent.DangerousRelease();
+            }
+            if (descriptorHandle.IsAllocated) {
+                descriptorHandle.Free();
+            }
+        }
+    }
+
+    public static SafeFileHandle CreateRelative(
+        SafeFileHandle parent,
+        string name,
+        byte[] securityDescriptor
+    )
+    {
+        return OpenRelativeCore(
+            parent,
+            name,
+            true,
+            false,
+            true,
+            FileCreate,
+            securityDescriptor,
+            true
+        );
+    }
+
+    public static SafeFileHandle OpenRelative(
+        SafeFileHandle parent,
+        string name,
+        bool writeDacl,
+        bool writeOwner,
+        bool traverse
+    )
+    {
+        return OpenRelativeCore(
+            parent,
+            name,
+            writeDacl,
+            writeOwner,
+            traverse,
+            FileOpen,
+            null,
+            false
+        );
+    }
+
+    public static void MarkDelete(SafeFileHandle file)
+    {
+        FileDispositionInfo disposition = new FileDispositionInfo {
+            DeleteFile = true
+        };
+        if (!SetFileInformationByHandle(
+            file,
+            FileDispositionInfoClass,
+            ref disposition,
+            (uint)Marshal.SizeOf(typeof(FileDispositionInfo))
+        )) {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
         }
     }
 
@@ -401,7 +516,8 @@ public static class CrablineWindowsDirectoryHandle
 
     public static void WriteSecurityDescriptor(
         SafeFileHandle file,
-        byte[] securityDescriptor
+        byte[] securityDescriptor,
+        bool writeOwner
     )
     {
         GCHandle descriptorHandle = GCHandle.Alloc(
@@ -410,14 +526,16 @@ public static class CrablineWindowsDirectoryHandle
         );
         try {
             IntPtr descriptor = descriptorHandle.AddrOfPinnedObject();
-            IntPtr owner;
-            bool ownerDefaulted;
-            if (!GetSecurityDescriptorOwner(
-                descriptor,
-                out owner,
-                out ownerDefaulted
-            )) {
-                throw new Win32Exception(Marshal.GetLastWin32Error());
+            IntPtr owner = IntPtr.Zero;
+            if (writeOwner) {
+                bool ownerDefaulted;
+                if (!GetSecurityDescriptorOwner(
+                    descriptor,
+                    out owner,
+                    out ownerDefaulted
+                )) {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
             }
             bool daclPresent;
             IntPtr dacl;
@@ -430,17 +548,21 @@ public static class CrablineWindowsDirectoryHandle
             )) {
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
-            if (!daclPresent) {
+            if (!daclPresent || dacl == IntPtr.Zero) {
                 throw new InvalidOperationException(
-                    "Private directory security descriptor has no DACL."
+                    "Private directory security descriptor has no usable DACL."
                 );
+            }
+            uint securityInformation =
+                DaclSecurityInformation |
+                ProtectedDaclSecurityInformation;
+            if (writeOwner) {
+                securityInformation |= OwnerSecurityInformation;
             }
             uint error = SetSecurityInfo(
                 file,
                 SeFileObject,
-                OwnerSecurityInformation |
-                    DaclSecurityInformation |
-                    ProtectedDaclSecurityInformation,
+                securityInformation,
                 owner,
                 IntPtr.Zero,
                 dacl,
@@ -469,7 +591,7 @@ public static class CrablineWindowsDirectoryHandle
 
     public static string ReadPathIdentity(string path)
     {
-        using (SafeFileHandle current = Open(path, false)) {
+        using (SafeFileHandle current = Open(path, false, false, false)) {
             return ReadIdentity(current);
         }
     }
@@ -502,13 +624,35 @@ if ($null -eq $sid) {
   throw "Could not resolve the current Windows user SID."
 }
 
-$directory = [CrablineWindowsDirectoryHandle]::Open($directoryPath, $true)
+$inspection = [CrablineWindowsDirectoryHandle]::Open(
+  $directoryPath,
+  $false,
+  $false,
+  $false
+)
+$directory = $null
 try {
-  $directoryIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($directory)
+  $directoryIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($inspection)
   $acl = [System.Security.AccessControl.DirectorySecurity]::new()
   $acl.SetSecurityDescriptorBinaryForm(
-    [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($directory)
+    [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($inspection)
   )
+  $currentOwner = $acl.GetOwner(
+    [System.Security.Principal.SecurityIdentifier]
+  )
+  $writeOwner = $currentOwner.Value -ne $sid.Value
+  $directory = [CrablineWindowsDirectoryHandle]::Open(
+    $directoryPath,
+    $true,
+    $writeOwner,
+    $false
+  )
+  if (
+    [CrablineWindowsDirectoryHandle]::ReadIdentity($directory) -ne
+    $directoryIdentity
+  ) {
+    throw "Private directory identity changed before ACL repair."
+  }
   $acl.SetOwner($sid)
   $acl.SetAccessRuleProtection($true, $false)
   $existingRules = @($acl.GetAccessRules(
@@ -533,7 +677,8 @@ try {
   $acl.SetAccessRule($rule)
   [CrablineWindowsDirectoryHandle]::WriteSecurityDescriptor(
     $directory,
-    $acl.GetSecurityDescriptorBinaryForm()
+    $acl.GetSecurityDescriptorBinaryForm(),
+    $writeOwner
   )
 
   $actual = [System.Security.AccessControl.DirectorySecurity]::new()
@@ -574,7 +719,10 @@ try {
     $directoryIdentity
   )
 } finally {
-  $directory.Dispose()
+  if ($null -ne $directory) {
+    $directory.Dispose()
+  }
+  $inspection.Dispose()
 }
 `;
 
@@ -603,7 +751,12 @@ function Assert-SafeParentNamespace(
   [string]$candidate,
   [bool]$rejectChildCreation
 ) {
-  $parentDirectory = [CrablineWindowsDirectoryHandle]::Open($candidate, $false)
+  $parentDirectory = [CrablineWindowsDirectoryHandle]::Open(
+    $candidate,
+    $false,
+    $false,
+    $false
+  )
   try {
     # ReadIdentity rejects reparse points, so the lexical walk cannot cross a junction.
     $parentIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($parentDirectory)
@@ -743,65 +896,140 @@ if ($missing.Count -eq 0) {
   }
   $current = $parent.FullName
 }
-Assert-SafeNamespaceChain $current ($missing.Count -gt 0)
 
 $directory = $null
-if ($missing.Count -eq 0) {
-  $directory = [CrablineWindowsDirectoryHandle]::Open($directoryPath, $true)
-  $acl = [System.Security.AccessControl.DirectorySecurity]::new()
-  $acl.SetSecurityDescriptorBinaryForm(
-    [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($directory)
-  )
-  $acl.SetOwner($sid)
-  $acl.SetAccessRuleProtection($true, $false)
-  $existingRules = @($acl.GetAccessRules(
-    $true,
-    $false,
-    [System.Security.Principal.SecurityIdentifier]
-  ))
-  foreach ($existingRule in $existingRules) {
-    [void]$acl.RemoveAccessRuleSpecific($existingRule)
-  }
-  $acl.SetAccessRule($rule)
-  [CrablineWindowsDirectoryHandle]::WriteSecurityDescriptor(
-    $directory,
-    $acl.GetSecurityDescriptorBinaryForm()
-  )
-} else {
-  $paths = $missing.ToArray()
-  [Array]::Reverse($paths)
-  foreach ($candidate in $paths) {
-    $createdDirectory = $null
-    try {
-      $createdDirectory = [CrablineWindowsDirectoryHandle]::Create(
-        $candidate,
-        $descriptor
-      )
-    } catch [System.ComponentModel.Win32Exception] {
-      if (
-        $_.Exception.NativeErrorCode -ne 80 -and
-        $_.Exception.NativeErrorCode -ne 183
-      ) {
-        throw
-      }
-      $createdDirectory = [CrablineWindowsDirectoryHandle]::Open($candidate, $true)
-      [void][CrablineWindowsDirectoryHandle]::ReadIdentity($createdDirectory)
-      [CrablineWindowsDirectoryHandle]::WriteSecurityDescriptor(
-        $createdDirectory,
-        $descriptor
-      )
-    }
-    if ($candidate -eq $directoryPath) {
-      $directory = $createdDirectory
-    } else {
-      $createdDirectory.Dispose()
-    }
-  }
-}
-if ($null -eq $directory) {
-  throw "Windows did not return the private directory handle."
-}
+$heldDirectories = [System.Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
+$createdDirectories = [System.Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
+$firstCreatedDirectory = $null
 try {
+  if ($missing.Count -eq 0) {
+    $inspection = [CrablineWindowsDirectoryHandle]::Open(
+      $directoryPath,
+      $false,
+      $false,
+      $false
+    )
+    $heldDirectories.Add($inspection)
+    $directoryIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($inspection)
+    Assert-SafeNamespaceChain $current $false
+    [CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(
+      $directoryPath,
+      $directoryIdentity
+    )
+    $currentAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $currentAcl.SetSecurityDescriptorBinaryForm(
+      [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($inspection)
+    )
+    $currentOwner = $currentAcl.GetOwner(
+      [System.Security.Principal.SecurityIdentifier]
+    )
+    $writeOwner = $currentOwner.Value -ne $sid.Value
+    $directory = [CrablineWindowsDirectoryHandle]::Open(
+      $directoryPath,
+      $true,
+      $writeOwner,
+      $false
+    )
+    $heldDirectories.Add($directory)
+    if (
+      [CrablineWindowsDirectoryHandle]::ReadIdentity($directory) -ne
+      $directoryIdentity
+    ) {
+      throw "Private directory identity changed before ACL repair."
+    }
+    [CrablineWindowsDirectoryHandle]::WriteSecurityDescriptor(
+      $directory,
+      $descriptor,
+      $writeOwner
+    )
+  } else {
+    $paths = $missing.ToArray()
+    [Array]::Reverse($paths)
+    $parentDirectory = [CrablineWindowsDirectoryHandle]::Open(
+      $current,
+      $false,
+      $false,
+      $true
+    )
+    $heldDirectories.Add($parentDirectory)
+    $existingParentIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity(
+      $parentDirectory
+    )
+    Assert-SafeNamespaceChain $current $true
+    [CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(
+      $current,
+      $existingParentIdentity
+    )
+
+    foreach ($candidate in $paths) {
+      $childName = [System.IO.Path]::GetFileName($candidate)
+      $createdDirectory = $null
+      try {
+        $createdDirectory = [CrablineWindowsDirectoryHandle]::CreateRelative(
+          $parentDirectory,
+          $childName,
+          $descriptor
+        )
+        $createdDirectories.Add($createdDirectory)
+        if ($null -eq $firstCreatedDirectory) {
+          $firstCreatedDirectory = $candidate
+        }
+      } catch [System.ComponentModel.Win32Exception] {
+        if (
+          $_.Exception.NativeErrorCode -ne 80 -and
+          $_.Exception.NativeErrorCode -ne 183
+        ) {
+          throw
+        }
+        $inspection = [CrablineWindowsDirectoryHandle]::OpenRelative(
+          $parentDirectory,
+          $childName,
+          $false,
+          $false,
+          $false
+        )
+        $heldDirectories.Add($inspection)
+        $childIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($inspection)
+        $currentAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+        $currentAcl.SetSecurityDescriptorBinaryForm(
+          [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($inspection)
+        )
+        $currentOwner = $currentAcl.GetOwner(
+          [System.Security.Principal.SecurityIdentifier]
+        )
+        $writeOwner = $currentOwner.Value -ne $sid.Value
+        $createdDirectory = [CrablineWindowsDirectoryHandle]::OpenRelative(
+          $parentDirectory,
+          $childName,
+          $true,
+          $writeOwner,
+          $true
+        )
+        if (
+          [CrablineWindowsDirectoryHandle]::ReadIdentity($createdDirectory) -ne
+          $childIdentity
+        ) {
+          $createdDirectory.Dispose()
+          throw "Private directory identity changed before ACL repair."
+        }
+        [CrablineWindowsDirectoryHandle]::WriteSecurityDescriptor(
+          $createdDirectory,
+          $descriptor,
+          $writeOwner
+        )
+      }
+      $heldDirectories.Add($createdDirectory)
+      $parentDirectory = $createdDirectory
+    }
+    $directory = $parentDirectory
+    [CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(
+      $current,
+      $existingParentIdentity
+    )
+  }
+  if ($null -eq $directory) {
+    throw "Windows did not return the private directory handle."
+  }
   $directoryIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($directory)
   $actual = [System.Security.AccessControl.DirectorySecurity]::new()
   $actual.SetSecurityDescriptorBinaryForm(
@@ -836,8 +1064,36 @@ try {
     $directoryPath,
     $directoryIdentity
   )
+  if ($null -ne $firstCreatedDirectory) {
+    [Console]::Out.Write($firstCreatedDirectory)
+  }
+} catch {
+  $primaryError = $_.Exception
+  $cleanupErrors = [System.Collections.Generic.List[System.Exception]]::new()
+  for ($index = $createdDirectories.Count - 1; $index -ge 0; $index--) {
+    try {
+      [CrablineWindowsDirectoryHandle]::MarkDelete(
+        $createdDirectories[$index]
+      )
+      $createdDirectories[$index].Dispose()
+    } catch {
+      $cleanupErrors.Add($_.Exception)
+    }
+  }
+  if ($cleanupErrors.Count -gt 0) {
+    $aggregateErrors = [System.Collections.Generic.List[System.Exception]]::new()
+    $aggregateErrors.Add($primaryError)
+    $aggregateErrors.AddRange($cleanupErrors)
+    throw [System.AggregateException]::new(
+      "Private directory ancestry creation and rollback cleanup failed.",
+      $aggregateErrors
+    )
+  }
+  throw $primaryError
 } finally {
-  $directory.Dispose()
+  for ($index = $heldDirectories.Count - 1; $index -ge 0; $index--) {
+    $heldDirectories[$index].Dispose()
+  }
 }
 `;
 
@@ -874,7 +1130,12 @@ if ($null -eq $parent) {
 }
 Assert-SafeNamespaceChain $parent.FullName $false
 
-$directory = [CrablineWindowsDirectoryHandle]::Open($directoryPath, $false)
+$directory = [CrablineWindowsDirectoryHandle]::Open(
+  $directoryPath,
+  $false,
+  $false,
+  $false
+)
 try {
   $directoryIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($directory)
   $descriptor = [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($directory)
@@ -950,7 +1211,12 @@ ${WINDOWS_SAFE_PARENT_NAMESPACE_HELPER}
 
 Assert-SafeNamespaceChain $directoryPath $true
 
-$directory = [CrablineWindowsDirectoryHandle]::Open($directoryPath, $false)
+$directory = [CrablineWindowsDirectoryHandle]::Open(
+  $directoryPath,
+  $false,
+  $false,
+  $false
+)
 try {
   $directoryIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($directory)
   $descriptor = [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($directory)
@@ -1032,32 +1298,42 @@ export async function applyOwnerOnlyWindowsDirectoryAcl(
   }
 }
 
+export async function createOwnerOnlyWindowsDirectoryAncestry(
+  directoryPath: string,
+  run: WindowsAclRunner = runWindowsAclCommand,
+  systemRoot: string | null | undefined = process.env.SystemRoot,
+): Promise<string | undefined> {
+  const powershellPath = resolveWindowsPowerShellPath(systemRoot);
+  const output = await run(
+    powershellPath,
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      WINDOWS_CREATE_OWNER_ONLY_DIRECTORY_SCRIPT,
+    ],
+    {
+      env: {
+        ...process.env,
+        CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
+      },
+      killSignal: "SIGKILL",
+      timeout: WINDOWS_ACL_COMMAND_TIMEOUT_MS,
+      windowsHide: true,
+    },
+  );
+  const firstCreatedDirectory = output.trim();
+  return firstCreatedDirectory.length > 0 ? firstCreatedDirectory : undefined;
+}
+
 export async function createOwnerOnlyWindowsDirectory(
   directoryPath: string,
   run: WindowsAclRunner = runWindowsAclCommand,
   systemRoot: string | null | undefined = process.env.SystemRoot,
 ): Promise<void> {
   try {
-    const powershellPath = resolveWindowsPowerShellPath(systemRoot);
-    await run(
-      powershellPath,
-      [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        WINDOWS_CREATE_OWNER_ONLY_DIRECTORY_SCRIPT,
-      ],
-      {
-        env: {
-          ...process.env,
-          CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
-        },
-        killSignal: "SIGKILL",
-        timeout: WINDOWS_ACL_COMMAND_TIMEOUT_MS,
-        windowsHide: true,
-      },
-    );
+    await createOwnerOnlyWindowsDirectoryAncestry(directoryPath, run, systemRoot);
   } catch (error) {
     throw new Error(
       "Could not atomically create or verify an owner-only Windows directory; Windows PowerShell ACL support is required.",
