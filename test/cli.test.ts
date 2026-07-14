@@ -122,17 +122,14 @@ describe("cli", () => {
     const configPath = await createConfig();
     let exitCode = -1;
     const captured = await captureWrites(async () => {
-      exitCode = await runCli(
-        ["node", "crabline", "--json", "--config", configPath, "providers"],
-        {
-          dependencies: {
-            createRegistry: () =>
-              ({
-                catalog: [{ value: 1n }],
-              }) as never,
-          },
+      exitCode = await runCli(["node", "crabline", "--json", "--config", configPath, "providers"], {
+        dependencies: {
+          createRegistry: () =>
+            ({
+              catalog: [{ value: 1n }],
+            }) as never,
         },
-      );
+      });
     });
 
     expect(exitCode).toBe(1);
