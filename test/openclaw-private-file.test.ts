@@ -1098,54 +1098,57 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
-  it("rolls back a directory claim when its first parent sync fails", async () => {
-    const directory = await createTempDir();
-    const claimPath = path.join(directory, ".crabline-private-mutation.claim");
-    const linkSpy = vi
-      .spyOn(fs, "link")
-      .mockRejectedValue(Object.assign(new Error("hard links unsupported"), { code: "ENOTSUP" }));
-    const actualOpen = fs.open.bind(fs);
-    const actualRename = fs.rename.bind(fs);
-    const syncFailure = new Error("directory claim parent sync failed");
-    let claimInstalled = false;
-    let syncFailed = false;
-    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
-      await actualRename(from, to);
-      if (to === claimPath) {
-        claimInstalled = true;
-      }
-    });
-    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (openedPath, flags, mode) => {
-      if (claimInstalled && !syncFailed && openedPath === directory && flags === "r") {
-        syncFailed = true;
-        throw syncFailure;
-      }
-      return mode === undefined
-        ? await actualOpen(openedPath, flags)
-        : await actualOpen(openedPath, flags, mode);
-    });
-    try {
-      const filePath = path.join(directory, "manifest.json");
+  it.skipIf(process.platform === "win32")(
+    "rolls back a directory claim when its first parent sync fails",
+    async () => {
+      const directory = await createTempDir();
+      const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+      const linkSpy = vi
+        .spyOn(fs, "link")
+        .mockRejectedValue(Object.assign(new Error("hard links unsupported"), { code: "ENOTSUP" }));
+      const actualOpen = fs.open.bind(fs);
+      const actualRename = fs.rename.bind(fs);
+      const syncFailure = new Error("directory claim parent sync failed");
+      let claimInstalled = false;
+      let syncFailed = false;
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        await actualRename(from, to);
+        if (to === claimPath) {
+          claimInstalled = true;
+        }
+      });
+      const openSpy = vi.spyOn(fs, "open").mockImplementation(async (openedPath, flags, mode) => {
+        if (claimInstalled && !syncFailed && openedPath === directory && flags === "r") {
+          syncFailed = true;
+          throw syncFailure;
+        }
+        return mode === undefined
+          ? await actualOpen(openedPath, flags)
+          : await actualOpen(openedPath, flags, mode);
+      });
+      try {
+        const filePath = path.join(directory, "manifest.json");
 
-      await expect(publishPrivateFileAtomically(filePath, "first\n")).rejects.toBe(syncFailure);
+        await expect(publishPrivateFileAtomically(filePath, "first\n")).rejects.toBe(syncFailure);
 
-      renameSpy.mockRestore();
-      openSpy.mockRestore();
-      linkSpy.mockRestore();
-      await publishPrivateFileAtomically(filePath, "second\n");
-      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
-      expect(
-        (await fs.readdir(directory)).filter((entry) =>
-          entry.startsWith(".crabline-private-mutation"),
-        ),
-      ).toEqual([]);
-    } finally {
-      renameSpy.mockRestore();
-      openSpy.mockRestore();
-      linkSpy.mockRestore();
-      await disposeTempDir(directory);
-    }
-  });
+        renameSpy.mockRestore();
+        openSpy.mockRestore();
+        linkSpy.mockRestore();
+        await publishPrivateFileAtomically(filePath, "second\n");
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
+        expect(
+          (await fs.readdir(directory)).filter((entry) =>
+            entry.startsWith(".crabline-private-mutation"),
+          ),
+        ).toEqual([]);
+      } finally {
+        renameSpy.mockRestore();
+        openSpy.mockRestore();
+        linkSpy.mockRestore();
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it("removes a partially created directory claim candidate after setup failure", async () => {
     const directory = await createTempDir();
@@ -1155,29 +1158,47 @@ describe("OpenClaw private file publication", () => {
     const actualOpen = fs.open.bind(fs);
     const setupFailure = new Error("directory claim metadata setup failed");
     let setupFailed = false;
-    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (openedPath, flags, mode) => {
-      if (!setupFailed && path.basename(String(openedPath)) === "owner.json" && flags === "wx+") {
+    const openSpy =
+      process.platform === "win32"
+        ? undefined
+        : vi.spyOn(fs, "open").mockImplementation(async (openedPath, flags, mode) => {
+            if (
+              !setupFailed &&
+              path.basename(String(openedPath)) === "owner.json" &&
+              flags === "wx+"
+            ) {
+              setupFailed = true;
+              throw setupFailure;
+            }
+            return mode === undefined
+              ? await actualOpen(openedPath, flags)
+              : await actualOpen(openedPath, flags, mode);
+          });
+    const createWindowsFile = async (filePath: string) => {
+      if (!setupFailed && path.basename(filePath) === "owner.json") {
         setupFailed = true;
         throw setupFailure;
       }
-      return mode === undefined
-        ? await actualOpen(openedPath, flags)
-        : await actualOpen(openedPath, flags, mode);
-    });
+      return await createOwnerOnlyWindowsFile(filePath);
+    };
     try {
       const filePath = path.join(directory, "manifest.json");
 
-      await expect(publishPrivateFileAtomically(filePath, "first\n")).rejects.toBe(setupFailure);
+      await expect(
+        publishPrivateFileAtomically(filePath, "first\n", {
+          ...(process.platform === "win32" ? { createWindowsFile } : {}),
+        }),
+      ).rejects.toBe(setupFailure);
 
       expect(
         (await fs.readdir(directory)).filter((entry) => entry.endsWith(".candidate-dir")),
       ).toEqual([]);
-      openSpy.mockRestore();
+      openSpy?.mockRestore();
       linkSpy.mockRestore();
       await publishPrivateFileAtomically(filePath, "second\n");
       await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
     } finally {
-      openSpy.mockRestore();
+      openSpy?.mockRestore();
       linkSpy.mockRestore();
       await disposeTempDir(directory);
     }
@@ -1373,41 +1394,44 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
-  it("rolls back a linked claim when its first parent sync fails", async () => {
-    const directory = await createTempDir();
-    const actualOpen = fs.open.bind(fs);
-    const actualLink = fs.link.bind(fs);
-    const syncFailure = new Error("claim parent sync failed");
-    let claimLinked = false;
-    let syncFailed = false;
-    const linkSpy = vi.spyOn(fs, "link").mockImplementation(async (...args) => {
-      await actualLink(...args);
-      claimLinked = true;
-    });
-    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (filePath, flags, mode) => {
-      if (claimLinked && !syncFailed && filePath === directory && flags === "r") {
-        syncFailed = true;
-        throw syncFailure;
+  it.skipIf(process.platform === "win32")(
+    "rolls back a linked claim when its first parent sync fails",
+    async () => {
+      const directory = await createTempDir();
+      const actualOpen = fs.open.bind(fs);
+      const actualLink = fs.link.bind(fs);
+      const syncFailure = new Error("claim parent sync failed");
+      let claimLinked = false;
+      let syncFailed = false;
+      const linkSpy = vi.spyOn(fs, "link").mockImplementation(async (...args) => {
+        await actualLink(...args);
+        claimLinked = true;
+      });
+      const openSpy = vi.spyOn(fs, "open").mockImplementation(async (filePath, flags, mode) => {
+        if (claimLinked && !syncFailed && filePath === directory && flags === "r") {
+          syncFailed = true;
+          throw syncFailure;
+        }
+        return mode === undefined
+          ? await actualOpen(filePath, flags)
+          : await actualOpen(filePath, flags, mode);
+      });
+      try {
+        const filePath = path.join(directory, "manifest.json");
+
+        await expect(publishPrivateFileAtomically(filePath, "first\n")).rejects.toBe(syncFailure);
+
+        linkSpy.mockRestore();
+        openSpy.mockRestore();
+        await publishPrivateFileAtomically(filePath, "second\n");
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
+      } finally {
+        linkSpy.mockRestore();
+        openSpy.mockRestore();
+        await disposeTempDir(directory);
       }
-      return mode === undefined
-        ? await actualOpen(filePath, flags)
-        : await actualOpen(filePath, flags, mode);
-    });
-    try {
-      const filePath = path.join(directory, "manifest.json");
-
-      await expect(publishPrivateFileAtomically(filePath, "first\n")).rejects.toBe(syncFailure);
-
-      linkSpy.mockRestore();
-      openSpy.mockRestore();
-      await publishPrivateFileAtomically(filePath, "second\n");
-      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
-    } finally {
-      linkSpy.mockRestore();
-      openSpy.mockRestore();
-      await disposeTempDir(directory);
-    }
-  });
+    },
+  );
 
   it.each([".crabline-private-mutation.claim", ".CRABLINE-PRIVATE-MUTATION.claim"])(
     "rejects the reserved claim namespace before changing destination %s",
