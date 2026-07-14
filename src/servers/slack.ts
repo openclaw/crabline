@@ -368,8 +368,16 @@ function nextDmChannelId(state: SlackServerState): string {
 }
 
 function nextMpimChannelId(state: SlackServerState): string {
-  const index = state.nextMpimIndex++;
-  return `G${String(index).padStart(9, "0")}`;
+  for (;;) {
+    const index = state.nextMpimIndex++;
+    const channelId = `G${String(index).padStart(9, "0")}`;
+    if (
+      !state.messagesByChannel.has(channelId) &&
+      ![...state.userMpimChannels.values()].some((channel) => channel.id === channelId)
+    ) {
+      return channelId;
+    }
+  }
 }
 
 function dmChannelForUser(state: SlackServerState, userId: string): string {
