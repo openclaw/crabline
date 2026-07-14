@@ -31,7 +31,9 @@ public static class CrablineWindowsDirectoryHandle
     private const uint FileOpenReparsePoint = 0x00200000;
     private const uint ObjectCaseInsensitive = 0x00000040;
     private const uint FileAttributeNormal = 0x00000080;
+    private const uint DirectoryAttribute = 0x00000010;
     private const uint ReparsePointAttribute = 0x00000400;
+    private const int FileIdInfoClass = 18;
     private const uint OwnerSecurityInformation = 0x00000001;
     private const uint DaclSecurityInformation = 0x00000004;
     private const uint ProtectedDaclSecurityInformation = 0x80000000;
@@ -57,6 +59,20 @@ public static class CrablineWindowsDirectoryHandle
         public uint NumberOfLinks;
         public uint FileIndexHigh;
         public uint FileIndexLow;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileId128
+    {
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+        public byte[] Identifier;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileIdInfo
+    {
+        public ulong VolumeSerialNumber;
+        public FileId128 FileId;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -123,6 +139,15 @@ public static class CrablineWindowsDirectoryHandle
     private static extern bool GetFileInformationByHandle(
         SafeFileHandle file,
         out ByHandleFileInformation information
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(
+        SafeFileHandle file,
+        int informationClass,
+        out FileIdInfo information,
+        uint bufferSize
     );
 
     [DllImport("advapi32.dll")]
@@ -303,19 +328,40 @@ public static class CrablineWindowsDirectoryHandle
                 "Private directory must not be a reparse point."
             );
         }
-        ulong fileIndex =
-            ((ulong)information.FileIndexHigh << 32) |
-            information.FileIndexLow;
-        if (fileIndex == 0) {
+        if ((information.FileAttributes & DirectoryAttribute) == 0) {
+            throw new InvalidOperationException(
+                "Private directory handle does not reference a directory."
+            );
+        }
+        FileIdInfo identity;
+        uint identitySize = (uint)Marshal.SizeOf(typeof(FileIdInfo));
+        if (!GetFileInformationByHandleEx(
+            file,
+            FileIdInfoClass,
+            out identity,
+            identitySize
+        )) {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        byte[] identifier = identity.FileId.Identifier;
+        bool hasIdentity = identifier != null && identifier.Length == 16;
+        if (hasIdentity) {
+            hasIdentity = false;
+            foreach (byte value in identifier) {
+                if (value != 0) {
+                    hasIdentity = true;
+                    break;
+                }
+            }
+        }
+        if (!hasIdentity) {
             throw new InvalidOperationException(
                 "Windows did not return a stable directory identity."
             );
         }
-        return information.VolumeSerialNumber.ToString(
+        return identity.VolumeSerialNumber.ToString(
             System.Globalization.CultureInfo.InvariantCulture
-        ) + ":" + fileIndex.ToString(
-            System.Globalization.CultureInfo.InvariantCulture
-        );
+        ) + ":" + BitConverter.ToString(identifier).Replace("-", String.Empty);
     }
 
     public static byte[] ReadSecurityDescriptor(SafeFileHandle file)
