@@ -241,6 +241,78 @@ describe("recorder", () => {
     expect(createCount).toBe(2);
   });
 
+  it("does not reject Windows recorder lock-root child churn during ACL inspection", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const lockRoot = path.join(directory, "active-locks");
+    let descriptorReads = 0;
+    const readSecurityDescriptor = async () => {
+      descriptorReads += 1;
+      if (descriptorReads === 2) {
+        await mkdir(path.join(lockRoot, "concurrent-lock"));
+      }
+      return "owner-only";
+    };
+    const createWindowsDirectory = async (directoryPath: string) => {
+      await mkdir(directoryPath, { recursive: true });
+    };
+
+    await secureProviderRecorderLockRoot(lockRoot, undefined, {
+      createWindowsDirectory,
+      platform: "win32",
+      readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+    });
+    await mkdir(path.join(lockRoot, "acl-check-trigger"));
+
+    await expect(
+      secureProviderRecorderLockRoot(lockRoot, undefined, {
+        createWindowsDirectory,
+        platform: "win32",
+        readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+      }),
+    ).resolves.toBe(lockRoot);
+
+    expect(descriptorReads).toBe(2);
+  });
+
+  it("recovers when a Windows recorder lock root disappears during ACL inspection", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const lockRoot = path.join(directory, "disappearing-locks");
+    let createCount = 0;
+    let descriptorReads = 0;
+    const createWindowsDirectory = async (directoryPath: string) => {
+      createCount += 1;
+      await mkdir(directoryPath, { recursive: true });
+    };
+    const readSecurityDescriptor = async () => {
+      descriptorReads += 1;
+      if (descriptorReads === 2) {
+        await rm(lockRoot, { force: true, recursive: true });
+        throw Object.assign(new Error("lock root removed during Get-Acl"), { code: "ENOENT" });
+      }
+      return "owner-only";
+    };
+
+    await secureProviderRecorderLockRoot(lockRoot, undefined, {
+      createWindowsDirectory,
+      platform: "win32",
+      readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+    });
+    await mkdir(path.join(lockRoot, "acl-check-trigger"));
+
+    await expect(
+      secureProviderRecorderLockRoot(lockRoot, undefined, {
+        createWindowsDirectory,
+        platform: "win32",
+        readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+      }),
+    ).resolves.toBe(lockRoot);
+
+    expect(createCount).toBe(2);
+    expect(descriptorReads).toBe(3);
+  });
+
   it("creates Windows recorder lock roots with their final ACL atomically", async () => {
     const calls: Parameters<WindowsAclRunner>[] = [];
     const run: WindowsAclRunner = async (...args) => {
@@ -276,6 +348,8 @@ describe("recorder", () => {
 
     const [, args, options] = calls[0]!;
     const script = args.at(-1);
+    expect(script).toContain("AreAccessRulesProtected");
+    expect(script).toContain("$rules.Count -ne 1");
     expect(script).toContain("GetSecurityDescriptorBinaryForm()");
     expect(script).toContain("[Convert]::ToBase64String($descriptor)");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
