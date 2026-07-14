@@ -557,7 +557,7 @@ describe("WhatsApp provider lifecycle", () => {
 
   it("bounds cleanup when an admitted webhook recorder append never settles", async () => {
     let handle: WebhookHandler | undefined;
-    const close = vi.fn(async () => undefined);
+    const close = vi.fn<() => Promise<void>>(async () => undefined);
     webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
       handle = params.handle;
       return {
