@@ -745,6 +745,32 @@ describe("process-owned lock filesystem", () => {
         update: 1000,
       }),
     ).rejects.toMatchObject({ code: "ELOCKED" });
+
+    const ownerPath = path.join(claimPath, "crabline-owner.json");
+    const openSyncAfterRetention = fs.openSync.bind(fs);
+    let inspectionFailed = false;
+    const inspectionSpy = vi.spyOn(fs, "openSync").mockImplementation(((filePath, flags, mode) => {
+      if (String(filePath) === ownerPath && !inspectionFailed) {
+        inspectionFailed = true;
+        throw Object.assign(new Error("claim inspection failed"), { code: "EACCES" });
+      }
+      return openSyncAfterRetention(filePath, flags, mode);
+    }) as typeof fs.openSync);
+    try {
+      await expect(
+        lock(target, {
+          fs: foreignFileSystem,
+          realpath: false,
+          retries: 0,
+          stale: 2000,
+          update: 1000,
+        }),
+      ).rejects.toMatchObject({ code: "ELOCKED" });
+    } finally {
+      inspectionSpy.mockRestore();
+    }
+
+    expect(inspectionFailed).toBe(false);
     await expect(release()).resolves.toBeUndefined();
     expect(fs.existsSync(claimPath)).toBe(false);
   }, 15_000);

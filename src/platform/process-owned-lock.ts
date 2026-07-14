@@ -42,11 +42,16 @@ type SupersededRecoveryClaim = {
   path: string;
 };
 
+type RetainedRecoveryClaim = {
+  claim: RecoveryClaim;
+  retainedByToken: string;
+};
+
 type AbandonedDirectoryIdentity = DirectoryIdentity & {
   ownerGenerationKey: string;
 };
 
-const retainedCoordinationClaims = new Map<string, RecoveryClaim>();
+const retainedCoordinationClaims = new Map<string, RetainedRecoveryClaim>();
 const abandonedOwnerKeys = new Set<string>();
 const abandonedDirectoryIdentities = new Map<string, AbandonedDirectoryIdentity>();
 
@@ -1284,13 +1289,19 @@ export function createProcessOwnedLockFileSystem(
         activeError = error as NodeJS.ErrnoException;
       }
       if (activeError && !abandonOwner(claim.activePath)) {
-        retainedCoordinationClaims.set(coordinationKey, claim);
+        retainedCoordinationClaims.set(coordinationKey, {
+          claim,
+          retainedByToken: token,
+        });
       }
       callback();
     };
     const preserveActiveClaim = (): void => {
       if (!abandonOwner(claim.activePath)) {
-        retainedCoordinationClaims.set(coordinationKey, claim);
+        retainedCoordinationClaims.set(coordinationKey, {
+          claim,
+          retainedByToken: token,
+        });
       }
       callback();
     };
@@ -1378,8 +1389,13 @@ export function createProcessOwnedLockFileSystem(
     callback: (error: NodeJS.ErrnoException | null, claim?: RecoveryClaim) => void,
   ): void => {
     const coordinationKey = canonicalLockDirectoryPath(directory);
-    const retainedClaim = retainedCoordinationClaims.get(coordinationKey);
-    if (retainedClaim) {
+    const retained = retainedCoordinationClaims.get(coordinationKey);
+    if (retained) {
+      if (retained.retainedByToken !== token && !ownedDirectories.has(coordinationKey)) {
+        callback(lockCleanupError("Recorder lock retained coordination claim is owned elsewhere."));
+        return;
+      }
+      const { claim: retainedClaim } = retained;
       let retainedClaimIsOwned = false;
       try {
         const current = verifiedLockDirectoryStats(
@@ -1396,17 +1412,13 @@ export function createProcessOwnedLockFileSystem(
         retainedClaimIsOwned = false;
       }
       if (retainedClaimIsOwned) {
-        if (retainedClaim.ownerGenerationKey !== token) {
-          callback(
-            lockCleanupError("Recorder lock retained coordination claim is owned elsewhere."),
-          );
-          return;
+        if (retainedCoordinationClaims.get(coordinationKey) === retained) {
+          retainedCoordinationClaims.delete(coordinationKey);
         }
-        retainedCoordinationClaims.delete(coordinationKey);
         callback(null, retainedClaim);
         return;
       }
-      if (retainedCoordinationClaims.get(coordinationKey) === retainedClaim) {
+      if (retainedCoordinationClaims.get(coordinationKey) === retained) {
         retainedCoordinationClaims.delete(coordinationKey);
       }
     }
@@ -1442,7 +1454,10 @@ export function createProcessOwnedLockFileSystem(
               ) {
                 const coordinationKey = canonicalLockDirectoryPath(directory);
                 interruptedPublicationIdentities.set(coordinationKey, directoryIdentity(existing));
-                retainedCoordinationClaims.set(coordinationKey, coordinationClaim);
+                retainedCoordinationClaims.set(coordinationKey, {
+                  claim: coordinationClaim,
+                  retainedByToken: token,
+                });
                 callback(error);
                 return;
               }
@@ -1830,10 +1845,10 @@ export function createProcessOwnedLockFileSystem(
               );
               abandonedDirectoryIdentities.delete(coordinationKey);
             }
-            retainedCoordinationClaims.set(
-              canonicalLockDirectoryPath(directory),
-              coordinationClaim,
-            );
+            retainedCoordinationClaims.set(canonicalLockDirectoryPath(directory), {
+              claim: coordinationClaim,
+              retainedByToken: token,
+            });
             callback(null);
           } catch (error) {
             finish(error as NodeJS.ErrnoException);
