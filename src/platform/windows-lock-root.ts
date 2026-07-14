@@ -2,7 +2,6 @@ import { lstat } from "node:fs/promises";
 
 export type WindowsLockRootIdentity = {
   birthtimeNs: bigint;
-  ctimeNs: bigint;
   dev: bigint;
   ino: bigint;
 };
@@ -28,7 +27,6 @@ export async function secureCachedWindowsLockRoot(options: {
         }
         return {
           birthtimeNs: identity.birthtimeNs,
-          ctimeNs: identity.ctimeNs,
           dev: identity.dev,
           ino: identity.ino,
         };
@@ -63,7 +61,6 @@ export async function secureCachedWindowsLockRoot(options: {
       !current.isSymbolicLink() &&
       current.dev === expected.dev &&
       current.ino === expected.ino &&
-      current.ctimeNs === expected.ctimeNs &&
       current.birthtimeNs === expected.birthtimeNs
     ) {
       return options.root;

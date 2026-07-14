@@ -118,6 +118,7 @@ describe("recorder", () => {
         },
       }),
     ).resolves.toBe(lockRoot);
+    await mkdir(path.join(lockRoot, "active-lock"));
     await expect(
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         platform: "win32",
