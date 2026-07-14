@@ -11,6 +11,7 @@ import {
   readNonBlankString,
   readString,
 } from "../shared.js";
+import { throwProbeHttpError } from "./probe-response.js";
 
 function nativeId(value: string): string {
   const id = value.trim();
@@ -33,7 +34,10 @@ export const ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProv
           ...(signal ? { signal } : {}),
         });
         if (!response.ok) {
-          throw new Error(`Crabline Zalo getMe probe failed with HTTP ${response.status}.`);
+          await throwProbeHttpError(
+            response,
+            `Crabline Zalo getMe probe failed with HTTP ${response.status}.`,
+          );
         }
         const result = await response.json();
         const bot = isRecord(result) && isRecord(result.result) ? result.result : undefined;

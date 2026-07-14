@@ -8,6 +8,7 @@ import {
   readNonBlankString,
   readString,
 } from "../shared.js";
+import { throwProbeHttpError } from "./probe-response.js";
 
 const SIGNAL_UUID_RE =
   /^(?:uuid:)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu;
@@ -78,7 +79,10 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           ...(abortSignal ? { signal: abortSignal } : {}),
         });
         if (!response.ok) {
-          throw new Error(`Crabline Signal check probe failed with HTTP ${response.status}.`);
+          await throwProbeHttpError(
+            response,
+            `Crabline Signal check probe failed with HTTP ${response.status}.`,
+          );
         }
         return { ok: true, status: response.status };
       },

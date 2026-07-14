@@ -13,6 +13,7 @@ import {
   canonicalizeWhatsAppUserCorrelationJid,
   canonicalizeWhatsAppUserJid,
 } from "../../servers/whatsapp-jid.js";
+import { throwProbeHttpError } from "./probe-response.js";
 
 function requireWhatsAppJid(value: string, label: string, userOnly = false): string {
   const canonical = userOnly
@@ -57,7 +58,10 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           ...(signal ? { signal } : {}),
         });
         if (!response.ok) {
-          throw new Error(`Crabline WhatsApp probe failed with HTTP ${response.status}.`);
+          await throwProbeHttpError(
+            response,
+            `Crabline WhatsApp probe failed with HTTP ${response.status}.`,
+          );
         }
         const payload: unknown = await response.json();
         if (!isRecord(payload) || readString(payload.id) !== whatsapp.phoneNumberId) {

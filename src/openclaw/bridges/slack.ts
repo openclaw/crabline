@@ -14,6 +14,7 @@ import {
   SLACK_TS_RULE,
   SLACK_USER_ID_RULE,
 } from "../../providers/slack-ids.js";
+import { throwProbeHttpError } from "./probe-response.js";
 
 function requireSlackSendTargetId(value: string, label: string): string {
   const trimmed = value.trim();
@@ -185,7 +186,10 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
           ...(signal ? { signal } : {}),
         });
         if (!response.ok) {
-          throw new Error(`Crabline Slack auth.test probe failed with HTTP ${response.status}.`);
+          await throwProbeHttpError(
+            response,
+            `Crabline Slack auth.test probe failed with HTTP ${response.status}.`,
+          );
         }
         const result: unknown = await response.json();
         if (!isRecord(result) || result.ok !== true) {
