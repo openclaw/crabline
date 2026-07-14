@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { constants as fsConstants } from "node:fs";
 import { realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +28,13 @@ const readWindowsDirectorySecuritySnapshot = vi.fn(async () => ({
   identity: "10:00000000000000000000000000000014",
   securityDescriptor: "owner-only",
 }));
+
+const serverRecorderExistingOpenFlags =
+  fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
+
+function isServerRecorderExistingOpen(flags: number | string): boolean {
+  return flags === "a+" || flags === "r+" || flags === serverRecorderExistingOpenFlags;
+}
 
 const fsMocks = vi.hoisted(() => {
   const directory = {
@@ -66,11 +74,21 @@ const fsMocks = vi.hoisted(() => {
     >(),
     sync: vi.fn<() => Promise<void>>(),
     truncate: vi.fn<(length: number) => Promise<void>>(),
+    write:
+      vi.fn<
+        (
+          buffer: Buffer,
+          offset: number,
+          length: number,
+          position: number,
+        ) => Promise<{ buffer: Buffer; bytesWritten: number }>
+      >(),
   };
   return {
     chmod: vi.fn<(filePath: string, mode: number) => Promise<void>>(),
     directory,
     file,
+    recordedWrite: vi.fn<(data: string) => Promise<void>>(),
     lstat: vi.fn<
       (
         filePath: string,
@@ -79,6 +97,7 @@ const fsMocks = vi.hoisted(() => {
         dev: bigint;
         ino: bigint;
         isDirectory(): boolean;
+        isFile?(): boolean;
         isSymbolicLink(): boolean;
         mode: bigint;
         uid: bigint;
@@ -229,8 +248,12 @@ beforeEach(() => {
   });
   fsMocks.directory.sync.mockReset();
   fsMocks.directory.sync.mockResolvedValue();
+  fsMocks.recordedWrite.mockReset();
+  fsMocks.recordedWrite.mockResolvedValue();
   fsMocks.file.appendFile.mockReset();
-  fsMocks.file.appendFile.mockResolvedValue();
+  fsMocks.file.appendFile.mockImplementation(async (data) => {
+    await fsMocks.recordedWrite(data);
+  });
   fsMocks.file.chmod.mockReset();
   fsMocks.file.chmod.mockResolvedValue();
   fsMocks.file.close.mockReset();
@@ -243,14 +266,26 @@ beforeEach(() => {
   fsMocks.file.sync.mockResolvedValue();
   fsMocks.file.truncate.mockReset();
   fsMocks.file.truncate.mockResolvedValue();
+  fsMocks.file.write.mockReset();
+  fsMocks.file.write.mockImplementation(async (buffer, offset, length) => {
+    await fsMocks.recordedWrite(buffer.subarray(offset, offset + length).toString("utf8"));
+    return {
+      buffer,
+      bytesWritten: length,
+    };
+  });
   fsMocks.lstat.mockReset();
-  fsMocks.lstat.mockResolvedValue({
-    dev: 10n,
-    ino: 20n,
-    isDirectory: () => true,
-    isSymbolicLink: () => false,
-    mode: 0o700n,
-    uid: BigInt(process.geteuid?.() ?? 0),
+  fsMocks.lstat.mockImplementation(async (filePath) => {
+    const isRecorderFile = String(filePath).endsWith(".jsonl");
+    return {
+      dev: isRecorderFile ? 1n : 10n,
+      ino: isRecorderFile ? 1n : 20n,
+      isDirectory: () => !isRecorderFile,
+      isFile: () => isRecorderFile,
+      isSymbolicLink: () => false,
+      mode: isRecorderFile ? 0o600n : 0o700n,
+      uid: BigInt(process.geteuid?.() ?? 0),
+    };
   });
   fsMocks.mkdir.mockReset();
   fsMocks.mkdir.mockResolvedValue(undefined);
@@ -258,6 +293,9 @@ beforeEach(() => {
   fsMocks.open.mockImplementation(async (_filePath, flags) => {
     if (flags === "ax+") {
       throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
+    }
+    if (isServerRecorderExistingOpen(flags)) {
+      return fsMocks.file;
     }
     return typeof flags === "number" || flags === "r" ? fsMocks.directory : fsMocks.file;
   });
@@ -524,7 +562,11 @@ describe("server recorder", () => {
       return filePath === canonicalFinalParent ? canonicalFirstParent : undefined;
     });
     fsMocks.open.mockImplementation(async (_filePath, flags) =>
-      typeof flags === "number" || flags === "r" ? fsMocks.directory : fsMocks.file,
+      isServerRecorderExistingOpen(flags)
+        ? fsMocks.file
+        : typeof flags === "number" || flags === "r"
+          ? fsMocks.directory
+          : fsMocks.file,
     );
     await recordServerEvent({
       event: serverEvent("/private"),
@@ -544,9 +586,7 @@ describe("server recorder", () => {
       [path.dirname(canonicalFirstParent), "r"],
     ]);
     expect(fsMocks.file.chmod).toHaveBeenCalledWith(0o600);
-    expect(fsMocks.file.appendFile).toHaveBeenCalledWith(expect.any(String), {
-      encoding: "utf8",
-    });
+    expect(fsMocks.recordedWrite).toHaveBeenCalledWith(expect.any(String));
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
     expect(fsMocks.directory.sync).toHaveBeenCalledTimes(3);
     expect(fsMocks.file.sync.mock.invocationCallOrder[0]).toBeLessThan(
@@ -574,7 +614,7 @@ describe("server recorder", () => {
     ).toBe(true);
     expect(lockMocks.release).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.chmod.mock.invocationCallOrder[0]).toBeLessThan(
-      fsMocks.file.appendFile.mock.invocationCallOrder[0]!,
+      fsMocks.recordedWrite.mock.invocationCallOrder[0]!,
     );
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
     expect(fsMocks.directory.close.mock.calls.length).toBeGreaterThanOrEqual(3);
@@ -595,7 +635,7 @@ describe("server recorder", () => {
     fsMocks.directory.sync.mockRejectedValueOnce(ancestrySyncFailure).mockResolvedValue(undefined);
     fsMocks.open.mockImplementation(async (openedPath, flags) => {
       if (typeof flags === "number") {
-        return fsMocks.directory;
+        return isServerRecorderExistingOpen(flags) ? fsMocks.file : fsMocks.directory;
       }
       if (flags === "r") {
         if (openedPath === canonicalRoot) {
@@ -633,7 +673,7 @@ describe("server recorder", () => {
       recorderPath,
     });
 
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+    expect(fsMocks.recordedWrite).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
     expect(fsMocks.directory.sync).toHaveBeenCalledTimes(2);
     expect(fsMocks.open).not.toHaveBeenCalledWith(path.parse(recorderPath).root, "r");
@@ -656,7 +696,7 @@ describe("server recorder", () => {
     fsMocks.stat.mockResolvedValue({ dev: 61, ino: 62, nlink: 1, size: 0 });
     fsMocks.open.mockImplementation(async (openedPath, flags) => {
       if (typeof flags === "number") {
-        return fsMocks.directory;
+        return isServerRecorderExistingOpen(flags) ? fsMocks.file : fsMocks.directory;
       }
       if (flags === "ax+") {
         throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
@@ -718,7 +758,7 @@ describe("server recorder", () => {
     fsMocks.stat.mockResolvedValue({ dev: 71, ino: 72, nlink: 1, size: 0 });
     fsMocks.open.mockImplementation(async (openedPath, flags) => {
       if (typeof flags === "number") {
-        return fsMocks.directory;
+        return isServerRecorderExistingOpen(flags) ? fsMocks.file : fsMocks.directory;
       }
       if (flags === "ax+") {
         if (recorderExists) {
@@ -780,7 +820,7 @@ describe("server recorder", () => {
     });
 
     expect(lockMocks.lock).toHaveBeenCalledTimes(3);
-    expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    expect(fsMocks.recordedWrite).toHaveBeenCalledOnce();
     expect(lockMocks.release).toHaveBeenCalledTimes(2);
   });
 
@@ -832,13 +872,13 @@ describe("server recorder", () => {
     });
 
     await vi.waitFor(() => expect(recorderMkdirCalls()).toHaveLength(1));
-    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+    expect(fsMocks.recordedWrite).not.toHaveBeenCalled();
 
     releaseFirstMkdir?.();
     await Promise.all([first, second]);
 
     expect(recorderMkdirCalls()).toHaveLength(2);
-    expect(fsMocks.file.appendFile.mock.calls.map(([line]) => JSON.parse(line).path)).toEqual([
+    expect(fsMocks.recordedWrite.mock.calls.map(([line]) => JSON.parse(line).path)).toEqual([
       "/first",
       "/second",
     ]);
@@ -847,7 +887,7 @@ describe("server recorder", () => {
       fsMocks.mkdir.mock.invocationCallOrder[
         fsMocks.mkdir.mock.calls.indexOf(recorderMkdirCalls()[1]!)
       ],
-    ).toBeGreaterThan(fsMocks.file.appendFile.mock.invocationCallOrder[0]!);
+    ).toBeGreaterThan(fsMocks.recordedWrite.mock.invocationCallOrder[0]!);
   });
 
   it("snapshots events before waiting for recorder admission", async () => {
@@ -862,14 +902,14 @@ describe("server recorder", () => {
 
     await recording;
 
-    expect(JSON.parse(fsMocks.file.appendFile.mock.calls[0]![0]).path).toBe("/original");
+    expect(JSON.parse(fsMocks.recordedWrite.mock.calls[0]![0]).path).toBe("/original");
     expect(observer).toHaveBeenCalledWith(serverEvent("/original"));
   });
 
   it("recovers serialization after an append failure", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder-recovery.jsonl");
     const appendFailure = new Error("disk unavailable");
-    fsMocks.file.appendFile.mockRejectedValueOnce(appendFailure).mockResolvedValueOnce();
+    fsMocks.recordedWrite.mockRejectedValueOnce(appendFailure).mockResolvedValueOnce();
 
     await expect(
       recordServerEvent({
@@ -891,7 +931,7 @@ describe("server recorder", () => {
       }),
     ).resolves.toBeUndefined();
 
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+    expect(fsMocks.recordedWrite).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.truncate).not.toHaveBeenCalled();
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
   });
@@ -903,7 +943,7 @@ describe("server recorder", () => {
       recorderPath: path.join("/tmp", "crabline-server-recorder-durable.jsonl"),
     });
 
-    expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    expect(fsMocks.recordedWrite).toHaveBeenCalledOnce();
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
   });
 
@@ -918,7 +958,11 @@ describe("server recorder", () => {
       if (flags === "r" && openedPath !== canonicalParent) {
         throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
       }
-      return typeof flags === "number" || flags === "r" ? fsMocks.directory : fsMocks.file;
+      return isServerRecorderExistingOpen(flags)
+        ? fsMocks.file
+        : typeof flags === "number" || flags === "r"
+          ? fsMocks.directory
+          : fsMocks.file;
     });
 
     await recordServerEvent({
@@ -997,7 +1041,7 @@ describe("server recorder", () => {
     });
 
     expect(fsMocks.file.close).toHaveBeenCalledTimes(2);
-    expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    expect(fsMocks.recordedWrite).toHaveBeenCalledOnce();
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
   });
 
@@ -1012,7 +1056,7 @@ describe("server recorder", () => {
       }),
     ).rejects.toThrow("Server recorder file identity is unavailable.");
 
-    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+    expect(fsMocks.recordedWrite).not.toHaveBeenCalled();
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
   });
 
@@ -1027,7 +1071,7 @@ describe("server recorder", () => {
       }),
     ).rejects.toThrow("Server recorder file link count is unavailable.");
 
-    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+    expect(fsMocks.recordedWrite).not.toHaveBeenCalled();
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
   });
 
@@ -1049,7 +1093,7 @@ describe("server recorder", () => {
       }),
     ).rejects.toThrow("Server recorder path is not a regular file.");
 
-    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+    expect(fsMocks.recordedWrite).not.toHaveBeenCalled();
     expect(fsMocks.file.sync).not.toHaveBeenCalled();
     expect(observer).not.toHaveBeenCalled();
   });
@@ -1069,7 +1113,7 @@ describe("server recorder", () => {
       "Server recorder hardlinks require CRABLINE_RECORDER_LOCK_DIR to name one shared writable lock directory for every writer.",
     );
 
-    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+    expect(fsMocks.recordedWrite).not.toHaveBeenCalled();
     expect(lockMocks.lock).toHaveBeenCalledTimes(2);
     expect(lockMocks.release).toHaveBeenCalledTimes(2);
   });
@@ -1095,7 +1139,7 @@ describe("server recorder", () => {
       }),
     ).rejects.toMatchObject({ committed: true, name: "ServerRecorderCommittedError" });
 
-    expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    expect(fsMocks.recordedWrite).toHaveBeenCalledOnce();
     expect(fsMocks.file.truncate).not.toHaveBeenCalled();
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
@@ -1123,7 +1167,7 @@ describe("server recorder", () => {
       }),
     ).rejects.toMatchObject({ committed: true, name: "ServerRecorderCommittedError" });
 
-    expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    expect(fsMocks.recordedWrite).toHaveBeenCalledOnce();
     expect(fsMocks.file.truncate).not.toHaveBeenCalled();
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
     expect(fsMocks.directory.sync).toHaveBeenCalledOnce();
@@ -1178,7 +1222,7 @@ describe("server recorder", () => {
 
   it("exposes an indeterminate result when an append fails", async () => {
     const appendFailure = new Error("simulated append failure");
-    fsMocks.file.appendFile.mockRejectedValueOnce(appendFailure);
+    fsMocks.recordedWrite.mockRejectedValueOnce(appendFailure);
 
     const recording = recordServerEvent({
       event: serverEvent("/append-failed"),
@@ -1261,7 +1305,7 @@ describe("server recorder", () => {
         recorderPath,
       }),
     ).resolves.toBeUndefined();
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+    expect(fsMocks.recordedWrite).toHaveBeenCalledTimes(2);
   });
 
   it("fills short tail reads before repairing a torn final append", async () => {
@@ -1286,9 +1330,8 @@ describe("server recorder", () => {
 
     expect(fsMocks.file.truncate).toHaveBeenCalledWith(Buffer.byteLength(completed));
     expect(fsMocks.file.read.mock.calls.length).toBeGreaterThan(3);
-    expect(fsMocks.file.appendFile).toHaveBeenLastCalledWith(
+    expect(fsMocks.recordedWrite).toHaveBeenLastCalledWith(
       `${JSON.stringify(serverEvent("/after-recovery"))}\n`,
-      { encoding: "utf8" },
     );
     expect(fsMocks.file.sync).toHaveBeenCalledOnce();
   });
@@ -1300,6 +1343,7 @@ describe("server recorder", () => {
       const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
       const contents = Buffer.from(`${completed}{"type":"api","path":"/torn"`);
       let repairAttempts = 0;
+      let existingOpen = true;
       fsMocks.file.stat.mockResolvedValue({
         dev: 1,
         ino: 1,
@@ -1315,10 +1359,18 @@ describe("server recorder", () => {
         if (flags === "ax+") {
           throw Object.assign(new Error("Recorder already exists"), { code: "EEXIST" });
         }
-        if (flags === "r+" && repairAttempts++ === 0) {
-          throw Object.assign(new Error("Recorder rotated"), { code: "ENOENT" });
+        if (flags === "r+") {
+          if (existingOpen) {
+            existingOpen = false;
+          } else if (repairAttempts++ === 0) {
+            throw Object.assign(new Error("Recorder rotated"), { code: "ENOENT" });
+          }
         }
-        return typeof flags === "number" || flags === "r" ? fsMocks.directory : fsMocks.file;
+        return isServerRecorderExistingOpen(flags)
+          ? fsMocks.file
+          : typeof flags === "number" || flags === "r"
+            ? fsMocks.directory
+            : fsMocks.file;
       });
 
       await expect(
@@ -1331,7 +1383,7 @@ describe("server recorder", () => {
 
       expect(repairAttempts).toBe(2);
       expect(fsMocks.file.truncate).toHaveBeenCalledWith(Buffer.byteLength(completed));
-      expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+      expect(fsMocks.recordedWrite).toHaveBeenCalledOnce();
     },
   );
 
@@ -1370,7 +1422,7 @@ describe("server recorder", () => {
       ).rejects.toThrow("Server recorder rotation retries exhausted");
 
       expect(fsMocks.file.truncate).not.toHaveBeenCalled();
-      expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+      expect(fsMocks.recordedWrite).not.toHaveBeenCalled();
     },
   );
 
@@ -1388,7 +1440,7 @@ describe("server recorder", () => {
       }),
     ).resolves.toBeUndefined();
 
-    const recordedLine = fsMocks.file.appendFile.mock.calls[0]?.[0];
+    const recordedLine = fsMocks.recordedWrite.mock.calls[0]?.[0];
     expect(recordedLine).toBeDefined();
     expect(Buffer.byteLength(recordedLine!)).toBeGreaterThan(4 * 1024 * 1024);
     expect(JSON.parse(recordedLine!).query.payload).toHaveLength(4 * 1024 * 1024);
@@ -1420,9 +1472,9 @@ describe("server recorder", () => {
     ).resolves.toBeUndefined();
 
     expect(fsMocks.file.truncate).not.toHaveBeenCalled();
-    expect(fsMocks.file.appendFile.mock.calls).toEqual([
-      ["\n", { encoding: "utf8" }],
-      [`${JSON.stringify(serverEvent("/after-valid-oversized-tail"))}\n`, { encoding: "utf8" }],
+    expect(fsMocks.recordedWrite.mock.calls).toEqual([
+      ["\n"],
+      [`${JSON.stringify(serverEvent("/after-valid-oversized-tail"))}\n`],
     ]);
   });
 
@@ -1475,9 +1527,9 @@ describe("server recorder", () => {
       tailStart,
     );
     expect(fsMocks.file.truncate).not.toHaveBeenCalled();
-    expect(fsMocks.file.appendFile.mock.calls).toEqual([
-      ["\n", { encoding: "utf8" }],
-      [`${JSON.stringify(serverEvent("/after-valid-boundary-tail"))}\n`, { encoding: "utf8" }],
+    expect(fsMocks.recordedWrite.mock.calls).toEqual([
+      ["\n"],
+      [`${JSON.stringify(serverEvent("/after-valid-boundary-tail"))}\n`],
     ]);
   });
 
@@ -1503,9 +1555,8 @@ describe("server recorder", () => {
     ).resolves.toBeUndefined();
 
     expect(fsMocks.file.truncate).toHaveBeenCalledWith(Buffer.byteLength(completed));
-    expect(fsMocks.file.appendFile).toHaveBeenLastCalledWith(
+    expect(fsMocks.recordedWrite).toHaveBeenLastCalledWith(
       `${JSON.stringify(serverEvent("/after-oversized-tail"))}\n`,
-      { encoding: "utf8" },
     );
   });
 
@@ -1548,7 +1599,7 @@ describe("server recorder", () => {
       fileSize - validationBudget - 1,
     );
     expect(fsMocks.file.truncate).not.toHaveBeenCalled();
-    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+    expect(fsMocks.recordedWrite).not.toHaveBeenCalled();
   });
 
   it("serializes torn-tail recovery and append across recorder processes", async () => {
@@ -1834,7 +1885,7 @@ describe("server recorder", () => {
       },
       recorderPath,
     });
-    await vi.waitFor(() => expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(fsMocks.recordedWrite).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(order).toEqual(["first:start", "second"]));
 
     releaseFirst?.();
@@ -1857,7 +1908,7 @@ describe("server recorder", () => {
       },
       recorderPath,
     });
-    await vi.waitFor(() => expect(fsMocks.file.appendFile).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(fsMocks.recordedWrite).toHaveBeenCalledOnce());
 
     second = recordServerEvent({
       event: serverEvent("/second"),
@@ -1867,7 +1918,7 @@ describe("server recorder", () => {
     allowFirstToWait();
 
     await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+    expect(fsMocks.recordedWrite).toHaveBeenCalledTimes(2);
   });
 
   it("allows observers to append reentrantly to the same recorder", async () => {
@@ -1885,7 +1936,7 @@ describe("server recorder", () => {
       recorderPath,
     });
 
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+    expect(fsMocks.recordedWrite).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
   });
 
@@ -1906,7 +1957,7 @@ describe("server recorder", () => {
     });
 
     expect(nestedObserver).toHaveBeenCalledWith(serverEvent("/nested"));
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+    expect(fsMocks.recordedWrite).toHaveBeenCalledTimes(2);
   });
 
   it("allows nested observers for independent recorder paths", async () => {
@@ -1925,7 +1976,7 @@ describe("server recorder", () => {
     });
 
     expect(nestedObserver).toHaveBeenCalledWith(serverEvent("/nested"));
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+    expect(fsMocks.recordedWrite).toHaveBeenCalledTimes(2);
   });
 
   it("starts nested observers after prior invocation without waiting for completion", async () => {
@@ -1961,7 +2012,7 @@ describe("server recorder", () => {
       },
       recorderPath: secondPath,
     });
-    await vi.waitFor(() => expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(fsMocks.recordedWrite).toHaveBeenCalledTimes(3));
     await vi.waitFor(() =>
       expect(nestedObserver).toHaveBeenCalledWith(serverEvent("/nested-on-first")),
     );
@@ -2012,7 +2063,7 @@ describe("server recorder", () => {
     });
 
     await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(4);
+    expect(fsMocks.recordedWrite).toHaveBeenCalledTimes(4);
   });
 
   it("keeps later appends available after an observer failure", async () => {
@@ -2040,7 +2091,7 @@ describe("server recorder", () => {
       }),
     ).resolves.toBeUndefined();
 
-    expect(fsMocks.file.appendFile).toHaveBeenCalledTimes(2);
+    expect(fsMocks.recordedWrite).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.truncate).not.toHaveBeenCalled();
     expect(fsMocks.file.sync).toHaveBeenCalledTimes(2);
   });
@@ -2060,7 +2111,7 @@ describe("server recorder", () => {
       committed: true,
       name: "ServerRecorderCommittedError",
     });
-    expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    expect(fsMocks.recordedWrite).toHaveBeenCalledOnce();
     expect(fsMocks.file.truncate).not.toHaveBeenCalled();
   });
 
@@ -2089,6 +2140,6 @@ describe("server recorder", () => {
         recorderPath: path.join("/tmp", "crabline-server-recorder-committed-cycle.jsonl"),
       }),
     ).resolves.toBeUndefined();
-    expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
+    expect(fsMocks.recordedWrite).not.toHaveBeenCalled();
   });
 });

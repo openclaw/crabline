@@ -98,6 +98,26 @@ async function readBufferAt(
   return buffer.subarray(0, bytesRead);
 }
 
+async function appendRecorderText(
+  file: Awaited<ReturnType<typeof open>>,
+  contents: string,
+  position: number,
+): Promise<void> {
+  if (process.platform !== "win32") {
+    await file.appendFile(contents, { encoding: "utf8" });
+    return;
+  }
+  const buffer = Buffer.from(contents, "utf8");
+  let written = 0;
+  while (written < buffer.length) {
+    const result = await file.write(buffer, written, buffer.length - written, position + written);
+    if (result.bytesWritten === 0) {
+      throw new Error("Server recorder append made no progress.");
+    }
+    written += result.bytesWritten;
+  }
+}
+
 async function findIncompleteTailStart(
   file: Awaited<ReturnType<typeof open>>,
   fileSize: number,
@@ -141,16 +161,6 @@ async function openRecorderFile(
   filePath: string,
 ): Promise<{ created: boolean; file: Awaited<ReturnType<typeof open>> }> {
   try {
-    const existing = await lstat(filePath);
-    if (existing.isFile?.() === false) {
-      throw new Error(`Server recorder path is not a regular file: ${filePath}`);
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
-  try {
     return {
       created: true,
       file: await open(filePath, "ax+", 0o600),
@@ -161,7 +171,17 @@ async function openRecorderFile(
     }
     return {
       created: false,
-      file: await open(filePath, "a+", 0o600),
+      file: await open(
+        filePath,
+        // A non-creating Windows open cannot materialize a dangling reparse target.
+        process.platform === "win32"
+          ? "r+"
+          : fsConstants.O_RDWR |
+              fsConstants.O_APPEND |
+              fsConstants.O_NONBLOCK |
+              fsConstants.O_NOFOLLOW,
+        0o600,
+      ),
     };
   }
 }
@@ -310,6 +330,21 @@ async function recorderPathHasIdentity(
       throw new Error(`Server recorder path is not a regular file: ${filePath}`);
     }
     return recorderIdentity(stats) === expectedIdentity;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function recorderWindowsPathIsRegular(filePath: string): Promise<boolean> {
+  try {
+    const stats = await lstat(filePath, { bigint: true });
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw new Error(`Server recorder path is not a regular file: ${filePath}`);
+    }
+    return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return false;
@@ -797,15 +832,20 @@ async function appendRecorderAttempt(params: {
   let releaseIdentityLock: (() => Promise<void>) | undefined;
   let result: "committed" | "retargeted" | "retry" | undefined;
   try {
+    const openedStats = await file.stat({ bigint: true });
+    const lockedIdentity = requireRecorderFileIdentity(openedStats);
+    let identity = `${lockedIdentity.dev}:${lockedIdentity.ino}`;
     if (opened.created) {
       await file.chmod(0o600);
     }
-    const openedStats = await file.stat({ bigint: true });
-    let identity = requireRecorderIdentity(openedStats);
-    if (!(await recorderPathHasIdentity(params.publicationPath, identity))) {
+    if (
+      process.platform === "win32" &&
+      !(await recorderWindowsPathIsRegular(params.publicationPath))
+    ) {
+      result = "retry";
+    } else if (!(await recorderPathHasIdentity(params.publicationPath, identity))) {
       result = "retry";
     } else {
-      const lockedIdentity = requireRecorderFileIdentity(openedStats);
       releaseIdentityLock = await acquireRecorderIdentityLock(lockedIdentity);
       // Lock acquisition may have blocked while another writer repaired or appended.
       let stats = await file.stat({ bigint: true });
@@ -837,7 +877,7 @@ async function appendRecorderAttempt(params: {
             }
             try {
               JSON.parse(tail.toString("utf8"));
-              await file.appendFile("\n", { encoding: "utf8" });
+              await appendRecorderText(file, "\n", fileSize);
             } catch (error) {
               if (!(error instanceof SyntaxError)) {
                 throw error;
@@ -861,7 +901,7 @@ async function appendRecorderAttempt(params: {
           result = "retry";
         } else if (result === undefined) {
           try {
-            await file.appendFile(params.line, { encoding: "utf8" });
+            await appendRecorderText(file, params.line, recorderFileSize(stats.size));
             await file.sync();
             if (
               !(await recorderPathHasIdentity(params.publicationPath, identity)) ||

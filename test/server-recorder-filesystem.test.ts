@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   appendFile,
   chmod,
@@ -15,6 +16,7 @@ import {
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import { afterEach, expect, it, vi } from "vitest";
+import type { ServerRequestEvent } from "../src/servers/http.js";
 import { recordServerEvent } from "../src/servers/recorder.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
@@ -28,6 +30,63 @@ afterEach(async () => {
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+function serverEvent(pathname: string): ServerRequestEvent {
+  return {
+    at: "2026-07-14T12:00:00.000Z",
+    method: "POST",
+    path: pathname,
+    query: {},
+    type: "api",
+  };
+}
+
+it.skipIf(process.platform === "win32")(
+  "rejects a FIFO recorder without waiting for a writer",
+  async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "server.jsonl");
+    execFileSync("mkfifo", [recorderPath]);
+
+    await expect(
+      recordServerEvent({
+        event: {
+          at: new Date().toISOString(),
+          method: "POST",
+          path: "/fifo",
+          query: {},
+          type: "api",
+        },
+        onEvent: undefined,
+        recorderPath,
+      }),
+    ).rejects.toThrow("Server recorder path is not a regular file.");
+  },
+  1_000,
+);
+
+it.runIf(process.platform === "win32")(
+  "appends through a validated existing Windows handle",
+  async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "server.jsonl");
+    await writeFile(recorderPath, JSON.stringify(serverEvent("/existing")), "utf8");
+
+    await recordServerEvent({
+      event: serverEvent("/appended"),
+      onEvent: undefined,
+      recorderPath,
+    });
+
+    const events = (await readFile(recorderPath, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { path: string });
+    expect(events.map((event) => event.path)).toEqual(["/existing", "/appended"]);
+  },
+);
 
 it.skipIf(process.platform === "win32")(
   "reacquires the matching lock when a recorder symlink is retargeted",
