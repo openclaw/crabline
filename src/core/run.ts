@@ -51,6 +51,15 @@ class UnsettledProviderOperationError extends CrablineError {
   }
 }
 
+class ProviderOperationTimeoutError extends CrablineError {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message, { kind: "timeout" });
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -93,6 +102,7 @@ async function withFixtureDeadline<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   operationName: string,
+  retryableAfterTimeout = true,
 ): Promise<T> {
   const controller = new AbortController();
   const pending = observeProviderOperation(
@@ -100,11 +110,9 @@ async function withFixtureDeadline<T>(
   );
   const result = await raceInboundDeadline(pending.promise, timeoutMs);
   if (result === INBOUND_DEADLINE_REACHED) {
-    const timeoutError = new CrablineError(
+    const timeoutError = new ProviderOperationTimeoutError(
       `Provider ${operationName} timed out after ${timeoutMs}ms.`,
-      {
-        kind: "timeout",
-      },
+      retryableAfterTimeout,
     );
     controller.abort(timeoutError);
     if (
@@ -451,12 +459,16 @@ export async function runFixtureCommand(params: {
               async (signal) => await provider.send({ ...sendContext, signal }),
               fixture.timeoutMs,
               "send",
+              false,
             );
           } catch (error) {
             lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "outbound", nonce);
             if (error instanceof UnsettledProviderOperationError) {
               abortDrainFailed = true;
               unsettledProviderOperations.push(error.operation);
+              break;
+            }
+            if (error instanceof ProviderOperationTimeoutError && !error.retryable) {
               break;
             }
             if (isPermanentFailure(lastFailure)) {

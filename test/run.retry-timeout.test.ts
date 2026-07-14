@@ -329,6 +329,66 @@ describe("runFixtureCommand retries", () => {
     expect(cleanupCalls).toBe(1);
   });
 
+  it("does not retry an accepted send that settles during abort grace", async () => {
+    let cleanupCalls = 0;
+    let sendCalls = 0;
+    const provider: ProviderAdapter = {
+      id: "mock",
+      platform: "loopback",
+      status: "ready",
+      supports: ["send"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send(context) {
+        sendCalls += 1;
+        return await new Promise((resolve) => {
+          context.signal?.addEventListener(
+            "abort",
+            () => {
+              setTimeout(() => {
+                resolve({
+                  accepted: true,
+                  messageId: "accepted-after-deadline",
+                  threadId: "thread-1",
+                });
+              }, 25);
+            },
+            { once: true },
+          );
+        });
+      },
+      async waitForInbound() {
+        throw new Error("wait must not run");
+      },
+      async cleanup() {
+        cleanupCalls += 1;
+      },
+    };
+    const registry: Registry = {
+      catalog: OPENCLAW_SUPPORT_CATALOG,
+      resolve() {
+        return provider;
+      },
+    };
+
+    const result = await runFixtureCommand({
+      fixtureId: "fixture",
+      manifest,
+      manifestPath: "/tmp/crabline.yaml",
+      modeOverride: "send",
+      registry,
+    });
+
+    expect(result).toMatchObject({ failureKind: "timeout", ok: false });
+    expect(result.diagnostics).toContain("Provider send timed out after 10ms.");
+    expect(sendCalls).toBe(1);
+    expect(cleanupCalls).toBe(1);
+  });
+
   it("bounds cleanup after an inbound wait ignores cancellation", async () => {
     let releaseWait: (() => void) | undefined;
     const provider: ProviderAdapter = {
