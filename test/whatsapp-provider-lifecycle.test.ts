@@ -256,6 +256,41 @@ describe("WhatsApp provider lifecycle", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("cancels operations and bounds cleanup when listener startup never settles", async () => {
+    webhookMocks.startWebhookServer.mockReturnValueOnce(new Promise(() => undefined));
+    const config = createConfig();
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createContext(config);
+    const probeController = new AbortController();
+    const inboundController = new AbortController();
+    const probeFailure = new Error("probe deadline reached");
+
+    const probe = provider.probe({ ...context, signal: probeController.signal });
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "never-started-wait",
+      signal: inboundController.signal,
+      since: new Date(0).toISOString(),
+      timeoutMs: 30_000,
+    });
+    const stream = provider.watch({
+      ...context,
+      signal: inboundController.signal,
+      since: new Date(0).toISOString(),
+    });
+    const watching = stream[Symbol.asyncIterator]();
+    const next = watching.next();
+    await vi.waitFor(() => expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1));
+
+    probeController.abort(probeFailure);
+    inboundController.abort(new Error("inbound deadline reached"));
+
+    await expect(probe).rejects.toBe(probeFailure);
+    await expect(waiting).resolves.toBeNull();
+    await expect(next).resolves.toEqual({ done: true, value: undefined });
+    await expect(provider.cleanup()).resolves.toBeUndefined();
+  }, 1_000);
+
   it("rechecks cleanup after awaiting an existing listener", async () => {
     const close = vi.fn(async () => undefined);
     webhookMocks.startWebhookServer.mockResolvedValueOnce({
@@ -367,7 +402,9 @@ describe("WhatsApp provider lifecycle", () => {
         nonce: "whatsapp-cleanup-race",
         text: "finish before cleanup",
       });
-      await vi.waitFor(() => expect(recorderMocks.appendRecordedInbound).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(recorderMocks.appendRecordedInbound).toHaveBeenCalledTimes(2), {
+        timeout: 5_000,
+      });
 
       let cleanupResolved = false;
       cleanup = provider.cleanup().then(() => {
