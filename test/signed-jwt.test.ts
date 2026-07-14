@@ -694,6 +694,26 @@ describe("signed JWT remote key cache", () => {
     await expect(resolveKey({ alg: "RS256", kid: "key-0" })).rejects.toThrow(/128-key limit/u);
   });
 
+  it("classifies empty remote key sets as infrastructure failures", async () => {
+    const resolveKey = createCachedJwtKeyResolver<string>({
+      async fetchKeys() {
+        return {
+          expiresAt: 1_700_000_060_000,
+          values: [],
+        };
+      },
+      keyId: (value) => value,
+      now: () => 1_700_000_000_000,
+      unknownKeyMessage: "unknown key",
+    });
+
+    const failure = await resolveKey({ alg: "RS256", kid: "missing" }).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(JwtKeyInfrastructureError);
+    expect(failure).toMatchObject({ message: expect.stringMatching(/at least one key/u) });
+  });
+
   it("backs off failed key fetches", async () => {
     let now = 1_700_000_000_000;
     let fetches = 0;
@@ -709,12 +729,21 @@ describe("signed JWT remote key cache", () => {
       unknownKeyMessage: "unknown key",
     });
 
-    await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
-    await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
+    for (const failure of [
+      await resolveKey({ alg: "RS256", kid: "missing" }).catch((error: unknown) => error),
+      await resolveKey({ alg: "RS256", kid: "missing" }).catch((error: unknown) => error),
+    ]) {
+      expect(failure).toBeInstanceOf(JwtKeyInfrastructureError);
+      expect(failure).toMatchObject({ cause: fetchError });
+    }
     expect(fetches).toBe(1);
 
     now += 10_001;
-    await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
+    const retriedFailure = await resolveKey({ alg: "RS256", kid: "missing" }).catch(
+      (error: unknown) => error,
+    );
+    expect(retriedFailure).toBeInstanceOf(JwtKeyInfrastructureError);
+    expect(retriedFailure).toMatchObject({ cause: fetchError });
     expect(fetches).toBe(2);
   });
 
@@ -735,8 +764,13 @@ describe("signed JWT remote key cache", () => {
         unknownKeyMessage: "unknown key",
       });
 
-      await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
-      await expect(resolveKey({ alg: "RS256", kid: "missing" })).rejects.toBe(fetchError);
+      for (const failure of [
+        await resolveKey({ alg: "RS256", kid: "missing" }).catch((error: unknown) => error),
+        await resolveKey({ alg: "RS256", kid: "missing" }).catch((error: unknown) => error),
+      ]) {
+        expect(failure).toBeInstanceOf(JwtKeyInfrastructureError);
+        expect(failure).toMatchObject({ cause: fetchError });
+      }
       expect(fetches).toBe(1);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -766,12 +800,19 @@ describe("signed JWT remote key cache", () => {
     });
 
     await expect(resolveKey({ alg: "RS256", kid: "known" })).resolves.toBe("known");
-    await expect(resolveKey({ alg: "RS256", kid: "missing-a" })).rejects.toBe(fetchError);
-    await expect(resolveKey({ alg: "RS256", kid: "missing-b" })).rejects.toThrow("unknown key");
+    for (const kid of ["missing-a", "missing-b"]) {
+      const failure = await resolveKey({ alg: "RS256", kid }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(JwtKeyInfrastructureError);
+      expect(failure).toMatchObject({ cause: fetchError });
+    }
     expect(fetches).toBe(2);
 
     now += 10_001;
-    await expect(resolveKey({ alg: "RS256", kid: "missing-c" })).rejects.toBe(fetchError);
+    const retriedFailure = await resolveKey({ alg: "RS256", kid: "missing-c" }).catch(
+      (error: unknown) => error,
+    );
+    expect(retriedFailure).toBeInstanceOf(JwtKeyInfrastructureError);
+    expect(retriedFailure).toMatchObject({ cause: fetchError });
     expect(fetches).toBe(3);
   });
 

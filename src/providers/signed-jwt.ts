@@ -26,6 +26,12 @@ const MAX_NEGATIVE_KEY_IDS = 128;
 const MAX_REMOTE_KEY_SET_SIZE = 128;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
+function jwtKeyInfrastructureError(error: unknown): JwtKeyInfrastructureError {
+  return error instanceof JwtKeyInfrastructureError
+    ? error
+    : new JwtKeyInfrastructureError("JWT signing key fetch failed.", { cause: error });
+}
+
 function decodeBase64UrlPart(value: string, label: string): Buffer {
   if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
     throw new Error(`${label} must use unpadded base64url encoding.`);
@@ -191,6 +197,9 @@ function validateRemoteJwtKeySet<T>(
   if (!Array.isArray(keySet.values)) {
     throw new JwtKeyInfrastructureError("JWT signing key set values must be an array.");
   }
+  if (keySet.values.length === 0) {
+    throw new JwtKeyInfrastructureError("JWT signing key set must include at least one key.");
+  }
   if (keySet.values.length > MAX_REMOTE_KEY_SET_SIZE) {
     throw new JwtKeyInfrastructureError(
       `JWT signing key set exceeds the ${MAX_REMOTE_KEY_SET_SIZE}-key limit.`,
@@ -293,11 +302,12 @@ export function createCachedJwtKeyResolver<T>(params: {
             return keySet;
           },
           (error: unknown) => {
+            const infrastructureError = jwtKeyInfrastructureError(error);
             if (fetchInFlight?.generation === generation) {
               fetchFailureCooldownUntil = now() + refreshCooldownMs;
-              fetchFailureError = error;
+              fetchFailureError = infrastructureError;
             }
-            throw error;
+            throw infrastructureError;
           },
         )
         .finally(() => {
@@ -368,6 +378,9 @@ export function createCachedJwtKeyResolver<T>(params: {
       refreshed = await refreshInFlight;
     } else {
       if (refreshCooldownUntil > now()) {
+        if (fetchFailureCooldownUntil > now() && fetchFailureError) {
+          throw fetchFailureError;
+        }
         return rejectUnknownKey(header.kid, refreshCooldownUntil);
       }
       refreshInFlight = Promise.resolve()
