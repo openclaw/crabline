@@ -139,6 +139,54 @@ async function openRecorderFile(
   }
 }
 
+async function truncateRecorderFile(
+  file: Awaited<ReturnType<typeof open>>,
+  filePath: string,
+  expectedIdentity: string,
+  length: number,
+): Promise<boolean> {
+  if (process.platform !== "win32") {
+    await file.truncate(length);
+    return true;
+  }
+  const repairFile = await open(filePath, "r+");
+  let result = false;
+  let operationFailed = false;
+  let operationError: unknown;
+  try {
+    if (requireRecorderIdentity(await repairFile.stat()) === expectedIdentity) {
+      await repairFile.truncate(length);
+      await repairFile.sync();
+      result = true;
+    }
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+  let closeFailed = false;
+  let closeError: unknown;
+  try {
+    await repairFile.close();
+  } catch (error) {
+    closeFailed = true;
+    closeError = error;
+  }
+  if (closeFailed) {
+    if (operationFailed) {
+      throw new AggregateError(
+        [operationError, closeError],
+        "Server recorder tail repair and repair-handle close both failed.",
+        { cause: closeError },
+      );
+    }
+    throw closeError;
+  }
+  if (operationFailed) {
+    throw operationError;
+  }
+  return result;
+}
+
 async function syncDirectory(directoryPath: string): Promise<void> {
   if (process.platform === "win32") {
     return;
@@ -570,15 +618,24 @@ async function appendRecorderAttempt(params: {
               if (!(error instanceof SyntaxError)) {
                 throw error;
               }
-              await file.truncate(tailStart);
+              if (
+                !(await truncateRecorderFile(file, params.publicationPath, identity, tailStart))
+              ) {
+                result = "retry";
+              }
             }
           }
         }
-        stats = await file.stat();
-        identity = requireRecorderIdentity(stats);
-        if (!(await recorderPathHasIdentity(params.publicationPath, identity))) {
+        if (result === undefined) {
+          stats = await file.stat();
+          identity = requireRecorderIdentity(stats);
+        }
+        if (
+          result === undefined &&
+          !(await recorderPathHasIdentity(params.publicationPath, identity))
+        ) {
           result = "retry";
-        } else {
+        } else if (result === undefined) {
           try {
             await file.appendFile(params.line, { encoding: "utf8" });
             await file.sync();
