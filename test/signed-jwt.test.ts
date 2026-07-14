@@ -23,6 +23,34 @@ function signedJwt(
 }
 
 describe("signed JWT remote key cache", () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1, 1.5])(
+    "rejects invalid fetch timeouts: %s",
+    (timeoutMs) => {
+      expect(() =>
+        createCachedJwtKeyResolver<string>({
+          fetchKeys: async () => ({ expiresAt: 0, values: [] }),
+          keyId: (value) => value,
+          timeoutMs,
+          unknownKeyMessage: "unknown key",
+        }),
+      ).toThrow("timeoutMs must be a positive safe integer.");
+    },
+  );
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 1.5])(
+    "rejects invalid refresh cooldowns: %s",
+    (refreshCooldownMs) => {
+      expect(() =>
+        createCachedJwtKeyResolver<string>({
+          fetchKeys: async () => ({ expiresAt: 0, values: [] }),
+          keyId: (value) => value,
+          refreshCooldownMs,
+          unknownKeyMessage: "unknown key",
+        }),
+      ).toThrow("refreshCooldownMs must be a non-negative safe integer.");
+    },
+  );
+
   it("requires canonical base64url, numeric nbf, and a future expiry boundary", async () => {
     const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const now = 1_700_000_000_000;

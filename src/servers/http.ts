@@ -96,6 +96,7 @@ export async function readBody(
   request: IncomingMessage,
   maxBytes = DEFAULT_MAX_REQUEST_BODY_BYTES,
 ): Promise<Buffer> {
+  requirePositiveSafeInteger(maxBytes, "maxBytes");
   if (request.aborted) {
     throw new Error("Request body stream was aborted.");
   }
