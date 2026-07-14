@@ -1447,6 +1447,21 @@ describe("OpenClaw local provider bridge", () => {
           threadId: "42",
         },
       });
+      const registration = await fetch(telegram.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          my_chat_member: {
+            chat: {
+              id: Number(inbound.providerBody.chatId),
+              is_forum: true,
+              type: "supergroup",
+              username: "examplegroup",
+            },
+          },
+          update_id: 1,
+        }),
+        headers: inbound.providerHeaders,
+        method: "POST",
+      });
       const response = await fetch(`${telegram.baseUrl}/bot${telegram.botToken}/sendMessage`, {
         body: JSON.stringify({
           chat_id: delivery.to,
@@ -1461,6 +1476,7 @@ describe("OpenClaw local provider bridge", () => {
       };
 
       expect(delivery.to).toBe("@examplegroup");
+      expect(registration.status).toBe(200);
       expect(response.status).toBe(200);
       expect(String(payload.result.chat.id)).toBe(inbound.providerBody.chatId);
       expect(payload.result.message_thread_id).toBe(42);

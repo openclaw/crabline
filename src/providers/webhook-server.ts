@@ -255,8 +255,10 @@ export async function startWebhookServer(params: {
   onError?: ((error: unknown) => void) | undefined;
   path: string;
   port: number;
+  signal?: AbortSignal | undefined;
   shutdownGraceMs?: number | undefined;
 }): Promise<StartedWebhookServer> {
+  params.signal?.throwIfAborted();
   if (!isCanonicalHttpPath(params.path)) {
     throw new Error("Webhook path must be a canonical URL pathname.");
   }
@@ -343,11 +345,62 @@ export async function startWebhookServer(params: {
   });
 
   await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
+    let abortCloseStarted = false;
+    let aborting = false;
+    let settled = false;
+    const cleanup = () => {
+      server.off("error", onError);
+      params.signal?.removeEventListener("abort", onAbort);
+    };
+    const fail = (error: unknown) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onError = (error: Error) => fail(error);
+    const closeAbortedStartup = () => {
+      if (!aborting || abortCloseStarted || !server.listening) {
+        return;
+      }
+      abortCloseStarted = true;
+      const reason =
+        params.signal?.reason ?? new DOMException("Webhook startup aborted", "AbortError");
+      void closeServer(server, shutdownGraceMs).then(
+        () => fail(reason),
+        (closeError: unknown) =>
+          fail(
+            new AggregateError(
+              [reason, closeError],
+              "Webhook startup was aborted and listener cleanup failed.",
+            ),
+          ),
+      );
+    };
+    const onAbort = () => {
+      if (settled || aborting) {
+        return;
+      }
+      aborting = true;
+      closing = true;
+      closeAbortedStartup();
+    };
+    server.once("error", onError);
+    params.signal?.addEventListener("abort", onAbort, { once: true });
     server.listen(params.port, params.host, () => {
-      server.off("error", reject);
+      if (aborting) {
+        closeAbortedStartup();
+        return;
+      }
+      settled = true;
+      cleanup();
       resolve();
     });
+    if (params.signal?.aborted) {
+      onAbort();
+    }
   });
 
   const address = server.address();

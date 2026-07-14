@@ -581,6 +581,25 @@ describe("WhatsApp handshake protobufs", () => {
     expect(message.clientHello?.ephemeral).toEqual(Buffer.from([0x2a]));
   });
 
+  it("recursively skips matched unknown groups", () => {
+    const message = decodeHandshakeMessage(
+      Buffer.from([0x2b, 0x33, 0x38, 0x01, 0x34, 0x2c, 0x12, 0x03, 0x0a, 0x01, 0x2a]),
+    );
+
+    expect(message.clientHello?.ephemeral).toEqual(Buffer.from([0x2a]));
+  });
+
+  it("rejects mismatched and excessively nested unknown groups", () => {
+    expect(() => decodeHandshakeMessage(Buffer.from([0x2b, 0x34]))).toThrow(
+      "Mismatched WhatsApp handshake protobuf end group.",
+    );
+    expect(() =>
+      decodeHandshakeMessage(
+        Buffer.from([...Array<number>(65).fill(0x2b), ...Array<number>(65).fill(0x2c)]),
+      ),
+    ).toThrow("group nesting exceeds");
+  });
+
   it("rejects known fields encoded with non-length-delimited wire types", () => {
     for (const message of [
       Buffer.from([0x10, 0x00]),

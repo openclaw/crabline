@@ -72,7 +72,6 @@ const DEFAULT_WHATSAPP_WEBHOOK = {
 const MAX_WAIT_CURSORS = 64;
 const MAX_WHATSAPP_WEBHOOK_BODY_BYTES = 1024 * 1024;
 const WHATSAPP_WEBHOOK_BODY_TIMEOUT_MS = 5_000;
-const WHATSAPP_WEBHOOK_STARTUP_CLEANUP_GRACE_MS = 250;
 
 function abortableOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) {
@@ -92,27 +91,6 @@ function abortableOperation<T>(operation: Promise<T>, signal: AbortSignal): Prom
       },
     );
   });
-}
-
-async function settlesWithin(operation: Promise<unknown>, timeoutMs: number): Promise<boolean> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<false>((resolve) => {
-    timeout = setTimeout(() => resolve(false), timeoutMs);
-    timeout.unref();
-  });
-  try {
-    return await Promise.race([
-      operation.then(
-        () => true as const,
-        () => true as const,
-      ),
-      deadline,
-    ]);
-  } finally {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-  }
 }
 
 class WhatsAppWebhookBodyError extends Error {
@@ -599,8 +577,12 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
           methods: ["GET", "POST"],
           path: webhookPath,
           port,
+          signal: this.#lifecycleAbort.signal,
         });
       } catch (error) {
+        if (this.#cleanupBegun) {
+          throw error;
+        }
         throw new CrablineError(
           `whatsapp local mock webhook server failed: ${ensureErrorMessage(error)}`,
           { cause: error, kind: "connectivity" },
@@ -609,7 +591,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
 
       this.#server = server;
       if (this.#cleanupBegun) {
-        void this.#closeStartedWebhookServer(server).catch(() => undefined);
+        await this.#closeStartedWebhookServer(server);
       }
       return server;
     })();
@@ -647,7 +629,13 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   async #closeWebhookServer(): Promise<void> {
     const starting = this.#serverStarting;
     if (starting) {
-      await settlesWithin(starting, WHATSAPP_WEBHOOK_STARTUP_CLEANUP_GRACE_MS);
+      try {
+        await starting;
+      } catch (error) {
+        if (error !== this.#lifecycleAbort.signal.reason) {
+          throw error;
+        }
+      }
     }
     const server = this.#server;
     if (server) {

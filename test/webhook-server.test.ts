@@ -91,6 +91,22 @@ describe("webhook server", () => {
     ).rejects.toThrow(/canonical URL pathname/u);
   });
 
+  it("closes startup before rejecting an abort", async () => {
+    const controller = new AbortController();
+    const reason = new Error("cancel webhook startup");
+    const starting = startWebhookServer({
+      handle: async () => new Response("ok"),
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+      signal: controller.signal,
+    });
+
+    controller.abort(reason);
+
+    await expect(starting).rejects.toBe(reason);
+  });
+
   it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1, 1.5])(
     "rejects invalid maxBodyBytes before listening: %s",
     async (maxBodyBytes) => {

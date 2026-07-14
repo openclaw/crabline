@@ -37,6 +37,7 @@ const WHATSAPP_GENERATED_MESSAGE_ID_RE = /^wamid\.FAKE(\d{8,})$/u;
 const DEFAULT_GRAPH_VERSION = "v25.0";
 const MAX_WHATSAPP_READABLE_MESSAGE_IDS = 10_000;
 const MAX_WHATSAPP_RECENT_MESSAGE_IDS = 10_000;
+const MAX_WHATSAPP_MESSAGE_ID_BYTES = 128;
 const MAX_WHATSAPP_TEXT_MESSAGE_CHARACTERS = 4_096;
 
 function createDefaultAccessToken(): string {
@@ -226,6 +227,12 @@ function reserveMessageId(
 ): WhatsAppMessageIdReservation | Response {
   let id = requestedId;
   if (id) {
+    if (Buffer.byteLength(id, "utf8") > MAX_WHATSAPP_MESSAGE_ID_BYTES) {
+      return graphParameterError(
+        "(#100) Invalid parameter: messageId",
+        `messageId must not exceed ${MAX_WHATSAPP_MESSAGE_ID_BYTES} UTF-8 bytes.`,
+      );
+    }
     if (state.pendingMessageIds.has(id) || state.recentMessageIds.has(id)) {
       return graphParameterError(
         "(#100) Invalid parameter: messageId",
