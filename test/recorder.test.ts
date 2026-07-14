@@ -152,6 +152,36 @@ describe("recorder", () => {
     await expect(stat(lockRoot)).resolves.toBeDefined();
   });
 
+  it("deduplicates concurrent Windows recorder lock-root replacement recovery", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const lockRoot = path.join(directory, "concurrent-recreated-locks");
+    let createCount = 0;
+    const createWindowsDirectory = async (directoryPath: string) => {
+      createCount += 1;
+      await mkdir(directoryPath, { recursive: true });
+    };
+
+    await secureProviderRecorderLockRoot(lockRoot, undefined, {
+      createWindowsDirectory,
+      platform: "win32",
+    });
+    await rm(lockRoot, { force: true, recursive: true });
+    await mkdir(lockRoot);
+    await Promise.all([
+      secureProviderRecorderLockRoot(lockRoot, undefined, {
+        createWindowsDirectory,
+        platform: "win32",
+      }),
+      secureProviderRecorderLockRoot(lockRoot, undefined, {
+        createWindowsDirectory,
+        platform: "win32",
+      }),
+    ]);
+
+    expect(createCount).toBe(2);
+  });
+
   it("rejects non-directory Windows recorder lock roots returned by the atomic creator", async () => {
     const directory = await createTempDir();
     directories.push(directory);

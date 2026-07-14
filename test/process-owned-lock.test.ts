@@ -663,6 +663,35 @@ describe("process-owned lock filesystem", () => {
     }
   });
 
+  it("preserves a replacement lock directory after owner publication fails", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const originalDirectory = `${lockDirectory}.original`;
+    const ownerPath = path.join(lockDirectory, "crabline-owner.json");
+    const openSync = fs.openSync.bind(fs);
+    let replacementIdentity: fs.BigIntStats | undefined;
+    const openSpy = vi.spyOn(fs, "openSync").mockImplementation(((filePath, flags, mode) => {
+      if (String(filePath) === ownerPath) {
+        fs.renameSync(lockDirectory, originalDirectory);
+        fs.mkdirSync(lockDirectory);
+        replacementIdentity = fs.lstatSync(lockDirectory, { bigint: true });
+        throw Object.assign(new Error("owner publication failed"), { code: "EACCES" });
+      }
+      return openSync(filePath, flags, mode);
+    }) as typeof fs.openSync);
+
+    try {
+      await expect(acquire(target)).rejects.toMatchObject({ code: "EACCES" });
+      const retained = fs.lstatSync(lockDirectory, { bigint: true });
+      expect({ dev: retained.dev, ino: retained.ino }).toEqual({
+        dev: replacementIdentity?.dev,
+        ino: replacementIdentity?.ino,
+      });
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
   it("rolls back owner publication when close reports an error", async () => {
     const target = await createLockTarget();
     const lockDirectory = `${target}.lock`;
