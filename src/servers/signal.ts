@@ -562,7 +562,7 @@ async function handleRpc(params: {
         record: false,
         response: notification
           ? new Response(null, { status: 204 })
-          : rpcError(-32602, "Invalid params", id),
+          : rpcError(-32602, "Invalid params", id, 200),
       };
     }
     const account = params.body.params.account;
@@ -572,7 +572,7 @@ async function handleRpc(params: {
         record: false,
         response: notification
           ? new Response(null, { status: 204 })
-          : rpcError(-32602, "Specified account does not exist", id),
+          : rpcError(-32602, "Specified account does not exist", id, 200),
       };
     }
     const timestamp = nextSignalTimestamp(params.state);
@@ -582,7 +582,7 @@ async function handleRpc(params: {
         record: false,
         response: notification
           ? new Response(null, { status: 204 })
-          : rpcError(-32603, "Timestamp capacity exhausted", id),
+          : rpcError(-32603, "Timestamp capacity exhausted", id, 200),
       };
     }
     return {
