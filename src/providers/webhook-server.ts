@@ -16,6 +16,7 @@ export type StartedWebhookServer = {
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_BODY_TIMEOUT_MS = 5_000;
+const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
 
 class RequestBodyTooLargeError extends Error {}
 class RequestBodyTimeoutError extends Error {}
@@ -24,6 +25,15 @@ class ResponseDeliveryClosedError extends Error {}
 function requirePositiveSafeInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive safe integer.`);
+  }
+  return value;
+}
+
+function requireTimerDelay(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_NODE_TIMER_DELAY_MS) {
+    throw new Error(
+      `${name} must be a positive integer no greater than ${MAX_NODE_TIMER_DELAY_MS}.`,
+    );
   }
   return value;
 }
@@ -255,14 +265,14 @@ export async function startWebhookServer(params: {
     params.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
     "Webhook maxBodyBytes",
   );
-  const bodyTimeoutMs = requirePositiveSafeInteger(
+  const bodyTimeoutMs = requireTimerDelay(
     params.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS,
     "Webhook bodyTimeoutMs",
   );
   const shutdownGraceMs =
     params.shutdownGraceMs === undefined
       ? undefined
-      : requirePositiveSafeInteger(params.shutdownGraceMs, "Webhook shutdownGraceMs");
+      : requireTimerDelay(params.shutdownGraceMs, "Webhook shutdownGraceMs");
   let closing = false;
   const server = createServer(async (request, response) => {
     try {

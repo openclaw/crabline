@@ -23,21 +23,26 @@ function signedJwt(
 }
 
 describe("signed JWT remote key cache", () => {
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1, 1.5])(
-    "rejects invalid fetch timeouts: %s",
-    (timeoutMs) => {
-      expect(() =>
-        createCachedJwtKeyResolver<string>({
-          fetchKeys: async () => ({ expiresAt: 0, values: [] }),
-          keyId: (value) => value,
-          timeoutMs,
-          unknownKeyMessage: "unknown key",
-        }),
-      ).toThrow("timeoutMs must be a positive safe integer.");
-    },
-  );
+  it.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    0,
+    -1,
+    1.5,
+    2_147_483_648,
+  ])("rejects invalid fetch timeouts: %s", (timeoutMs) => {
+    expect(() =>
+      createCachedJwtKeyResolver<string>({
+        fetchKeys: async () => ({ expiresAt: 0, values: [] }),
+        keyId: (value) => value,
+        timeoutMs,
+        unknownKeyMessage: "unknown key",
+      }),
+    ).toThrow("timeoutMs must be a positive integer no greater than 2147483647.");
+  });
 
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 1.5])(
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 1.5, 2_147_483_648])(
     "rejects invalid refresh cooldowns: %s",
     (refreshCooldownMs) => {
       expect(() =>
@@ -47,9 +52,21 @@ describe("signed JWT remote key cache", () => {
           refreshCooldownMs,
           unknownKeyMessage: "unknown key",
         }),
-      ).toThrow("refreshCooldownMs must be a non-negative safe integer.");
+      ).toThrow("refreshCooldownMs must be a non-negative integer no greater than 2147483647.");
     },
   );
+
+  it("accepts the maximum Node timer delay", () => {
+    expect(() =>
+      createCachedJwtKeyResolver<string>({
+        fetchKeys: async () => ({ expiresAt: 0, values: [] }),
+        keyId: (value) => value,
+        refreshCooldownMs: 2_147_483_647,
+        timeoutMs: 2_147_483_647,
+        unknownKeyMessage: "unknown key",
+      }),
+    ).not.toThrow();
+  });
 
   it("requires canonical base64url, numeric nbf, and a future expiry boundary", async () => {
     const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
