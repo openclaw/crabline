@@ -2863,6 +2863,17 @@ describe("OpenClaw local provider bridge", () => {
       },
       threadId: "$root:matrix.test",
     });
+    expect(() =>
+      createOpenClawCrablineInbound({
+        manifest: matrixManifest,
+        input: {
+          conversation: { id: roomId, kind: "group" },
+          senderId: "@alice:matrix.test",
+          text: "invalid thread id",
+          threadId: "root",
+        },
+      }),
+    ).toThrow("Matrix thread IDs must be native event IDs.");
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
         manifest: matrixManifest,
@@ -2885,6 +2896,25 @@ describe("OpenClaw local provider bridge", () => {
       text: "unmapped thread reply",
       to: `${roomId}:thread:$root:matrix.test`,
     });
+    expect(
+      createOpenClawCrablineOutboundFromRecorderEvent({
+        manifest: matrixManifest,
+        targetByProviderTarget: new Map(),
+        event: {
+          body: {
+            body: "invalid thread reply",
+            msgtype: "m.text",
+            "m.relates_to": {
+              event_id: "root",
+              rel_type: "m.thread",
+            },
+          },
+          method: "PUT",
+          path: `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/invalid-thread`,
+          type: "api",
+        },
+      }),
+    ).toBeNull();
 
     expect(() =>
       createOpenClawCrablineInbound({
