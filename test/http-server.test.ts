@@ -5,6 +5,7 @@ import {
   adminAuthError,
   ADMIN_TOKEN_HEADER,
   assertLoopbackBindAddress,
+  constantTimeTokenEqual,
   DEFAULT_MAX_REQUEST_BODY_BYTES,
   drainRequestBody,
   hasAdminToken,
@@ -16,6 +17,7 @@ import {
   readBody,
   readInteger,
   RequestBodyTooLargeError,
+  ResponseBodyTooLargeError,
   startHttpJsonServer,
 } from "../src/servers/http.js";
 
@@ -49,6 +51,12 @@ describe("server admin authentication", () => {
     expect(hasAdminToken(createRequest(headers), expectedToken)).toBe(expected);
   });
 
+  it("compares tokens through a fixed-length digest", () => {
+    expect(constantTimeTokenEqual("same-token", "same-token")).toBe(true);
+    expect(constantTimeTokenEqual("short", "a-much-longer-token")).toBe(false);
+    expect(constantTimeTokenEqual("token-a", "token-b")).toBe(false);
+  });
+
   it("gives the custom header precedence over Bearer authorization", () => {
     expect(
       hasAdminToken(
@@ -80,6 +88,12 @@ describe("server admin authentication", () => {
 });
 
 describe("server HTTP body reader", () => {
+  it("rejects requests that were already aborted before reading began", async () => {
+    const request = Object.assign(createRequest(), { aborted: true });
+
+    await expect(readBody(request)).rejects.toThrow("Request body stream was aborted");
+  });
+
   it("keeps rejected request streams error-handled until close", async () => {
     const aborted = createRequest();
     const abortedRead = readBody(aborted);
@@ -397,6 +411,70 @@ describe("server HTTP body reader", () => {
         error: "internal server error",
         ok: false,
       });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("bounds buffered response bodies before staging status and headers", async () => {
+    let cancelled = false;
+    const server = await startHttpJsonServer({
+      async handle() {
+        return new Response(
+          new ReadableStream({
+            cancel() {
+              cancelled = true;
+            },
+            start(controller) {
+              controller.enqueue(Buffer.alloc(65, 0x78));
+            },
+          }),
+          { headers: { "x-uncommitted": "true" }, status: 201 },
+        );
+      },
+      handleError(error) {
+        expect(error).toBeInstanceOf(ResponseBodyTooLargeError);
+        return Response.json({ error: "response too large", ok: false }, { status: 500 });
+      },
+      host: "127.0.0.1",
+      maxResponseBodyBytes: 64,
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const response = await fetch(server.baseUrl);
+      expect(response.status).toBe(500);
+      expect(response.headers.get("x-uncommitted")).toBeNull();
+      await expect(response.json()).resolves.toEqual({
+        error: "response too large",
+        ok: false,
+      });
+      expect(cancelled).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("drains request bodies that handlers ignore", async () => {
+    let observedRequest: IncomingMessage | undefined;
+    const server = await startHttpJsonServer({
+      async handle(request) {
+        observedRequest = request;
+        return Response.json({ ok: true });
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const response = await fetch(server.baseUrl, {
+        body: "ignored request body",
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      await expect.poll(() => observedRequest?.readableEnded).toBe(true);
     } finally {
       await server.close();
     }
