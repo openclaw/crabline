@@ -250,7 +250,7 @@ describe("WhatsApp provider recorder cursors", () => {
     await Promise.all(waits.slice(1));
   });
 
-  it("prunes inactive cursor entries after a concurrent burst settles", async () => {
+  it("prunes inactive cursor entries while another wait remains active", async () => {
     const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
     const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
     providers.push(provider);
@@ -259,11 +259,28 @@ describe("WhatsApp provider recorder cursors", () => {
       metadata: {},
     });
     const startingOffsets: number[] = [];
+    let releaseActiveWait!: () => void;
+    const activeWaitBlocked = new Promise<void>((resolve) => {
+      releaseActiveWait = resolve;
+    });
+    let calls = 0;
     recorderMocks.waitForRecordedInbound.mockImplementation(async ({ cursor }) => {
+      calls++;
       startingOffsets.push(cursor!.readState.offset);
       cursor!.readState.offset = 1;
+      if (calls === 1) {
+        await activeWaitBlocked;
+      }
       return null;
     });
+    const activeWait = provider.waitForInbound({
+      ...baseContext,
+      nonce: "active-cursor",
+      since: new Date(0).toISOString(),
+      threadId: "15551234567",
+      timeoutMs: 100,
+    });
+    await vi.waitFor(() => expect(recorderMocks.waitForRecordedInbound).toHaveBeenCalledTimes(1));
     const contexts = Array.from({ length: 65 }, (_, index) => ({
       ...baseContext,
       nonce: `settled-cursor-${index}`,
@@ -274,8 +291,10 @@ describe("WhatsApp provider recorder cursors", () => {
 
     await Promise.all(contexts.map((context) => provider.waitForInbound(context)));
     await provider.waitForInbound(contexts[0]!);
+    releaseActiveWait();
+    await expect(activeWait).resolves.toBeNull();
 
-    expect(startingOffsets).toHaveLength(66);
+    expect(startingOffsets).toHaveLength(67);
     expect(startingOffsets.at(-1)).toBe(0);
   });
 
