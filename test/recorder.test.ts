@@ -118,6 +118,14 @@ describe("recorder", () => {
         },
       }),
     ).resolves.toBe(lockRoot);
+    await expect(
+      secureProviderRecorderLockRoot(lockRoot, undefined, {
+        platform: "win32",
+        createWindowsDirectory: async () => {
+          throw new Error("cached Windows lock root was re-secured");
+        },
+      }),
+    ).resolves.toBe(lockRoot);
 
     expect(secured).toEqual([lockRoot]);
   });

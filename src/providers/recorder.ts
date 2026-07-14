@@ -32,6 +32,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 const pendingAppends = new Map<string, Promise<void>>();
 const recordIdentityIndexes = new Map<string, RecordIdentityIndex>();
+const securedWindowsLockRoots = new Map<string, Promise<{ dev: bigint; ino: bigint }>>();
 const MAX_RECORD_IDENTITY_INDEXES = 128;
 const MAX_RECENT_RECORD_KEYS = 4096;
 const RECORDER_BATCH_VERSION = 1;
@@ -653,13 +654,34 @@ export async function secureProviderRecorderLockRoot(
   } = {},
 ): Promise<string> {
   if ((options.platform ?? process.platform) === "win32") {
-    await mkdir(path.dirname(root), { recursive: true });
-    await (options.createWindowsDirectory ?? createOwnerOnlyWindowsDirectory)(root);
-    const secured = await lstat(root, { bigint: true });
-    if (!secured.isDirectory() || secured.isSymbolicLink()) {
-      throw new Error("Provider recorder lock directory is not a private directory.");
+    const cacheKey = path.win32.normalize(path.resolve(root)).toLowerCase();
+    for (;;) {
+      let secured = securedWindowsLockRoots.get(cacheKey);
+      if (!secured) {
+        secured = (async () => {
+          await mkdir(path.dirname(root), { recursive: true });
+          await (options.createWindowsDirectory ?? createOwnerOnlyWindowsDirectory)(root);
+          const identity = await lstat(root, { bigint: true });
+          if (!identity.isDirectory() || identity.isSymbolicLink()) {
+            throw new Error("Provider recorder lock directory is not a private directory.");
+          }
+          return { dev: identity.dev, ino: identity.ino };
+        })();
+        securedWindowsLockRoots.set(cacheKey, secured);
+        void secured.catch(() => securedWindowsLockRoots.delete(cacheKey));
+      }
+      const expected = await secured;
+      const current = await lstat(root, { bigint: true });
+      if (
+        current.isDirectory() &&
+        !current.isSymbolicLink() &&
+        current.dev === expected.dev &&
+        current.ino === expected.ino
+      ) {
+        return root;
+      }
+      securedWindowsLockRoots.delete(cacheKey);
     }
-    return root;
   }
 
   await mkdir(root, { mode: 0o700, recursive: true });

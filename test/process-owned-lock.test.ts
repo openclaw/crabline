@@ -409,6 +409,19 @@ describe("process-owned lock filesystem", () => {
     15_000,
   );
 
+  it("recovers an aged coordination claim with truncated owner metadata", async () => {
+    const target = await createLockTarget();
+    const claimPath = recoveryClaimPath(`${target}.lock`);
+    await mkdir(claimPath);
+    await writeFile(path.join(claimPath, "crabline-owner.json"), "");
+    await utimes(claimPath, new Date(0), new Date(0));
+
+    const release = await acquire(target);
+    expect(release).toBeTypeOf("function");
+    await release();
+    expect(fs.existsSync(claimPath)).toBe(false);
+  });
+
   it.skipIf(process.platform === "win32")(
     "reuses a process-wide coordination claim after final cleanup fails",
     async () => {
