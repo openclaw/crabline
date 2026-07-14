@@ -1791,7 +1791,7 @@ export async function persistAcceptedBaileysMessage(params: {
   remoteJid: string;
   signalBundles: WhatsAppSignalBundleStore;
 }): Promise<boolean> {
-  const peer = canonicalizeWhatsAppChatCorrelationJid(params.node.attrs.to ?? "");
+  const peer = canonicalizeWhatsAppUserCorrelationJid(params.node.attrs.to ?? "");
   const messageId = params.node.attrs.id;
   if (!peer || !messageId) {
     return false;

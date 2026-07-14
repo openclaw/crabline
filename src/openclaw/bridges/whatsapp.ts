@@ -202,7 +202,7 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           return null;
         }
         const providerTarget = isBaileysSend
-          ? canonicalizeWhatsAppUserCorrelationJid(to)
+          ? canonicalizeWhatsAppChatCorrelationJid(to)
           : (canonicalizeWhatsAppChatJid(to) ??
             (/^\d{7,15}$/u.test(to) ? `${to}@s.whatsapp.net` : to));
         if (!providerTarget) {

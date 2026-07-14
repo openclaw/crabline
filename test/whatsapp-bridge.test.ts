@@ -88,4 +88,45 @@ describe("WhatsApp OpenClaw bridge", () => {
       await adapter.close();
     }
   });
+
+  it("preserves mapped Baileys group replies from recorder events", async () => {
+    const adapter = await startOpenClawCrablineAdapter({ channel: "whatsapp" });
+    try {
+      if (adapter.manifest.provider !== "whatsapp") {
+        throw new Error("Expected WhatsApp manifest.");
+      }
+      const inbound = adapter.createInbound({
+        input: {
+          conversation: { id: "120363001234567890@g.us", kind: "group" },
+          senderId: "15551234567@s.whatsapp.net",
+          text: "group prompt",
+        },
+      });
+      expect(inbound.providerTargetKey).toBe("120363001234567890@g.us");
+
+      expect(
+        adapter.createOutboundFromRecorderEvent({
+          event: {
+            accepted: true,
+            body: {
+              key: { remoteJid: "120363001234567890@g.us" },
+              message: { conversation: "group reply" },
+            },
+            method: "WEBSOCKET",
+            path: new URL(adapter.manifest.endpoints.baileysWebSocketUrl).pathname,
+            type: "api",
+          },
+          targetByProviderTarget: new Map([[inbound.providerTargetKey, "group:openclaw-testers"]]),
+        }),
+      ).toEqual({
+        accountId: "default",
+        senderId: "openclaw",
+        senderName: "OpenClaw QA",
+        text: "group reply",
+        to: "group:openclaw-testers",
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
 });

@@ -2435,6 +2435,52 @@ describe("whatsapp local provider server", () => {
     });
   });
 
+  it("keeps committed admin message IDs consumed after recorder observer failures", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    let failInboundEvent = true;
+    const recorderPath = path.join(directory, "whatsapp-committed-inbound.jsonl");
+    const server = await startWhatsAppServer({
+      adminToken: "admin",
+      onEvent: (event) => {
+        if (failInboundEvent && event.path === "/_crabline/admin/whatsapp/inbound") {
+          failInboundEvent = false;
+          throw new Error("simulated committed inbound observer failure");
+        }
+      },
+      recorderPath,
+    });
+    servers.push(server);
+    const sendInbound = () =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          chatJid: "15551234567@s.whatsapp.net",
+          messageId: "wamid.committed-inbound",
+          senderJid: "15551234567@s.whatsapp.net",
+          text: "record exactly once",
+        }),
+        headers: {
+          [ADMIN_TOKEN_HEADER]: "admin",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+
+    expect((await sendInbound()).status).toBe(500);
+    const retried = await sendInbound();
+    expect(retried.status).toBe(400);
+    await expect(retried.json()).resolves.toMatchObject({
+      error: { message: "(#100) Invalid parameter: messageId" },
+    });
+    const events = (await fs.readFile(recorderPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { body?: { messageId?: string } });
+    expect(
+      events.filter((event) => event.body?.messageId === "wamid.committed-inbound"),
+    ).toHaveLength(1);
+  });
+
   it("records successful read-status requests as accepted provider operations", async () => {
     const directory = await createTempDir();
     directories.push(directory);
