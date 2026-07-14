@@ -604,22 +604,23 @@ async function recorderLocalIdentityLockTarget(
 
 async function recorderIdentityLockTargets(fileIdentity: RecorderFileIdentity): Promise<string[]> {
   const configuredRoot = process.env[RECORDER_LOCK_DIRECTORY_ENV]?.trim();
-  if (!configuredRoot) {
-    if (fileIdentity.nlink > 1n) {
-      throw new Error(
-        `Server recorder hardlinks require ${RECORDER_LOCK_DIRECTORY_ENV} to name one shared writable lock directory for every writer.`,
-      );
+  if (configuredRoot) {
+    if (!path.isAbsolute(configuredRoot)) {
+      throw new Error(`${RECORDER_LOCK_DIRECTORY_ENV} must be an absolute path.`);
     }
-    return [await recorderLocalIdentityLockTarget(fileIdentity)];
+    const sharedRoot = await secureRecorderLockRoot(configuredRoot);
+    // Lock every configured writer in the shared namespace before a first hardlink can appear.
+    return [
+      await recorderLocalIdentityLockTarget(fileIdentity),
+      recorderSharedIdentityLockPath(sharedRoot, fileIdentity),
+    ];
   }
-  if (!path.isAbsolute(configuredRoot)) {
-    throw new Error(`${RECORDER_LOCK_DIRECTORY_ENV} must be an absolute path.`);
+  if (fileIdentity.nlink > 1n) {
+    throw new Error(
+      `Server recorder hardlinks require ${RECORDER_LOCK_DIRECTORY_ENV} to name one shared writable lock directory for every writer.`,
+    );
   }
-  const sharedRoot = await secureRecorderLockRoot(configuredRoot);
-  return [
-    await recorderLocalIdentityLockTarget(fileIdentity),
-    recorderSharedIdentityLockPath(sharedRoot, fileIdentity),
-  ];
+  return [await recorderLocalIdentityLockTarget(fileIdentity)];
 }
 
 async function acquireSingleRecorderLock(filePath: string): Promise<() => Promise<void>> {
