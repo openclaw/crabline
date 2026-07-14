@@ -998,7 +998,7 @@ describe("lazy provider lifecycle", () => {
       text: id,
       threadId: "thread",
     });
-    let returnCalls = 0;
+    const cleanupSteps: string[] = [];
     const concrete: ProviderAdapter = {
       id: "test",
       platform: "loopback",
@@ -1016,22 +1016,14 @@ describe("lazy provider lifecycle", () => {
       async waitForInbound() {
         return null;
       },
-      watch() {
-        return {
-          [Symbol.asyncIterator]() {
-            return {
-              async next() {
-                return { done: false as const, value: event("watch-event") };
-              },
-              async return() {
-                returnCalls += 1;
-                return returnCalls === 1
-                  ? { done: false as const, value: event("return-value") }
-                  : { done: true as const, value: undefined };
-              },
-            };
-          },
-        };
+      async *watch() {
+        try {
+          yield event("watch-event");
+        } finally {
+          cleanupSteps.push("before-yield");
+          yield event("cleanup-yield");
+          cleanupSteps.push("after-yield");
+        }
       },
     };
     const provider = new LazyProviderAdapter({
@@ -1048,7 +1040,7 @@ describe("lazy provider lifecycle", () => {
       break;
     }
 
-    expect(returnCalls).toBe(2);
+    expect(cleanupSteps).toEqual(["before-yield", "after-yield"]);
     await provider.cleanup();
   });
 
@@ -1063,7 +1055,7 @@ describe("lazy provider lifecycle", () => {
       text: "watch event",
       threadId: "thread",
     };
-    let returnCalls = 0;
+    const cleanupSteps: string[] = [];
     const concrete: ProviderAdapter = {
       id: "test",
       platform: "loopback",
@@ -1081,23 +1073,16 @@ describe("lazy provider lifecycle", () => {
       async waitForInbound() {
         return null;
       },
-      watch() {
-        return {
-          [Symbol.asyncIterator]() {
-            return {
-              async next() {
-                return { done: false as const, value: event };
-              },
-              async return() {
-                returnCalls += 1;
-                if (returnCalls === 1) {
-                  return { done: false as const, value: event };
-                }
-                throw cleanupError;
-              },
-            };
-          },
-        };
+      async *watch() {
+        try {
+          yield event;
+        } finally {
+          cleanupSteps.push("before-yield");
+          yield { ...event, id: "cleanup-yield" };
+          cleanupSteps.push("after-yield");
+          // oxlint-disable-next-line no-unsafe-finally -- This intentionally models a failing generator cleanup.
+          throw cleanupError;
+        }
       },
     };
     const provider = new LazyProviderAdapter({
@@ -1118,7 +1103,7 @@ describe("lazy provider lifecycle", () => {
         }
       })(),
     ).rejects.toBe(cleanupError);
-    expect(returnCalls).toBe(2);
+    expect(cleanupSteps).toEqual(["before-yield", "after-yield"]);
     await provider.cleanup();
   });
 
