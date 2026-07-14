@@ -371,6 +371,39 @@ describe("webhook server", () => {
     expect(response.status).toBe(404);
   });
 
+  it("closes unmatched routes whose request bodies stall", async () => {
+    let handlerInvoked = false;
+    const server = await startWebhookServer({
+      bodyTimeoutMs: 20,
+      async handle() {
+        handlerInvoked = true;
+        return new Response("ok");
+      },
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+    const endpoint = new URL(server.endpointUrl);
+    const socket = connect(Number(endpoint.port), endpoint.hostname);
+    let response = "";
+    const closed = once(socket, "close");
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      response += chunk;
+    });
+    await once(socket, "connect");
+    socket.write("POST /wrong HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 5\r\n\r\n1");
+    await vi.waitFor(() => expect(response).toContain("HTTP/1.1 404"));
+    await expect(
+      Promise.race([
+        closed.then(() => "closed"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 500)),
+      ]),
+    ).resolves.toBe("closed");
+    expect(handlerInvoked).toBe(false);
+  });
+
   it("times out slow request bodies before invoking the handler", async () => {
     let handlerInvoked = false;
     const server = await startWebhookServer({

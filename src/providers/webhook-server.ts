@@ -4,6 +4,7 @@ import {
   advertisedHostForBindAddress,
   assertLoopbackBindAddress,
   closeServer,
+  drainRequestBody,
   formatUrlHost,
   writeFetchResponseHeaders,
 } from "../servers/http.js";
@@ -25,18 +26,19 @@ async function readRequestBody(
   maxBodyBytes: number,
   bodyTimeoutMs: number,
 ): Promise<Buffer> {
+  if (request.aborted) {
+    throw new Error("request body aborted");
+  }
   return await new Promise<Buffer>((resolve, reject) => {
     const chunks: Buffer[] = [];
     let bodyBytes = 0;
     let settled = false;
 
-    const cleanup = (preserveErrorListener = false) => {
+    const cleanup = () => {
       clearTimeout(timeout);
       request.off("data", onData);
       request.off("end", onEnd);
-      if (!preserveErrorListener) {
-        request.off("error", onError);
-      }
+      request.off("error", onError);
       request.off("aborted", onAborted);
     };
     const fail = (error: unknown) => {
@@ -44,7 +46,8 @@ async function readRequestBody(
         return;
       }
       settled = true;
-      cleanup(true);
+      cleanup();
+      drainRequestBody(request);
       reject(error);
     };
     const onData = (chunk: Buffer | string) => {
@@ -55,7 +58,6 @@ async function readRequestBody(
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       bodyBytes += buffer.length;
       if (bodyBytes > maxBodyBytes) {
-        request.resume();
         fail(new RequestBodyTooLargeError());
         return;
       }
@@ -72,7 +74,6 @@ async function readRequestBody(
     const onError = (error: Error) => fail(error);
     const onAborted = () => fail(new Error("request body aborted"));
     const timeout = setTimeout(() => {
-      request.resume();
       fail(new RequestBodyTimeoutError());
     }, bodyTimeoutMs);
 
@@ -80,7 +81,27 @@ async function readRequestBody(
     request.once("end", onEnd);
     request.once("error", onError);
     request.once("aborted", onAborted);
+    if (request.aborted) {
+      onAborted();
+    }
   });
+}
+
+function drainIgnoredRequestBody(request: IncomingMessage, bodyTimeoutMs: number): void {
+  if (request.destroyed || request.readableEnded) {
+    return;
+  }
+  const socket = request.socket;
+  const timeout = setTimeout(() => socket.destroy(), bodyTimeoutMs);
+  timeout.unref();
+  const cleanup = () => {
+    clearTimeout(timeout);
+    request.off("end", cleanup);
+    socket.off("close", cleanup);
+  };
+  request.once("end", cleanup);
+  socket.once("close", cleanup);
+  drainRequestBody(request);
 }
 
 async function toFetchRequest(
@@ -229,7 +250,7 @@ export async function startWebhookServer(params: {
   const server = createServer(async (request, response) => {
     try {
       if (closing) {
-        request.resume();
+        drainIgnoredRequestBody(request, bodyTimeoutMs);
         await writeFetchResponse(
           response,
           new Response("provider is shutting down", {
@@ -243,7 +264,7 @@ export async function startWebhookServer(params: {
       const host = request.headers.host ?? "127.0.0.1";
       const url = new URL(request.url ?? "/", `http://${host}`);
       if (!methods.has(method) || url.pathname !== params.path) {
-        request.resume();
+        drainIgnoredRequestBody(request, bodyTimeoutMs);
         await writeFetchResponse(response, new Response("not found", { status: 404 }));
         return;
       }

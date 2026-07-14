@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { CrablineError } from "../core/errors.js";
 
@@ -22,7 +22,9 @@ export type HttpJsonHandlerResult =
 
 export const ADMIN_TOKEN_HEADER = "x-crabline-admin-token";
 export const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+export const DEFAULT_MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_SERVER_SHUTDOWN_GRACE_MS = 250;
+const DRAINING_REQUESTS = new WeakSet<IncomingMessage>();
 const LOOPBACK_ADDRESSES = new BlockList();
 LOOPBACK_ADDRESSES.addSubnet("127.0.0.0", 8, "ipv4");
 LOOPBACK_ADDRESSES.addAddress("::1", "ipv6");
@@ -56,17 +58,29 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
+export class ResponseBodyTooLargeError extends Error {
+  constructor(readonly maxBytes: number) {
+    super(`Response body exceeds the ${maxBytes} byte limit.`);
+    this.name = "ResponseBodyTooLargeError";
+  }
+}
+
 export function jsonResponse(value: unknown, status = 200): Response {
   return Response.json(value, { status });
 }
 
 export function drainRequestBody(request: IncomingMessage): void {
+  if (request.readableEnded || DRAINING_REQUESTS.has(request)) {
+    return;
+  }
+  DRAINING_REQUESTS.add(request);
   const ignoreError = () => {};
   request.on("error", ignoreError);
-  if (request.destroyed || request.readableEnded) {
+  if (request.destroyed) {
     return;
   }
   const cleanup = () => {
+    DRAINING_REQUESTS.delete(request);
     request.off("close", cleanup);
     request.off("end", cleanup);
     request.off("error", ignoreError);
@@ -81,6 +95,9 @@ export async function readBody(
   request: IncomingMessage,
   maxBytes = DEFAULT_MAX_REQUEST_BODY_BYTES,
 ): Promise<Buffer> {
+  if (request.aborted) {
+    throw new Error("Request body stream was aborted.");
+  }
   const contentLengthHeader = request.headers["content-length"];
   const contentLengthValue = Array.isArray(contentLengthHeader)
     ? contentLengthHeader[0]
@@ -137,6 +154,9 @@ export async function readBody(
     request.on("data", onData);
     request.on("end", onEnd);
     request.on("error", onError);
+    if (request.aborted) {
+      onAborted();
+    }
   });
 }
 
@@ -277,6 +297,7 @@ export function writeFetchResponseHeaders(response: ServerResponse, fetchRespons
 export async function writeResponse(
   response: ServerResponse,
   fetchResponse: Response,
+  maxBytes = DEFAULT_MAX_RESPONSE_BODY_BYTES,
 ): Promise<void> {
   const reader = fetchResponse.body?.getReader();
   let cancellation: Promise<void> | undefined;
@@ -331,6 +352,9 @@ export async function writeResponse(
           break;
         }
         if (chunk.value.byteLength > 0) {
+          if (bodyLength + chunk.value.byteLength > maxBytes) {
+            throw new ResponseBodyTooLargeError(maxBytes);
+          }
           const buffer = Buffer.from(chunk.value);
           chunks.push(buffer);
           bodyLength += buffer.length;
@@ -390,15 +414,17 @@ export async function startHttpJsonServer(params: {
   handle: (request: IncomingMessage, response: ServerResponse) => Promise<HttpJsonHandlerResult>;
   handleError?: (error: unknown, request: IncomingMessage) => Response | undefined;
   host: string;
+  maxResponseBodyBytes?: number | undefined;
   port: number;
   serverName: string;
 }): Promise<{ baseUrl: string; close(): Promise<void>; server: Server }> {
   const handleRequest = async (request: IncomingMessage, response: ServerResponse) => {
     try {
       const result = await params.handle(request, response);
+      drainRequestBody(request);
       const handled = result instanceof Response ? { response: result } : result;
       try {
-        await writeResponse(response, handled.response);
+        await writeResponse(response, handled.response, params.maxResponseBodyBytes);
       } catch (error) {
         await handled.onWriteFailure?.();
         throw error;
@@ -409,6 +435,7 @@ export async function startHttpJsonServer(params: {
         // Delivery is already committed; lifecycle failures must not trigger another response.
       }
     } catch (error) {
+      drainRequestBody(request);
       let handled: Response | undefined;
       try {
         handled = params.handleError?.(error, request);
@@ -426,6 +453,7 @@ export async function startHttpJsonServer(params: {
               },
               500,
             ),
+          params.maxResponseBodyBytes,
         );
       } catch {
         response.destroy();
@@ -499,6 +527,12 @@ function readBearerToken(authorization: string | undefined): string | undefined 
   return trimmed.slice(7);
 }
 
+export function constantTimeTokenEqual(providedToken: string, expectedToken: string): boolean {
+  const provided = createHash("sha256").update(providedToken).digest();
+  const expected = createHash("sha256").update(expectedToken).digest();
+  return timingSafeEqual(provided, expected);
+}
+
 export function hasAdminToken(request: IncomingMessage, expectedToken: string): boolean {
   const header = request.headers[ADMIN_TOKEN_HEADER];
   const directToken = Array.isArray(header) ? header[0] : header;
@@ -507,9 +541,7 @@ export function hasAdminToken(request: IncomingMessage, expectedToken: string): 
     return false;
   }
 
-  const provided = Buffer.from(providedToken);
-  const expected = Buffer.from(expectedToken);
-  return provided.length === expected.length && timingSafeEqual(provided, expected);
+  return constantTimeTokenEqual(providedToken, expectedToken);
 }
 
 export function adminAuthError(): Response {
