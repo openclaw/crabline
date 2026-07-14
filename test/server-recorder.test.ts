@@ -23,6 +23,8 @@ const lockMocks = vi.hoisted(() => {
   };
 });
 
+const readWindowsDirectorySecurityDescriptor = vi.fn(async () => "owner-only");
+
 const fsMocks = vi.hoisted(() => {
   const directory = {
     chmod: vi.fn<(mode: number) => Promise<void>>(),
@@ -210,6 +212,7 @@ function directoryAncestryCount(directory: string): number {
 }
 
 beforeEach(() => {
+  readWindowsDirectorySecurityDescriptor.mockClear();
   lockMocks.release.mockReset();
   lockMocks.release.mockResolvedValue();
   lockMocks.lock.mockReset();
@@ -276,15 +279,21 @@ describe("server recorder", () => {
     const createWindowsDirectory = vi.fn(async () => undefined);
 
     await expect(
-      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+      secureServerRecorderWindowsLockRoot(lockRoot, {
+        createWindowsDirectory,
+        readWindowsDirectorySecurityDescriptor,
+      }),
     ).resolves.toBe(lockRoot);
     await expect(
-      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+      secureServerRecorderWindowsLockRoot(lockRoot, {
+        createWindowsDirectory,
+        readWindowsDirectorySecurityDescriptor,
+      }),
     ).resolves.toBe(lockRoot);
 
     expect(createWindowsDirectory).toHaveBeenCalledTimes(1);
     expect(createWindowsDirectory).toHaveBeenCalledWith(lockRoot);
-    expect(fsMocks.lstat).toHaveBeenCalledTimes(3);
+    expect(fsMocks.lstat).toHaveBeenCalledTimes(4);
     expect(fsMocks.lstat).toHaveBeenCalledWith(lockRoot, { bigint: true });
   });
 
@@ -293,10 +302,16 @@ describe("server recorder", () => {
     const missing = Object.assign(new Error("lock root removed"), { code: "ENOENT" });
     const createWindowsDirectory = vi.fn(async () => undefined);
 
-    await secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory });
+    await secureServerRecorderWindowsLockRoot(lockRoot, {
+      createWindowsDirectory,
+      readWindowsDirectorySecurityDescriptor,
+    });
     fsMocks.lstat.mockRejectedValueOnce(missing);
     await expect(
-      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+      secureServerRecorderWindowsLockRoot(lockRoot, {
+        createWindowsDirectory,
+        readWindowsDirectorySecurityDescriptor,
+      }),
     ).resolves.toBe(lockRoot);
 
     expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
@@ -306,7 +321,10 @@ describe("server recorder", () => {
     const lockRoot = path.join("/tmp", "crabline-server-recorder-concurrent-locks");
     const createWindowsDirectory = vi.fn(async () => undefined);
 
-    await secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory });
+    await secureServerRecorderWindowsLockRoot(lockRoot, {
+      createWindowsDirectory,
+      readWindowsDirectorySecurityDescriptor,
+    });
     fsMocks.lstat.mockResolvedValue({
       dev: 10n,
       ino: 21n,
@@ -316,8 +334,14 @@ describe("server recorder", () => {
       uid: BigInt(process.geteuid?.() ?? 0),
     });
     await Promise.all([
-      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
-      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+      secureServerRecorderWindowsLockRoot(lockRoot, {
+        createWindowsDirectory,
+        readWindowsDirectorySecurityDescriptor,
+      }),
+      secureServerRecorderWindowsLockRoot(lockRoot, {
+        createWindowsDirectory,
+        readWindowsDirectorySecurityDescriptor,
+      }),
     ]);
 
     expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
@@ -327,6 +351,14 @@ describe("server recorder", () => {
     const lockRoot = path.join("/tmp", "crabline-server-recorder-unstable-locks");
     const createWindowsDirectory = vi.fn(async () => undefined);
     fsMocks.lstat
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: 20n,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
       .mockResolvedValueOnce({
         dev: 10n,
         ino: 20n,
@@ -353,6 +385,14 @@ describe("server recorder", () => {
       })
       .mockResolvedValueOnce({
         dev: 10n,
+        ino: 22n,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
         ino: 23n,
         isDirectory: () => true,
         isSymbolicLink: () => false,
@@ -361,7 +401,10 @@ describe("server recorder", () => {
       });
 
     await expect(
-      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+      secureServerRecorderWindowsLockRoot(lockRoot, {
+        createWindowsDirectory,
+        readWindowsDirectorySecurityDescriptor,
+      }),
     ).rejects.toThrow("Server recorder Windows lock root could not be stabilized.");
     expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
   });
@@ -382,6 +425,38 @@ describe("server recorder", () => {
       })
       .mockResolvedValueOnce({
         dev: 10n,
+        ino: originalInode,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: replacementInode,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: replacementInode,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: replacementInode,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
         ino: replacementInode,
         isDirectory: () => true,
         isSymbolicLink: () => false,
@@ -390,7 +465,10 @@ describe("server recorder", () => {
       });
 
     await expect(
-      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+      secureServerRecorderWindowsLockRoot(lockRoot, {
+        createWindowsDirectory,
+        readWindowsDirectorySecurityDescriptor,
+      }),
     ).resolves.toBe(lockRoot);
 
     expect(createWindowsDirectory).toHaveBeenCalledTimes(2);

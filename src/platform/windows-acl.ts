@@ -154,6 +154,18 @@ if (
 }
 `;
 
+const WINDOWS_DIRECTORY_SECURITY_DESCRIPTOR_SCRIPT = String.raw`
+$ErrorActionPreference = "Stop"
+$directoryPath = $env:CRABLINE_PRIVATE_DIRECTORY_PATH
+if ([string]::IsNullOrWhiteSpace($directoryPath)) {
+  throw "CRABLINE_PRIVATE_DIRECTORY_PATH is required."
+}
+
+$acl = Get-Acl -LiteralPath $directoryPath
+$descriptor = $acl.GetSecurityDescriptorBinaryForm()
+[Convert]::ToBase64String($descriptor)
+`;
+
 export type WindowsAclRunner = (
   command: string,
   args: string[],
@@ -235,6 +247,43 @@ export async function createOwnerOnlyWindowsDirectory(
   } catch (error) {
     throw new Error(
       "Could not atomically create or verify an owner-only Windows directory; Windows PowerShell ACL support is required.",
+      { cause: error },
+    );
+  }
+}
+
+export async function readWindowsDirectorySecurityDescriptor(
+  directoryPath: string,
+  run: WindowsAclRunner = runWindowsAclCommand,
+  systemRoot: string | null | undefined = process.env.SystemRoot,
+): Promise<string> {
+  try {
+    const powershellPath = resolveWindowsPowerShellPath(systemRoot);
+    const descriptor = await run(
+      powershellPath,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        WINDOWS_DIRECTORY_SECURITY_DESCRIPTOR_SCRIPT,
+      ],
+      {
+        env: {
+          ...process.env,
+          CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
+        },
+        windowsHide: true,
+      },
+    );
+    const normalized = descriptor.trim();
+    if (!normalized) {
+      throw new Error("Windows directory security descriptor was empty.");
+    }
+    return normalized;
+  } catch (error) {
+    throw new Error(
+      "Could not read the Windows directory security descriptor; powershell.exe with Get-Acl is required.",
       { cause: error },
     );
   }

@@ -4,7 +4,10 @@ import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
-import { createOwnerOnlyWindowsDirectory } from "../platform/windows-acl.js";
+import {
+  createOwnerOnlyWindowsDirectory,
+  readWindowsDirectorySecurityDescriptor,
+} from "../platform/windows-acl.js";
 import {
   secureCachedWindowsLockRoot,
   type WindowsLockRootIdentity,
@@ -655,6 +658,7 @@ export async function secureProviderRecorderLockRoot(
   options: {
     platform?: NodeJS.Platform;
     createWindowsDirectory?: (directoryPath: string) => Promise<void>;
+    readWindowsDirectorySecurityDescriptor?: (directoryPath: string) => Promise<string>;
   } = {},
 ): Promise<string> {
   if ((options.platform ?? process.platform) === "win32") {
@@ -667,6 +671,10 @@ export async function secureProviderRecorderLockRoot(
         await (options.createWindowsDirectory ?? createOwnerOnlyWindowsDirectory)(root);
       },
       errorPrefix: "Provider recorder lock directory",
+      readSecurityDescriptor: () =>
+        (options.readWindowsDirectorySecurityDescriptor ?? readWindowsDirectorySecurityDescriptor)(
+          root,
+        ),
       root,
     });
   }
