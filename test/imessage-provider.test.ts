@@ -56,6 +56,23 @@ describe("iMessage thread matching", () => {
     ).toBe(false);
   });
 
+  it("scopes direct targets even when no explicit thread is expected", () => {
+    const target = { id: "+15551234567" };
+
+    expect(
+      matchesIMessageThread("iMessage;-;unrelated-guid", undefined, target, {
+        chatGuid: "iMessage;-;unrelated-guid",
+        chatIdentifier: "+15557654321",
+      }),
+    ).toBe(false);
+    expect(
+      matchesIMessageThread("iMessage;-;expected-guid", undefined, target, {
+        chatGuid: "iMessage;-;expected-guid",
+        chatIdentifier: "+15551234567",
+      }),
+    ).toBe(true);
+  });
+
   it("does not treat fixture-local ids as provider thread aliases", () => {
     expect(
       matchesIMessageThread(
@@ -112,6 +129,70 @@ describe("iMessage thread matching", () => {
         id: "imsg-guid-alias",
         text: "recipient alias",
         threadId: "iMessage;-;chat-guid-1",
+      });
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
+  it("does not let an unrelated direct chat satisfy a recipient wait", async () => {
+    const config = await createLocalMockConfig("imessage", "/imessage/webhook");
+    const provider = new IMessageProviderAdapter("imessage", config, "crabline");
+    const context = createProviderContext("imessage", config, {
+      id: "+15551234567",
+      metadata: {},
+    });
+    context.fixture.inboundMatch.author = "any";
+
+    try {
+      const endpoint = (await provider.probe(context)).details
+        .find((detail) => detail.startsWith("webhook endpoint "))
+        ?.replace("webhook endpoint ", "");
+      expect(endpoint).toBeDefined();
+      const since = new Date(Date.now() - 1000).toISOString();
+      const unrelated = await fetch(endpoint!, {
+        body: JSON.stringify({
+          chatGuid: "iMessage;-;unrelated-guid",
+          chatIdentifier: "+15557654321",
+          guid: "imsg-unrelated-direct",
+          text: "shared direct nonce",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(unrelated.status).toBe(200);
+
+      await expect(
+        provider.waitForInbound({
+          ...context,
+          nonce: "shared direct nonce",
+          since,
+          timeoutMs: 25,
+        }),
+      ).resolves.toBeNull();
+
+      const expected = await fetch(endpoint!, {
+        body: JSON.stringify({
+          chatGuid: "iMessage;-;expected-guid",
+          chatIdentifier: "+15551234567",
+          guid: "imsg-expected-direct",
+          text: "shared direct nonce",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(expected.status).toBe(200);
+
+      await expect(
+        provider.waitForInbound({
+          ...context,
+          nonce: "shared direct nonce",
+          since,
+          timeoutMs: 500,
+        }),
+      ).resolves.toMatchObject({
+        id: "imsg-expected-direct",
+        threadId: "iMessage;-;expected-guid",
       });
     } finally {
       await provider.cleanup();

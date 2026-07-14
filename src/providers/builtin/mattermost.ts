@@ -158,17 +158,17 @@ export function matchesMattermostThread(
   if (!expectedThreadId) {
     return true;
   }
-  const scopedExpected =
+  if (
     target.channelId &&
     MATTERMOST_ID_RULE.pattern.test(expectedThreadId) &&
     expectedThreadId !== target.channelId
-      ? mattermostThreadKey(target.channelId, expectedThreadId)
-      : expectedThreadId;
+  ) {
+    return candidateThreadId === mattermostThreadKey(target.channelId, expectedThreadId);
+  }
   return (
     candidateThreadId === expectedThreadId ||
-    candidateThreadId === scopedExpected ||
-    (MATTERMOST_ID_RULE.pattern.test(scopedExpected) &&
-      candidateThreadId.startsWith(`${scopedExpected}:thread:`))
+    (MATTERMOST_ID_RULE.pattern.test(expectedThreadId) &&
+      candidateThreadId.startsWith(`${expectedThreadId}:thread:`))
   );
 }
 

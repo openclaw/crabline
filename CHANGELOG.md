@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Scope iMessage direct waits and Matrix and Mattermost thread correlation to their native conversations.
 - Escape visually unsafe Unicode controls in JSON reports, return a stable error document for unserializable values, and preserve Node write encoding semantics in test captures.
 - Ignore typeless Slack callbacks and redact URL fragments from Zalo recorder evidence.
 - Bind agent acknowledgements to the expected nonce instead of accepting an unrelated ACK.
