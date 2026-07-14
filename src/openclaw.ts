@@ -609,16 +609,23 @@ export async function runOpenClawCrablineProviderReadiness(
       probeSettlement = getUnsettledOpenClawCrablineProviderProbe(error);
     }
     if (probeSettlement) {
-      const primaryFailure = probeFailure;
-      void waitForOpenClawCrablineProbeCleanup(probeSettlement).then(async () => {
-        try {
-          await adapter.close();
-        } catch (cleanupError) {
-          if (primaryFailure instanceof Error) {
-            attachOpenClawCrablineProbeCleanupFailure(primaryFailure, cleanupError);
-          }
+      await waitForOpenClawCrablineProbeCleanup(probeSettlement);
+      try {
+        await adapter.close();
+      } catch (cleanupError) {
+        if (probeFailure instanceof Error) {
+          attachOpenClawCrablineProbeCleanupFailure(probeFailure, cleanupError);
+        } else {
+          const combinedError = new Error(
+            "OpenClaw Crabline provider probe and cleanup both failed.",
+            { cause: cleanupError },
+          );
+          Object.defineProperty(combinedError, "errors", {
+            value: [probeFailure, cleanupError],
+          });
+          throw combinedError;
         }
-      });
+      }
     } else {
       try {
         await adapter.close();

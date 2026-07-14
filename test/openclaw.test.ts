@@ -577,6 +577,24 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
+  it("preserves a known probe HTTP failure when body cancellation stalls", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          cancel() {
+            return new Promise<void>(() => {});
+          },
+        }),
+        { status: 503 },
+      ),
+    );
+    try {
+      await expect(probeOpenClawCrablineProvider(manifest)).rejects.toThrow(/HTTP 503/u);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it.each([
     { ok: true },
     { ok: true, result: null },
@@ -3246,7 +3264,7 @@ describe("OpenClaw local provider bridge", () => {
     },
   );
 
-  it("defers readiness cleanup while an aborted provider probe remains unsettled", async () => {
+  it("closes readiness adapters before returning an unsettled probe failure", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-probe-drain-"));
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const controller = new AbortController();
@@ -3293,24 +3311,16 @@ describe("OpenClaw local provider bridge", () => {
       await abortObserved;
 
       const result = await outcome;
-      expect(close).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
       expect(result.kind).toBe("rejected");
       expect(result).toMatchObject({
         error: expect.objectContaining({
+          cause: expect.objectContaining({
+            errors: expect.arrayContaining([cleanupFailure]),
+          }),
           message: "Crabline Telegram getMe probe timed out after 5000 ms.",
         }),
       });
-
-      await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
-      await vi.waitFor(() =>
-        expect(result).toMatchObject({
-          error: expect.objectContaining({
-            cause: expect.objectContaining({
-              errors: expect.arrayContaining([cleanupFailure]),
-            }),
-          }),
-        }),
-      );
     } finally {
       timeoutMock.mockRestore();
       await fs.rm(outputDir, { recursive: true, force: true });
