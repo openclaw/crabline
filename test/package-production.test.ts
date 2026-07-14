@@ -346,31 +346,27 @@ describe("production package", () => {
     }
   }, 120_000);
 
-  it(
-    "embeds source contents in published JavaScript source maps",
-    async () => {
-      const root = process.cwd();
-      const pack = await npmPackDryRun(root);
-      const sourceMaps = pack.files
-        .map((file) => file.path)
-        .filter((file) => file.startsWith("dist/") && file.endsWith(".js.map"));
+  it("embeds source contents in published JavaScript source maps", async () => {
+    const root = process.cwd();
+    const pack = await npmPackDryRun(root);
+    const sourceMaps = pack.files
+      .map((file) => file.path)
+      .filter((file) => file.startsWith("dist/") && file.endsWith(".js.map"));
 
-      expect(sourceMaps).not.toEqual([]);
-      await Promise.all(
-        sourceMaps.map(async (file) => {
-          const sourceMap = JSON.parse(await fs.readFile(path.join(root, file), "utf8")) as {
-            sources?: unknown[];
-            sourcesContent?: unknown[];
-          };
-          expect(sourceMap.sourcesContent, `${file} is missing inline source contents`).toHaveLength(
-            sourceMap.sources?.length ?? 0,
-          );
-          expect(sourceMap.sourcesContent?.every((source) => typeof source === "string")).toBe(true);
-        }),
-      );
-    },
-    120_000,
-  );
+    expect(sourceMaps).not.toEqual([]);
+    await Promise.all(
+      sourceMaps.map(async (file) => {
+        const sourceMap = JSON.parse(await fs.readFile(path.join(root, file), "utf8")) as {
+          sources?: unknown[];
+          sourcesContent?: unknown[];
+        };
+        expect(sourceMap.sourcesContent, `${file} is missing inline source contents`).toHaveLength(
+          sourceMap.sources?.length ?? 0,
+        );
+        expect(sourceMap.sourcesContent?.every((source) => typeof source === "string")).toBe(true);
+      }),
+    );
+  }, 120_000);
 
   it("uses portable cleanup scripts", async () => {
     const root = process.cwd();

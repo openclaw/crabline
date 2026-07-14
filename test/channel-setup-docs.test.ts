@@ -60,9 +60,7 @@ describe("channel setup contracts", () => {
     })).toSorted((left, right) => left.platform.localeCompare(right.platform));
     const documentedWebhooks = new Map(
       Array.from(
-        channelSetup.matchAll(
-          /^\| `([^`]+)`\s+\| `([^`]+)`\s+\| `([0-9]+)`\s+\|$/gmu,
-        ),
+        channelSetup.matchAll(/^\| `([^`]+)`\s+\| `([^`]+)`\s+\| `([0-9]+)`\s+\|$/gmu),
         (match) => [match[1]!, { path: match[2]!, port: Number(match[3]) }] as const,
       ),
     );
