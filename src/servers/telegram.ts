@@ -28,6 +28,7 @@ import {
 } from "./webhook-target.js";
 import {
   canonicalizeTelegramUsername,
+  isTelegramUsernameChatId,
   TELEGRAM_BOT_USERNAME_PATTERN,
   TELEGRAM_NATIVE_CHAT_ID_MAX,
   telegramUsernameChatId,
@@ -752,7 +753,7 @@ async function parseMultipartFormDataRequest(
     const boundary = parseTelegramMultipartBoundary(contentType);
     const bodyBoundary = Buffer.concat([Buffer.from("\r\n"), boundary]);
     const reader = new TelegramMultipartReader(request, TELEGRAM_MAX_REQUEST_BODY_BYTES);
-    const fields: Record<string, unknown> = {};
+    const fields = Object.create(null) as Record<string, unknown>;
     let retainedTextBytes = 0;
     let partCount = 0;
     let boundaryKind = await reader.readInitialBoundary(
@@ -899,7 +900,7 @@ function createBotUser(state: TelegramServerState) {
 function inferTelegramChatType(chatId: number): TelegramChat["type"] {
   return chatId >= 0
     ? "private"
-    : String(chatId).startsWith("-100") || BigInt(chatId) < -TELEGRAM_NATIVE_CHAT_ID_MAX
+    : String(chatId).startsWith("-100") || isTelegramUsernameChatId(chatId)
       ? "supergroup"
       : "group";
 }

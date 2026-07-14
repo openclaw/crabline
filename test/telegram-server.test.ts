@@ -5,6 +5,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startTelegramServer, type StartedTelegramServer } from "../src/index.js";
 import { handleTelegramGetUpdates, withTelegramWebhookDeadline } from "../src/servers/telegram.js";
+import {
+  TELEGRAM_NATIVE_CHAT_ID_MAX,
+  telegramUsernameChatId,
+} from "../src/servers/telegram-identity.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedTelegramServer[] = [];
@@ -218,6 +222,16 @@ describe("telegram local provider server", () => {
     });
     expect(secondPayload.result).toMatchObject({ message_id: 2 });
     expect(secondPayload.result.chat.id).toBe(firstPayload.result.chat.id);
+
+    for (const username of ["@Crabline_Channel", "@another_channel", "@collectible"]) {
+      const chatId = telegramUsernameChatId(username);
+      expect(chatId).toBeDefined();
+      expect(Number.isSafeInteger(chatId)).toBe(true);
+      expect(BigInt(Math.abs(chatId!)) <= TELEGRAM_NATIVE_CHAT_ID_MAX).toBe(true);
+    }
+    expect(telegramUsernameChatId("@Crabline_Channel")).toBe(
+      telegramUsernameChatId("@crabline_channel"),
+    );
   });
 
   it("preserves registered channel and supergroup types for username destinations", async () => {
@@ -2234,6 +2248,39 @@ describe("telegram local provider server", () => {
         },
       },
     });
+  });
+
+  it("keeps prototype-special multipart fields as own request properties", async () => {
+    let recordedBody: unknown;
+    const server = await startTelegramServer({
+      botToken: "test-token-placeholder",
+      onEvent(event) {
+        if (event.path === "/bot<redacted>/sendMessage") {
+          recordedBody = event.body;
+        }
+      },
+    });
+    servers.push(server);
+    const body = new FormData();
+    body.set("chat_id", "100");
+    body.set("text", "prototype-safe");
+    body.set(
+      "__proto__",
+      new Blob(["prototype bytes"], { type: "application/octet-stream" }),
+      "prototype.bin",
+    );
+
+    const response = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body,
+        method: "POST",
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(recordedBody).toBeTypeOf("object");
+    expect(Object.hasOwn(recordedBody as object, "__proto__")).toBe(true);
+    expect((recordedBody as Record<string, unknown>).__proto__).toBe("prototype.bin");
   });
 
   it("streams multipart files across chunk-split boundaries without retaining upload bytes", async () => {
