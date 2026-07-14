@@ -794,6 +794,53 @@ describe("run behavior", () => {
     },
   );
 
+  it.each(["auth", "config"] as const)(
+    "does not retry permanent %s inbound failures",
+    async (failureKind) => {
+      const send = vi.fn(async () => ({
+        accepted: true,
+        messageId: "sent",
+        threadId: "thread",
+      }));
+      const waitForInbound = vi.fn(async () => {
+        throw new CrablineError(`permanent ${failureKind} inbound failure`, {
+          kind: failureKind,
+        });
+      });
+      const provider: ProviderAdapter = {
+        id: "mock",
+        platform: "loopback",
+        status: "ready",
+        supports: ["roundtrip"],
+        normalizeTarget(target) {
+          return { id: target.id, metadata: target.metadata };
+        },
+        probe: async () => ({ details: [], healthy: true }),
+        send,
+        waitForInbound,
+      };
+      const retryingManifest = withAllCapabilities({
+        ...manifest,
+        fixtures: [{ ...manifest.fixtures[0]!, retries: 3 }],
+      });
+
+      const result = await runFixtureCommand({
+        fixtureId: "fixture",
+        manifest: retryingManifest,
+        manifestPath: "/tmp/crabline.yaml",
+        registry: buildRegistry(provider),
+      });
+
+      expect(result).toMatchObject({ failureKind, ok: false });
+      expect(result.diagnostics).toEqual([
+        "accepted message sent",
+        `permanent ${failureKind} inbound failure`,
+      ]);
+      expect(send).toHaveBeenCalledOnce();
+      expect(waitForInbound).toHaveBeenCalledOnce();
+    },
+  );
+
   it("retries rejected outbound results and fails when rejection persists", async () => {
     let sendCalls = 0;
     const provider: ProviderAdapter = {
