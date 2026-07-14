@@ -151,7 +151,7 @@ describe("loopback chat adapter", () => {
     expect(() => adapter!.fetchMessages("thread-1", { limit })).toThrow(/positive safe integer/u);
   });
 
-  it.each(["0", "-1", "1.5", "not-a-cursor", "9007199254740992"])(
+  it.each(["", "0", "-1", "1.5", "not-a-cursor", "9007199254740992"])(
     "rejects invalid message cursors: %s",
     (cursor) => {
       adapter = new LoopbackChatAdapter("crabline");

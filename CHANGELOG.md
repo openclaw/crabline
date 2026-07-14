@@ -10,6 +10,7 @@
 - Classify empty Zalo and Mattermost webhook credentials as configuration failures.
 - Confine Discord's generated recorder path to Crabline's recorder directory.
 - Isolate the local iMessage adapter from ambient gateway environment variables and accept native nested `imsg` notifications.
+- Reject empty loopback cursors, preserve Slack edit event identity, and prune settled WhatsApp wait cursors during concurrent waits.
 - Stream Telegram multipart uploads with bounded parser metadata instead of copying complete files through `FormData`.
 - Keep Unix recorder identity locks in one validated private per-user namespace across processes and recorder path changes.
 - Reject non-positive Telegram admin message IDs and enforce native Mattermost channel types and unique normalized usernames.

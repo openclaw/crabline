@@ -240,7 +240,9 @@ function normalizeSlackEventsPayload(payload: unknown) {
       });
     }
     const threadTs = message.thread_ts;
-    const eventId = optionalString(message, "ts");
+    const eventId = isMessageChanged
+      ? optionalString(event, "event_ts")
+      : optionalString(message, "ts");
     return {
       author: slackAuthorFromEvent(message),
       ...(eventId

@@ -212,7 +212,7 @@ export class LoopbackChatAdapter {
     }
     const limit = options?.limit ?? storedMessages.length;
     let cursor: number | undefined;
-    if (options?.cursor) {
+    if (options?.cursor !== undefined) {
       if (!/^[1-9]\d*$/u.test(options.cursor)) {
         throw new CrablineError("Loopback message cursor must be a positive safe integer.", {
           kind: "config",

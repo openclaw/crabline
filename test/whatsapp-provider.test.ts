@@ -750,6 +750,55 @@ describe("WhatsApp webhook normalizer", () => {
       await provider.cleanup();
     }
   });
+
+  it("prunes settled wait cursors while another wait remains active", async () => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
+    const context = createProviderContext("whatsapp", config, {
+      id: "15551234567",
+      metadata: {},
+    });
+    const contexts = Array.from({ length: 65 }, (_, index) => ({
+      ...context,
+      nonce: `mp-whatsapp-cursor-${index}-12345678`,
+      since: new Date(0).toISOString(),
+      timeoutMs: 1_000,
+    }));
+    const controllers = contexts.map(() => new AbortController());
+
+    try {
+      await provider.probe(context);
+      const waits = contexts.map((waitContext, index) =>
+        provider.waitForInbound({ ...waitContext, signal: controllers[index]!.signal }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await appendRecordedInbound(config.whatsapp!.recorder.path!, {
+        author: "assistant",
+        id: "cursor-prune-0",
+        provider: "whatsapp",
+        sentAt: new Date().toISOString(),
+        text: contexts[0]!.nonce,
+        threadId: "15551234567",
+      });
+
+      await expect(waits[0]).resolves.toMatchObject({ id: "cursor-prune-0" });
+      await expect(provider.waitForInbound(contexts[0]!)).resolves.toMatchObject({
+        id: "cursor-prune-0",
+      });
+
+      for (const controller of controllers.slice(1)) {
+        controller.abort();
+      }
+      await expect(Promise.all(waits.slice(1))).resolves.toEqual(
+        Array.from({ length: 64 }, () => null),
+      );
+    } finally {
+      for (const controller of controllers) {
+        controller.abort();
+      }
+      await provider.cleanup();
+    }
+  });
 });
 
 const contractNonces = {
