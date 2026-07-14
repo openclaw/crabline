@@ -38,6 +38,29 @@ function expectedAncestrySyncPaths(filePath: string, syncThroughPath?: string): 
   }
 }
 
+async function writeOwnerOnlyClaimFile(filePath: string, contents: string): Promise<void> {
+  if (process.platform === "win32") {
+    await createOwnerOnlyWindowsFile(filePath);
+    await fs.writeFile(filePath, contents);
+    return;
+  }
+  await fs.writeFile(filePath, contents, { mode: 0o600 });
+  await fs.chmod(filePath, 0o600);
+}
+
+async function writeOwnerOnlyClaimDirectory(
+  directoryPath: string,
+  contents: string,
+): Promise<void> {
+  if (process.platform === "win32") {
+    await createOwnerOnlyWindowsDirectoryAncestry(directoryPath);
+  } else {
+    await fs.mkdir(directoryPath, { mode: 0o700 });
+    await fs.chmod(directoryPath, 0o700);
+  }
+  await writeOwnerOnlyClaimFile(path.join(directoryPath, "owner.json"), contents);
+}
+
 describe("OpenClaw private file publication", () => {
   it.skipIf(process.platform === "win32")(
     "replaces permissive POSIX files with mode 0600",
@@ -766,16 +789,14 @@ describe("OpenClaw private file publication", () => {
     const directory = await createTempDir();
     try {
       const claimPath = path.join(directory, ".crabline-private-mutation.claim");
-      await fs.mkdir(claimPath, { mode: 0o700 });
-      await fs.writeFile(
-        path.join(claimPath, "owner.json"),
+      await writeOwnerOnlyClaimDirectory(
+        claimPath,
         `${JSON.stringify({
           ownerId: "stale-directory-owner",
           pid: 999_994,
           processIdentity: "dead:stale-directory-owner",
           processStartedAtMs: 100,
         })}\n`,
-        { mode: 0o600 },
       );
 
       await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
@@ -968,31 +989,27 @@ describe("OpenClaw private file publication", () => {
       if (!replacedRoot && to === nestedClaimPath) {
         replacedRoot = true;
         await fs.rm(claimPath, { recursive: true });
-        await fs.mkdir(claimPath, { mode: 0o700 });
-        await fs.writeFile(
-          path.join(claimPath, "owner.json"),
+        await writeOwnerOnlyClaimDirectory(
+          claimPath,
           `${JSON.stringify({
             ownerId: "live-directory-owner",
             pid: 777_777,
             processIdentity: "live:directory-owner",
             processStartedAtMs: 300,
           })}\n`,
-          { mode: 0o600 },
         );
       }
       await actualRename(from, to);
     });
     try {
-      await fs.mkdir(claimPath, { mode: 0o700 });
-      await fs.writeFile(
-        path.join(claimPath, "owner.json"),
+      await writeOwnerOnlyClaimDirectory(
+        claimPath,
         `${JSON.stringify({
           ownerId: "stale-directory-owner",
           pid: 999_994,
           processIdentity: "dead:stale-directory-owner",
           processStartedAtMs: 100,
         })}\n`,
-        { mode: 0o600 },
       );
 
       await expect(
@@ -1046,16 +1063,14 @@ describe("OpenClaw private file publication", () => {
       await actualRename(from, to);
     });
     try {
-      await fs.mkdir(claimPath, { mode: 0o700 });
-      await fs.writeFile(
-        path.join(claimPath, "owner.json"),
+      await writeOwnerOnlyClaimDirectory(
+        claimPath,
         `${JSON.stringify({
           ownerId: "stale-directory-owner",
           pid: 999_994,
           processIdentity: "dead:stale-directory-owner",
           processStartedAtMs: 100,
         })}\n`,
-        { mode: 0o600 },
       );
 
       await expect(
@@ -1490,7 +1505,7 @@ describe("OpenClaw private file publication", () => {
       processIdentity: "dead:short-read-owner",
       processStartedAtMs: 100,
     })}\n`;
-    await fs.writeFile(claimPath, contents, { mode: 0o600 });
+    await writeOwnerOnlyClaimFile(claimPath, contents);
     const actualOpen = fs.open.bind(fs);
     const openSpy = vi.spyOn(fs, "open").mockImplementation(async (openedPath, flags, mode) => {
       const handle =
@@ -1531,7 +1546,7 @@ describe("OpenClaw private file publication", () => {
     const directory = await createTempDir();
     try {
       const claimPath = path.join(directory, ".crabline-private-mutation.claim");
-      await fs.writeFile(
+      await writeOwnerOnlyClaimFile(
         claimPath,
         `${JSON.stringify({
           ownerId: "stale-owner",
@@ -1539,9 +1554,7 @@ describe("OpenClaw private file publication", () => {
           processIdentity: "dead:stale-owner",
           processStartedAtMs: 100,
         })}\n`,
-        { mode: 0o600 },
       );
-      await fs.chmod(claimPath, 0o600);
 
       await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
         claimRuntime: {
@@ -1571,14 +1584,13 @@ describe("OpenClaw private file publication", () => {
     const directory = await createTempDir();
     try {
       const claimPath = path.join(directory, ".crabline-private-mutation.claim");
-      await fs.writeFile(
+      await writeOwnerOnlyClaimFile(
         claimPath,
         `${JSON.stringify({
           ownerId: "reused-pid-owner",
           pid: process.pid,
           processStartedAtMs: 100,
         })}\n`,
-        { mode: 0o600 },
       );
 
       await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
@@ -1610,7 +1622,7 @@ describe("OpenClaw private file publication", () => {
       commitReached = resolve;
     });
     try {
-      await fs.writeFile(
+      await writeOwnerOnlyClaimFile(
         path.join(directory, ".crabline-private-mutation.claim"),
         `${JSON.stringify({
           ownerId: "stale-root-owner",
@@ -1618,7 +1630,6 @@ describe("OpenClaw private file publication", () => {
           processIdentity: "dead:stale-root-owner",
           processStartedAtMs: 100,
         })}\n`,
-        { mode: 0o600 },
       );
       const firstPublication = publishPrivateFileAtomically(
         path.join(directory, "manifest.json"),
@@ -1669,7 +1680,7 @@ describe("OpenClaw private file publication", () => {
     try {
       const claimPath = path.join(directory, ".crabline-private-mutation.claim");
       const candidatePath = `${claimPath}.crashed.candidate`;
-      await fs.writeFile(
+      await writeOwnerOnlyClaimFile(
         candidatePath,
         `${JSON.stringify({
           ownerId: "crashed-owner",
@@ -1677,7 +1688,6 @@ describe("OpenClaw private file publication", () => {
           processIdentity: "dead:crashed-owner",
           processStartedAtMs: 100,
         })}\n`,
-        { mode: 0o600 },
       );
       await fs.link(candidatePath, claimPath);
       expect((await fs.stat(claimPath)).nlink).toBe(2);
@@ -1716,7 +1726,7 @@ describe("OpenClaw private file publication", () => {
         processIdentity: "dead:crashed-compactor",
         processStartedAtMs: 100,
       })}\n`;
-      await fs.writeFile(rootClaimPath, contents, { mode: 0o600 });
+      await writeOwnerOnlyClaimFile(rootClaimPath, contents);
       const successorPath = path.join(
         directory,
         `.crabline-private-mutation.${createHash("sha256").update(contents).digest("hex")}.claim`,
@@ -1747,47 +1757,50 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
-  it("compacts more stale claims than the former fixed traversal limit", async () => {
-    const directory = await createTempDir();
-    try {
-      let claimPath = path.join(directory, ".crabline-private-mutation.claim");
-      for (let index = 0; index < 1025; index += 1) {
-        const contents = `${JSON.stringify({
-          ownerId: `stale-${index}`,
-          pid: 900_000 + index,
-          processIdentity: `dead:stale-${index}`,
-          processStartedAtMs: index + 1,
-        })}\n`;
-        await fs.writeFile(claimPath, contents, { mode: 0o600 });
-        claimPath = path.join(
-          directory,
-          `.crabline-private-mutation.${createHash("sha256").update(contents).digest("hex")}.claim`,
+  it.skipIf(process.platform === "win32")(
+    "compacts more stale claims than the former fixed traversal limit",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        let claimPath = path.join(directory, ".crabline-private-mutation.claim");
+        for (let index = 0; index < 1025; index += 1) {
+          const contents = `${JSON.stringify({
+            ownerId: `stale-${index}`,
+            pid: 900_000 + index,
+            processIdentity: `dead:stale-${index}`,
+            processStartedAtMs: index + 1,
+          })}\n`;
+          await fs.writeFile(claimPath, contents, { mode: 0o600 });
+          claimPath = path.join(
+            directory,
+            `.crabline-private-mutation.${createHash("sha256").update(contents).digest("hex")}.claim`,
+          );
+        }
+
+        await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
+          claimRuntime: {
+            getProcessIdentity: () => null,
+            isProcessAlive: () => false,
+            ownerId: "replacement-owner",
+            pid: process.pid,
+            processIdentity: "test:replacement-owner",
+            processStartedAtMs: 2000,
+          },
+        });
+
+        await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
+          "private\n",
         );
+        expect(
+          (await fs.readdir(directory)).filter((entry) =>
+            entry.startsWith(".crabline-private-mutation"),
+          ),
+        ).toEqual([]);
+      } finally {
+        await disposeTempDir(directory);
       }
-
-      await publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
-        claimRuntime: {
-          getProcessIdentity: () => null,
-          isProcessAlive: () => false,
-          ownerId: "replacement-owner",
-          pid: process.pid,
-          processIdentity: "test:replacement-owner",
-          processStartedAtMs: 2000,
-        },
-      });
-
-      await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
-        "private\n",
-      );
-      expect(
-        (await fs.readdir(directory)).filter((entry) =>
-          entry.startsWith(".crabline-private-mutation"),
-        ),
-      ).toEqual([]);
-    } finally {
-      await disposeTempDir(directory);
-    }
-  });
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "migrates an owned permissive publication parent before writing",

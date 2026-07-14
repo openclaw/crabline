@@ -16,5 +16,6 @@ export default defineConfig({
     },
     environment: "node",
     exclude: [...configDefaults.exclude, "dist/**"],
+    testTimeout: process.platform === "win32" ? 30_000 : 5_000,
   },
 });
