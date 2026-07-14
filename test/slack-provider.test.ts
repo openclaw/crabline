@@ -35,10 +35,12 @@ describe("Slack URL verification", () => {
         ts: "1700000001.000200",
         type: "message",
       },
+      event_id: "Ev1234567890",
       token: "placeholder",
       type: "event_callback",
     });
 
+    expect(normalized.id).toBe("Ev1234567890");
     expect(normalized.raw).toMatchObject({ type: "event_callback" });
     expect(normalized.raw).not.toHaveProperty("token");
   });
@@ -334,6 +336,60 @@ describe("slack provider", () => {
         author: "user",
         text: `ACK ${nonce}`,
         threadId: "D1234567890",
+      });
+    },
+  );
+
+  it.each(["U1234567890", "W1234567890"])(
+    "correlates threaded D-channel events to direct target %s",
+    async (userId) => {
+      const config = await createSlackConfig(0);
+      const threadTs = "1700000000.000100";
+      const provider = new SlackProviderAdapter("slack", config, "crabline");
+      providers.push(provider);
+      const context = createContext(config, {
+        id: userId,
+        metadata: {},
+        threadId: threadTs,
+      });
+      context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
+      const endpoint = endpointFromDetails((await provider.probe(context)).details);
+      const nonce = `threaded-direct-${userId}`;
+      const waiting = provider.waitForInbound({
+        ...context,
+        nonce,
+        since: new Date(Date.now() - 1000).toISOString(),
+        timeoutMs: 500,
+      });
+
+      for (const [eventId, candidateThreadTs] of [
+        ["EvWRONGTHREAD1", "1700000000.000101"],
+        ["EvRIGHTTHREAD1", threadTs],
+      ]) {
+        const response = await fetch(endpoint, {
+          body: JSON.stringify({
+            event: {
+              channel: "D1234567890",
+              text: `ACK ${nonce}`,
+              thread_ts: candidateThreadTs,
+              ts: candidateThreadTs === threadTs ? "1700000002.000300" : "1700000001.000200",
+              type: "message",
+              user: userId,
+            },
+            event_id: eventId,
+            type: "event_callback",
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+        expect(response.status).toBe(200);
+      }
+
+      await expect(waiting).resolves.toMatchObject({
+        author: "user",
+        id: "EvRIGHTTHREAD1",
+        text: `ACK ${nonce}`,
+        threadId: `D1234567890:thread:${threadTs}`,
       });
     },
   );
@@ -709,6 +765,56 @@ describe("slack provider", () => {
       method: "POST",
     });
     expect(accepted.status).toBe(200);
+  });
+
+  it("deduplicates retries by outer event_id without suppressing distinct events", async () => {
+    const signingSecret = "test-token-placeholder";
+    const config = await createSlackConfig(0, signingSecret);
+    const provider = new SlackProviderAdapter("slack", config, "crabline");
+    providers.push(provider);
+    const endpoint = endpointFromDetails((await provider.probe(createContext(config))).details);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const send = async (eventId: string, text: string, retryNumber?: string): Promise<Response> => {
+      const body = JSON.stringify({
+        event: {
+          channel: "C1234567890",
+          text,
+          ts: "1700000001.000200",
+          type: "message",
+          user: "U1234567890",
+        },
+        event_id: eventId,
+        type: "event_callback",
+      });
+      return await fetch(endpoint, {
+        body,
+        headers: {
+          "content-type": "application/json",
+          ...(retryNumber
+            ? {
+                "x-slack-retry-num": retryNumber,
+                "x-slack-retry-reason": "http_timeout",
+              }
+            : {}),
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature(signingSecret, timestamp, body),
+        },
+        method: "POST",
+      });
+    };
+
+    expect((await send("EvRETRY001", "original delivery")).status).toBe(200);
+    expect((await send("EvRETRY001", "original delivery", "1")).status).toBe(200);
+    expect((await send("EvDISTINCT001", "distinct event")).status).toBe(200);
+
+    const records = (await readFile(config.slack!.recorder.path!, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { id: string; text: string });
+    expect(records).toEqual([
+      expect.objectContaining({ id: "EvRETRY001", text: "original delivery" }),
+      expect.objectContaining({ id: "EvDISTINCT001", text: "distinct event" }),
+    ]);
   });
 
   it("acknowledges unsupported, typeless, and textless callbacks without recording them", async () => {
