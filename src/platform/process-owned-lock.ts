@@ -25,6 +25,7 @@ type ParsedLockOwner = {
 };
 
 type RecoveryClaim = {
+  activeIdentity: DirectoryIdentity;
   activePath: string;
   supersededPaths: SupersededRecoveryClaim[];
 };
@@ -49,6 +50,7 @@ const abandonedDirectoryIdentities = new Map<string, AbandonedDirectoryIdentity>
 
 const OWNER_FILE = "crabline-owner.json";
 const ABANDONED_OWNER_PREFIX = ".crabline-abandoned-";
+const ABANDONED_OWNER_NAME_PATTERN = /^\.crabline-abandoned-[0-9a-f]{64}$/u;
 const MAX_OWNER_BYTES = 4096;
 const MAX_PROCESS_ID = 2_147_483_647;
 const IDENTITY_CACHE_MS = 1000;
@@ -405,6 +407,97 @@ function directoryIdentityMatches(
   actual: Pick<fs.Stats, "dev" | "ino">,
 ): boolean {
   return expected !== undefined && expected.dev === actual.dev && expected.ino === actual.ino;
+}
+
+function lockCleanupError(message: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(message), { code: "ELOCKED" });
+}
+
+function isLockArtifactName(name: string): boolean {
+  return name === OWNER_FILE || ABANDONED_OWNER_NAME_PATTERN.test(name);
+}
+
+function verifiedLockDirectoryStats(
+  directoryPath: fs.PathLike,
+  expectedIdentity: DirectoryIdentity,
+  expectedMtimeMs?: number,
+): fs.Stats | undefined {
+  let stats: fs.Stats;
+  try {
+    stats = fs.lstatSync(directoryPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+  if (
+    !stats.isDirectory() ||
+    stats.isSymbolicLink() ||
+    !directoryIdentityMatches(expectedIdentity, stats) ||
+    (expectedMtimeMs !== undefined && stats.mtimeMs !== expectedMtimeMs)
+  ) {
+    throw lockCleanupError("Recorder lock cleanup target changed.");
+  }
+  return stats;
+}
+
+function removeVerifiedLockDirectorySync(
+  directoryPath: fs.PathLike,
+  expectedIdentity: DirectoryIdentity,
+  expectedMtimeMs?: number,
+): void {
+  if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity, expectedMtimeMs)) {
+    return;
+  }
+  const entries = fs.readdirSync(directoryPath);
+  if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
+    return;
+  }
+  const artifacts: string[] = [];
+  for (const entry of entries) {
+    if (!isLockArtifactName(entry)) {
+      throw lockCleanupError("Recorder lock cleanup found an unexpected artifact.");
+    }
+    if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
+      return;
+    }
+    const artifactPath = path.join(String(directoryPath), entry);
+    const artifact = fs.lstatSync(artifactPath);
+    if (!artifact.isFile() || artifact.isSymbolicLink()) {
+      throw lockCleanupError("Recorder lock cleanup found an unsafe artifact.");
+    }
+    artifacts.push(artifactPath);
+  }
+  artifacts.sort(
+    (left, right) =>
+      Number(path.basename(left) === OWNER_FILE) - Number(path.basename(right) === OWNER_FILE),
+  );
+  for (const artifactPath of artifacts) {
+    if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
+      return;
+    }
+    const artifact = fs.lstatSync(artifactPath);
+    if (!artifact.isFile() || artifact.isSymbolicLink()) {
+      throw lockCleanupError("Recorder lock cleanup artifact changed.");
+    }
+    fs.unlinkSync(artifactPath);
+  }
+  if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
+    return;
+  }
+  try {
+    fs.rmdirSync(directoryPath);
+  } catch (error) {
+    try {
+      if (verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
+        fs.utimesSync(directoryPath, new Date(0), new Date(0));
+      }
+    } catch {
+      // Do not mutate a replacement directory after cleanup loses its identity fence.
+    }
+    throw error;
+  }
 }
 
 function canonicalLockDirectoryPath(directoryPath: fs.PathLike): string {
@@ -776,6 +869,21 @@ function isRecoverableForeignOwner(
   );
 }
 
+function isRecoverableUnknownOwner(
+  candidate: ParsedLockOwner,
+  status: OwnerStatus,
+  stats: Pick<fs.Stats, "mtimeMs">,
+): boolean {
+  return (
+    status === "unknown" &&
+    candidate.owner.version >= 2 &&
+    candidate.owner.processIdentity !== null &&
+    isExactProcessIdentity(candidate.owner.processIdentity) &&
+    Date.now() - candidate.publishedAtMs >= OWNERLESS_LOCK_RECOVERY_MS &&
+    Date.now() - stats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS
+  );
+}
+
 export function createProcessOwnedLockFileSystem(
   options: {
     machineIdentityReader?: () => string | null;
@@ -924,7 +1032,10 @@ export function createProcessOwnedLockFileSystem(
     return published;
   };
 
-  const ownerStatus = (candidate: ParsedLockOwner | null | undefined): OwnerStatus => {
+  const ownerStatus = (
+    candidate: ParsedLockOwner | null | undefined,
+    forceIdentityRefresh = false,
+  ): OwnerStatus => {
     if (!candidate) {
       return "unknown";
     }
@@ -984,6 +1095,7 @@ export function createProcessOwnedLockFileSystem(
     }
     const now = Date.now();
     if (
+      forceIdentityRefresh ||
       !cachedForeignIdentity ||
       cachedForeignIdentity.pid !== claim.pid ||
       cachedForeignIdentity.ownerGenerationKey !== claim.token ||
@@ -1031,11 +1143,32 @@ export function createProcessOwnedLockFileSystem(
   ): void => {
     fs.mkdir(claimPath, { mode: 0o700 }, (claimError) => {
       if (!claimError) {
+        let createdIdentity: DirectoryIdentity | undefined;
         try {
+          const created = fs.lstatSync(claimPath);
+          if (!created.isDirectory() || created.isSymbolicLink()) {
+            throw lockCleanupError("Recorder lock recovery claim changed during creation.");
+          }
+          createdIdentity = directoryIdentity(created);
           publishOwner(claimPath);
-          callback(null, { activePath: claimPath, supersededPaths: [] });
+          const published = verifiedLockDirectoryStats(claimPath, createdIdentity);
+          if (!published) {
+            throw lockCleanupError("Recorder lock recovery claim disappeared during publication.");
+          }
+          callback(null, {
+            activeIdentity: directoryIdentity(published),
+            activePath: claimPath,
+            supersededPaths: [],
+          });
         } catch (ownerError) {
-          fs.rmdir(claimPath, () => callback(ownerError as NodeJS.ErrnoException));
+          if (createdIdentity) {
+            try {
+              removeVerifiedLockDirectorySync(claimPath, createdIdentity);
+            } catch {
+              // Preserve an unverified replacement instead of deleting it by pathname.
+            }
+          }
+          callback(ownerError as NodeJS.ErrnoException);
         }
         return;
       }
@@ -1054,7 +1187,15 @@ export function createProcessOwnedLockFileSystem(
             const recoverableForeign =
               status === "foreign" && isRecoverableForeignOwner(existingClaim, status, stats);
             const recoverableUnverifiable = isRecoverableUnverifiableOwner(existingClaim, status);
-            if (status === "dead" || recoverableForeign || recoverableUnverifiable) {
+            const recoverableUnknown =
+              isRecoverableUnknownOwner(existingClaim, status, stats) &&
+              isRecoverableUnknownOwner(existingClaim, ownerStatus(existingClaim, true), stats);
+            if (
+              status === "dead" ||
+              recoverableForeign ||
+              recoverableUnverifiable ||
+              recoverableUnknown
+            ) {
               existingFingerprint = `owner:${existingClaim.owner.token}`;
             }
           } else if (isRecoverableOwnerlessClaim(stats)) {
@@ -1091,6 +1232,7 @@ export function createProcessOwnedLockFileSystem(
           );
         } else {
           callback(null, {
+            activeIdentity: takeoverClaim.activeIdentity,
             activePath: takeoverClaim.activePath,
             supersededPaths: [
               { identity: existingIdentity, path: claimPath },
@@ -1113,12 +1255,22 @@ export function createProcessOwnedLockFileSystem(
     const supersededPaths = [...claim.supersededPaths].reverse();
     let removedSupersededPath = false;
     const removeActiveClaim = (): void => {
-      fs.rm(claim.activePath, { force: true, recursive: true }, (activeError) => {
-        if (activeError && !abandonOwner(claim.activePath)) {
-          retainedCoordinationClaims.set(coordinationKey, claim);
-        }
-        callback();
-      });
+      let activeError: NodeJS.ErrnoException | null = null;
+      try {
+        removeVerifiedLockDirectorySync(claim.activePath, claim.activeIdentity);
+      } catch (error) {
+        activeError = error as NodeJS.ErrnoException;
+      }
+      if (activeError && !abandonOwner(claim.activePath)) {
+        retainedCoordinationClaims.set(coordinationKey, claim);
+      }
+      callback();
+    };
+    const preserveActiveClaim = (): void => {
+      if (!abandonOwner(claim.activePath)) {
+        retainedCoordinationClaims.set(coordinationKey, claim);
+      }
+      callback();
     };
     const removeSuperseded = (index: number): void => {
       const superseded = supersededPaths[index];
@@ -1126,49 +1278,42 @@ export function createProcessOwnedLockFileSystem(
         removeActiveClaim();
         return;
       }
-      let current: fs.Stats;
+      let current: fs.Stats | undefined;
       try {
-        current = fs.lstatSync(superseded.path);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          removedSupersededPath = true;
-          removeSuperseded(index + 1);
-          return;
-        }
+        current = verifiedLockDirectoryStats(
+          superseded.path,
+          superseded.identity,
+          superseded.identity.mtimeMs,
+        );
+      } catch {
         if (!removedSupersededPath) {
-          if (!abandonOwner(claim.activePath)) {
-            retainedCoordinationClaims.set(coordinationKey, claim);
-          }
-          callback();
+          preserveActiveClaim();
           return;
         }
         removeActiveClaim();
         return;
       }
-      if (
-        !current.isDirectory() ||
-        current.isSymbolicLink() ||
-        !directoryIdentityMatches(superseded.identity, current) ||
-        current.mtimeMs !== superseded.identity.mtimeMs
-      ) {
-        removeActiveClaim();
-        return;
-      }
-      fs.rm(superseded.path, { force: true, recursive: true }, (error) => {
-        if (error) {
-          if (!removedSupersededPath) {
-            if (!abandonOwner(claim.activePath)) {
-              retainedCoordinationClaims.set(coordinationKey, claim);
-            }
-            callback();
-            return;
-          }
-          removeActiveClaim();
-          return;
-        }
+      if (!current) {
         removedSupersededPath = true;
         removeSuperseded(index + 1);
-      });
+        return;
+      }
+      try {
+        removeVerifiedLockDirectorySync(
+          superseded.path,
+          superseded.identity,
+          superseded.identity.mtimeMs,
+        );
+      } catch {
+        if (!removedSupersededPath) {
+          preserveActiveClaim();
+          return;
+        }
+        removeActiveClaim();
+        return;
+      }
+      removedSupersededPath = true;
+      removeSuperseded(index + 1);
     };
     removeSuperseded(0);
   };
@@ -1287,6 +1432,10 @@ export function createProcessOwnedLockFileSystem(
         candidate !== undefined &&
         candidate !== null &&
         isRecoverableForeignOwner(candidate, status, stats);
+      const recoverableUnknown =
+        candidate !== undefined &&
+        candidate !== null &&
+        isRecoverableUnknownOwner(candidate, status, stats);
       if (
         candidate &&
         abandonedOwnerKeys.has(abandonedOwnerKey(candidate.lockDirectory, candidate.owner.token))
@@ -1303,6 +1452,7 @@ export function createProcessOwnedLockFileSystem(
         candidate?.owner.token === token ||
           status === "dead" ||
           recoverableForeign ||
+          recoverableUnknown ||
           recoverableInterruptedPublication ||
           recoverableAgedUnverifiableOwner ||
           (candidate !== undefined &&
@@ -1346,22 +1496,23 @@ export function createProcessOwnedLockFileSystem(
           releaseRecoveryClaim(directory, coordinationClaim, () => callback(error));
         };
         const candidate = parseOwner(directoryPath);
+        let initialStats: fs.Stats;
+        try {
+          initialStats = fs.lstatSync(directoryPath);
+          if (!initialStats.isDirectory() || initialStats.isSymbolicLink()) {
+            throw lockCleanupError("Recorder lock recovery target is not a directory.");
+          }
+        } catch (error) {
+          finish(error as NodeJS.ErrnoException);
+          return;
+        }
         if (candidate !== undefined && candidate !== null) {
           interruptedPublicationIdentities.delete(coordinationKey);
         }
         const ownedIdentity = ownedDirectories.get(coordinationKey);
-        let ownsPublishedDirectory = false;
-        if (ownedIdentity) {
-          try {
-            const current = fs.lstatSync(directoryPath);
-            ownsPublishedDirectory =
-              current.isDirectory() && directoryIdentityMatches(ownedIdentity, current);
-          } catch {
-            ownsPublishedDirectory = false;
-          }
-        }
+        const ownsPublishedDirectory = directoryIdentityMatches(ownedIdentity, initialStats);
         if (
-          candidate?.owner.token === token ||
+          (candidate?.owner.token === token && ownsPublishedDirectory) ||
           ((candidate === null || candidate === undefined) && ownsPublishedDirectory)
         ) {
           const tombstonePath = `${coordinationClaim.activePath}.${token}.release`;
@@ -1374,9 +1525,12 @@ export function createProcessOwnedLockFileSystem(
             ownedDirectories.delete(coordinationKey);
             abandonedDirectoryIdentities.delete(coordinationKey);
             abandonedOwnerKeys.delete(abandonedOwnerKey(directory, token));
-            fs.rm(tombstonePath, { force: true, recursive: true }, (removeError) =>
-              finish(removeError),
-            );
+            try {
+              removeVerifiedLockDirectorySync(tombstonePath, directoryIdentity(initialStats));
+              finish(null);
+            } catch (error) {
+              finish(error as NodeJS.ErrnoException);
+            }
           });
           return;
         }
@@ -1402,40 +1556,37 @@ export function createProcessOwnedLockFileSystem(
           candidate !== undefined &&
           candidate !== null &&
           isRecoverableUnverifiableOwner(candidate, status);
-        let recoverableForeign = false;
-        if (candidate !== undefined && candidate !== null && status === "foreign") {
-          try {
-            foreignStats = fs.statSync(directoryPath);
-            recoverableForeign = isRecoverableForeignOwner(candidate, status, foreignStats);
-          } catch (error) {
-            finish(error as NodeJS.ErrnoException);
-            return;
-          }
+        const recoverableForeign =
+          candidate !== undefined &&
+          candidate !== null &&
+          isRecoverableForeignOwner(candidate, status, initialStats);
+        const recoverableUnknown =
+          candidate !== undefined &&
+          candidate !== null &&
+          isRecoverableUnknownOwner(candidate, status, initialStats);
+        if (recoverableForeign) {
+          foreignStats = initialStats;
         }
         if (candidate === undefined || candidate === null) {
-          try {
-            ownerlessStats = fs.statSync(directoryPath);
-            recoverableAbandoned = directoryIdentityMatches(
-              abandonedDirectoryIdentities.get(coordinationKey),
+          ownerlessStats = initialStats;
+          recoverableAbandoned = directoryIdentityMatches(
+            abandonedDirectoryIdentities.get(coordinationKey),
+            ownerlessStats,
+          );
+          recoverableInterruptedPublication =
+            directoryIdentityMatches(
+              interruptedPublicationIdentities.get(coordinationKey),
               ownerlessStats,
-            );
-            recoverableInterruptedPublication =
-              directoryIdentityMatches(
-                interruptedPublicationIdentities.get(coordinationKey),
-                ownerlessStats,
-              ) && Date.now() - ownerlessStats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
-            recoverableAgedUnverifiableOwner =
-              isRecoverableOwnerlessClaim(ownerlessStats) &&
-              (candidate === undefined ||
-                (candidate === null && hasRecoverableMalformedOwner(directoryPath)));
-          } catch (error) {
-            finish(error as NodeJS.ErrnoException);
-            return;
-          }
+            ) && Date.now() - ownerlessStats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
+          recoverableAgedUnverifiableOwner =
+            isRecoverableOwnerlessClaim(ownerlessStats) &&
+            (candidate === undefined ||
+              (candidate === null && hasRecoverableMalformedOwner(directoryPath)));
         }
         if (
           status !== "dead" &&
           !recoverableForeign &&
+          !recoverableUnknown &&
           !recoverableUnverifiable &&
           !recoverableAbandoned &&
           !recoverableInterruptedPublication &&
@@ -1449,46 +1600,59 @@ export function createProcessOwnedLockFileSystem(
           return;
         }
         const refreshed = parseOwner(directoryPath);
-        const refreshedStatus = ownerStatus(refreshed);
+        const refreshedStatus = ownerStatus(refreshed, recoverableUnknown);
+        let refreshedStats: fs.Stats | undefined;
+        try {
+          const current = fs.lstatSync(directoryPath);
+          if (
+            current.isDirectory() &&
+            !current.isSymbolicLink() &&
+            current.dev === initialStats.dev &&
+            current.ino === initialStats.ino &&
+            current.mtimeMs === initialStats.mtimeMs
+          ) {
+            refreshedStats = current;
+          }
+        } catch {
+          // A changed recovery target fails authorization below.
+        }
         let recoveryStillAuthorized =
           candidate !== undefined &&
           candidate !== null &&
+          refreshedStats !== undefined &&
           lockOwnerMatches(candidate, refreshed) &&
           (refreshedStatus === "dead" ||
             (recoverableForeign &&
               refreshed !== undefined &&
               refreshed !== null &&
               foreignStats !== undefined &&
-              (() => {
-                try {
-                  const refreshedStats = fs.statSync(directoryPath);
-                  return (
-                    refreshedStats.dev === foreignStats.dev &&
-                    refreshedStats.ino === foreignStats.ino &&
-                    refreshedStats.mtimeMs === foreignStats.mtimeMs &&
-                    isRecoverableForeignOwner(refreshed, refreshedStatus, refreshedStats)
-                  );
-                } catch {
-                  return false;
-                }
-              })()) ||
+              refreshedStats.dev === foreignStats.dev &&
+              refreshedStats.ino === foreignStats.ino &&
+              refreshedStats.mtimeMs === foreignStats.mtimeMs &&
+              isRecoverableForeignOwner(refreshed, refreshedStatus, refreshedStats)) ||
+            (recoverableUnknown &&
+              refreshed !== undefined &&
+              refreshed !== null &&
+              isRecoverableUnknownOwner(refreshed, refreshedStatus, refreshedStats)) ||
             (refreshed !== undefined &&
               refreshed !== null &&
               isRecoverableUnverifiableOwner(refreshed, refreshedStatus)));
         if (recoverableAbandoned && ownerlessStats) {
           try {
-            recoveryStillAuthorized = directoryIdentityMatches(
-              abandonedDirectoryIdentities.get(coordinationKey),
-              fs.statSync(directoryPath),
-            );
+            recoveryStillAuthorized =
+              refreshedStats !== undefined &&
+              directoryIdentityMatches(
+                abandonedDirectoryIdentities.get(coordinationKey),
+                refreshedStats,
+              );
           } catch {
             recoveryStillAuthorized = false;
           }
         }
         if (recoverableInterruptedPublication && ownerlessStats) {
           try {
-            const refreshedStats = fs.statSync(directoryPath);
             recoveryStillAuthorized =
+              refreshedStats !== undefined &&
               refreshed === undefined &&
               refreshedStats.dev === ownerlessStats.dev &&
               refreshedStats.ino === ownerlessStats.ino &&
@@ -1504,8 +1668,8 @@ export function createProcessOwnedLockFileSystem(
         }
         if (recoverableAgedUnverifiableOwner && ownerlessStats) {
           try {
-            const refreshedStats = fs.statSync(directoryPath);
             recoveryStillAuthorized =
+              refreshedStats !== undefined &&
               (candidate === undefined ? refreshed === undefined : refreshed === null) &&
               (candidate !== null || hasRecoverableMalformedOwner(directoryPath)) &&
               refreshedStats.dev === ownerlessStats.dev &&
@@ -1530,11 +1694,8 @@ export function createProcessOwnedLockFileSystem(
             finish(renameError);
             return;
           }
-          fs.rm(tombstonePath, { force: true, recursive: true }, (removeError) => {
-            if (removeError) {
-              finish(removeError);
-              return;
-            }
+          try {
+            removeVerifiedLockDirectorySync(tombstonePath, directoryIdentity(initialStats));
             if (candidate) {
               abandonedOwnerKeys.delete(
                 abandonedOwnerKey(candidate.lockDirectory, candidate.owner.token),
@@ -1553,7 +1714,9 @@ export function createProcessOwnedLockFileSystem(
               coordinationClaim,
             );
             callback(null);
-          });
+          } catch (error) {
+            finish(error as NodeJS.ErrnoException);
+          }
         });
       });
     };
@@ -1563,31 +1726,47 @@ export function createProcessOwnedLockFileSystem(
     const directory = String(directoryPath);
     const claimPath = recoveryClaimPath(directory);
     fs.mkdirSync(claimPath, { mode: 0o700 });
+    const createdClaim = fs.lstatSync(claimPath);
+    if (!createdClaim.isDirectory() || createdClaim.isSymbolicLink()) {
+      throw lockCleanupError("Recorder lock recovery claim changed during creation.");
+    }
     const coordinationClaim: RecoveryClaim = {
+      activeIdentity: directoryIdentity(createdClaim),
       activePath: claimPath,
       supersededPaths: [],
     };
     try {
       publishOwner(claimPath);
+      if (!verifiedLockDirectoryStats(claimPath, coordinationClaim.activeIdentity)) {
+        throw lockCleanupError("Recorder lock recovery claim disappeared during publication.");
+      }
       const candidate = parseOwner(directoryPath);
       if (candidate?.owner.token !== token) {
         throw Object.assign(new Error("Recorder lock is not owned by this process."), {
           code: "ELOCKED",
         });
       }
+      const ownedIdentity = ownedDirectories.get(canonicalLockDirectoryPath(directory));
+      const ownedDirectory = fs.lstatSync(directoryPath);
+      if (
+        !ownedDirectory.isDirectory() ||
+        ownedDirectory.isSymbolicLink() ||
+        !directoryIdentityMatches(ownedIdentity, ownedDirectory)
+      ) {
+        throw lockCleanupError("Recorder lock ownership changed before release.");
+      }
       const tombstonePath = `${claimPath}.${token}.release`;
       fs.renameSync(directoryPath, tombstonePath);
-      fs.rmSync(tombstonePath, { force: true, recursive: true });
+      removeVerifiedLockDirectorySync(tombstonePath, directoryIdentity(ownedDirectory));
+      ownedDirectories.delete(canonicalLockDirectoryPath(directory));
     } finally {
-      for (const currentPath of [
-        ...coordinationClaim.supersededPaths.map((claim) => claim.path),
-        coordinationClaim.activePath,
-      ]) {
-        try {
-          fs.rmSync(currentPath, { force: true, recursive: true });
-        } catch {
-          // Exit cleanup is best-effort; a live coordination claim is safer than an ABA race.
-        }
+      try {
+        removeVerifiedLockDirectorySync(
+          coordinationClaim.activePath,
+          coordinationClaim.activeIdentity,
+        );
+      } catch {
+        // Exit cleanup is best-effort; a live coordination claim is safer than an ABA race.
       }
     }
   }) as typeof fs.rmdirSync;

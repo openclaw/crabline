@@ -320,20 +320,15 @@ describe("process-owned lock filesystem", () => {
     await mkdir(takeoverClaim);
     const takeoverToken = await writeDepartedExecutionOwner(takeoverClaim, owner);
     const activeClaim = recoveryClaimPath(takeoverClaim, `owner:${takeoverToken}`);
-    const remove = fs.rm.bind(fs);
+    const removeDirectory = fs.rmdirSync.bind(fs);
     let failedBaseCleanup = false;
-    const removeSpy = vi.spyOn(fs, "rm").mockImplementation(((
-      targetPath: fs.PathLike,
-      options: fs.RmDirOptions,
-      callback: (error: NodeJS.ErrnoException | null) => void,
-    ) => {
+    const removeSpy = vi.spyOn(fs, "rmdirSync").mockImplementation(((targetPath: fs.PathLike) => {
       if (String(targetPath) === baseClaim && !failedBaseCleanup) {
         failedBaseCleanup = true;
-        callback(Object.assign(new Error("base claim cleanup failed"), { code: "EACCES" }));
-        return;
+        throw Object.assign(new Error("base claim cleanup failed"), { code: "EACCES" });
       }
-      remove(targetPath, options, callback);
-    }) as typeof fs.rm);
+      removeDirectory(targetPath);
+    }) as typeof fs.rmdirSync);
 
     try {
       await expect(acquire(target)).rejects.toMatchObject({ code: "ELOCKED" });
@@ -489,22 +484,17 @@ describe("process-owned lock filesystem", () => {
       await exited;
       await new Promise((resolve) => setTimeout(resolve, 3300));
 
-      const remove = fs.rm.bind(fs);
+      const removeDirectory = fs.rmdirSync.bind(fs);
       let claimCleanupCount = 0;
-      const removeSpy = vi.spyOn(fs, "rm").mockImplementation(((
-        targetPath: fs.PathLike,
-        options: fs.RmDirOptions,
-        callback: (error: NodeJS.ErrnoException | null) => void,
-      ) => {
+      const removeSpy = vi.spyOn(fs, "rmdirSync").mockImplementation(((targetPath: fs.PathLike) => {
         const claimCleanup = /^\.crabline-reclaim-[0-9a-f]{64}$/u.test(
           path.basename(String(targetPath)),
         );
         if (claimCleanup && ++claimCleanupCount === 3) {
-          callback(Object.assign(new Error("claim cleanup failed"), { code: "EACCES" }));
-          return;
+          throw Object.assign(new Error("claim cleanup failed"), { code: "EACCES" });
         }
-        remove(targetPath, options, callback);
-      }) as typeof fs.rm);
+        removeDirectory(targetPath);
+      }) as typeof fs.rmdirSync);
       try {
         const release = await acquire(target);
         expect(release).toBeTypeOf("function");
@@ -572,6 +562,78 @@ describe("process-owned lock filesystem", () => {
     } finally {
       mkdirSpy.mockRestore();
       await rm(lockDirectory, { force: true, recursive: true });
+    }
+  });
+
+  it("preserves a replacement tree at a coordination claim path", async () => {
+    const target = await createLockTarget();
+    const lockFileSystem = createProcessOwnedLockFileSystem();
+    const readDirectory = fs.readdirSync.bind(fs);
+    let sentinelPath: string | undefined;
+    const readdirSpy = vi.spyOn(fs, "readdirSync").mockImplementation(((directoryPath, options) => {
+      const claimPath = String(directoryPath);
+      if (
+        sentinelPath === undefined &&
+        /^\.crabline-reclaim-[0-9a-f]{64}$/u.test(path.basename(claimPath))
+      ) {
+        fs.renameSync(claimPath, `${claimPath}.original`);
+        fs.mkdirSync(claimPath);
+        const replacementTree = path.join(claimPath, "replacement");
+        fs.mkdirSync(replacementTree);
+        sentinelPath = path.join(replacementTree, "sentinel");
+        fs.writeFileSync(sentinelPath, "preserve");
+      }
+      return readDirectory(directoryPath, options as never);
+    }) as typeof fs.readdirSync);
+
+    try {
+      const release = await lock(target, {
+        fs: lockFileSystem,
+        realpath: false,
+        retries: 0,
+        stale: 2000,
+        update: 1000,
+      });
+      expect(sentinelPath).toBeDefined();
+      expect(fs.readFileSync(sentinelPath!, "utf8")).toBe("preserve");
+      await release();
+      expect(fs.readFileSync(sentinelPath!, "utf8")).toBe("preserve");
+    } finally {
+      readdirSpy.mockRestore();
+    }
+  });
+
+  it("preserves a replacement tree at a release tombstone path", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const release = await acquire(target);
+    const rename = fs.rename.bind(fs);
+    let sentinelPath: string | undefined;
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(((
+      oldPath: fs.PathLike,
+      newPath: fs.PathLike,
+      callback: (error: NodeJS.ErrnoException | null) => void,
+    ) => {
+      rename(oldPath, newPath, (error) => {
+        if (!error && String(oldPath) === lockDirectory) {
+          const tombstonePath = String(newPath);
+          fs.renameSync(tombstonePath, `${tombstonePath}.original`);
+          fs.mkdirSync(tombstonePath);
+          const replacementTree = path.join(tombstonePath, "replacement");
+          fs.mkdirSync(replacementTree);
+          sentinelPath = path.join(replacementTree, "sentinel");
+          fs.writeFileSync(sentinelPath, "preserve");
+        }
+        callback(error);
+      });
+    }) as typeof fs.rename);
+
+    try {
+      await expect(release()).rejects.toMatchObject({ code: "ELOCKED" });
+      expect(sentinelPath).toBeDefined();
+      expect(fs.readFileSync(sentinelPath!, "utf8")).toBe("preserve");
+    } finally {
+      renameSpy.mockRestore();
     }
   });
 
@@ -1026,6 +1088,90 @@ describe("process-owned lock filesystem", () => {
 
     const release = await acquire(target);
     expect(release).toBeTypeOf("function");
+    await release();
+
+    owner.child.stdin.end();
+    await once(owner.child, "exit");
+  });
+
+  it("keeps a recent exact owner when its live PID identity cannot be inspected", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const owner = await startIdleProcess();
+    const ownerRecord = await currentOwnerRecord();
+    await mkdir(lockDirectory);
+    await writeFile(
+      path.join(lockDirectory, "crabline-owner.json"),
+      `${JSON.stringify({
+        ...ownerRecord,
+        executionIdentity: randomUUID(),
+        pid: owner.pid,
+        processIdentity: exactIdentityForCurrentPlatform(1),
+        processStartedAtMs: 1,
+        token: randomUUID(),
+      })}\n`,
+      { mode: 0o600 },
+    );
+    const identityReader = vi.fn((pid: number) =>
+      pid === process.pid ? exactIdentityForCurrentPlatform(2) : null,
+    );
+    const lockFileSystem = createProcessOwnedLockFileSystem({
+      processIdentityReader: identityReader,
+    });
+
+    await expect(
+      lock(target, {
+        fs: lockFileSystem,
+        realpath: false,
+        retries: 0,
+        stale: 2000,
+        update: 1000,
+      }),
+    ).rejects.toMatchObject({ code: "ELOCKED" });
+
+    expect(identityReader.mock.calls.filter(([pid]) => pid === owner.pid)).toHaveLength(1);
+    owner.child.stdin.end();
+    await once(owner.child, "exit");
+  });
+
+  it("recovers an aged exact owner after repeated live PID identity failures", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const owner = await startIdleProcess();
+    const ownerRecord = await currentOwnerRecord();
+    await mkdir(lockDirectory);
+    const ownerPath = path.join(lockDirectory, "crabline-owner.json");
+    await writeFile(
+      ownerPath,
+      `${JSON.stringify({
+        ...ownerRecord,
+        executionIdentity: randomUUID(),
+        pid: owner.pid,
+        processIdentity: exactIdentityForCurrentPlatform(1),
+        processStartedAtMs: 1,
+        token: randomUUID(),
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await utimes(ownerPath, new Date(0), new Date(0));
+    await utimes(lockDirectory, new Date(0), new Date(0));
+    const identityReader = vi.fn((pid: number) =>
+      pid === process.pid ? exactIdentityForCurrentPlatform(2) : null,
+    );
+    const lockFileSystem = createProcessOwnedLockFileSystem({
+      processIdentityReader: identityReader,
+    });
+
+    const release = await lock(target, {
+      fs: lockFileSystem,
+      realpath: false,
+      retries: 0,
+      stale: 2000,
+      update: 1000,
+    });
+    expect(
+      identityReader.mock.calls.filter(([pid]) => pid === owner.pid).length,
+    ).toBeGreaterThanOrEqual(2);
     await release();
 
     owner.child.stdin.end();
