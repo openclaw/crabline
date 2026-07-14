@@ -735,14 +735,23 @@ describe("recorder", () => {
 
     const probeHandle = await open(filePath, "a+");
     const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+      write(
+        buffer: Uint8Array,
+        offset: number,
+        length: number,
+        position: number,
+      ): Promise<{ buffer: Uint8Array; bytesWritten: number }>;
       writeFile(data: string, encoding: BufferEncoding): Promise<void>;
     };
     await probeHandle.close();
+    const originalWrite = fileHandlePrototype.write;
     const originalWriteFile = fileHandlePrototype.writeFile;
+    const appendPosition = (await stat(filePath)).size;
     const partialAppendError = Object.assign(new Error("simulated partial append"), {
       code: "ENOSPC",
     });
     let failNextWrite = true;
+    let partialWritePosition: number | undefined;
     let releasePartialWrite!: () => void;
     let reportPartialWrite!: () => void;
     const partialWriteReported = new Promise<void>((resolve) => {
@@ -751,20 +760,40 @@ describe("recorder", () => {
     const partialWriteReleased = new Promise<void>((resolve) => {
       releasePartialWrite = resolve;
     });
-    fileHandlePrototype.writeFile = async function (
-      this: FileHandle,
-      data: string,
-      encoding: BufferEncoding,
-    ) {
-      if (failNextWrite) {
-        failNextWrite = false;
-        await originalWriteFile.call(this, data.slice(0, Math.ceil(data.length / 2)), encoding);
-        reportPartialWrite();
-        await partialWriteReleased;
-        throw partialAppendError;
-      }
-      await originalWriteFile.call(this, data, encoding);
-    };
+    if (process.platform === "win32") {
+      fileHandlePrototype.write = async function (
+        this: FileHandle,
+        buffer: Uint8Array,
+        offset: number,
+        length: number,
+        position: number,
+      ) {
+        if (failNextWrite) {
+          failNextWrite = false;
+          partialWritePosition = position;
+          await originalWrite.call(this, buffer, offset, Math.ceil(length / 2), position);
+          reportPartialWrite();
+          await partialWriteReleased;
+          throw partialAppendError;
+        }
+        return originalWrite.call(this, buffer, offset, length, position);
+      };
+    } else {
+      fileHandlePrototype.writeFile = async function (
+        this: FileHandle,
+        data: string,
+        encoding: BufferEncoding,
+      ) {
+        if (failNextWrite) {
+          failNextWrite = false;
+          await originalWriteFile.call(this, data.slice(0, Math.ceil(data.length / 2)), encoding);
+          reportPartialWrite();
+          await partialWriteReleased;
+          throw partialAppendError;
+        }
+        await originalWriteFile.call(this, data, encoding);
+      };
+    }
 
     const batch = [event("retry-1"), event("retry-2")];
     const failedAppend = appendRecordedInboundBatch(filePath, batch);
@@ -780,8 +809,10 @@ describe("recorder", () => {
         indeterminate: true,
         name: "ProviderRecorderCommittedError",
       });
+      expect(partialWritePosition).toBe(process.platform === "win32" ? appendPosition : undefined);
     } finally {
       releasePartialWrite();
+      fileHandlePrototype.write = originalWrite;
       fileHandlePrototype.writeFile = originalWriteFile;
     }
 
