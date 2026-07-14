@@ -5,7 +5,10 @@ import path from "node:path";
 import { lock } from "proper-lockfile";
 import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
 import { createOwnerOnlyWindowsDirectory } from "../platform/windows-acl.js";
-import { secureCachedWindowsLockRoot } from "../platform/windows-lock-root.js";
+import {
+  secureCachedWindowsLockRoot,
+  type WindowsLockRootIdentity,
+} from "../platform/windows-lock-root.js";
 import type { InboundEnvelope } from "./types.js";
 
 export type RecordableInboundEnvelope = InboundEnvelope & {
@@ -33,7 +36,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 const pendingAppends = new Map<string, Promise<void>>();
 const recordIdentityIndexes = new Map<string, RecordIdentityIndex>();
-const securedWindowsLockRoots = new Map<string, Promise<{ dev: bigint; ino: bigint }>>();
+const securedWindowsLockRoots = new Map<string, Promise<WindowsLockRootIdentity>>();
 const MAX_RECORD_IDENTITY_INDEXES = 128;
 const MAX_RECENT_RECORD_KEYS = 4096;
 const RECORDER_BATCH_VERSION = 1;

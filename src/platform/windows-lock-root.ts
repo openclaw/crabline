@@ -1,6 +1,8 @@
 import { lstat } from "node:fs/promises";
 
-type WindowsLockRootIdentity = {
+export type WindowsLockRootIdentity = {
+  birthtimeNs: bigint;
+  ctimeNs: bigint;
   dev: bigint;
   ino: bigint;
 };
@@ -24,7 +26,12 @@ export async function secureCachedWindowsLockRoot(options: {
         if (!identity.isDirectory() || identity.isSymbolicLink()) {
           throw new Error(`${options.errorPrefix} is not a private directory.`);
         }
-        return { dev: identity.dev, ino: identity.ino };
+        return {
+          birthtimeNs: identity.birthtimeNs,
+          ctimeNs: identity.ctimeNs,
+          dev: identity.dev,
+          ino: identity.ino,
+        };
       })();
       options.cache.set(options.cacheKey, secured);
       void secured.catch(() => {
@@ -55,7 +62,9 @@ export async function secureCachedWindowsLockRoot(options: {
       current.isDirectory() &&
       !current.isSymbolicLink() &&
       current.dev === expected.dev &&
-      current.ino === expected.ino
+      current.ino === expected.ino &&
+      current.ctimeNs === expected.ctimeNs &&
+      current.birthtimeNs === expected.birthtimeNs
     ) {
       return options.root;
     }
