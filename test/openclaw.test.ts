@@ -44,6 +44,7 @@ import {
   createOpenClawCrablineProviderBridge,
   isRecord,
   parseQaTarget,
+  runOpenClawCrablineProviderProbe,
   type OpenClawCrablineProviderAdapter,
 } from "../src/openclaw/shared.js";
 
@@ -3184,6 +3185,87 @@ describe("OpenClaw local provider bridge", () => {
       }
     },
   );
+
+  it("defers readiness cleanup while an aborted provider probe remains unsettled", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-probe-drain-"));
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    const controller = new AbortController();
+    const timeoutMock = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    const cleanupFailure = new Error("deferred adapter close failed");
+    const close = vi.fn(async () => {
+      throw cleanupFailure;
+    });
+    let reportAbort: (() => void) | undefined;
+    let reportProbeStart: (() => void) | undefined;
+    const abortObserved = new Promise<void>((resolve) => {
+      reportAbort = resolve;
+    });
+    const probeStarted = new Promise<void>((resolve) => {
+      reportProbeStart = resolve;
+    });
+
+    try {
+      const readiness = runProviderReadinessWithDependencies(
+        { outputDir, selection },
+        {
+          startAdapter: async (params) =>
+            ({
+              close,
+              manifest: { ...manifest, recorderPath: params.recorderPath! },
+              probe: async () =>
+                await runOpenClawCrablineProviderProbe("telegram", async (signal) => {
+                  reportProbeStart?.();
+                  return await new Promise<never>(() => {
+                    signal.addEventListener("abort", () => reportAbort?.(), { once: true });
+                  });
+                }),
+            }) as unknown as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>,
+        },
+      );
+      let readinessSettled = false;
+      const outcome = readiness.then(
+        (result) => {
+          readinessSettled = true;
+          return { kind: "resolved" as const, result };
+        },
+        (error: unknown) => {
+          readinessSettled = true;
+          return { error, kind: "rejected" as const };
+        },
+      );
+
+      await probeStarted;
+      expect(timeoutMock).toHaveBeenCalledWith(5_000);
+      controller.abort(new DOMException("probe deadline", "TimeoutError"));
+      await abortObserved;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      expect(readinessSettled).toBe(true);
+      expect(close).not.toHaveBeenCalled();
+
+      const result = await outcome;
+      expect(result.kind).toBe("rejected");
+      expect(result).toMatchObject({
+        error: expect.objectContaining({
+          message: "Crabline Telegram getMe probe timed out after 5000 ms.",
+        }),
+      });
+
+      await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() =>
+        expect(result).toMatchObject({
+          error: expect.objectContaining({
+            cause: expect.objectContaining({
+              errors: expect.arrayContaining([cleanupFailure]),
+            }),
+          }),
+        }),
+      );
+    } finally {
+      timeoutMock.mockRestore();
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  }, 5_000);
 
   it("fails closed when a successful probe produces no recorder evidence", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-missing-"));
