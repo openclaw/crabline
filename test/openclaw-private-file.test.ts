@@ -1020,6 +1020,69 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
+  it("rejects root owner metadata changed before a nested directory claim", async () => {
+    const directory = await createTempDir();
+    const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+    const nestedClaimPath = path.join(claimPath, ".next");
+    const linkSpy = vi
+      .spyOn(fs, "link")
+      .mockRejectedValue(Object.assign(new Error("hard links unsupported"), { code: "ENOTSUP" }));
+    const actualRename = fs.rename.bind(fs);
+    let replacedOwner = false;
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      if (!replacedOwner && to === nestedClaimPath) {
+        replacedOwner = true;
+        await fs.writeFile(
+          path.join(claimPath, "owner.json"),
+          `${JSON.stringify({
+            ownerId: "live-directory-owner",
+            pid: 777_777,
+            processIdentity: "live:directory-owner",
+            processStartedAtMs: 300,
+          })}\n`,
+          { mode: 0o600 },
+        );
+      }
+      await actualRename(from, to);
+    });
+    try {
+      await fs.mkdir(claimPath, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(claimPath, "owner.json"),
+        `${JSON.stringify({
+          ownerId: "stale-directory-owner",
+          pid: 999_994,
+          processIdentity: "dead:stale-directory-owner",
+          processStartedAtMs: 100,
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      await expect(
+        publishPrivateFileAtomically(path.join(directory, "manifest.json"), "private\n", {
+          claimRuntime: {
+            getProcessIdentity: (pid) => (pid === 777_777 ? "live:directory-owner" : null),
+            isProcessAlive: (pid) => pid === 777_777,
+            ownerId: "replacement-owner",
+            pid: process.pid,
+            processIdentity: "test:replacement-owner",
+            processStartedAtMs: 200,
+          },
+        }),
+      ).rejects.toThrow("Private path mutation is already claimed.");
+
+      expect(replacedOwner).toBe(true);
+      await expect(fs.readdir(claimPath)).resolves.toEqual(["owner.json"]);
+      await expect(fs.stat(path.join(directory, "manifest.json"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      renameSpy.mockRestore();
+      linkSpy.mockRestore();
+      await disposeTempDir(directory);
+    }
+  });
+
   it("rolls back a directory claim when its first parent sync fails", async () => {
     const directory = await createTempDir();
     const claimPath = path.join(directory, ".crabline-private-mutation.claim");
