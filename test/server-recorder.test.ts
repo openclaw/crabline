@@ -323,6 +323,49 @@ describe("server recorder", () => {
     expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
   });
 
+  it("bounds repeated Windows process-lock root replacement recovery", async () => {
+    const lockRoot = path.join("/tmp", "crabline-server-recorder-unstable-locks");
+    const createWindowsDirectory = vi.fn(async () => undefined);
+    fsMocks.lstat
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: 20n,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: 21n,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: 22n,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: 23n,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      });
+
+    await expect(
+      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+    ).rejects.toThrow("Server recorder Windows lock root could not be stabilized.");
+    expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
+  });
+
   it("re-secures a Windows process-lock root when wide file IDs differ", async () => {
     const lockRoot = path.join("/tmp", "crabline-server-recorder-wide-id-locks");
     const createWindowsDirectory = vi.fn(async () => undefined);
