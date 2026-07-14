@@ -18,6 +18,7 @@
 - Escape C1 controls in JSON reports and fail commands whose successful payload cannot be serialized.
 - Reject corrupt retained capability matrices before artifact rotation and cancel failed OpenClaw probe response bodies.
 - Recursively inspect referenced local actions, include Go manifests in dependency review, and allow production package source-map checks to complete under load.
+- Cryptographically verify npm provenance and bind existing releases to the expected package digest, repository, workflow, tag, and commit.
 - Stream Telegram multipart uploads with bounded parser metadata instead of copying complete files through `FormData`.
 - Keep Unix recorder identity locks in one validated private per-user namespace across processes and recorder path changes.
 - Reject non-positive Telegram admin message IDs and enforce native Mattermost channel types and unique normalized usernames.
