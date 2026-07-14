@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Bound shared HTTP responses, Matrix sync payloads, stalled webhook DNS recovery, unmatched request bodies, and admitted local-mock hook cleanup.
+- Reject Signal JSON-RPC numeric IDs that cannot round-trip as safe integers while preserving string IDs.
 - Keep Telegram multipart fields prototype-safe, synthetic chat IDs within 52 significant bits, and topic identities scoped to their chats.
 - Preserve opaque Mattermost identifiers exactly instead of trimming REST and WebSocket inputs.
 - Preserve Zalo polling arrival order until each older HTTP response commits.

@@ -498,7 +498,7 @@ async function handleRpc(params: {
     !hasId ||
     id === null ||
     typeof id === "string" ||
-    (typeof id === "number" && Number.isFinite(id));
+    (typeof id === "number" && Number.isSafeInteger(id));
   const method = params.body.method;
   if (typeof method !== "string" || !validId) {
     return {
