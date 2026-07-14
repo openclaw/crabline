@@ -480,7 +480,7 @@ describe("process-owned lock filesystem", () => {
   }, 15_000);
 
   it.skipIf(process.platform === "win32")(
-    "reuses a process-wide coordination claim after final cleanup fails",
+    "exposes failed coordination cleanup to another process",
     async () => {
       const target = await createLockTarget();
       const child = await startLockOwner(target);
@@ -509,9 +509,10 @@ describe("process-owned lock filesystem", () => {
         const release = await acquire(target);
         expect(release).toBeTypeOf("function");
         await release();
-        const nextRelease = await acquire(target);
-        expect(nextRelease).toBeTypeOf("function");
-        await nextRelease();
+        const nextOwner = await startLockOwner(target);
+        const nextOwnerExited = once(nextOwner, "exit");
+        nextOwner.stdin.end("release\n");
+        await nextOwnerExited;
       } finally {
         removeSpy.mockRestore();
       }
@@ -643,9 +644,10 @@ describe("process-owned lock filesystem", () => {
       await expect(acquire(target)).rejects.toMatchObject({ code: "EIO" });
       await expect(readFile(ownerPath, "utf8")).resolves.toContain('"token"');
 
-      const release = await acquire(target);
-      expect(release).toBeTypeOf("function");
-      await release();
+      const nextOwner = await startLockOwner(target);
+      const exited = once(nextOwner, "exit");
+      nextOwner.stdin.end("release\n");
+      await exited;
     } finally {
       lstatSpy.mockRestore();
       await rm(lockDirectory, { force: true, recursive: true });

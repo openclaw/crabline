@@ -19,6 +19,7 @@ type LockOwner = {
 type OwnerStatus = "active" | "dead" | "foreign" | "superseded" | "unknown";
 
 type ParsedLockOwner = {
+  lockDirectory: string;
   owner: LockOwner;
   publishedAtMs: number;
 };
@@ -47,6 +48,7 @@ const abandonedOwnerTokens = new Set<string>();
 const abandonedDirectoryIdentities = new Map<string, AbandonedDirectoryIdentity>();
 
 const OWNER_FILE = "crabline-owner.json";
+const ABANDONED_OWNER_PREFIX = ".crabline-abandoned-";
 const MAX_OWNER_BYTES = 4096;
 const MAX_PROCESS_ID = 2_147_483_647;
 const IDENTITY_CACHE_MS = 1000;
@@ -463,7 +465,7 @@ function readProcessNamespaceWithRetry(pid: number): string | null {
   return null;
 }
 
-function parseOpenedOwner(ownerHandle: number): ParsedLockOwner | undefined {
+function parseOpenedOwner(ownerHandle: number): Omit<ParsedLockOwner, "lockDirectory"> | undefined {
   const stats = fs.fstatSync(ownerHandle);
   if (!stats.isFile() || stats.size === 0 || stats.size > MAX_OWNER_BYTES) {
     return undefined;
@@ -554,7 +556,7 @@ function parseOwner(lockDirectory: fs.PathLike): ParsedLockOwner | null | undefi
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null;
   }
-  let parsed: ParsedLockOwner | undefined;
+  let parsed: Omit<ParsedLockOwner, "lockDirectory"> | undefined;
   try {
     parsed = parseOpenedOwner(ownerHandle);
   } catch {
@@ -565,7 +567,120 @@ function parseOwner(lockDirectory: fs.PathLike): ParsedLockOwner | null | undefi
   } catch {
     return null;
   }
-  return parsed ?? null;
+  return parsed === undefined
+    ? null
+    : {
+        ...parsed,
+        lockDirectory: String(lockDirectory),
+      };
+}
+
+function abandonedOwnerMarkerPath(lockDirectory: fs.PathLike, ownerToken: string): string {
+  const digest = createHash("sha256").update(ownerToken).digest("hex");
+  return path.join(String(lockDirectory), `${ABANDONED_OWNER_PREFIX}${digest}`);
+}
+
+function hasAbandonedOwnerMarker(candidate: ParsedLockOwner): boolean {
+  const markerPath = abandonedOwnerMarkerPath(candidate.lockDirectory, candidate.owner.token);
+  let markerHandle: number;
+  try {
+    markerHandle = fs.openSync(markerPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch {
+    return false;
+  }
+  let matches = false;
+  try {
+    const stats = fs.fstatSync(markerHandle);
+    if (stats.isFile() && stats.size > 0 && stats.size <= 256) {
+      const raw = Buffer.alloc(stats.size);
+      let offset = 0;
+      while (offset < raw.byteLength) {
+        const bytesRead = fs.readSync(markerHandle, raw, offset, raw.byteLength - offset, offset);
+        if (bytesRead === 0) {
+          break;
+        }
+        offset += bytesRead;
+      }
+      matches = offset === raw.byteLength && raw.toString("utf8").trim() === candidate.owner.token;
+    }
+  } catch {
+    matches = false;
+  }
+  try {
+    fs.closeSync(markerHandle);
+  } catch {
+    return false;
+  }
+  return matches;
+}
+
+function publishAbandonedOwnerMarker(lockDirectory: fs.PathLike, ownerToken: string): boolean {
+  const candidate = parseOwner(lockDirectory);
+  if (!candidate || candidate.owner.token !== ownerToken) {
+    return false;
+  }
+  const markerPath = abandonedOwnerMarkerPath(lockDirectory, ownerToken);
+  let markerHandle: number | undefined;
+  let markerIdentity: fs.Stats | undefined;
+  try {
+    markerHandle = fs.openSync(
+      markerPath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+      0o600,
+    );
+    markerIdentity = fs.fstatSync(markerHandle);
+    const contents = Buffer.from(`${ownerToken}\n`);
+    let offset = 0;
+    while (offset < contents.byteLength) {
+      const written = fs.writeSync(
+        markerHandle,
+        contents,
+        offset,
+        contents.byteLength - offset,
+        offset,
+      );
+      if (written === 0) {
+        throw new Error("Recorder lock abandonment publication made no progress.");
+      }
+      offset += written;
+    }
+    fs.fsyncSync(markerHandle);
+    fs.closeSync(markerHandle);
+    markerHandle = undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return hasAbandonedOwnerMarker(candidate);
+    }
+    if (markerIdentity !== undefined) {
+      try {
+        const current = fs.lstatSync(markerPath);
+        if (markerIdentity.dev === current.dev && markerIdentity.ino === current.ino) {
+          fs.unlinkSync(markerPath);
+        }
+      } catch {
+        // Preserve a replacement marker that cannot be proven to be ours.
+      }
+    }
+    return false;
+  } finally {
+    if (markerHandle !== undefined) {
+      try {
+        fs.closeSync(markerHandle);
+      } catch {
+        // The failed abandonment publication remains non-authoritative.
+      }
+    }
+  }
+  const refreshed = parseOwner(lockDirectory);
+  if (!refreshed || refreshed.owner.token !== ownerToken || !hasAbandonedOwnerMarker(refreshed)) {
+    try {
+      fs.unlinkSync(markerPath);
+    } catch {
+      // A changed marker is ignored unless it matches the current owner token.
+    }
+    return false;
+  }
+  return true;
 }
 
 function hasRecoverableMalformedOwner(lockDirectory: fs.PathLike): boolean {
@@ -783,12 +898,13 @@ export function createProcessOwnedLockFileSystem(
     }
   };
 
-  const abandonOwner = (directory: string): void => {
+  const abandonOwner = (directory: string): boolean => {
     abandonedOwnerTokens.add(token);
+    const published = publishAbandonedOwnerMarker(directory, token);
     const coordinationKey = canonicalLockDirectoryPath(directory);
     const ownedIdentity = ownedDirectories.get(coordinationKey);
     if (!ownedIdentity) {
-      return;
+      return published;
     }
     try {
       const current = fs.lstatSync(directory);
@@ -801,6 +917,7 @@ export function createProcessOwnedLockFileSystem(
     } catch {
       // The path no longer names the directory published by this wrapper.
     }
+    return published;
   };
 
   const ownerStatus = (candidate: ParsedLockOwner | null | undefined): OwnerStatus => {
@@ -808,7 +925,7 @@ export function createProcessOwnedLockFileSystem(
       return "unknown";
     }
     const claim = candidate.owner;
-    if (abandonedOwnerTokens.has(claim.token)) {
+    if (abandonedOwnerTokens.has(claim.token) || hasAbandonedOwnerMarker(candidate)) {
       return "dead";
     }
     if (
@@ -988,15 +1105,18 @@ export function createProcessOwnedLockFileSystem(
     // the active claim discoverable through the original coordination path.
     const supersededPaths = [...claim.supersededPaths].reverse();
     let removedSupersededPath = false;
+    const removeActiveClaim = (): void => {
+      fs.rm(claim.activePath, { force: true, recursive: true }, (activeError) => {
+        if (activeError && !abandonOwner(claim.activePath)) {
+          retainedCoordinationClaims.set(coordinationKey, claim);
+        }
+        callback();
+      });
+    };
     const removeSuperseded = (index: number): void => {
       const superseded = supersededPaths[index];
       if (!superseded) {
-        fs.rm(claim.activePath, { force: true, recursive: true }, (activeError) => {
-          if (activeError && !removedSupersededPath) {
-            retainedCoordinationClaims.set(coordinationKey, claim);
-          }
-          callback();
-        });
+        removeActiveClaim();
         return;
       }
       let current: fs.Stats;
@@ -1009,11 +1129,13 @@ export function createProcessOwnedLockFileSystem(
           return;
         }
         if (!removedSupersededPath) {
-          retainedCoordinationClaims.set(coordinationKey, claim);
+          if (!abandonOwner(claim.activePath)) {
+            retainedCoordinationClaims.set(coordinationKey, claim);
+          }
           callback();
           return;
         }
-        fs.rm(claim.activePath, { force: true, recursive: true }, () => callback());
+        removeActiveClaim();
         return;
       }
       if (
@@ -1022,17 +1144,19 @@ export function createProcessOwnedLockFileSystem(
         !directoryIdentityMatches(superseded.identity, current) ||
         current.mtimeMs !== superseded.identity.mtimeMs
       ) {
-        fs.rm(claim.activePath, { force: true, recursive: true }, () => callback());
+        removeActiveClaim();
         return;
       }
       fs.rm(superseded.path, { force: true, recursive: true }, (error) => {
         if (error) {
           if (!removedSupersededPath) {
-            retainedCoordinationClaims.set(coordinationKey, claim);
+            if (!abandonOwner(claim.activePath)) {
+              retainedCoordinationClaims.set(coordinationKey, claim);
+            }
             callback();
             return;
           }
-          fs.rm(claim.activePath, { force: true, recursive: true }, () => callback());
+          removeActiveClaim();
           return;
         }
         removedSupersededPath = true;
@@ -1157,6 +1281,10 @@ export function createProcessOwnedLockFileSystem(
         candidate !== null &&
         isRecoverableForeignOwner(candidate, status, stats);
       if (candidate && abandonedOwnerTokens.has(candidate.owner.token)) {
+        callback(null, syntheticStaleStat(stats));
+        return;
+      }
+      if (candidate && hasAbandonedOwnerMarker(candidate)) {
         callback(null, syntheticStaleStat(stats));
         return;
       }
