@@ -219,12 +219,15 @@ export class LazyProviderAdapter implements ProviderAdapter {
       closePromise ??= (async () => {
         controller.abort();
         try {
-          const result = source.return
-            ? await source.return()
-            : { done: true as const, value: undefined as never };
-          if (result.done) {
+          if (!source.return) {
             finish();
+            return { done: true as const, value: undefined as never };
           }
+          let result = await source.return();
+          while (!result.done) {
+            result = await source.return();
+          }
+          finish();
           return result;
         } catch (error) {
           finish();
