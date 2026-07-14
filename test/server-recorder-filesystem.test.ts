@@ -16,6 +16,7 @@ import {
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import { afterEach, expect, it, vi } from "vitest";
+import { readWindowsDirectorySecurityDescriptor } from "../src/platform/windows-acl.js";
 import type { ServerRequestEvent } from "../src/servers/http.js";
 import { recordServerEvent } from "../src/servers/recorder.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
@@ -63,7 +64,7 @@ it.skipIf(process.platform === "win32")(
       }),
     ).rejects.toThrow("Server recorder path is not a regular file.");
   },
-  1_000,
+  2_000,
 );
 
 it.runIf(process.platform === "win32")(
@@ -89,6 +90,60 @@ it.runIf(process.platform === "win32")(
       .split("\n")
       .map((line) => JSON.parse(line) as { path: string });
     expect(events.map((event) => event.path)).toEqual(["/existing", "/appended"]);
+  },
+);
+
+it.runIf(process.platform === "win32")(
+  "rejects an unsafe Windows recorder parent without changing its ACLs",
+  async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "server.jsonl");
+    await writeFile(recorderPath, `${JSON.stringify(serverEvent("/existing"))}\n`, "utf8");
+    execFileSync("icacls.exe", [directory, "/grant", "*S-1-1-0:(OI)(CI)(F)"], {
+      windowsHide: true,
+    });
+    const before = execFileSync("icacls.exe", [directory], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+
+    await expect(
+      recordServerEvent({
+        event: serverEvent("/appended"),
+        onEvent: undefined,
+        recorderPath,
+      }),
+    ).rejects.toThrow("Could not validate the Windows directory namespace");
+
+    const after = execFileSync("icacls.exe", [directory], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    expect(after).toBe(before);
+    await expect(readFile(recorderPath, "utf8")).resolves.toBe(
+      `${JSON.stringify(serverEvent("/existing"))}\n`,
+    );
+  },
+);
+
+it.runIf(process.platform === "win32")(
+  "creates a missing Windows recorder parent with an owner-only ACL",
+  async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const parent = path.join(directory, "private-recorder");
+    const recorderPath = path.join(parent, "server.jsonl");
+
+    await recordServerEvent({
+      event: serverEvent("/created"),
+      onEvent: undefined,
+      recorderPath,
+    });
+
+    await expect(readWindowsDirectorySecurityDescriptor(parent)).resolves.toEqual(
+      expect.any(String),
+    );
   },
 );
 

@@ -19,10 +19,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   applyOwnerOnlyWindowsDirectoryAcl,
   createOwnerOnlyWindowsDirectory,
+  readWindowsDirectoryNamespaceSecuritySnapshot,
   readWindowsDirectorySecurityDescriptor,
   readWindowsDirectorySecuritySnapshot,
   type WindowsAclRunner,
 } from "../src/platform/windows-acl.js";
+import { isManagedRecorderDirectory } from "../src/platform/recorder-directory.js";
 import {
   appendRecordedInbound,
   appendRecordedInboundBatch,
@@ -568,9 +570,21 @@ describe("recorder", () => {
     expect(script).toContain("RawSecurityDescriptor");
     expect(script).toContain("DiscretionaryAclPresent");
     expect(script).toContain("Private directory parent namespace has a null DACL.");
+    expect(script).toContain("CreateDirectories");
+    expect(script).toContain("WriteData");
+    expect(script).toContain("WriteAttributes");
+    expect(script).toContain("[int64]0x40000000");
     expect(script).toContain("DeleteSubdirectoriesAndFiles");
+    expect(script).toContain("Assert-SafeNamespaceChain $current ($missing.Count -gt 0)");
     expect(script).toContain("Private directory parent namespace permits untrusted replacement.");
-    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Create(\n      $candidate,");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Create(");
+    expect(script).toContain("catch [System.ComponentModel.Win32Exception]");
+    expect(script).toContain("$_.Exception.NativeErrorCode -ne 80");
+    expect(script).toContain("$_.Exception.NativeErrorCode -ne 183");
+    expect(script).toContain(
+      "[void][CrablineWindowsDirectoryHandle]::ReadIdentity($createdDirectory)",
+    );
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::WriteSecurityDescriptor(");
     expect(script).toContain("AssertSamePathIdentity");
     expect(script).not.toContain("[System.IO.Directory]::CreateDirectory(");
     expect(script).not.toContain("$directory.SetAccessControl($acl)");
@@ -629,10 +643,45 @@ describe("recorder", () => {
     );
     expect(script).toContain("[CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(");
     expect(script).toContain("[Convert]::ToBase64String($descriptor)");
+    expect(script).toContain("Assert-SafeNamespaceChain $parent.FullName $false");
+    expect(script).toContain("RawSecurityDescriptor");
+    expect(script).toContain("Private directory must not be a reparse point.");
+    expect(script).toContain("Private directory parent namespace has a null DACL.");
+    expect(script).toContain("$rejectChildCreationAtCandidate = $false");
+    expect(script).toContain("Private directory parent namespace permits untrusted replacement.");
     expect(script).not.toContain("Get-Acl");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
     expect(options.killSignal).toBe("SIGKILL");
     expect(options.timeout).toBe(15_000);
+  });
+
+  it("validates a Windows directory namespace without requiring an owner-only ACL", async () => {
+    const calls: Parameters<WindowsAclRunner>[] = [];
+    const run: WindowsAclRunner = async (...args) => {
+      calls.push(args);
+      return `${stableWindowsDirectoryIdentity}\r\ndescriptor-base64`;
+    };
+    const directoryPath = String.raw`C:\Temp\custom-recorder`;
+
+    await expect(
+      readWindowsDirectoryNamespaceSecuritySnapshot(directoryPath, run, String.raw`C:\Windows`),
+    ).resolves.toEqual({
+      identity: stableWindowsDirectoryIdentity,
+      securityDescriptor: "descriptor-base64",
+    });
+
+    const [, args, options] = calls[0]!;
+    const script = args.at(-1);
+    expect(script).toContain("Assert-SafeNamespaceChain $directoryPath $true");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Open($directoryPath, $false)");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(");
+    expect(script).not.toContain("[CrablineWindowsDirectoryHandle]::WriteSecurityDescriptor(");
+    expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
+  });
+
+  it("matches managed Windows recorder directories case-insensitively", () => {
+    expect(isManagedRecorderDirectory(path.resolve("ARTIFACTS", "CRABLINE"), "win32")).toBe(true);
+    expect(isManagedRecorderDirectory(path.resolve(".CRABLINE", "SERVERS"), "win32")).toBe(true);
   });
 
   it.runIf(process.platform === "win32")(
@@ -643,6 +692,25 @@ describe("recorder", () => {
       const lockRoot = path.join(directory, "new-lock-root");
 
       await expect(createOwnerOnlyWindowsDirectory(lockRoot)).resolves.toBeUndefined();
+      await expect(stat(lockRoot)).resolves.toMatchObject({
+        isDirectory: expect.any(Function),
+      });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "handles concurrent Windows recorder lock-root creation",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const lockRoot = path.join(directory, "concurrent-lock-root");
+
+      await expect(
+        Promise.all([
+          createOwnerOnlyWindowsDirectory(lockRoot),
+          createOwnerOnlyWindowsDirectory(lockRoot),
+        ]),
+      ).resolves.toEqual([undefined, undefined]);
       await expect(stat(lockRoot)).resolves.toMatchObject({
         isDirectory: expect.any(Function),
       });
@@ -744,6 +812,26 @@ describe("recorder", () => {
   );
 
   it.runIf(process.platform === "win32")(
+    "does not create Windows recorder lock roots through intermediate junctions",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const target = path.join(directory, "target");
+      const junction = path.join(directory, "junction");
+      const lockRoot = path.join(junction, "lock-root");
+      await mkdir(target);
+      await symlink(target, junction, "junction");
+
+      await expect(createOwnerOnlyWindowsDirectory(lockRoot)).rejects.toThrow(
+        "Could not atomically create or verify an owner-only Windows directory",
+      );
+      await expect(stat(path.join(target, "lock-root"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
     "rejects Windows recorder lock roots beneath a null-DACL parent",
     async () => {
       const directory = await createTempDir();
@@ -808,6 +896,176 @@ describe("recorder", () => {
 
       await expect(secureProviderRecorderLockRoot(lockRoot, undefined)).resolves.toBe(lockRoot);
       await expect(readWindowsDirectorySecurityDescriptor(lockRoot)).resolves.toEqual(
+        expect.any(String),
+      );
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "rejects cached Windows recorder lock roots after their parent becomes replaceable",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const parent = path.join(directory, "replaceable-parent");
+      const lockRoot = path.join(parent, "lock-root");
+      await mkdir(parent);
+
+      await expect(secureProviderRecorderLockRoot(lockRoot, undefined)).resolves.toBe(lockRoot);
+      execFileSync("icacls.exe", [parent, "/grant", "*S-1-1-0:(OI)(CI)(F)"], { windowsHide: true });
+
+      try {
+        await expect(secureProviderRecorderLockRoot(lockRoot, undefined)).rejects.toThrow(
+          "Could not atomically create or verify an owner-only Windows directory",
+        );
+      } finally {
+        execFileSync("icacls.exe", [parent, "/remove:g", "*S-1-1-0"], {
+          windowsHide: true,
+        });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "rejects Windows recorder lock-root parents with untrusted child-creation rights",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const parent = path.join(directory, "creatable-parent");
+      const lockRoot = path.join(parent, "lock-root");
+      await mkdir(parent);
+      execFileSync("icacls.exe", [parent, "/grant", "*S-1-1-0:(AD)"], {
+        windowsHide: true,
+      });
+
+      try {
+        await expect(createOwnerOnlyWindowsDirectory(lockRoot)).rejects.toThrow(
+          "Could not atomically create or verify an owner-only Windows directory",
+        );
+        await expect(stat(lockRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        execFileSync("icacls.exe", [parent, "/remove:g", "*S-1-1-0"], {
+          windowsHide: true,
+        });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "rejects Windows recorder lock-root parents with untrusted reparse mutation rights",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      for (const [name, rights] of [
+        ["specific", "WD,WA"],
+        ["generic", "GW"],
+      ] as const) {
+        const parent = path.join(directory, `${name}-mutable-parent`);
+        const lockRoot = path.join(parent, "lock-root");
+        await mkdir(parent);
+        execFileSync("icacls.exe", [parent, "/grant", `*S-1-1-0:(${rights})`], {
+          windowsHide: true,
+        });
+
+        try {
+          await expect(createOwnerOnlyWindowsDirectory(lockRoot)).rejects.toThrow(
+            "Could not atomically create or verify an owner-only Windows directory",
+          );
+          await expect(stat(lockRoot)).rejects.toMatchObject({ code: "ENOENT" });
+        } finally {
+          execFileSync("icacls.exe", [parent, "/remove:g", "*S-1-1-0"], {
+            windowsHide: true,
+          });
+        }
+      }
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "rejects unsafe Windows provider recorder parents without changing their ACLs",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const filePath = path.join(directory, "provider.jsonl");
+      execFileSync("icacls.exe", [directory, "/grant", "*S-1-1-0:(OI)(CI)(F)"], {
+        windowsHide: true,
+      });
+      const before = execFileSync("icacls.exe", [directory], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+
+      await expect(
+        appendRecordedInbound(filePath, {
+          author: "assistant",
+          id: "unsafe-parent",
+          provider: "slack",
+          sentAt: new Date().toISOString(),
+          text: "private",
+          threadId: "slack:C123",
+        }),
+      ).rejects.toThrow("Could not validate the Windows directory namespace");
+
+      const after = execFileSync("icacls.exe", [directory], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      expect(after).toBe(before);
+      await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "rejects child-inheritable Windows recorder ACLs without changing them",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const filePath = path.join(directory, "provider.jsonl");
+      execFileSync("icacls.exe", [directory, "/grant", "*S-1-1-0:(OI)(IO)(M)"], {
+        windowsHide: true,
+      });
+      const before = execFileSync("icacls.exe", [directory], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+
+      await expect(
+        appendRecordedInbound(filePath, {
+          author: "assistant",
+          id: "inherited-unsafe-parent",
+          provider: "slack",
+          sentAt: new Date().toISOString(),
+          text: "private",
+          threadId: "slack:C123",
+        }),
+      ).rejects.toThrow("Could not validate the Windows directory namespace");
+
+      const after = execFileSync("icacls.exe", [directory], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      expect(after).toBe(before);
+      await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "creates missing Windows provider recorder parents with owner-only ACLs",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const parent = path.join(directory, "private-recorder");
+      const filePath = path.join(parent, "provider.jsonl");
+
+      await appendRecordedInbound(filePath, {
+        author: "assistant",
+        id: "private-parent",
+        provider: "slack",
+        sentAt: new Date().toISOString(),
+        text: "private",
+        threadId: "slack:C123",
+      });
+
+      await expect(readWindowsDirectorySecurityDescriptor(parent)).resolves.toEqual(
         expect.any(String),
       );
     },

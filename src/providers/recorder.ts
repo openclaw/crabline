@@ -4,8 +4,10 @@ import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
+import { isManagedRecorderDirectory } from "../platform/recorder-directory.js";
 import {
   createOwnerOnlyWindowsDirectory,
+  readWindowsDirectoryNamespaceSecuritySnapshot,
   readWindowsDirectorySecuritySnapshot,
   type WindowsDirectorySecuritySnapshot,
 } from "../platform/windows-acl.js";
@@ -41,6 +43,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 const pendingAppends = new Map<string, Promise<void>>();
 const recordIdentityIndexes = new Map<string, RecordIdentityIndex>();
 const securedWindowsLockRoots = new Map<string, Promise<WindowsLockRootIdentity>>();
+const securedWindowsRecorderDirectories = new Map<string, Promise<WindowsLockRootIdentity>>();
 const MAX_RECORD_IDENTITY_INDEXES = 128;
 const MAX_RECENT_RECORD_KEYS = 4096;
 const RECORDER_BATCH_VERSION = 1;
@@ -837,6 +840,43 @@ export async function secureProviderRecorderLockRoot(
   return canonicalRoot;
 }
 
+async function secureProviderRecorderWindowsDirectory(root: string): Promise<string> {
+  const cacheKey = path.win32.normalize(path.resolve(root)).toLowerCase();
+  return secureCachedWindowsLockRoot({
+    cache: securedWindowsRecorderDirectories,
+    cacheKey,
+    createDirectory: async () => {
+      try {
+        const identity = await lstat(root);
+        if (!identity.isDirectory() || identity.isSymbolicLink()) {
+          throw new Error("Provider recorder Windows directory is not a private directory.");
+        }
+        if (isManagedRecorderDirectory(root)) {
+          await createOwnerOnlyWindowsDirectory(root);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error;
+        }
+        await createOwnerOnlyWindowsDirectory(root);
+      }
+    },
+    errorPrefix: "Provider recorder Windows directory",
+    readSecuritySnapshot: () => readWindowsDirectoryNamespaceSecuritySnapshot(root),
+    root,
+  });
+}
+
+async function prepareRecorderDirectory(filePath: string): Promise<string | undefined> {
+  const directory = path.dirname(filePath);
+  if (process.platform === "win32") {
+    await secureProviderRecorderWindowsDirectory(directory);
+    return undefined;
+  }
+  const createdDirectory = await mkdir(directory, { recursive: true });
+  return createdDirectory === undefined ? undefined : await realpath(createdDirectory);
+}
+
 function recorderLockRootUnavailable(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
   return (
@@ -1158,9 +1198,7 @@ export async function appendRecordedInbound(
   filePath: string,
   event: RecordableInboundEnvelope,
 ): Promise<RecordedInboundEnvelope> {
-  const createdDirectory = await mkdir(path.dirname(filePath), { recursive: true });
-  const firstCreatedDirectory =
-    createdDirectory === undefined ? undefined : await realpath(createdDirectory);
+  const firstCreatedDirectory = await prepareRecorderDirectory(filePath);
 
   const recorded = {
     ...event,
@@ -1184,9 +1222,7 @@ export async function appendRecordedInboundBatch(
   if (events.length === 0) {
     return [];
   }
-  const createdDirectory = await mkdir(path.dirname(filePath), { recursive: true });
-  const firstCreatedDirectory =
-    createdDirectory === undefined ? undefined : await realpath(createdDirectory);
+  const firstCreatedDirectory = await prepareRecorderDirectory(filePath);
   for (let attempt = 0; ; attempt++) {
     try {
       return await serializeAppend(
