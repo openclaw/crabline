@@ -270,6 +270,20 @@ describe("server recorder", () => {
     expect(fsMocks.lstat).toHaveBeenCalledWith(lockRoot);
   });
 
+  it("recreates a cached Windows process-lock root after deletion", async () => {
+    const lockRoot = path.join("/tmp", "crabline-server-recorder-recreated-locks");
+    const missing = Object.assign(new Error("lock root removed"), { code: "ENOENT" });
+    const createWindowsDirectory = vi.fn(async () => undefined);
+
+    await secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory });
+    fsMocks.lstat.mockRejectedValueOnce(missing);
+    await expect(
+      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+    ).resolves.toBe(lockRoot);
+
+    expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
+  });
+
   it("maps Windows path case aliases to the same process lock", () => {
     const lockRoot = String.raw`C:\Users\tester\AppData\Local\Crabline\locks`;
 

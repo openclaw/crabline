@@ -44,7 +44,7 @@ type AbandonedDirectoryIdentity = DirectoryIdentity & {
 };
 
 const retainedCoordinationClaims = new Map<string, RecoveryClaim>();
-const abandonedOwnerTokens = new Set<string>();
+const abandonedOwnerKeys = new Set<string>();
 const abandonedDirectoryIdentities = new Map<string, AbandonedDirectoryIdentity>();
 
 const OWNER_FILE = "crabline-owner.json";
@@ -417,6 +417,10 @@ function canonicalLockDirectoryPath(directoryPath: fs.PathLike): string {
   }
   const canonical = path.join(canonicalParent, path.basename(resolved));
   return process.platform === "win32" ? path.win32.normalize(canonical).toLowerCase() : canonical;
+}
+
+function abandonedOwnerKey(directoryPath: fs.PathLike, ownerToken: string): string {
+  return `${canonicalLockDirectoryPath(directoryPath)}\0${ownerToken}`;
 }
 
 function recoveryClaimPath(directoryPath: fs.PathLike, fingerprint = "coordination"): string {
@@ -899,7 +903,7 @@ export function createProcessOwnedLockFileSystem(
   };
 
   const abandonOwner = (directory: string): boolean => {
-    abandonedOwnerTokens.add(token);
+    abandonedOwnerKeys.add(abandonedOwnerKey(directory, token));
     const published = publishAbandonedOwnerMarker(directory, token);
     const coordinationKey = canonicalLockDirectoryPath(directory);
     const ownedIdentity = ownedDirectories.get(coordinationKey);
@@ -925,7 +929,10 @@ export function createProcessOwnedLockFileSystem(
       return "unknown";
     }
     const claim = candidate.owner;
-    if (abandonedOwnerTokens.has(claim.token) || hasAbandonedOwnerMarker(candidate)) {
+    if (
+      abandonedOwnerKeys.has(abandonedOwnerKey(candidate.lockDirectory, claim.token)) ||
+      hasAbandonedOwnerMarker(candidate)
+    ) {
       return "dead";
     }
     if (
@@ -1280,7 +1287,10 @@ export function createProcessOwnedLockFileSystem(
         candidate !== undefined &&
         candidate !== null &&
         isRecoverableForeignOwner(candidate, status, stats);
-      if (candidate && abandonedOwnerTokens.has(candidate.owner.token)) {
+      if (
+        candidate &&
+        abandonedOwnerKeys.has(abandonedOwnerKey(candidate.lockDirectory, candidate.owner.token))
+      ) {
         callback(null, syntheticStaleStat(stats));
         return;
       }
@@ -1363,7 +1373,7 @@ export function createProcessOwnedLockFileSystem(
             }
             ownedDirectories.delete(coordinationKey);
             abandonedDirectoryIdentities.delete(coordinationKey);
-            abandonedOwnerTokens.delete(token);
+            abandonedOwnerKeys.delete(abandonedOwnerKey(directory, token));
             fs.rm(tombstonePath, { force: true, recursive: true }, (removeError) =>
               finish(removeError),
             );
@@ -1526,12 +1536,16 @@ export function createProcessOwnedLockFileSystem(
               return;
             }
             if (candidate) {
-              abandonedOwnerTokens.delete(candidate.owner.token);
+              abandonedOwnerKeys.delete(
+                abandonedOwnerKey(candidate.lockDirectory, candidate.owner.token),
+              );
             }
             interruptedPublicationIdentities.delete(coordinationKey);
             const abandonedIdentity = abandonedDirectoryIdentities.get(coordinationKey);
             if (abandonedIdentity) {
-              abandonedOwnerTokens.delete(abandonedIdentity.ownerGenerationKey);
+              abandonedOwnerKeys.delete(
+                abandonedOwnerKey(directory, abandonedIdentity.ownerGenerationKey),
+              );
               abandonedDirectoryIdentities.delete(coordinationKey);
             }
             retainedCoordinationClaims.set(

@@ -130,6 +130,28 @@ describe("recorder", () => {
     expect(secured).toEqual([lockRoot]);
   });
 
+  it("recreates a cached Windows recorder lock root after deletion", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const lockRoot = path.join(directory, "recreated-locks");
+    const createWindowsDirectory = async (directoryPath: string) => {
+      await mkdir(directoryPath);
+    };
+
+    await secureProviderRecorderLockRoot(lockRoot, undefined, {
+      createWindowsDirectory,
+      platform: "win32",
+    });
+    await rm(lockRoot, { force: true, recursive: true });
+    await expect(
+      secureProviderRecorderLockRoot(lockRoot, undefined, {
+        createWindowsDirectory,
+        platform: "win32",
+      }),
+    ).resolves.toBe(lockRoot);
+    await expect(stat(lockRoot)).resolves.toBeDefined();
+  });
+
   it("rejects non-directory Windows recorder lock roots returned by the atomic creator", async () => {
     const directory = await createTempDir();
     directories.push(directory);

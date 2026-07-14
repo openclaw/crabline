@@ -508,6 +508,7 @@ describe("process-owned lock filesystem", () => {
       try {
         const release = await acquire(target);
         expect(release).toBeTypeOf("function");
+        await expect(acquire(target)).rejects.toMatchObject({ code: "ELOCKED" });
         await release();
         const nextOwner = await startLockOwner(target);
         const nextOwnerExited = once(nextOwner, "exit");
