@@ -470,6 +470,22 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
+  it("cancels successful Signal probe response bodies", async () => {
+    const cancel = vi.fn();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(new ReadableStream({ cancel }), { status: 200 }));
+    try {
+      await expect(probeOpenClawCrablineProvider(signalManifest)).resolves.toEqual({
+        ok: true,
+        status: 200,
+      });
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it.each([null, {}, { id: "999999999999999" }])(
     "requires WhatsApp to return the configured phone resource: %j",
     async (payload) => {
