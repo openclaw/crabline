@@ -347,7 +347,9 @@ export class WhatsAppSignalBundleStore {
     const timeout = setTimeout(() => {
       const error = new Error("WhatsApp message acceptance timed out.");
       fenceTerminalAcceptance(error);
-      options.onTerminalTimeout?.();
+      try {
+        options.onTerminalTimeout?.();
+      } catch {}
     }, timeoutMs);
     timeout.unref();
     let pendingAcknowledgement: PendingWhatsAppAcknowledgement;
