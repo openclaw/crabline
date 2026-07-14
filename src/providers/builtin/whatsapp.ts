@@ -72,6 +72,48 @@ const DEFAULT_WHATSAPP_WEBHOOK = {
 const MAX_WAIT_CURSORS = 64;
 const MAX_WHATSAPP_WEBHOOK_BODY_BYTES = 1024 * 1024;
 const WHATSAPP_WEBHOOK_BODY_TIMEOUT_MS = 5_000;
+const WHATSAPP_WEBHOOK_STARTUP_CLEANUP_GRACE_MS = 250;
+
+function abortableOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    void operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function settlesWithin(operation: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<false>((resolve) => {
+    timeout = setTimeout(() => resolve(false), timeoutMs);
+    timeout.unref();
+  });
+  try {
+    return await Promise.race([
+      operation.then(
+        () => true as const,
+        () => true as const,
+      ),
+      deadline,
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
 
 class WhatsAppWebhookBodyError extends Error {
   constructor(
@@ -227,6 +269,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   readonly #inFlightWebhookRequests = new Set<Promise<Response>>();
   readonly #waitCursors = new Map<string, WaitCursorState>();
   #server: StartedWebhookServer | null = null;
+  #serverClosePromise: Promise<void> | null = null;
   #serverClosing: Promise<void> | null = null;
   #serverStarting: Promise<StartedWebhookServer> | null = null;
 
@@ -257,12 +300,13 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
   }
 
   override async probe(context: ProviderContext): Promise<ProbeResult> {
-    context.signal?.throwIfAborted();
-    const server = await this.#ensureWebhookServer();
+    const signal = this.#operationSignal(context.signal);
+    signal.throwIfAborted();
+    const server = await this.#ensureWebhookServer(signal);
     if (this.#cleanupBegun || this.#cleanedUp) {
       throw this.#cleanedUpError();
     }
-    context.signal?.throwIfAborted();
+    signal.throwIfAborted();
     const target = this.normalizeTarget(context.fixture.target);
     const details = [
       "whatsapp local mock ready",
@@ -299,10 +343,11 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     if (context.signal?.aborted) {
       return null;
     }
+    const signal = this.#operationSignal(context.signal);
     try {
-      await this.#ensureWebhookServer();
+      await this.#ensureWebhookServer(signal);
     } catch (error) {
-      if (this.#cleanupBegun) {
+      if (this.#cleanupBegun || signal.aborted) {
         return null;
       }
       throw error;
@@ -336,7 +381,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
           isAddressInChannel(candidate.threadId, channelId) &&
           matchesInbound(candidate, context.fixture.inboundMatch, context.nonce),
         since: context.since,
-        signal: this.#operationSignal(context.signal),
+        signal,
         timeoutMs: context.timeoutMs,
       });
       if (
@@ -363,10 +408,11 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     if (context.signal?.aborted) {
       return;
     }
+    const signal = this.#operationSignal(context.signal);
     try {
-      await this.#ensureWebhookServer();
+      await this.#ensureWebhookServer(signal);
     } catch (error) {
-      if (this.#cleanupBegun) {
+      if (this.#cleanupBegun || signal.aborted) {
         return;
       }
       throw error;
@@ -381,7 +427,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
         entry.provider === this.id &&
         !isOutboundRecord(entry) &&
         isAddressInChannel(entry.threadId, target.threadId ?? target.channelId ?? target.id),
-      signal: this.#operationSignal(context.signal),
+      signal,
       since: context.since,
     })) {
       yield event;
@@ -528,15 +574,16 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     );
   }
 
-  async #ensureWebhookServer(): Promise<StartedWebhookServer> {
+  async #ensureWebhookServer(signal: AbortSignal): Promise<StartedWebhookServer> {
     if (this.#cleanupBegun) {
       throw this.#cleanedUpError();
     }
+    signal.throwIfAborted();
     if (this.#server) {
       return this.#server;
     }
     if (this.#serverStarting) {
-      return await this.#serverStarting;
+      return await abortableOperation(this.#serverStarting, signal);
     }
 
     const resolvedConfig = resolveWhatsAppAdapterConfig(this.#config, this.#env);
@@ -562,39 +609,54 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
 
       this.#server = server;
       if (this.#cleanupBegun) {
-        throw this.#cleanedUpError();
+        void this.#closeStartedWebhookServer(server).catch(() => undefined);
       }
       return server;
     })();
     this.#serverStarting = starting;
+    void starting.then(
+      () => {
+        if (this.#serverStarting === starting) {
+          this.#serverStarting = null;
+        }
+      },
+      () => {
+        if (this.#serverStarting === starting) {
+          this.#serverStarting = null;
+        }
+      },
+    );
 
-    try {
-      return await starting;
-    } finally {
-      if (this.#serverStarting === starting) {
-        this.#serverStarting = null;
-      }
+    const server = await abortableOperation(starting, signal);
+    if (this.#cleanupBegun) {
+      throw this.#cleanedUpError();
     }
+    return server;
+  }
+
+  async #closeStartedWebhookServer(server: StartedWebhookServer): Promise<void> {
+    if (this.#server === server) {
+      this.#server = null;
+    }
+    if (!this.#serverClosePromise) {
+      this.#serverClosePromise = server.close();
+    }
+    await this.#serverClosePromise;
   }
 
   async #closeWebhookServer(): Promise<void> {
     const starting = this.#serverStarting;
     if (starting) {
-      try {
-        await starting;
-      } catch {
-        // A failed startup has no listener; a cleanup race publishes one below.
-      }
+      await settlesWithin(starting, WHATSAPP_WEBHOOK_STARTUP_CLEANUP_GRACE_MS);
     }
     const server = this.#server;
-    if (!server) {
+    if (server) {
+      await this.#closeStartedWebhookServer(server);
       return;
     }
-
-    if (this.#server === server) {
-      this.#server = null;
+    if (this.#serverClosePromise) {
+      await this.#serverClosePromise;
     }
-    await server.close();
   }
 
   #cleanedUpError(): CrablineError {
