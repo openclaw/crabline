@@ -36,6 +36,7 @@ import {
   canonicalizeWhatsAppUserCorrelationJid,
   canonicalizeWhatsAppUserJid,
 } from "../src/servers/whatsapp-jid.js";
+import { isWhatsAppMessageIdInUse } from "../src/servers/whatsapp.js";
 import type { BinaryNode } from "../src/servers/whatsapp-wire/binary-node.js";
 import { Curve, ensureSignalPublicKey, type KeyPair } from "../src/servers/whatsapp-wire/crypto.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
@@ -823,9 +824,31 @@ describe("whatsapp local provider server", () => {
     });
     expect(mismatchedLidSender.status).toBe(400);
 
+    for (const body of [
+      {
+        chatJid: "15550000000@s.whatsapp.net",
+        senderJid: "15550000000_7:2@s.whatsapp.net",
+      },
+      {
+        chatJid: "120363001234567890@g.us",
+        senderJid: "15550000000:3@s.whatsapp.net",
+      },
+    ]) {
+      const selfSender = await sendInbound(body);
+      expect(selfSender.status).toBe(400);
+      await expect(selfSender.json()).resolves.toMatchObject({
+        error: {
+          error_data: {
+            details: "senderJid must not identify the configured WhatsApp self identity.",
+          },
+          message: "(#100) Invalid parameter: senderJid",
+        },
+      });
+    }
+
     const direct = await sendInbound({
       chatJid: "15551234567:4@c.us",
-      senderJid: "15551234567:2@s.whatsapp.net",
+      senderJid: "15551234567_7:2@s.whatsapp.net",
     });
     expect(direct.status).toBe(200);
     const directBody = (await direct.json()) as {
@@ -843,6 +866,7 @@ describe("whatsapp local provider server", () => {
             changes: [
               {
                 value: {
+                  contacts: [{ wa_id: "15551234567" }],
                   messages: [{ from: "15551234567" }],
                 },
               },
@@ -941,6 +965,23 @@ describe("whatsapp local provider server", () => {
           event.body?.messageId === "wamid.FAKE00000001",
       ),
     ).toHaveLength(1);
+  });
+
+  it("keeps active inbound message ids reserved after recent-cache eviction", () => {
+    const messageId = "wamid.active-inbound";
+    const recentMessageIds = new Map([[messageId, true] as const]);
+    recentMessageIds.delete(messageId);
+
+    expect(
+      isWhatsAppMessageIdInUse(
+        {
+          inboundMessageIds: new Set([messageId]),
+          pendingMessageIds: new Set(),
+          recentMessageIds,
+        },
+        messageId,
+      ),
+    ).toBe(true);
   });
 
   it("separates PN and LID signal bundle/session keys while normalizing devices", () => {

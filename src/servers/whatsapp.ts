@@ -225,6 +225,22 @@ type WhatsAppMessageIdReservation = {
   id: string;
 };
 
+/** @internal */
+export function isWhatsAppMessageIdInUse(
+  state: {
+    inboundMessageIds: ReadonlySet<string>;
+    pendingMessageIds: ReadonlySet<string>;
+    recentMessageIds: ReadonlyMap<string, true>;
+  },
+  id: string,
+): boolean {
+  return (
+    state.inboundMessageIds.has(id) ||
+    state.pendingMessageIds.has(id) ||
+    state.recentMessageIds.has(id)
+  );
+}
+
 function reserveMessageId(
   state: WhatsAppServerState,
   requestedId?: string,
@@ -237,7 +253,7 @@ function reserveMessageId(
         `messageId must not exceed ${MAX_WHATSAPP_MESSAGE_ID_BYTES} UTF-8 bytes.`,
       );
     }
-    if (state.pendingMessageIds.has(id) || state.recentMessageIds.has(id)) {
+    if (isWhatsAppMessageIdInUse(state, id)) {
       return graphParameterError(
         "(#100) Invalid parameter: messageId",
         "messageId must be unique within this WhatsApp server.",
@@ -246,7 +262,7 @@ function reserveMessageId(
   } else {
     do {
       id = `wamid.FAKE${String(state.nextMessageId++).padStart(8, "0")}`;
-    } while (state.pendingMessageIds.has(id) || state.recentMessageIds.has(id));
+    } while (isWhatsAppMessageIdInUse(state, id));
   }
   state.pendingMessageIds.add(id);
   let settled = false;
@@ -284,7 +300,8 @@ function reserveMessageId(
 }
 
 function waIdFromJid(jid: string): string {
-  return jid.split("@", 1)[0]?.split(":", 1)[0] ?? jid;
+  const correlationJid = canonicalizeWhatsAppUserCorrelationJid(jid);
+  return correlationJid?.split("@", 1)[0] ?? jid;
 }
 
 function directPeerIdentity(jid: string): string {
@@ -462,6 +479,14 @@ async function handleAdminInbound(params: {
   const senderJid = requireWhatsAppSenderJid(params.body.senderJid ?? params.body.from);
   if (senderJid instanceof Response) {
     return { response: senderJid };
+  }
+  if (directPeerIdentity(senderJid) === directPeerIdentity(params.state.selfJid)) {
+    return {
+      response: graphParameterError(
+        "(#100) Invalid parameter: senderJid",
+        "senderJid must not identify the configured WhatsApp self identity.",
+      ),
+    };
   }
   const isGroupChat = isWhatsAppGroupJid(chatJid);
   if (!isGroupChat && directPeerIdentity(chatJid) !== directPeerIdentity(senderJid)) {

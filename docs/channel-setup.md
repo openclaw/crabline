@@ -539,6 +539,10 @@ receives the native Zalo `{ event_name, message }` update directly with
 otherwise injected messages are returned by `getUpdates`. Provider errors use
 Zalo's `{ ok, error_code, description }` shape.
 
+Programmatic `startZaloServer()` callers can tune the retained polling queue
+with `maxPendingInboundEvents` and `maxPendingInboundBytes`; the byte limit
+defaults to 64 MiB and remains reserved until the polling response commits.
+
 `setWebhook` requires HTTPS, matching Zalo's public API. A loopback-bound
 Crabline server also accepts a loopback HTTP URL for independent local client
 tests. Non-loopback binds reject webhook destinations that resolve to private,

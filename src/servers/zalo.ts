@@ -33,6 +33,7 @@ import {
 type ZaloChatType = "GROUP" | "PRIVATE";
 
 const DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_MS = 5_000;
+const DEFAULT_MAX_PENDING_INBOUND_BYTES = 64 * 1024 * 1024;
 const MAX_ACTIVE_ZALO_WEBHOOK_VALIDATIONS = 8;
 const MAX_ZALO_REDACTION_DEPTH = 32;
 const MAX_WEBHOOK_DELIVERY_TIMEOUT_MS = 30_000;
@@ -83,6 +84,7 @@ type ZaloServerState = {
   botToken: string;
   closing: boolean;
   inboundAdmission: Promise<void>;
+  maxPendingInboundBytes: number;
   maxPendingInboundEvents: number;
   nextMessage: number;
   nextUpdateOrder: number;
@@ -90,8 +92,11 @@ type ZaloServerState = {
   pendingInboundAdmissions: number;
   pendingRequest: PendingUpdateRequest | undefined;
   recorderPath: string;
+  retainedUpdateBytes: number;
+  retainedUpdateCount: number;
   reservedUpdateOrders: Set<number>;
   restrictWebhookTargets: boolean;
+  updateBytes: WeakMap<ZaloUpdate, number>;
   updateOrders: WeakMap<ZaloUpdate, number>;
   updates: ZaloUpdate[];
   webhook: { secretToken: string; updatedAt: number; url: string } | undefined;
@@ -131,6 +136,7 @@ export type StartZaloServerParams = {
   onEvent?: ServerEventObserver | undefined;
   port?: number | undefined;
   recorderPath?: string | undefined;
+  maxPendingInboundBytes?: number | undefined;
   maxPendingInboundEvents?: number | undefined;
   webhookDeliveryTimeoutMs?: number | undefined;
 };
@@ -308,6 +314,16 @@ function webhookDeliveryTimeoutMs(value: number | undefined): number {
   return Math.max(1, Math.min(Math.floor(value), MAX_WEBHOOK_DELIVERY_TIMEOUT_MS));
 }
 
+function maxPendingInboundBytes(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_MAX_PENDING_INBOUND_BYTES;
+  }
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error("maxPendingInboundBytes must be a positive safe integer.");
+  }
+  return value;
+}
+
 async function validateWebhookUrl(
   url: URL,
   state: Pick<ZaloServerState, "allowLoopbackHttpWebhook" | "restrictWebhookTargets">,
@@ -450,6 +466,40 @@ function pollingUpdateOrder(state: ZaloServerState, update: ZaloUpdate): number 
   return order;
 }
 
+function pollingUpdateBytes(state: ZaloServerState, update: ZaloUpdate): number {
+  const existing = state.updateBytes.get(update);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const bytes = Buffer.byteLength(JSON.stringify(update), "utf8");
+  state.updateBytes.set(update, bytes);
+  return bytes;
+}
+
+function retainPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boolean {
+  const bytes = pollingUpdateBytes(state, update);
+  if (
+    state.retainedUpdateCount >= state.maxPendingInboundEvents ||
+    state.retainedUpdateBytes + bytes > state.maxPendingInboundBytes
+  ) {
+    state.updateBytes.delete(update);
+    return false;
+  }
+  state.retainedUpdateCount += 1;
+  state.retainedUpdateBytes += bytes;
+  return true;
+}
+
+function releasePollingUpdate(state: ZaloServerState, update: ZaloUpdate): void {
+  const bytes = state.updateBytes.get(update);
+  if (bytes === undefined) {
+    throw new Error("Zalo polling update retention was released without a reservation.");
+  }
+  state.updateBytes.delete(update);
+  state.retainedUpdateCount -= 1;
+  state.retainedUpdateBytes -= bytes;
+}
+
 function queuePollingUpdate(state: ZaloServerState, update: ZaloUpdate): void {
   const order = pollingUpdateOrder(state, update);
   const insertionIndex = state.updates.findIndex(
@@ -492,7 +542,7 @@ function flushPendingPollingUpdate(state: ZaloServerState): void {
 
 function reservedUpdateResponse(state: ZaloServerState, update: ZaloUpdate): HttpJsonHandlerResult {
   let settled = false;
-  const release = () => {
+  const releaseReservation = () => {
     if (settled) {
       return false;
     }
@@ -502,14 +552,15 @@ function reservedUpdateResponse(state: ZaloServerState, update: ZaloUpdate): Htt
   };
   return {
     onWriteFailure() {
-      if (!release()) {
+      if (!releaseReservation()) {
         return;
       }
       queuePollingUpdate(state, update);
       flushPendingPollingUpdate(state);
     },
     onWriteSuccess() {
-      if (release()) {
+      if (releaseReservation()) {
+        releasePollingUpdate(state, update);
         flushPendingPollingUpdate(state);
       }
     },
@@ -602,30 +653,23 @@ async function waitForUpdate(
   }
 }
 
-function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boolean {
+function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): void {
   pollingUpdateOrder(state, update);
   if (state.updates.length > 0 || hasEarlierReservedPollingUpdate(state, update)) {
-    if (state.updates.length + state.reservedUpdateOrders.size >= state.maxPendingInboundEvents) {
-      return false;
-    }
     queuePollingUpdate(state, update);
     flushPendingPollingUpdate(state);
-    return true;
+    return;
   }
   const pending = state.pendingRequest;
   if (pending) {
     if (isPendingUpdateRequestLive(pending)) {
       reservePollingUpdate(state, update);
       settlePendingUpdate(state, pending, { kind: "update", update });
-      return true;
+      return;
     }
     settlePendingUpdate(state, pending, { kind: "disconnect" });
   }
-  if (state.updates.length + state.reservedUpdateOrders.size >= state.maxPendingInboundEvents) {
-    return false;
-  }
   queuePollingUpdate(state, update);
-  return true;
 }
 
 async function deliverWebhookUpdate(
@@ -689,9 +733,8 @@ async function handleAdminInbound(
     drainRequestBody(request);
     return zaloError("Webhook configuration is in progress", 409);
   }
-  const queued =
-    state.webhook?.url === undefined ? state.updates.length + state.reservedUpdateOrders.size : 0;
-  if (queued + state.pendingInboundAdmissions >= state.maxPendingInboundEvents) {
+  const retainedUpdates = state.webhook?.url === undefined ? state.retainedUpdateCount : 0;
+  if (retainedUpdates + state.pendingInboundAdmissions >= state.maxPendingInboundEvents) {
     drainRequestBody(request);
     return zaloError(
       `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
@@ -705,6 +748,7 @@ async function handleAdminInbound(
     releaseAdmission = resolve;
   });
   let admissionPending = true;
+  let retainedPollingUpdate: ZaloUpdate | undefined;
   try {
     const parsedBody = await parseUnknownRequestBody(request);
     await previousAdmission;
@@ -718,15 +762,7 @@ async function handleAdminInbound(
     if (chatId instanceof Response || senderId instanceof Response || text instanceof Response) {
       return [chatId, senderId, text].find((value) => value instanceof Response) as Response;
     }
-    if (
-      !state.webhook?.url &&
-      state.updates.length + state.reservedUpdateOrders.size >= state.maxPendingInboundEvents
-    ) {
-      return zaloError(
-        `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
-        429,
-      );
-    }
+    const webhook = state.webhook;
     const update: ZaloUpdate = {
       event_name: "message.text.received",
       message: {
@@ -741,6 +777,17 @@ async function handleAdminInbound(
         text,
       },
     };
+    if (!webhook?.url) {
+      if (!retainPollingUpdate(state, update)) {
+        return zaloError(
+          `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
+          429,
+        );
+      }
+      retainedPollingUpdate = update;
+      state.pendingInboundAdmissions -= 1;
+      admissionPending = false;
+    }
     await appendEvent(state, {
       at: new Date().toISOString(),
       body: redactParams(body),
@@ -749,23 +796,20 @@ async function handleAdminInbound(
       query: redactParams(queryRecord(url)) as Record<string, string>,
       type: "admin",
     });
-    if (state.webhook?.url) {
-      const error = await deliverWebhookUpdate(state, state.webhook, update);
+    if (webhook?.url) {
+      const error = await deliverWebhookUpdate(state, webhook, update);
       if (error) {
         return error;
       }
     } else {
-      state.pendingInboundAdmissions -= 1;
-      admissionPending = false;
-      if (!deliverPollingUpdate(state, update)) {
-        return zaloError(
-          `Pending inbound queue is full (${state.maxPendingInboundEvents} updates)`,
-          429,
-        );
-      }
+      deliverPollingUpdate(state, update);
+      retainedPollingUpdate = undefined;
     }
     return zaloOk(update);
   } finally {
+    if (retainedPollingUpdate) {
+      releasePollingUpdate(state, retainedPollingUpdate);
+    }
     await previousAdmission;
     releaseAdmission();
     if (admissionPending) {
@@ -938,6 +982,7 @@ export async function startZaloServer(
       (isLoopbackHost(host) ? "crabline-zalo-bot-token" : randomBytes(32).toString("base64url")),
     closing: false,
     inboundAdmission: Promise.resolve(),
+    maxPendingInboundBytes: maxPendingInboundBytes(params.maxPendingInboundBytes),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessage: 1,
     nextUpdateOrder: 1,
@@ -945,8 +990,11 @@ export async function startZaloServer(
     pendingInboundAdmissions: 0,
     pendingRequest: undefined,
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "zalo.jsonl"),
+    retainedUpdateBytes: 0,
+    retainedUpdateCount: 0,
     reservedUpdateOrders: new Set(),
     restrictWebhookTargets: true,
+    updateBytes: new WeakMap(),
     updateOrders: new WeakMap(),
     updates: [],
     webhook: undefined,

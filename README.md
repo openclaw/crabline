@@ -393,7 +393,9 @@ API methods accept GET query parameters or POST requests. Admin
 ingress injects a native Zalo update into the active polling or webhook
 transport. Webhook delivery posts the native `{ event_name, message }` update
 directly. OpenClaw-specific endpoint, config, and target mapping remain in the
-isolated bridge.
+isolated bridge. Programmatic `startZaloServer()` callers can tune the retained
+polling queue with `maxPendingInboundEvents` and `maxPendingInboundBytes`; the
+byte limit defaults to 64 MiB.
 
 The admin ingress accepts JSON like:
 
