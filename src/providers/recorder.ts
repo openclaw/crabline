@@ -409,10 +409,12 @@ async function resolveRecorderPublicationPath(filePath: string): Promise<string>
 async function openRecorderForAppend(
   filePath: string,
 ): Promise<{ created: boolean; handle: Awaited<ReturnType<typeof open>> }> {
+  const createFlags = process.platform === "win32" ? "wx+" : "ax+";
+  const existingFlags = process.platform === "win32" ? "r+" : "a+";
   try {
     return {
       created: true,
-      handle: await open(filePath, "ax+", 0o600),
+      handle: await open(filePath, createFlags, 0o600),
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
@@ -420,8 +422,34 @@ async function openRecorderForAppend(
     }
     return {
       created: false,
-      handle: await open(filePath, "a+", 0o600),
+      handle: await open(filePath, existingFlags, 0o600),
     };
+  }
+}
+
+async function appendRecorderData(
+  handle: Awaited<ReturnType<typeof open>>,
+  data: string,
+): Promise<void> {
+  if (process.platform !== "win32") {
+    await handle.writeFile(data, "utf8");
+    return;
+  }
+
+  const bytes = Buffer.from(data, "utf8");
+  const position = (await handle.stat()).size;
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesWritten } = await handle.write(
+      bytes,
+      offset,
+      bytes.length - offset,
+      position + offset,
+    );
+    if (bytesWritten === 0) {
+      throw new Error("Could not append recorder data.");
+    }
+    offset += bytesWritten;
   }
 }
 
@@ -499,7 +527,7 @@ async function prepareRecorderTailForAppend(
   const tail = tailWindow.subarray(lastNewline + 1).toString("utf8");
   try {
     parseRecordedLine(tail);
-    await handle.writeFile("\n", "utf8");
+    await appendRecorderData(handle, "\n");
     return true;
   } catch (error) {
     if (!(error instanceof SyntaxError)) {
@@ -581,7 +609,7 @@ async function appendCommittedLine(
     }
     await prepareRecorderTailForAppend(handle);
     published = true;
-    await handle.writeFile(line, "utf8");
+    await appendRecorderData(handle, line);
     if (durable) {
       await handle.sync();
     }

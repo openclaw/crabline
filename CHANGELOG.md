@@ -6,6 +6,7 @@
 - Reject non-positive Telegram admin message IDs and enforce native Mattermost channel types and unique normalized usernames.
 - Preserve local-mock webhook acceptance when clients disconnect or post-commit settlement hooks fail.
 - Scope iMessage direct waits and Matrix and Mattermost thread correlation to their native conversations.
+- Open Windows recorder files with truncation-capable handles while preserving serialized append behavior.
 - Coordinate recorder repair by file identity, limit existing-file durability syncs to the immediate parent, and reject provider lock roots beneath unsafe Unix namespaces.
 - Stop retrying and resending accepted outbound messages after permanent inbound authentication or configuration failures.
 - Escape visually unsafe Unicode controls in JSON reports, return a stable error document for unserializable values, and preserve Node write encoding semantics in test captures.
