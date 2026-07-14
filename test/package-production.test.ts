@@ -139,6 +139,18 @@ const IMPORT_PATTERNS = DEV_ONLY_RUNTIME_PACKAGES.map(
 );
 
 describe("production package", () => {
+  it("builds distributable output before running package verification", async () => {
+    const pkg = JSON.parse(await fs.readFile("package.json", "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    const verifySteps = pkg.scripts?.verify?.split(" && ") ?? [];
+
+    expect(verifySteps).toContain("pnpm build");
+    expect(verifySteps.indexOf("pnpm build")).toBeLessThan(
+      verifySteps.indexOf("pnpm test:coverage"),
+    );
+  });
+
   it("ships its public entry points and CLI without dev-only dependencies", async () => {
     const root = process.cwd();
     const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as {
