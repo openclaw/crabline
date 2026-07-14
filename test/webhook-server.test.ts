@@ -91,6 +91,21 @@ describe("webhook server", () => {
     ).rejects.toThrow(/canonical URL pathname/u);
   });
 
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1, 1.5])(
+    "rejects invalid maxBodyBytes before listening: %s",
+    async (maxBodyBytes) => {
+      await expect(
+        startWebhookServer({
+          handle: async () => new Response("ok"),
+          host: "127.0.0.1",
+          maxBodyBytes,
+          path: "/slack/events",
+          port: -1,
+        }),
+      ).rejects.toThrow(/maxBodyBytes must be a positive safe integer/u);
+    },
+  );
+
   it("can serve explicit GET webhook routes", async () => {
     const server = await startWebhookServer({
       async handle(request) {
@@ -351,6 +366,44 @@ describe("webhook server", () => {
     const healthy = await fetch(server.endpointUrl, { body: "1234", method: "POST" });
     expect(healthy.status).toBe(200);
     expect(handlerInvoked).toBe(true);
+  });
+
+  it("closes oversized request bodies that stall after rejection", async () => {
+    let handlerInvoked = false;
+    const server = await startWebhookServer({
+      bodyTimeoutMs: 20,
+      async handle() {
+        handlerInvoked = true;
+        return new Response("ok");
+      },
+      host: "127.0.0.1",
+      maxBodyBytes: 4,
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+    const endpoint = new URL(server.endpointUrl);
+    const socket = connect(Number(endpoint.port), endpoint.hostname);
+    let response = "";
+    const closed = once(socket, "close");
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      response += chunk;
+    });
+    await once(socket, "connect");
+    socket.write(
+      "POST /slack/events HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 10\r\n\r\n12345",
+    );
+
+    await vi.waitFor(() => expect(response).toContain("HTTP/1.1 413"));
+    expect(response).toMatch(/\r\nconnection: close\r\n/iu);
+    await expect(
+      Promise.race([
+        closed.then(() => "closed"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 500)),
+      ]),
+    ).resolves.toBe("closed");
+    expect(handlerInvoked).toBe(false);
   });
 
   it("rejects a wrong route before reading an oversized body", async () => {

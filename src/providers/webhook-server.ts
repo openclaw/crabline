@@ -47,7 +47,7 @@ async function readRequestBody(
       }
       settled = true;
       cleanup();
-      drainRequestBody(request);
+      drainRequestBodyWithDeadline(request, bodyTimeoutMs);
       reject(error);
     };
     const onData = (chunk: Buffer | string) => {
@@ -87,7 +87,7 @@ async function readRequestBody(
   });
 }
 
-function drainIgnoredRequestBody(request: IncomingMessage, bodyTimeoutMs: number): void {
+function drainRequestBodyWithDeadline(request: IncomingMessage, bodyTimeoutMs: number): void {
   if (request.destroyed || request.readableEnded) {
     return;
   }
@@ -245,12 +245,15 @@ export async function startWebhookServer(params: {
   }
   const methods = new Set(params.methods ?? ["POST"]);
   const maxBodyBytes = params.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes <= 0) {
+    throw new Error("Webhook maxBodyBytes must be a positive safe integer.");
+  }
   const bodyTimeoutMs = params.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
   let closing = false;
   const server = createServer(async (request, response) => {
     try {
       if (closing) {
-        drainIgnoredRequestBody(request, bodyTimeoutMs);
+        drainRequestBodyWithDeadline(request, bodyTimeoutMs);
         await writeFetchResponse(
           response,
           new Response("provider is shutting down", {
@@ -264,7 +267,7 @@ export async function startWebhookServer(params: {
       const host = request.headers.host ?? "127.0.0.1";
       const url = new URL(request.url ?? "/", `http://${host}`);
       if (!methods.has(method) || url.pathname !== params.path) {
-        drainIgnoredRequestBody(request, bodyTimeoutMs);
+        drainRequestBodyWithDeadline(request, bodyTimeoutMs);
         await writeFetchResponse(response, new Response("not found", { status: 404 }));
         return;
       }
@@ -304,7 +307,7 @@ export async function startWebhookServer(params: {
                 ? "request body timeout"
                 : "internal server error",
             {
-              ...(status === 408 ? { headers: { connection: "close" } } : {}),
+              ...(status === 408 || status === 413 ? { headers: { connection: "close" } } : {}),
               status,
             },
           ),
