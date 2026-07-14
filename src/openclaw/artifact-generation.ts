@@ -27,6 +27,7 @@ const STAGING_NAME_PATTERN =
   /^\.staging-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const REMOVAL_TOMBSTONE_PATTERN =
   /^\.(.+)\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove$/iu;
+const CURRENT_GENERATION_READ_ATTEMPTS = 8;
 type OpenClawCrablineArtifactPointerBase = {
   capabilityMatrixPath: string;
   generation: string;
@@ -438,7 +439,7 @@ export async function readOpenClawCrablineArtifactPointer(
   }
 }
 
-async function assertCurrentGenerationExists(
+async function assertArtifactGenerationExists(
   outputDir: string,
   pointer: OpenClawCrablineArtifactPointer,
 ): Promise<void> {
@@ -519,8 +520,7 @@ async function assertCurrentGenerationExists(
     capabilityMatrix.version !== 1 ||
     capabilityMatrix.source !== "openclaw/crabline" ||
     capabilityMatrix.manifestPath !== pointer.manifestPath ||
-    typeof capabilityMatrix.channelDriver !== "string" ||
-    capabilityMatrix.channelDriver.length === 0 ||
+    capabilityMatrix.channelDriver !== "crabline" ||
     typeof capabilityMatrix.selectedChannel !== "string" ||
     capabilityMatrix.selectedChannel.length === 0 ||
     capabilityMatrix.report === null ||
@@ -529,7 +529,7 @@ async function assertCurrentGenerationExists(
     readiness.version !== 1 ||
     readiness.source !== "openclaw/crabline" ||
     readiness.manifestPath !== pointer.manifestPath ||
-    readiness.channelDriver !== capabilityMatrix.channelDriver ||
+    readiness.channelDriver !== "crabline" ||
     readiness.selectedChannel !== capabilityMatrix.selectedChannel ||
     manifest.provider !== readiness.selectedChannel ||
     !isReadinessSection(
@@ -612,6 +612,39 @@ async function assertCurrentGenerationExists(
   throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
 }
 
+async function readValidCurrentArtifactGeneration(
+  outputDir: string,
+  initialPointer: OpenClawCrablineArtifactPointer,
+): Promise<OpenClawCrablineArtifactPointer> {
+  let pointer = initialPointer;
+  let lastValidationError: unknown;
+  for (let attempt = 0; attempt < CURRENT_GENERATION_READ_ATTEMPTS; attempt += 1) {
+    try {
+      await assertArtifactGenerationExists(outputDir, pointer);
+      lastValidationError = undefined;
+    } catch (error) {
+      lastValidationError = error;
+    }
+
+    const currentPointer = await readOpenClawCrablineArtifactPointer(outputDir);
+    if (currentPointer === null || isDeepStrictEqual(currentPointer, pointer)) {
+      if (lastValidationError !== undefined) {
+        throw lastValidationError;
+      }
+      if (currentPointer === null) {
+        throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
+      }
+      return pointer;
+    }
+    pointer = currentPointer;
+  }
+
+  throw new Error(
+    "OpenClaw Crabline current artifact generation changed too frequently to validate.",
+    lastValidationError === undefined ? undefined : { cause: lastValidationError },
+  );
+}
+
 async function pruneArtifactStore(params: {
   lock: OpenClawCrablineSmokeRunLock;
   pointer: OpenClawCrablineArtifactPointer | null;
@@ -682,11 +715,11 @@ export async function publishOpenClawCrablineArtifactGeneration(
   await output.assertIdentityAt();
   await store.assertIdentityAt();
   await params.lock.assertOwned();
-  const currentPointer = await readOpenClawCrablineArtifactPointer(outputDir);
+  let currentPointer = await readOpenClawCrablineArtifactPointer(outputDir);
   await output.assertIdentityAt();
   await store.assertIdentityAt();
   if (currentPointer) {
-    await assertCurrentGenerationExists(outputDir, currentPointer);
+    currentPointer = await readValidCurrentArtifactGeneration(outputDir, currentPointer);
     await output.assertIdentityAt();
     await store.assertIdentityAt();
   }
@@ -836,7 +869,7 @@ export async function publishOpenClawCrablineArtifactGeneration(
     await output.assertIdentityAt();
     await store.assertIdentityAt();
     await staging.assertIdentityAt(generationPath);
-    await assertCurrentGenerationExists(outputDir, pointer);
+    await assertArtifactGenerationExists(outputDir, pointer);
     await output.assertIdentityAt();
     await store.assertIdentityAt();
     await staging.assertIdentityAt(generationPath);
