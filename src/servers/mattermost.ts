@@ -420,6 +420,16 @@ function commitNextPost(
   state.posts.set(pending.post.id, pending.post);
 }
 
+function nextDirectChannelId(state: MattermostServerState, seed: string): string {
+  let collision = 0;
+  let channelId: string;
+  do {
+    channelId = mattermostId(collision === 0 ? seed : `${seed}:${collision}`);
+    collision += 1;
+  } while (state.channels.has(channelId));
+  return channelId;
+}
+
 function webSocketEventTooLargeResponse(): Response {
   return mattermostError("WebSocket event is too large", 413);
 }
@@ -477,6 +487,12 @@ function handleAdminInbound(params: {
   if (!senderName) {
     return jsonResponse(
       { error: "senderName must be a valid Mattermost username", ok: false },
+      400,
+    );
+  }
+  if (senderId === params.state.botUserId && senderName !== params.state.botUsername) {
+    return jsonResponse(
+      { error: "senderName must match the configured bot username", ok: false },
       400,
     );
   }
@@ -633,10 +649,16 @@ async function handleApi(params: {
     }
     const participantIds = [...userIds].sort();
     const channelName = participantIds.join("__");
-    const channelId = mattermostId(`dm:${participantIds.join(":")}`);
-    if (!state.channels.has(channelId) && state.channels.size >= state.maxCommittedChannels) {
+    const existingChannel = [...state.channels.values()].find(
+      (channel) => channel.type === "D" && channel.name === channelName,
+    );
+    if (existingChannel) {
+      return jsonResponse(existingChannel, 201);
+    }
+    if (state.channels.size >= state.maxCommittedChannels) {
       return mattermostError("Too many retained channels", 503);
     }
+    const channelId = nextDirectChannelId(state, `dm:${participantIds.join(":")}`);
     const channel = { display_name: "", id: channelId, name: channelName, type: "D" };
     state.channels.set(channelId, channel);
     return jsonResponse(channel, 201);
