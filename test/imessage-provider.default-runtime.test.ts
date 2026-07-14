@@ -22,6 +22,14 @@ function createConfig(imessage?: Partial<NonNullable<ProviderConfig["imessage"]>
   };
 }
 
+function createEnvironment(apiKey?: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  if (apiKey !== undefined) {
+    env.IMESSAGE_API_KEY = apiKey;
+  }
+  return env;
+}
+
 describe("imessage provider default runtime", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -37,6 +45,17 @@ describe("imessage provider default runtime", () => {
       serverUrl: undefined,
     });
   });
+
+  it.each([undefined, "", "   "])(
+    "uses the mock key for empty local API key values: %j",
+    (apiKey) => {
+      expect(resolveIMessageAdapterConfig(createConfig(), createEnvironment(apiKey))).toEqual({
+        apiKey: "local-mock-imessage-api-key",
+        local: true,
+        serverUrl: undefined,
+      });
+    },
+  );
 
   it("accepts an explicitly isolated environment", () => {
     expect(
@@ -77,4 +96,46 @@ describe("imessage provider default runtime", () => {
       serverUrl: "https://ambient-imessage.example.com",
     });
   });
+
+  it.each(["", "   "])(
+    "falls back to a non-empty environment key when the configured key is blank: %j",
+    (apiKey) => {
+      expect(
+        resolveIMessageAdapterConfig(createConfig({ apiKey, local: false }), {
+          IMESSAGE_API_KEY: "test-token-placeholder",
+        }),
+      ).toEqual({
+        apiKey: "test-token-placeholder",
+        local: false,
+        serverUrl: undefined,
+      });
+    },
+  );
+
+  it("prefers a non-empty configured key over the environment", () => {
+    expect(
+      resolveIMessageAdapterConfig(createConfig({ apiKey: "sample", local: false }), {
+        IMESSAGE_API_KEY: "test-token-placeholder",
+      }),
+    ).toEqual({
+      apiKey: "sample",
+      local: false,
+      serverUrl: undefined,
+    });
+  });
+
+  it.each([undefined, "", "   "])(
+    "rejects remote mode without a non-empty API key: %j",
+    (apiKey) => {
+      expect(() =>
+        resolveIMessageAdapterConfig(createConfig({ local: false }), createEnvironment(apiKey)),
+      ).toThrow(
+        expect.objectContaining({
+          kind: "config",
+          message:
+            "Remote iMessage mode requires imessage.apiKey or IMESSAGE_API_KEY to be non-empty.",
+        }),
+      );
+    },
+  );
 });

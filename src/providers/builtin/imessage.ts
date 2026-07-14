@@ -17,8 +17,24 @@ import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js
 export function resolveIMessageAdapterConfig(config: ProviderConfig, env?: NodeJS.ProcessEnv) {
   const local = config.imessage?.local ?? true;
   env ??= local ? {} : process.env;
+  const configuredApiKey = config.imessage?.apiKey;
+  const environmentApiKey = env.IMESSAGE_API_KEY;
+  let apiKey = configuredApiKey?.trim()
+    ? configuredApiKey
+    : environmentApiKey?.trim()
+      ? environmentApiKey
+      : undefined;
+  if (!apiKey) {
+    if (!local) {
+      throw new CrablineError(
+        "Remote iMessage mode requires imessage.apiKey or IMESSAGE_API_KEY to be non-empty.",
+        { kind: "config" },
+      );
+    }
+    apiKey = "local-mock-imessage-api-key";
+  }
   return {
-    apiKey: config.imessage?.apiKey ?? env.IMESSAGE_API_KEY ?? "local-mock-imessage-api-key",
+    apiKey,
     local,
     serverUrl: config.imessage?.serverUrl ?? env.IMESSAGE_SERVER_URL,
   };

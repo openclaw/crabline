@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Require explicit remote iMessage API keys and decode legacy loopback channel metadata consistently.
 - Preserve configured Mattermost bot identity during admin ingress and avoid overwriting retained channels on direct-channel ID collisions.
 - Validate serve options before credential reads, reject retry-unsafe nonce-free roundtrips, and restore authenticated external Mattermost webhook guidance.
 - Ignore inherit-only Windows ACEs for current-directory mutation checks and bind lock-root identity and ACL validation to the same no-follow handle across path replacement.
