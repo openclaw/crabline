@@ -17,7 +17,11 @@ import {
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
-import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import {
+  recordServerEvent,
+  ServerRecorderCommittedError,
+  type ServerEventObserver,
+} from "./recorder.js";
 import {
   attachWhatsAppBaileysWebSocketServer,
   resolveMaxPendingWhatsAppInboundMessages,
@@ -581,8 +585,25 @@ async function handleRequest(params: { request: IncomingMessage; state: WhatsApp
     try {
       await appendEvent(params.state, event);
     } catch (error) {
-      preparedDelivery?.cancel();
-      result.messageIdReservation?.cancel();
+      if (!(error instanceof ServerRecorderCommittedError)) {
+        preparedDelivery?.cancel();
+        result.messageIdReservation?.cancel();
+        throw error;
+      }
+      result.messageIdReservation?.commit();
+      if (result.message && preparedDelivery) {
+        try {
+          await preparedDelivery.commit();
+          rememberInboundMessageId(params.state, result.message.key.id);
+        } catch (deliveryError) {
+          const reconciliationError = new AggregateError(
+            [error, deliveryError],
+            "WhatsApp recorder append committed, but inbound delivery reconciliation failed.",
+          );
+          reconciliationError.cause = deliveryError;
+          throw reconciliationError;
+        }
+      }
       throw error;
     }
     if (result.message && preparedDelivery) {
