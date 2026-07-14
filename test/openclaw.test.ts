@@ -163,6 +163,18 @@ function recorderProbeLine(extra: Record<string, unknown> = {}): string {
   })}\n`;
 }
 
+function telegramProbeResult(extra: Record<string, unknown> = {}) {
+  return {
+    ok: true,
+    result: {
+      first_name: "Crabline",
+      id: 424_242,
+      is_bot: true,
+    },
+    ...extra,
+  };
+}
+
 const manifest: CrablineServerManifest = {
   adminToken: "crabline-admin-token",
   baseUrl: "http://127.0.0.1:1234",
@@ -2982,8 +2994,10 @@ describe("OpenClaw local provider bridge", () => {
               probe: async () => {
                 await fs.writeFile(params.recorderPath!, recorderProbeLine());
                 return {
-                  ok: true,
+                  ...telegramProbeResult(),
                   result: {
+                    first_name: "Crabline",
+                    id: 424_242,
                     is_bot: true,
                     username: "crabline_bot",
                   },
@@ -3164,7 +3178,7 @@ describe("OpenClaw local provider bridge", () => {
                   if (outcome === "failed") {
                     throw probeFailure;
                   }
-                  return { ok: true };
+                  return telegramProbeResult();
                 },
               } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
             },
@@ -3290,7 +3304,7 @@ describe("OpenClaw local provider bridge", () => {
               return {
                 close: async () => await close(),
                 manifest: { ...manifest, recorderPath: recorderPath! },
-                probe: async () => ({ ok: true }),
+                probe: async () => telegramProbeResult(),
               } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
             },
             syncParent,
@@ -3340,7 +3354,7 @@ describe("OpenClaw local provider bridge", () => {
               return {
                 close,
                 manifest: { ...manifest, recorderPath: params.recorderPath! },
-                probe: async () => ({ ok: true }),
+                probe: async () => telegramProbeResult(),
               } as unknown as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
             },
             syncParent,
@@ -3373,7 +3387,7 @@ describe("OpenClaw local provider bridge", () => {
           ...manifest,
           recorderPath: params.recorderPath!,
         },
-        probe: async () => ({ currentRun }),
+        probe: async () => telegramProbeResult({ currentRun }),
       } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
     };
     try {
@@ -3481,7 +3495,7 @@ describe("OpenClaw local provider bridge", () => {
             return {
               close: async () => undefined,
               manifest: { ...manifest, recorderPath: params.recorderPath! },
-              probe: async () => ({ ok: true }),
+              probe: async () => telegramProbeResult(),
             } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
           },
         },
@@ -3532,7 +3546,7 @@ describe("OpenClaw local provider bridge", () => {
       return {
         close: async () => undefined,
         manifest: { ...manifest, recorderPath: params.recorderPath! },
-        probe: async () => ({ ok: true }),
+        probe: async () => telegramProbeResult(),
       } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
     };
     try {
@@ -3604,7 +3618,7 @@ describe("OpenClaw local provider bridge", () => {
               return {
                 close: async () => undefined,
                 manifest: { ...manifest, recorderPath: params.recorderPath! },
-                probe: async () => ({ ok: true }),
+                probe: async () => telegramProbeResult(),
               } as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>;
             },
           },
