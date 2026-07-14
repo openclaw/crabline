@@ -246,6 +246,42 @@ describe("process-owned lock filesystem", () => {
     },
   );
 
+  it.runIf(process.platform === "darwin")(
+    "does not reclaim a precise owner observed through a coarse fallback",
+    async () => {
+      const target = await createLockTarget();
+      const lockDirectory = `${target}.lock`;
+      const owner = await startIdleProcess();
+      const preciseIdentity = `darwin:1.1:us:${owner.processStartedAtMs * 1000}`;
+      const coarseIdentity = `darwin:1.1:s:${Math.trunc(owner.processStartedAtMs / 1000)}`;
+      await mkdir(lockDirectory);
+      await writeOwner(lockDirectory, {
+        pid: owner.pid,
+        processIdentity: preciseIdentity,
+        processStartedAtMs: owner.processStartedAtMs,
+      });
+      await utimes(lockDirectory, new Date(0), new Date(0));
+      const lockFs = createProcessOwnedLockFileSystem({
+        processIdentityReader: (pid) =>
+          pid === process.pid ? exactIdentityForCurrentPlatform(123) : coarseIdentity,
+      });
+
+      await expect(
+        lock(target, {
+          fs: lockFs,
+          realpath: false,
+          retries: 0,
+          stale: 2000,
+          update: 1000,
+        }),
+      ).rejects.toMatchObject({ code: "ELOCKED" });
+
+      owner.child.stdin.end();
+      await once(owner.child, "exit");
+    },
+    10_000,
+  );
+
   it("distinguishes dead Linux process states from stopped owners", () => {
     expect(isDeadLinuxProcessState("123 (worker) Z 1 2 3")).toBe(true);
     expect(isDeadLinuxProcessState("123 (worker) X 1 2 3")).toBe(true);
@@ -421,6 +457,27 @@ describe("process-owned lock filesystem", () => {
     await release();
     expect(fs.existsSync(claimPath)).toBe(false);
   });
+
+  it("recovers an aged version-1 coordination claim after its PID is reused", async () => {
+    const target = await createLockTarget();
+    const claimPath = recoveryClaimPath(`${target}.lock`);
+    const owner = await startIdleProcess();
+    await mkdir(claimPath);
+    const ownerPath = await writeOwner(claimPath, {
+      pid: owner.pid,
+      processStartedAtMs: 1,
+    });
+    await utimes(ownerPath, new Date(0), new Date(0));
+    await utimes(claimPath, new Date(0), new Date(0));
+
+    const release = await acquire(target);
+    expect(release).toBeTypeOf("function");
+    await release();
+    expect(fs.existsSync(claimPath)).toBe(false);
+
+    owner.child.stdin.end();
+    await once(owner.child, "exit");
+  }, 15_000);
 
   it.skipIf(process.platform === "win32")(
     "reuses a process-wide coordination claim after final cleanup fails",
@@ -776,6 +833,33 @@ describe("process-owned lock filesystem", () => {
       `${JSON.stringify({
         ...owner,
         machineIdentity: `${platform}:00000000-0000-0000-0000-000000000000`,
+        token: randomUUID(),
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await utimes(lockDirectory, new Date(0), new Date(0));
+
+    const release = await acquire(target);
+    expect(release).toBeTypeOf("function");
+    await release();
+  });
+
+  it("recovers a stale version-4 owner written on another platform", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const owner = await currentOwnerRecord();
+    const foreignPlatform = process.platform === "linux" ? "windows" : "linux";
+    await mkdir(lockDirectory);
+    await writeFile(
+      path.join(lockDirectory, "crabline-owner.json"),
+      `${JSON.stringify({
+        ...owner,
+        machineIdentity: `${foreignPlatform}:00000000-0000-0000-0000-000000000000`,
+        processIdentity:
+          foreignPlatform === "linux"
+            ? "linux:00000000-0000-0000-0000-000000000000:1"
+            : "windows:1",
+        processNamespace: foreignPlatform === "linux" ? "pid:[1]" : null,
         token: randomUUID(),
       })}\n`,
       { mode: 0o600 },
