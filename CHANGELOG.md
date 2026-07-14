@@ -20,6 +20,7 @@
 - Recursively inspect referenced local actions, include Go manifests in dependency review, and allow production package source-map checks to complete under load.
 - Cryptographically verify npm provenance and bind existing releases to the expected package digest, repository, workflow, tag, and commit.
 - Keep server recorder hardlink transitions on compatible identity locks and reject non-regular recorder handles before publication.
+- Fail closed when Windows script Job Object containment is unavailable.
 - Stream Telegram multipart uploads with bounded parser metadata instead of copying complete files through `FormData`.
 - Keep Unix recorder identity locks in one validated private per-user namespace across processes and recorder path changes.
 - Reject non-positive Telegram admin message IDs and enforce native Mattermost channel types and unique normalized usernames.

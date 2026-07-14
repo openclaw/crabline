@@ -124,7 +124,7 @@ afterEach(() => {
 
 describe("script provider Windows cleanup", () => {
   it.each(["temp", "compile", "probe"] as const)(
-    "falls back to direct shell execution when Job Object helper %s is blocked",
+    "fails closed when Job Object helper %s is blocked",
     async (blockedStage) => {
       vi.resetModules();
       if (blockedStage === "temp") {
@@ -142,14 +142,12 @@ describe("script provider Windows cleanup", () => {
             throw new Error("blocked");
           });
       }
-      const scriptChild = createFakeChild(1110);
-      spawnMock.mockReturnValueOnce(scriptChild);
       const { ScriptProviderAdapter: IsolatedScriptProviderAdapter } =
         await import("../src/providers/builtin/script.js");
       const context = createContext();
       const provider = new IsolatedScriptProviderAdapter(context);
 
-      const failurePromise = provider
+      const failure = await provider
         .send({
           ...context,
           mode: "send",
@@ -157,15 +155,11 @@ describe("script provider Windows cleanup", () => {
           text: "payload",
         })
         .catch((error: unknown) => error);
-      await flushScriptSpawn();
-      scriptChild.emit("close", 7, null);
-      await failurePromise;
 
-      expect(spawnMock.mock.calls[0]?.[0]).toBe("node send.mjs");
-      expect(spawnMock.mock.calls[0]?.[1]).toMatchObject({
-        shell: true,
-        windowsHide: true,
-      });
+      expect(ensureErrorMessage(failure)).toContain("Script command failed to start.");
+      expect(ensureErrorMessage(failure)).toContain("Windows script Job Object helper");
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(rmSyncMock).toHaveBeenCalledTimes(blockedStage === "temp" ? 0 : 1);
     },
   );
 
@@ -174,15 +168,14 @@ describe("script provider Windows cleanup", () => {
     execFileMock.mockImplementationOnce(() => {
       throw new Error("transient bootstrap failure");
     });
-    const firstScriptChild = createFakeChild(1110);
     const secondScriptChild = createFakeChild(1111);
-    spawnMock.mockReturnValueOnce(firstScriptChild).mockReturnValueOnce(secondScriptChild);
+    spawnMock.mockReturnValueOnce(secondScriptChild);
     const { ScriptProviderAdapter: IsolatedScriptProviderAdapter } =
       await import("../src/providers/builtin/script.js");
     const context = createContext();
     const provider = new IsolatedScriptProviderAdapter(context);
 
-    const firstFailure = provider
+    const firstFailure = await provider
       .send({
         ...context,
         mode: "send",
@@ -190,9 +183,8 @@ describe("script provider Windows cleanup", () => {
         text: "payload",
       })
       .catch((error: unknown) => error);
-    await flushScriptSpawn();
-    firstScriptChild.emit("close", 7, null);
-    await firstFailure;
+    expect(ensureErrorMessage(firstFailure)).toContain("Windows script Job Object helper");
+    expect(spawnMock).not.toHaveBeenCalled();
 
     const secondFailure = provider
       .send({
@@ -207,8 +199,7 @@ describe("script provider Windows cleanup", () => {
     await secondFailure;
 
     expect(execFileMock).toHaveBeenCalledTimes(3);
-    expect(spawnMock.mock.calls[0]?.[0]).toBe("node send.mjs");
-    expect(spawnMock.mock.calls[1]?.[0]).toMatch(/crabline-script-job\.exe$/u);
+    expect(spawnMock.mock.calls[0]?.[0]).toMatch(/crabline-script-job\.exe$/u);
   });
 
   it("does not bootstrap the Job Object helper for an already-aborted spawn", async () => {

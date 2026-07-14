@@ -259,7 +259,7 @@ const WINDOWS_PROCESS_TERMINATOR_SOURCE = [
 ].join("");
 
 let windowsJobHelperPath: string | undefined;
-let windowsJobHelperPromise: Promise<string | undefined> | undefined;
+let windowsJobHelperPromise: Promise<string> | undefined;
 
 function removeWindowsJobHelper(directory: string): void {
   try {
@@ -289,15 +289,17 @@ function runWindowsJobHelperCommand(
   });
 }
 
-async function createWindowsJobHelper(): Promise<string | undefined> {
+async function createWindowsJobHelper(): Promise<string> {
   if (windowsJobHelperPath !== undefined) {
     return windowsJobHelperPath;
   }
   let directory: string;
   try {
     directory = mkdtempSync(path.join(tmpdir(), "crabline-script-job-"));
-  } catch {
-    return undefined;
+  } catch (error) {
+    throw new Error("Could not create the Windows script Job Object helper directory.", {
+      cause: error,
+    });
   }
   const helperPath = path.join(directory, "crabline-script-job.exe");
   try {
@@ -330,16 +332,18 @@ async function createWindowsJobHelper(): Promise<string | undefined> {
       timeout: 5_000,
       windowsHide: true,
     });
-  } catch {
+  } catch (error) {
     removeWindowsJobHelper(directory);
-    return undefined;
+    throw new Error("Could not initialize the Windows script Job Object helper.", {
+      cause: error,
+    });
   }
   windowsJobHelperPath = helperPath;
   process.once("exit", () => removeWindowsJobHelper(directory));
   return helperPath;
 }
 
-function ensureWindowsJobHelper(): Promise<string | undefined> {
+function ensureWindowsJobHelper(): Promise<string> {
   if (windowsJobHelperPath !== undefined) {
     return Promise.resolve(windowsJobHelperPath);
   }
@@ -439,28 +443,18 @@ async function spawnScriptChild(
       throw signal.reason ?? new Error("Script command aborted.");
     }
     startedAtMs = Date.now();
-    if (helperPath) {
-      const shellCommand = windowsShellCommand(params.command, params.shell);
-      child = spawn(helperPath, [], {
-        cwd,
-        env: {
-          ...process.env,
-          [WINDOWS_JOB_COMMAND_ENV]: Buffer.from(shellCommand.commandLine).toString("base64"),
-          [WINDOWS_JOB_SHELL_ENV]: Buffer.from(shellCommand.shell).toString("base64"),
-        },
-        shell: false,
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
-    } else {
-      child = spawn(params.command, {
-        cwd,
-        env: process.env,
-        shell: params.shell ?? true,
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
-    }
+    const shellCommand = windowsShellCommand(params.command, params.shell);
+    child = spawn(helperPath, [], {
+      cwd,
+      env: {
+        ...process.env,
+        [WINDOWS_JOB_COMMAND_ENV]: Buffer.from(shellCommand.commandLine).toString("base64"),
+        [WINDOWS_JOB_SHELL_ENV]: Buffer.from(shellCommand.shell).toString("base64"),
+      },
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
   } else {
     startedAtMs = Date.now();
     child = spawn(params.command, {
