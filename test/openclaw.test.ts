@@ -40,7 +40,12 @@ import {
 } from "../src/openclaw/artifact-generation.js";
 import { MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/matrix.js";
 import { SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/signal.js";
-import { isRecord, parseQaTarget } from "../src/openclaw/shared.js";
+import {
+  createOpenClawCrablineProviderBridge,
+  isRecord,
+  parseQaTarget,
+  type OpenClawCrablineProviderAdapter,
+} from "../src/openclaw/shared.js";
 
 type ProviderReadinessTestDependencies = {
   acquireLock?: () => Promise<{
@@ -294,6 +299,69 @@ const zaloManifest: CrablineServerManifest = {
 };
 
 describe("OpenClaw local provider bridge", () => {
+  it("preserves prototype methods and receivers on class-based adapters", async () => {
+    class ClassAdapter implements OpenClawCrablineProviderAdapter {
+      readonly label = "class-adapter";
+
+      createAgentDelivery() {
+        return {
+          channel: this.label,
+          replyChannel: this.label,
+          replyTo: this.label,
+          to: this.label,
+        };
+      }
+
+      createBinding() {
+        return {
+          accountId: this.label,
+          channel: this.label,
+          createChannelDriverSmokeEnv: (env: NodeJS.ProcessEnv) => env,
+          createGatewayConfig: () => ({}),
+          requiredPluginIds: [],
+        };
+      }
+
+      createInbound(input: Parameters<OpenClawCrablineProviderAdapter["createInbound"]>[0]) {
+        return {
+          providerBody: {},
+          providerHeaders: {},
+          providerTargetKey: this.label,
+          providerUrl: `https://${this.label}.test`,
+          qaTarget: `dm:${input.conversation.id}`,
+          stateConversation: input.conversation,
+        };
+      }
+
+      createOutboundFromRecorderEvent() {
+        return null;
+      }
+
+      async probe() {
+        return this.label;
+      }
+    }
+
+    const bridge = createOpenClawCrablineProviderBridge({
+      provider: "mattermost",
+      createAdapter: () => new ClassAdapter(),
+    });
+    const adapter = bridge.createAdapter(mattermostManifest);
+
+    await expect(adapter.probe()).resolves.toBe("class-adapter");
+    expect(adapter.createAgentDelivery({ id: "target", kind: "direct", native: true }).to).toBe(
+      "class-adapter",
+    );
+    expect(adapter.createBinding().channel).toBe("class-adapter");
+    expect(
+      adapter.createInbound({
+        conversation: { id: "target", kind: "direct" },
+        senderId: "sender",
+        text: "hello",
+      }).providerTargetKey,
+    ).toBe("class-adapter");
+  });
+
   it.each([
     ["mattermost", mattermostManifest],
     ["matrix", matrixManifest],
@@ -2417,28 +2485,43 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("maps Mattermost QA targets, inbound messages, and recorder events", () => {
+    const userId = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const otherUserId = "cccccccccccccccccccccccccc";
+    const channelId = "dddddddddddddddddddddddddd";
+    const otherChannelId = "eeeeeeeeeeeeeeeeeeeeeeeeee";
+    const rootId = "ffffffffffffffffffffffffff";
     const delivery = createOpenClawCrablineAgentDelivery({
       manifest: mattermostManifest,
-      target: "dm:alice",
+      target: `dm:${userId}`,
     });
-    expect(delivery).toMatchObject({
+    expect(delivery).toEqual({
       channel: "mattermost",
       replyChannel: "mattermost",
+      replyTo: `user:${userId}`,
+      to: `user:${userId}`,
     });
-    expect(delivery.to).toMatch(/^user:[a-z0-9]{26}$/u);
+
+    for (const target of ["dm:alice", "group:UPPERCASEIDENTIFIER123456"]) {
+      expect(() =>
+        createOpenClawCrablineAgentDelivery({
+          manifest: mattermostManifest,
+          target,
+        }),
+      ).toThrow("must be exactly 26 lowercase alphanumeric characters");
+    }
 
     expect(() =>
       createOpenClawCrablineAgentDelivery({
         manifest: mattermostManifest,
-        target: "thread:general/parent",
+        target: `thread:${channelId}/${rootId}`,
       }),
     ).toThrow("Mattermost thread targets require OpenClaw QA thread forwarding.");
 
     const inbound = createOpenClawCrablineInbound({
       manifest: mattermostManifest,
       input: {
-        conversation: { id: " alice ", kind: "direct" },
-        senderId: "alice",
+        conversation: { id: ` ${userId} `, kind: "direct" },
+        senderId: userId,
         senderName: "Alice",
         text: "hello",
       },
@@ -2450,19 +2533,19 @@ describe("OpenClaw local provider bridge", () => {
         text: "hello",
       },
       providerUrl: "http://127.0.0.1:9753/crabline/mattermost/inbound",
-      qaTarget: "dm:alice",
+      qaTarget: `dm:${userId}`,
       stateConversation: {
-        id: "alice",
+        id: userId,
         kind: "direct",
       },
     });
-    expect(inbound.providerBody.senderId).toBe(delivery.to.slice("user:".length));
+    expect(inbound.providerBody.senderId).toBe(userId);
     expect(() =>
       createOpenClawCrablineInbound({
         manifest: mattermostManifest,
         input: {
-          conversation: { id: "alice", kind: "direct" },
-          senderId: "bob",
+          conversation: { id: userId, kind: "direct" },
+          senderId: otherUserId,
           text: "hello",
         },
       }),
@@ -2473,7 +2556,7 @@ describe("OpenClaw local provider bridge", () => {
           manifest: mattermostManifest,
           input: {
             conversation: { id: conversationId, kind: "direct" },
-            senderId: "alice",
+            senderId: userId,
             text: "hello",
           },
         }),
@@ -2483,7 +2566,7 @@ describe("OpenClaw local provider bridge", () => {
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
         manifest: mattermostManifest,
-        targetByProviderTarget: new Map([[inbound.providerTargetKey, "dm:alice"]]),
+        targetByProviderTarget: new Map([[inbound.providerTargetKey, `dm:${userId}`]]),
         event: {
           body: { channel_id: inbound.providerTargetKey, message: "hello from openclaw" },
           method: "POST",
@@ -2496,7 +2579,7 @@ describe("OpenClaw local provider bridge", () => {
       senderId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
       senderName: "OpenClaw QA",
       text: "hello from openclaw",
-      to: "dm:alice",
+      to: `dm:${userId}`,
     });
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
@@ -2523,29 +2606,29 @@ describe("OpenClaw local provider bridge", () => {
     const threadInbound = createOpenClawCrablineInbound({
       manifest: mattermostManifest,
       input: {
-        conversation: { id: "general", kind: "group" },
-        senderId: "alice",
+        conversation: { id: channelId, kind: "group" },
+        senderId: userId,
         text: "thread reply",
-        threadId: "parent",
+        threadId: rootId,
       },
     });
-    expect(threadInbound.providerTargetKey).toMatch(/:thread:[a-z0-9]{26}$/u);
-    expect(threadInbound.threadId).toBe(threadInbound.providerBody.rootId);
+    expect(threadInbound.providerTargetKey).toBe(`${channelId}:thread:${rootId}`);
+    expect(threadInbound.threadId).toBe(rootId);
     const otherThreadInbound = createOpenClawCrablineInbound({
       manifest: mattermostManifest,
       input: {
-        conversation: { id: "random", kind: "group" },
-        senderId: "alice",
-        text: "same symbolic thread in another channel",
-        threadId: "parent",
+        conversation: { id: otherChannelId, kind: "group" },
+        senderId: userId,
+        text: "same root in another channel",
+        threadId: rootId,
       },
     });
-    expect(otherThreadInbound.providerBody.rootId).not.toBe(threadInbound.providerBody.rootId);
+    expect(otherThreadInbound.providerBody.rootId).toBe(rootId);
     const blankThreadInbound = createOpenClawCrablineInbound({
       manifest: mattermostManifest,
       input: {
-        conversation: { id: "general", kind: "group" },
-        senderId: "alice",
+        conversation: { id: channelId, kind: "group" },
+        senderId: userId,
         text: "top-level reply",
         threadId: " \n\t",
       },
@@ -2555,7 +2638,9 @@ describe("OpenClaw local provider bridge", () => {
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
         manifest: mattermostManifest,
-        targetByProviderTarget: new Map([[blankThreadInbound.providerTargetKey, "group:general"]]),
+        targetByProviderTarget: new Map([
+          [blankThreadInbound.providerTargetKey, `group:${channelId}`],
+        ]),
         event: {
           body: {
             channel_id: blankThreadInbound.providerBody.channelId,
@@ -2567,24 +2652,23 @@ describe("OpenClaw local provider bridge", () => {
           type: "api",
         },
       }),
-    ).toMatchObject({ to: "group:general" });
-    const nativeRootId = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
-    expect(
+    ).toMatchObject({ to: `group:${channelId}` });
+    expect(() =>
       createOpenClawCrablineInbound({
         manifest: mattermostManifest,
         input: {
-          conversation: { id: "general", kind: "group" },
-          senderId: "alice",
-          text: "real root",
-          threadId: nativeRootId,
+          conversation: { id: channelId, kind: "group" },
+          senderId: userId,
+          text: "invalid root",
+          threadId: "parent",
         },
-      }).providerBody.rootId,
-    ).toBe(nativeRootId);
+      }),
+    ).toThrow("must be exactly 26 lowercase alphanumeric characters");
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
         manifest: mattermostManifest,
         targetByProviderTarget: new Map([
-          [threadInbound.providerTargetKey, "thread:general/parent"],
+          [threadInbound.providerTargetKey, `thread:${channelId}/${rootId}`],
         ]),
         event: {
           body: {
@@ -2597,7 +2681,7 @@ describe("OpenClaw local provider bridge", () => {
           type: "api",
         },
       }),
-    ).toMatchObject({ to: "thread:general/parent" });
+    ).toMatchObject({ to: `thread:${channelId}/${rootId}` });
   });
 
   it("maps Matrix native rooms, inbound messages, and recorder events", () => {
