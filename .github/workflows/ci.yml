@@ -29,14 +29,21 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          cache-dependency-path: tools/go.sum
+          go-version-file: tools/go.mod
+
       - name: Validate workflows
         # actionlint's schema does not yet include GitHub's concurrency.queue key.
         run: >-
           cd tools &&
-          go run github.com/rhysd/actionlint/cmd/actionlint
+          find ../.github/workflows -type f
+          \( -name '*.yml' -o -name '*.yaml' \)
+          -exec go run github.com/rhysd/actionlint/cmd/actionlint
           -config-file ../.github/actionlint.yaml
           -ignore 'unexpected key "queue" for "concurrency" section'
-          ../.github/workflows/*.yml
+          {} +
 
       - name: Verify
         run: pnpm verify

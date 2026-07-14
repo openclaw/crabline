@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Provision CI Go from the tools module, lint both workflow YAML extensions, and build distributable output before package verification.
 - Give the recorder-scan roundtrip regression enough time to complete on loaded CI workers.
 - Reject invalid shared HTTP body limits, webhook deadlines, and signed-JWT cache timings before starting I/O.
 - Cancel provider-created webhook responses when recorder persistence fails before delivery.

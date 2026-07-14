@@ -42,16 +42,29 @@ async function readWorkflow(filePath: string): Promise<Workflow> {
 describe("CI workflow hardening", () => {
   it("runs actionlint in the primary CI gate", async () => {
     const workflow = await readWorkflow(".github/workflows/ci.yml");
-    const commands = Object.values(workflow.jobs ?? {}).flatMap(
-      (job) => job.steps?.map((step) => step.run).filter(Boolean) ?? [],
+    const steps = workflow.jobs?.verify?.steps ?? [];
+    const setupGoIndex = steps.findIndex((step) => step.uses?.startsWith("actions/setup-go@"));
+    const actionlintIndex = steps.findIndex((step) =>
+      step.run?.includes("github.com/rhysd/actionlint/cmd/actionlint"),
     );
 
-    expect(commands).toContain(
+    expect(steps[setupGoIndex]).toEqual({
+      uses: "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16",
+      with: {
+        "cache-dependency-path": "tools/go.sum",
+        "go-version-file": "tools/go.mod",
+      },
+    });
+    expect(setupGoIndex).toBeLessThan(actionlintIndex);
+    expect(steps[actionlintIndex]?.run).toBe(
       "cd tools && " +
+        "find ../.github/workflows -type f " +
+        "\\( -name '*.yml' -o -name '*.yaml' \\) " +
+        "-exec " +
         "go run github.com/rhysd/actionlint/cmd/actionlint " +
         "-config-file ../.github/actionlint.yaml " +
         '-ignore \'unexpected key "queue" for "concurrency" section\' ' +
-        "../.github/workflows/*.yml",
+        "{} +",
     );
   });
 
