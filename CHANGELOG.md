@@ -20,7 +20,7 @@
 - Keep lazy provider watches registered for cleanup after nonterminal iterator throws.
 - Version artifact generations so legacy recorder manifests can migrate while new snapshots retain explicit presence, locality, identity, and completeness checks.
 - Terminate complete Windows script process trees through kill-on-close Job Objects.
-- Create private publication ancestry with owner-only permissions and fence file publication and recursive removal with identity-checked mutation claims.
+- Create private publication ancestry with owner-only permissions, recognize trusted Windows system ownership, and fence file publication and recursive removal with identity-checked mutation claims.
 - Randomize WhatsApp XEdDSA signatures with fresh entropy while preserving their wire encoding.
 - Suppress serve readiness output when shutdown begins during ready-file publication.
 - Treat Unicode format characters as continuations when recognizing standalone acknowledgement tokens.

@@ -491,7 +491,8 @@ if ($null -eq $sid) {
 $trustedSids = @(
   $sid.Value,
   "S-1-5-18",
-  "S-1-5-32-544"
+  "S-1-5-32-544",
+  "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 )
 $ancestorReplacementRights = (
   [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
@@ -549,7 +550,8 @@ if ($null -eq $sid) {
 $trustedSids = @(
   $sid.Value,
   "S-1-5-18",
-  "S-1-5-32-544"
+  "S-1-5-32-544",
+  "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 )
 $mutationRights = (
   [System.Security.AccessControl.FileSystemRights]::WriteData -bor
