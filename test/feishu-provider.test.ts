@@ -7,6 +7,7 @@ import {
   FeishuProviderAdapter,
   handleFeishuWebhookPayload,
   normalizeFeishuWebhookPayload,
+  resolveFeishuAdapterConfig,
 } from "../src/providers/builtin/feishu.js";
 import {
   createLocalMockConfig,
@@ -41,6 +42,19 @@ describe("Feishu webhook normalizer", () => {
     expect(
       () => new FeishuProviderAdapter("feishu", config, "crabline", { env: {} }),
     ).not.toThrow();
+  });
+
+  it("rejects whitespace-only encryption keys from config and env", async () => {
+    const config = await createLocalMockConfig("feishu", "/feishu/webhook");
+    config.feishu!.encryptKey = " \t ";
+    expect(() => resolveFeishuAdapterConfig(config, {})).toThrow(
+      "Feishu encryptKey must not be empty or whitespace-only.",
+    );
+
+    delete config.feishu!.encryptKey;
+    expect(() => resolveFeishuAdapterConfig(config, { FEISHU_ENCRYPT_KEY: "\n" })).toThrow(
+      "FEISHU_ENCRYPT_KEY must not be empty or whitespace-only.",
+    );
   });
 
   it("answers URL verification challenges", async () => {

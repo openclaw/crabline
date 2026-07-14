@@ -1,7 +1,7 @@
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { LocalMockProviderAdapter } from "../local-mock.js";
+import { LocalMockProviderAdapter, resolveGeneratedLocalMockRecorderPath } from "../local-mock.js";
 import { matchesNativeId } from "../native-ids.js";
 import {
   getBuiltinTargetCodec,
@@ -53,7 +53,7 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
   const configuredPath = config.telegram?.recorder.path;
   return configuredPath
     ? path.resolve(configuredPath)
-    : path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
+    : resolveGeneratedLocalMockRecorderPath(providerId);
 }
 
 function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {

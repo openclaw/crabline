@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import {
   adminAuthError,
+  constantTimeTokenEqual,
   drainRequestBody,
   hasAdminToken,
   InvalidJsonBodyError,
@@ -209,7 +210,8 @@ function requireAuth(request: IncomingMessage, state: WhatsAppServerState): bool
     return false;
   }
   const match = /^Bearer +(.+)$/iu.exec(authorization.trimStart());
-  return match?.[1] === state.accessToken;
+  const providedToken = match?.[1];
+  return providedToken ? constantTimeTokenEqual(providedToken, state.accessToken) : false;
 }
 
 type WhatsAppMessageIdReservation = {

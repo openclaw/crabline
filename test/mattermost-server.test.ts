@@ -313,7 +313,13 @@ describe("Mattermost local provider server", () => {
     const server = await startMattermostServer({ botToken: "fake" });
     servers.push(server);
 
-    for (const authorization of ["Bearer  fake", "Bearer\tfake", "Basic fake"]) {
+    for (const authorization of [
+      "Bearer  fake",
+      "Bearer\tfake",
+      "Basic fake",
+      "Bearer fakf",
+      "Bearer short-token",
+    ]) {
       const response = await fetch(`${server.manifest.endpoints.apiRoot}/users/me`, {
         headers: { authorization },
       });
@@ -641,22 +647,24 @@ describe("Mattermost local provider server", () => {
       reason: "authentication timeout",
     });
 
-    const invalid = new WebSocket(server.manifest.endpoints.websocketUrl);
-    const invalidClosed = waitForSocketClose(invalid);
-    await waitForSocketOpen(invalid);
-    const failure = nextMessage(invalid);
-    invalid.send(
-      JSON.stringify({
-        action: "authentication_challenge",
-        data: { token: "not-a-real" },
-        seq: 1,
-      }),
-    );
-    await expect(failure).resolves.toMatchObject({ seq_reply: 1, status: "FAIL" });
-    await expect(invalidClosed).resolves.toEqual({
-      code: 4001,
-      reason: "authentication failed",
-    });
+    for (const token of ["fakf", "not-a-real"]) {
+      const invalid = new WebSocket(server.manifest.endpoints.websocketUrl);
+      const invalidClosed = waitForSocketClose(invalid);
+      await waitForSocketOpen(invalid);
+      const failure = nextMessage(invalid);
+      invalid.send(
+        JSON.stringify({
+          action: "authentication_challenge",
+          data: { token },
+          seq: 1,
+        }),
+      );
+      await expect(failure).resolves.toMatchObject({ seq_reply: 1, status: "FAIL" });
+      await expect(invalidClosed).resolves.toEqual({
+        code: 4001,
+        reason: "authentication failed",
+      });
+    }
   });
 
   it("rejects admin inbound when the disconnected event queue is full", async () => {

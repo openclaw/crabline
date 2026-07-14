@@ -93,6 +93,15 @@ describe("telegram provider", () => {
     });
   });
 
+  it("confines generated recorder paths for provider IDs", async () => {
+    const config = await createTelegramConfig(0);
+    config.telegram!.recorder = {};
+
+    expect(() => new TelegramProviderAdapter("../escape", config, "crabline")).toThrow(
+      /Provider ID cannot contain absolute or parent-directory paths/u,
+    );
+  });
+
   it("normalizes chat and topic targets", async () => {
     const config = await createTelegramConfig(0);
     const provider = new TelegramProviderAdapter("telegram", config, "crabline");
