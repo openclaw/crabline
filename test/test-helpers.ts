@@ -136,9 +136,9 @@ const createCaptureWriter =
       return originalWrite.call(target, chunk, encodingOrCallback, callback);
     }
     const encoding = typeof encodingOrCallback === "string" ? encodingOrCallback : undefined;
-    capture[stream].push(
-      typeof chunk === "string" ? chunk : Buffer.from(chunk).toString(encoding ?? "utf8"),
-    );
+    const bytes =
+      typeof chunk === "string" ? Buffer.from(chunk, encoding ?? "utf8") : Buffer.from(chunk);
+    capture[stream].push(bytes.toString("utf8"));
     const completion = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
     if (completion) {
       queueMicrotask(() => completion(null));
