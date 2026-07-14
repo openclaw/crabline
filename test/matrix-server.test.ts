@@ -1559,6 +1559,37 @@ describe("Matrix local provider server", () => {
     });
   });
 
+  it("does not advance past the sole deliverable event when room framing exceeds the limit", async () => {
+    const server = await startMatrixServer({
+      accessToken: "test-token-placeholder",
+      maxSyncResponseBytes: 1_200,
+      roomId: "!sync-framing-limit:matrix.test",
+    });
+    servers.push(server);
+    const sent = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!sync-framing-limit:matrix.test")}/send/m.room.message/framing-limit`,
+      {
+        body: JSON.stringify({ body: "x".repeat(100), msgtype: "m.text" }),
+        headers: {
+          ...auth("test-token-placeholder"),
+          "content-type": "application/json",
+        },
+        method: "PUT",
+      },
+    );
+    expect(sent.status).toBe(200);
+
+    const response = await fetch(server.manifest.endpoints.syncUrl, {
+      headers: auth("test-token-placeholder"),
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      admin_contact: "mailto:admin@localhost",
+      errcode: "M_RESOURCE_LIMIT_EXCEEDED",
+      error: "Sync response exceeds the configured byte limit",
+    });
+  });
+
   it("reserves sync capacity for later rooms before adding optional history", async () => {
     const server = await startMatrixServer({
       accessToken: "test-token-placeholder",
