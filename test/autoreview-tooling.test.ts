@@ -20,8 +20,8 @@ describe("autoreview tooling", () => {
       expect(launcher).toContain("sys.version_info >= (3, 10)");
       expect(launcher).toContain("Python 3.10 or newer is required");
     }
-    for (const requiredFunction of ["uploadPath", "deleteUpload", "publicUser"]) {
-      expect(harness).toContain(`"--require-finding",\n                    "${requiredFunction}"`);
+    for (const defectClass of ["path traversal", "command injection", "password exposure"]) {
+      expect(harness).toContain(`"--require-finding",\n                    "${defectClass}"`);
     }
   });
 
