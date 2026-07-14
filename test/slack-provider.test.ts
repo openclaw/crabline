@@ -631,7 +631,7 @@ describe("slack provider", () => {
     expect(accepted.status).toBe(200);
   });
 
-  it("acknowledges authenticated unsupported and textless callbacks without recording them", async () => {
+  it("acknowledges unsupported, typeless, and textless callbacks without recording them", async () => {
     const signingSecret = "test-token-placeholder";
     const config = await createSlackConfig(0, signingSecret);
     const provider = new SlackProviderAdapter("slack", config, "crabline");
@@ -664,6 +664,19 @@ describe("slack provider", () => {
         minute_rate_limited: 1_700_000_000,
         team_id: "TCRABLINE",
         type: "app_rate_limited",
+      },
+      {
+        event: {
+          channel: "C1234567890",
+          message: {
+            text: "typeless callback must not be recorded",
+            ts: "1700000003.000400",
+            type: "message",
+            user: "U1234567890",
+          },
+          subtype: "message_changed",
+        },
+        type: "event_callback",
       },
     ]) {
       const body = JSON.stringify(payload);

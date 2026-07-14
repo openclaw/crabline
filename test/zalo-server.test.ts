@@ -197,6 +197,7 @@ describe("Zalo local provider server", () => {
       ] as Array<[string, string]>) {
         webhookUrl.searchParams.set(key, value);
       }
+      webhookUrl.hash = "fragment-credential-placeholder";
       const setWebhook = await fetch(
         `${server.manifest.baseUrl}/bottest-token-placeholder/setWebhook`,
         {
@@ -207,6 +208,8 @@ describe("Zalo local provider server", () => {
                 {
                   callbackUrl:
                     "http://fixture-user:placeholder@example.com/hook?api_key=placeholder",
+                  fidelityUrl:
+                    "https://EXAMPLE.com:443/hook?callbackId=a%20b#fragment-fidelity-credential",
                 },
               ],
               invalidCallbackUrl: [
@@ -285,21 +288,26 @@ describe("Zalo local provider server", () => {
       const recorder = await fs.readFile(recorderPath, "utf8");
       expect(recorder).toContain('"secret_token":"<redacted>"');
       expect(recorder).toContain(
-        `http://<redacted>@127.0.0.1:${address.port}/zalo?mode=test&accessToken=<redacted>&password=<redacted>&apiKey=<redacted>&clientSecret=<redacted>&auth=<redacted>&callbackId=keep`,
+        `http://<redacted>@127.0.0.1:${address.port}/zalo?mode=test&accessToken=<redacted>&password=<redacted>&apiKey=<redacted>&clientSecret=<redacted>&auth=<redacted>&callbackId=keep#<redacted>`,
       );
       expect(recorder.match(/"url":"<redacted>"/gu)).toHaveLength(2);
       expect(recorder).not.toContain("test-auth-token");
       expect(recorder).not.toContain("alice");
       expect(recorder).not.toContain("sample");
+      expect(recorder).not.toContain("fragment-credential-placeholder");
       expect(recorder).not.toContain("credential-placeholder");
       expect(recorder).not.toContain("protocol-user");
       expect(recorder).not.toContain("fixture-user");
       expect(recorder).toContain(
         '"callbackUrl":"http://<redacted>@example.com/hook?api_key=<redacted>"',
       );
+      expect(recorder).toContain(
+        '"fidelityUrl":"https://EXAMPLE.com:443/hook?callbackId=a%20b#<redacted>"',
+      );
       expect(recorder).toContain('"invalidCallbackUrl":"<redacted>"');
       expect(recorder).not.toContain("ambiguous-user");
       expect(recorder).not.toContain("ambiguous-credential-placeholder");
+      expect(recorder).not.toContain("fragment-fidelity-credential");
       for (const secret of ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]) {
         expect(recorder).not.toContain(secret);
       }
