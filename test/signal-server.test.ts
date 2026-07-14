@@ -447,7 +447,6 @@ describe("signal local provider server", () => {
     for (const body of [
       { id: true, jsonrpc: "2.0", method: "version" },
       { id: {}, jsonrpc: "2.0", method: "version" },
-      { id: 1.5, jsonrpc: "2.0", method: "version" },
       { id: 1, jsonrpc: "2.0", method: 42 },
       { id: 1, method: "version" },
       { id: 1, jsonrpc: "2.0", method: "sendTyping", params: null },
@@ -464,6 +463,17 @@ describe("signal local provider server", () => {
         jsonrpc: "2.0",
       });
     }
+
+    const fractionalId = await fetch(server.manifest.endpoints.rpcUrl, {
+      body: JSON.stringify({ id: 1.5, jsonrpc: "2.0", method: "version" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(fractionalId.status).toBe(200);
+    await expect(fractionalId.json()).resolves.toMatchObject({
+      id: 1.5,
+      jsonrpc: "2.0",
+    });
 
     const unsafeId = await fetch(server.manifest.endpoints.rpcUrl, {
       body: '{"jsonrpc":"2.0","id":9007199254740993,"method":"version"}',
