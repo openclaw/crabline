@@ -64,6 +64,76 @@ describe("webhook server", () => {
     await expect(response.json()).resolves.toEqual({ echoed: true });
   });
 
+  it("runs preflight before consuming the request body", async () => {
+    const handle = vi.fn(async () => new Response("unreachable"));
+    const preflight = vi.fn(() => new Response("unauthorized", { status: 401 }));
+    const server = await startWebhookServer({
+      handle,
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+      preflight,
+    });
+    cleanups.push(() => server.close());
+    const endpoint = new URL(server.endpointUrl);
+    const socket = connect(Number(endpoint.port), endpoint.hostname);
+    socket.setEncoding("utf8");
+    socket.on("error", () => {});
+    let response = "";
+    socket.on("data", (chunk) => {
+      response += chunk;
+    });
+    await once(socket, "connect");
+    socket.write(
+      [
+        `POST ${endpoint.pathname} HTTP/1.1`,
+        `Host: ${endpoint.host}`,
+        "Content-Length: 100",
+        "",
+        "x",
+      ].join("\r\n"),
+    );
+
+    await vi.waitFor(() => expect(response).toContain("401 Unauthorized"));
+    expect(preflight).toHaveBeenCalledOnce();
+    expect(handle).not.toHaveBeenCalled();
+    socket.destroy();
+  });
+
+  it("aborts the handler request when the client disconnects", async () => {
+    let requestSignal: AbortSignal | undefined;
+    let reportAdmission!: () => void;
+    const admitted = new Promise<void>((resolve) => {
+      reportAdmission = resolve;
+    });
+    const server = await startWebhookServer({
+      async handle(request) {
+        requestSignal = request.signal;
+        reportAdmission();
+        await new Promise<void>((resolve) => {
+          request.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return new Response("closed");
+      },
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+    const endpoint = new URL(server.endpointUrl);
+    const socket = connect(Number(endpoint.port), endpoint.hostname);
+    socket.on("error", () => {});
+    await once(socket, "connect");
+    socket.write(
+      `POST ${endpoint.pathname} HTTP/1.1\r\nHost: ${endpoint.host}\r\nContent-Length: 0\r\n\r\n`,
+    );
+    await admitted;
+
+    socket.destroy();
+
+    await vi.waitFor(() => expect(requestSignal?.aborted).toBe(true));
+  });
+
   it("rejects non-matching paths", async () => {
     const server = await startWebhookServer({
       handle: async () => new Response("ok"),

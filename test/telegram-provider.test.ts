@@ -1,5 +1,7 @@
+import { once } from "node:events";
+import { connect } from "node:net";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   normalizeTelegramWebhookPayload,
   resolveTelegramAdapterConfig,
@@ -351,6 +353,7 @@ describe("telegram provider", () => {
     expect(probe.details.join("\n")).toContain("webhook endpoint http://127.0.0.1:");
     expect(probe.details.join("\n")).toContain("channel reachable 123456789");
 
+    const since = new Date(Date.now() - 1000).toISOString();
     const result = await provider.send({
       ...createContext(config),
       mode: "roundtrip",
@@ -365,7 +368,7 @@ describe("telegram provider", () => {
       provider.waitForInbound({
         ...createContext(config),
         nonce: "nonce-1",
-        since: new Date(Date.now() - 1000).toISOString(),
+        since,
         threadId: result.threadId,
         timeoutMs: 500,
       }),
@@ -441,6 +444,40 @@ describe("telegram provider", () => {
       method: "POST",
     });
     expect(accepted.status).toBe(200);
+  });
+
+  it("rejects unauthenticated webhook headers before reading the request body", async () => {
+    const config = await createTelegramConfig(0, "test-token-placeholder");
+    const provider = new TelegramProviderAdapter("telegram", config, "crabline");
+    providers.push(provider);
+
+    const probe = await provider.probe(createContext(config));
+    const endpoint = new URL(
+      probe.details
+        .find((detail) => detail.startsWith("webhook endpoint "))!
+        .replace("webhook endpoint ", ""),
+    );
+    const socket = connect(Number(endpoint.port), endpoint.hostname);
+    socket.setEncoding("utf8");
+    socket.on("error", () => {});
+    let response = "";
+    socket.on("data", (chunk) => {
+      response += chunk;
+    });
+    await once(socket, "connect");
+    socket.write(
+      [
+        `POST ${endpoint.pathname} HTTP/1.1`,
+        `Host: ${endpoint.host}`,
+        "Content-Type: application/json",
+        "Content-Length: 100",
+        "",
+        "{",
+      ].join("\r\n"),
+    );
+
+    await vi.waitFor(() => expect(response).toContain("401 Unauthorized"));
+    socket.destroy();
   });
 
   it("rejects header-unsafe webhook secrets from the environment", async () => {
