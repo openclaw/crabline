@@ -117,6 +117,19 @@ describe("test helpers", () => {
     expect(stderrCallback).toHaveBeenCalledWith(null);
   });
 
+  it("captures the bytes produced by write encodings", async () => {
+    const encodedString = "é";
+    const encodedBytes = Buffer.from(encodedString, "utf8");
+
+    const captured = await captureWrites(() => {
+      process.stdout.write(encodedString, "latin1");
+      process.stderr.write(encodedBytes, "latin1");
+    });
+
+    expect(captured.stdout).toEqual([Buffer.from(encodedString, "latin1").toString("utf8")]);
+    expect(captured.stderr).toEqual([encodedBytes.toString("utf8")]);
+  });
+
   it("restores the outer capture after a nested capture settles", async () => {
     const stdoutWrite = process.stdout.write;
     const stderrWrite = process.stderr.write;

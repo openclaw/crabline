@@ -79,6 +79,43 @@ describe("errors and reporters", () => {
     expect(formatJson(() => undefined)).toBe("null");
   });
 
+  it("escapes visually unsafe Unicode controls without changing parsed JSON values", () => {
+    const controls =
+      "\u061c\u200e\u200f\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069";
+    const output = formatJson({ [controls]: controls });
+
+    expect(output).not.toMatch(/[\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u);
+    for (const character of controls) {
+      expect(output).toContain(
+        String.raw`\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
+      );
+    }
+    expect(JSON.parse(output)).toEqual({ [controls]: controls });
+  });
+
+  it("returns a stable error envelope when JSON serialization fails", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const throwingValue = {
+      toJSON() {
+        throw new Error("sensitive serialization detail");
+      },
+    };
+    const expected = {
+      error: {
+        message: "Unable to serialize JSON output.",
+      },
+      ok: false,
+    };
+    const expectedOutput = JSON.stringify(expected, null, 2);
+
+    for (const value of [cyclic, { value: 1n }, throwingValue]) {
+      const output = formatJson(value);
+      expect(output).toBe(expectedOutput);
+      expect(output).not.toContain("sensitive serialization detail");
+    }
+  });
+
   it("neutralizes terminal controls in text output", () => {
     const output = formatRunResultText({
       diagnostics: ["first\u001b[2J\rsecond\nthird\u202e"],

@@ -5,6 +5,14 @@ const BIDI_CONTROL_CODE_POINTS = new Set([
   0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069,
 ]);
 
+const UNSAFE_JSON_CODE_POINTS = /[\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu;
+const JSON_SERIALIZATION_ERROR = `{
+  "error": {
+    "message": "Unable to serialize JSON output."
+  },
+  "ok": false
+}`;
+
 export function sanitizeTerminalText(value: string, singleLine = false): string {
   let sanitized = "";
   for (const character of value) {
@@ -54,7 +62,16 @@ export function formatRunResultText(result: CommandRunResult | SuiteRunResult): 
 }
 
 export function formatJson(result: unknown): string {
-  return JSON.stringify(result === undefined ? null : result, null, 2) ?? "null";
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(result === undefined ? null : result, null, 2);
+  } catch {
+    return JSON_SERIALIZATION_ERROR;
+  }
+  return (serialized ?? "null").replace(
+    UNSAFE_JSON_CODE_POINTS,
+    (character) => String.raw`\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
+  );
 }
 
 function formatSingleResult(result: CommandRunResult): string {
