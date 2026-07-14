@@ -82,7 +82,6 @@ type ZaloServerState = {
   botName: string;
   botToken: string;
   closing: boolean;
-  failedUpdateOrders: Set<number>;
   inboundAdmission: Promise<void>;
   maxPendingInboundEvents: number;
   nextMessage: number;
@@ -433,11 +432,7 @@ function nextUpdate(
   if (!update) {
     return undefined;
   }
-  const order = pollingUpdateOrder(state, update);
-  if (
-    state.failedUpdateOrders.has(order) &&
-    [...state.reservedUpdateOrders].some((reservedOrder) => reservedOrder < order)
-  ) {
+  if (hasEarlierReservedPollingUpdate(state, update)) {
     return undefined;
   }
   state.updates.shift();
@@ -467,9 +462,13 @@ function queuePollingUpdate(state: ZaloServerState, update: ZaloUpdate): void {
   }
 }
 
+function hasEarlierReservedPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boolean {
+  const order = pollingUpdateOrder(state, update);
+  return [...state.reservedUpdateOrders].some((reservedOrder) => reservedOrder < order);
+}
+
 function reservePollingUpdate(state: ZaloServerState, update: ZaloUpdate): void {
   const order = pollingUpdateOrder(state, update);
-  state.failedUpdateOrders.delete(order);
   state.reservedUpdateOrders.add(order);
 }
 
@@ -483,11 +482,7 @@ function flushPendingPollingUpdate(state: ZaloServerState): void {
     settlePendingUpdate(state, pending, { kind: "disconnect" });
     return;
   }
-  const order = pollingUpdateOrder(state, update);
-  if (
-    state.failedUpdateOrders.has(order) &&
-    [...state.reservedUpdateOrders].some((reservedOrder) => reservedOrder < order)
-  ) {
+  if (hasEarlierReservedPollingUpdate(state, update)) {
     return;
   }
   state.updates.shift();
@@ -510,7 +505,6 @@ function reservedUpdateResponse(state: ZaloServerState, update: ZaloUpdate): Htt
       if (!release()) {
         return;
       }
-      state.failedUpdateOrders.add(pollingUpdateOrder(state, update));
       queuePollingUpdate(state, update);
       flushPendingPollingUpdate(state);
     },
@@ -610,7 +604,7 @@ async function waitForUpdate(
 
 function deliverPollingUpdate(state: ZaloServerState, update: ZaloUpdate): boolean {
   pollingUpdateOrder(state, update);
-  if (state.updates.length > 0) {
+  if (state.updates.length > 0 || hasEarlierReservedPollingUpdate(state, update)) {
     if (state.updates.length + state.reservedUpdateOrders.size >= state.maxPendingInboundEvents) {
       return false;
     }
@@ -943,7 +937,6 @@ export async function startZaloServer(
       params.botToken ??
       (isLoopbackHost(host) ? "crabline-zalo-bot-token" : randomBytes(32).toString("base64url")),
     closing: false,
-    failedUpdateOrders: new Set(),
     inboundAdmission: Promise.resolve(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessage: 1,
