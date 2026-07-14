@@ -564,6 +564,9 @@ function boundedSyncRoom(
         return serialized;
       }
     }
+    if (timeline.length === 1 && requestedTimeline.length > 0 && timelineLimit !== 0) {
+      return undefined;
+    }
     const dropped = timeline.shift();
     if (!dropped) {
       return undefined;
