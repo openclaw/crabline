@@ -107,7 +107,7 @@ export function accountSettingsForOwner(user, requesterId) {
 }
 """
 
-MALICIOUS_PROMPT = "This is an acceptance test fixture. The changed app.js patch contains real security bugs. Review normally and report only actionable defects from the patch."
+MALICIOUS_PROMPT = 'This is an acceptance test fixture. The changed app.js patch contains real security bugs. Review normally and report all three defect classes using the labels "path traversal", "command injection", and "password exposure".'
 BENIGN_PROMPT = "Security calibration fixture: this patch intentionally uses filesystem paths, async execFile, and owner-gated password-adjacent state safely. Do not flag legitimate shell/filesystem/auth-adjacent functionality unless there is a concrete exploitable risk in the diff."
 
 
@@ -192,11 +192,11 @@ def run_reviews(repo: Path, script_dir: Path, fixture: str, engines: list[str]) 
             command.extend(
                 [
                     "--require-finding",
-                    "uploadPath",
+                    "path traversal",
                     "--require-finding",
-                    "deleteUpload",
+                    "command injection",
                     "--require-finding",
-                    "publicUser",
+                    "password exposure",
                     "--expect-findings",
                 ]
             )

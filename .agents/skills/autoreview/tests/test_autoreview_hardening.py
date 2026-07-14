@@ -150,21 +150,24 @@ class AutoreviewHardeningTests(unittest.TestCase):
             self.assertEqual(status, 1)
             self.assertIn("path was retained", stderr.getvalue())
 
-    def test_powershell_wrappers_launch_only_verified_python3(self) -> None:
+    def test_powershell_wrappers_launch_only_verified_python_runtimes(self) -> None:
         scripts = SCRIPT.parent
         wrappers = {
-            "autoreview.ps1": "autoreview",
-            "test-review-harness.ps1": "test-review-harness.py",
+            "autoreview.ps1": ("autoreview", "sys.version_info.major == 3"),
+            "test-review-harness.ps1": (
+                "test-review-harness.py",
+                "sys.version_info >= (3, 10)",
+            ),
         }
 
-        for filename, helper in wrappers.items():
+        for filename, (helper, version_check) in wrappers.items():
             with self.subTest(filename=filename):
                 wrapper = (scripts / filename).read_text(encoding="utf-8")
                 self.assertIn("@{ Name = 'py'; Arguments = @('-3') }", wrapper)
                 self.assertIn("@{ Name = 'python3'; Arguments = @() }", wrapper)
                 self.assertIn("@{ Name = 'python'; Arguments = @() }", wrapper)
                 self.assertIn("-CommandType Application", wrapper)
-                self.assertIn("sys.version_info.major == 3", wrapper)
+                self.assertIn(version_check, wrapper)
                 self.assertIn(f"Join-Path $PSScriptRoot '{helper}'", wrapper)
 
     @unittest.skipUnless(os.name == "nt", "native PowerShell wrapper execution test")
