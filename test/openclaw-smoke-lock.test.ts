@@ -1816,9 +1816,10 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("expires an old lock whose PID now belongs to another live process", async () => {
+  it("confirms a stale live PID for one heartbeat interval before reclaiming it", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
+    const confirmationSleep = vi.fn(async (_delayMs: number) => undefined);
     try {
       const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
         isProcessAlive: () => true,
@@ -1845,9 +1846,12 @@ describe("OpenClaw smoke lock cleanup", () => {
         now: () => 2_001,
         pid: 5_252,
         processStartedAtMs: 200,
+        sleep: confirmationSleep,
         startHeartbeat: disableHeartbeat,
       });
       expect(replacementLock).toBeDefined();
+      expect(confirmationSleep).toHaveBeenCalled();
+      expect(confirmationSleep.mock.calls.every(([delayMs]) => delayMs === 333)).toBe(true);
       await firstLock.release();
       await replacementLock.release();
     } finally {

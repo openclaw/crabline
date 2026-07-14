@@ -429,8 +429,19 @@ async function resolveRecorderPublicationPath(filePath: string): Promise<string>
 async function openRecorderForAppend(
   filePath: string,
 ): Promise<{ created: boolean; handle: Awaited<ReturnType<typeof open>> }> {
-  const createFlags = process.platform === "win32" ? "wx+" : "ax+";
-  const existingFlags = process.platform === "win32" ? "r+" : "a+";
+  const createFlags =
+    process.platform === "win32"
+      ? "wx+"
+      : fsConstants.O_RDWR |
+        fsConstants.O_APPEND |
+        fsConstants.O_CREAT |
+        fsConstants.O_EXCL |
+        fsConstants.O_NONBLOCK |
+        fsConstants.O_NOFOLLOW;
+  const existingFlags =
+    process.platform === "win32"
+      ? "r+"
+      : fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
   try {
     return {
       created: true,

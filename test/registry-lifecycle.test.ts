@@ -518,6 +518,115 @@ describe("lazy provider lifecycle", () => {
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
+  it("does not let cleanup overtake an admitted operation on a materialized provider", async () => {
+    const events: string[] = [];
+    const concrete: ProviderAdapter = {
+      id: "test",
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        events.push("send");
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      async waitForInbound() {
+        return null;
+      },
+      beginCleanup() {
+        events.push("beginCleanup");
+      },
+      async cleanup() {
+        events.push("cleanup");
+      },
+    };
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory: async () => concrete,
+      id: "test",
+      normalizeTarget: concrete.normalizeTarget.bind(concrete),
+      platform: "loopback",
+      status: "ready",
+      supports: ["probe", "send"],
+    });
+    const { context } = createTelegramManifest("/tmp/unused.jsonl");
+    await provider.probe(context);
+
+    const sending = provider.send({
+      ...context,
+      mode: "send",
+      nonce: "materialized-cleanup-race",
+      text: "dispatch first",
+    });
+    provider.beginCleanup();
+
+    expect(events).toEqual([]);
+    await expect(sending).resolves.toMatchObject({ accepted: true });
+    await provider.cleanup();
+    expect(events).toEqual(["send", "beginCleanup", "cleanup"]);
+  });
+
+  it("does not let a materialization microtask cleanup overtake admitted work", async () => {
+    const events: string[] = [];
+    const concrete: ProviderAdapter = {
+      id: "test",
+      platform: "loopback",
+      status: "ready",
+      supports: ["send"],
+      normalizeTarget(target) {
+        return { id: target.id, metadata: target.metadata };
+      },
+      async probe() {
+        return { details: [], healthy: true };
+      },
+      async send() {
+        events.push("send");
+        return { accepted: true, messageId: "sent", threadId: "thread" };
+      },
+      async waitForInbound() {
+        return null;
+      },
+      beginCleanup() {
+        events.push("beginCleanup");
+      },
+      async cleanup() {
+        events.push("cleanup");
+      },
+    };
+    const provider = new LazyProviderAdapter({
+      adapterName: "test",
+      factory: async () => concrete,
+      id: "test",
+      normalizeTarget: concrete.normalizeTarget.bind(concrete),
+      platform: "loopback",
+      status: "ready",
+      supports: ["send"],
+    });
+    const { context } = createTelegramManifest("/tmp/unused.jsonl");
+    const sending = provider.send({
+      ...context,
+      mode: "send",
+      nonce: "materialization-microtask-race",
+      text: "dispatch first",
+    });
+    await new Promise<void>((resolve) => {
+      queueMicrotask(() => {
+        provider.beginCleanup();
+        resolve();
+      });
+    });
+
+    expect(events).toEqual([]);
+    await expect(sending).resolves.toMatchObject({ accepted: true });
+    await provider.cleanup();
+    expect(events).toEqual(["send", "beginCleanup", "cleanup"]);
+  });
+
   it("cancels an uncommitted operation admitted before provider materialization", async () => {
     const directory = await createTempDir();
     const recorderPath = path.join(directory, "telegram.jsonl");

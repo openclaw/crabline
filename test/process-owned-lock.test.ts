@@ -1146,6 +1146,120 @@ describe("process-owned lock filesystem", () => {
     }
   }, 10_000);
 
+  it("restores a published replacement displaced by the final stale-owner rename", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const originalDirectory = `${lockDirectory}.original`;
+    const owner = await startIdleProcess();
+    const replacementOwner = await currentOwnerRecord();
+    const replacementGeneration = String(replacementOwner.token);
+    await mkdir(lockDirectory);
+    const ownerPath = await writeOwner(lockDirectory, {
+      pid: owner.pid,
+      processStartedAtMs: 1,
+    });
+    await utimes(ownerPath, new Date(0), new Date(0));
+    await utimes(lockDirectory, new Date(0), new Date(0));
+
+    const rename = fs.rename.bind(fs);
+    let replacementSentinel = "";
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementationOnce(((
+      oldPath: fs.PathLike,
+      newPath: fs.PathLike,
+      callback: (error: NodeJS.ErrnoException | null) => void,
+    ) => {
+      fs.renameSync(lockDirectory, originalDirectory);
+      fs.mkdirSync(lockDirectory);
+      fs.writeFileSync(
+        path.join(lockDirectory, "crabline-owner.json"),
+        `${JSON.stringify(replacementOwner)}\n`,
+      );
+      replacementSentinel = path.join(lockDirectory, "replacement");
+      fs.writeFileSync(replacementSentinel, "preserve");
+      rename(oldPath, newPath, callback);
+    }) as typeof fs.rename);
+
+    try {
+      await expect(acquire(target)).rejects.toMatchObject({ code: "ELOCKED" });
+      await expect(readFile(replacementSentinel, "utf8")).resolves.toBe("preserve");
+      await expect(
+        readFile(path.join(lockDirectory, "crabline-owner.json"), "utf8"),
+      ).resolves.toContain(replacementGeneration);
+    } finally {
+      renameSpy.mockRestore();
+      await rm(lockDirectory, { force: true, recursive: true });
+      await rm(originalDirectory, { force: true, recursive: true });
+      owner.child.stdin.end();
+      await once(owner.child, "exit");
+    }
+  }, 10_000);
+
+  it("preserves a displaced replacement when another published directory wins restoration", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const originalDirectory = `${lockDirectory}.original`;
+    const owner = await startIdleProcess();
+    const displacedOwner = await currentOwnerRecord();
+    const winningOwner = await currentOwnerRecord();
+    await mkdir(lockDirectory);
+    const ownerPath = await writeOwner(lockDirectory, {
+      pid: owner.pid,
+      processStartedAtMs: 1,
+    });
+    await utimes(ownerPath, new Date(0), new Date(0));
+    await utimes(lockDirectory, new Date(0), new Date(0));
+
+    const rename = fs.rename.bind(fs);
+    const renameSync = fs.renameSync.bind(fs);
+    let displacedPath = "";
+    let displacedSentinel = "";
+    let winningSentinel = "";
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementationOnce(((
+      oldPath: fs.PathLike,
+      newPath: fs.PathLike,
+      callback: (error: NodeJS.ErrnoException | null) => void,
+    ) => {
+      displacedPath = String(newPath);
+      fs.renameSync(lockDirectory, originalDirectory);
+      fs.mkdirSync(lockDirectory);
+      fs.writeFileSync(
+        path.join(lockDirectory, "crabline-owner.json"),
+        `${JSON.stringify(displacedOwner)}\n`,
+      );
+      displacedSentinel = path.join(lockDirectory, "displaced");
+      fs.writeFileSync(displacedSentinel, "preserve displaced");
+      rename(oldPath, newPath, callback);
+    }) as typeof fs.rename);
+    const renameSyncSpy = vi.spyOn(fs, "renameSync").mockImplementation(((oldPath, newPath) => {
+      if (String(oldPath) === displacedPath && String(newPath) === lockDirectory) {
+        fs.mkdirSync(lockDirectory);
+        fs.writeFileSync(
+          path.join(lockDirectory, "crabline-owner.json"),
+          `${JSON.stringify(winningOwner)}\n`,
+        );
+        winningSentinel = path.join(lockDirectory, "winning");
+        fs.writeFileSync(winningSentinel, "preserve winner");
+      }
+      renameSync(oldPath, newPath);
+    }) as typeof fs.renameSync);
+
+    try {
+      await expect(acquire(target)).rejects.toMatchObject({ code: "ELOCKED" });
+      await expect(readFile(winningSentinel, "utf8")).resolves.toBe("preserve winner");
+      await expect(readFile(path.join(displacedPath, "displaced"), "utf8")).resolves.toBe(
+        "preserve displaced",
+      );
+    } finally {
+      renameSyncSpy.mockRestore();
+      renameSpy.mockRestore();
+      await rm(displacedPath, { force: true, recursive: true });
+      await rm(lockDirectory, { force: true, recursive: true });
+      await rm(originalDirectory, { force: true, recursive: true });
+      owner.child.stdin.end();
+      await once(owner.child, "exit");
+    }
+  }, 10_000);
+
   it.runIf(process.platform === "darwin")(
     "publishes a sub-second Darwin process identity",
     async () => {

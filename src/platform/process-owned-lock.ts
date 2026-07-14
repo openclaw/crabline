@@ -692,6 +692,63 @@ function parseOwner(lockDirectory: fs.PathLike): ParsedLockOwner | null | undefi
       };
 }
 
+function restoreDisplacedPublishedLockDirectory(
+  displacedPath: string,
+  lockDirectory: string,
+): void {
+  try {
+    const displaced = fs.lstatSync(displacedPath, { bigint: true });
+    const owner = parseOwner(displacedPath);
+    if (
+      !displaced.isDirectory() ||
+      displaced.isSymbolicLink() ||
+      owner === null ||
+      owner === undefined
+    ) {
+      return;
+    }
+  } catch {
+    return;
+  }
+  try {
+    fs.lstatSync(lockDirectory);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return;
+    }
+  }
+  try {
+    // The coordination claim excludes compliant publishers. If an unexpected
+    // published directory races this restore, its owner file makes it nonempty,
+    // so rename refuses to replace it and the displaced directory stays preserved.
+    fs.renameSync(displacedPath, lockDirectory);
+  } catch {
+    // Preserve the displaced directory at its claim-local path if restoration races.
+  }
+}
+
+function renamedDirectoryMatches(
+  claimedPath: string,
+  lockDirectory: string,
+  expectedIdentity: DirectoryIdentity,
+): boolean {
+  try {
+    const claimed = fs.lstatSync(claimedPath, { bigint: true });
+    if (
+      claimed.isDirectory() &&
+      !claimed.isSymbolicLink() &&
+      directoryIdentityMatches(expectedIdentity, claimed)
+    ) {
+      return true;
+    }
+  } catch {
+    // Restore or preserve any directory displaced after the final identity check.
+  }
+  restoreDisplacedPublishedLockDirectory(claimedPath, lockDirectory);
+  return false;
+}
+
 function abandonedOwnerMarkerPath(lockDirectory: fs.PathLike, ownerToken: string): string {
   const digest = createHash("sha256").update(ownerToken).digest("hex");
   return path.join(String(lockDirectory), `${ABANDONED_OWNER_PREFIX}${digest}`);
@@ -1694,6 +1751,12 @@ export function createProcessOwnedLockFileSystem(
               finish(renameError);
               return;
             }
+            if (
+              !renamedDirectoryMatches(tombstonePath, directory, directoryIdentity(initialStats))
+            ) {
+              finish(lockCleanupError("Recorder lock release displaced a replacement directory."));
+              return;
+            }
             ownedDirectories.delete(coordinationKey);
             abandonedDirectoryIdentities.delete(coordinationKey);
             abandonedOwnerKeys.delete(abandonedOwnerKey(directory, token));
@@ -1866,6 +1929,10 @@ export function createProcessOwnedLockFileSystem(
             finish(renameError);
             return;
           }
+          if (!renamedDirectoryMatches(tombstonePath, directory, directoryIdentity(initialStats))) {
+            finish(lockCleanupError("Recorder lock recovery displaced a replacement directory."));
+            return;
+          }
           try {
             removeLockDirectorySync(tombstonePath, directoryIdentity(initialStats));
             if (candidate) {
@@ -1930,6 +1997,9 @@ export function createProcessOwnedLockFileSystem(
       }
       const tombstonePath = `${claimPath}.${token}.release`;
       fs.renameSync(directoryPath, tombstonePath);
+      if (!renamedDirectoryMatches(tombstonePath, directory, directoryIdentity(ownedDirectory))) {
+        throw lockCleanupError("Recorder lock release displaced a replacement directory.");
+      }
       removeLockDirectorySync(tombstonePath, directoryIdentity(ownedDirectory));
       ownedDirectories.delete(canonicalLockDirectoryPath(directory));
     } finally {
