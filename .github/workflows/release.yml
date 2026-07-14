@@ -82,7 +82,14 @@ jobs:
             .readFileSync("CHANGELOG.md", "utf8")
             .split(/\r?\n/u)
             .filter((line) => line.startsWith(headingPrefix));
-          if (headings.length !== 1 || !/^\d{4}-\d{2}-\d{2}$/u.test(headings[0].slice(headingPrefix.length))) {
+          const headingDate =
+            headings.length === 1 ? headings[0].slice(headingPrefix.length) : "";
+          const parsedDate = new Date(`${headingDate}T00:00:00.000Z`);
+          const validDate =
+            /^\d{4}-\d{2}-\d{2}$/u.test(headingDate) &&
+            Number.isFinite(parsedDate.getTime()) &&
+            parsedDate.toISOString().slice(0, 10) === headingDate;
+          if (headings.length !== 1 || !validDate) {
             throw new Error(`CHANGELOG.md must contain exactly one "${headingPrefix}YYYY-MM-DD" heading.`);
           }
           NODE
