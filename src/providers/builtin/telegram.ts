@@ -222,7 +222,7 @@ export class TelegramProviderAdapter extends LocalMockProviderAdapter implements
       options: {
         ...(authenticateWebhook
           ? {
-              authenticateWebhookRequest(request: Request) {
+              preflightWebhookRequest(request: Request) {
                 return authenticateWebhook(request.headers.get("x-telegram-bot-api-secret-token"))
                   ? undefined
                   : new Response("unauthorized", { status: 401 });

@@ -126,6 +126,7 @@ async function toFetchRequest(
   url: URL,
   maxBodyBytes: number,
   bodyTimeoutMs: number,
+  signal: AbortSignal,
 ): Promise<Request> {
   const requestBody = await readRequestBody(request, maxBodyBytes, bodyTimeoutMs);
   const body =
@@ -133,8 +134,9 @@ async function toFetchRequest(
       ? undefined
       : requestBody;
 
-  const init: RequestInit = {
+  const init: RequestInit & { duplex?: "half" } = {
     headers: request.headers as Record<string, string>,
+    signal,
   };
   if (request.method) {
     init.method = request.method;
@@ -145,6 +147,38 @@ async function toFetchRequest(
   }
 
   return new Request(url, init);
+}
+
+function toFetchRequestMetadata(request: IncomingMessage, url: URL, signal: AbortSignal): Request {
+  return new Request(url, {
+    headers: request.headers as Record<string, string>,
+    ...(request.method ? { method: request.method } : {}),
+    signal,
+  });
+}
+
+function trackRequestLifetime(request: IncomingMessage): {
+  dispose(): void;
+  signal: AbortSignal;
+} {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(new DOMException("Webhook client disconnected.", "AbortError"));
+    }
+  };
+  request.once("aborted", abort);
+  request.socket.once("close", abort);
+  if (request.aborted || request.socket.destroyed) {
+    abort();
+  }
+  return {
+    dispose() {
+      request.off("aborted", abort);
+      request.socket.off("close", abort);
+    },
+    signal: controller.signal,
+  };
 }
 
 async function writeFetchResponse(
@@ -255,6 +289,9 @@ export async function startWebhookServer(params: {
   onError?: ((error: unknown) => void) | undefined;
   path: string;
   port: number;
+  preflight?:
+    | ((request: Request) => Promise<Response | undefined> | Response | undefined)
+    | undefined;
   signal?: AbortSignal | undefined;
   shutdownGraceMs?: number | undefined;
 }): Promise<StartedWebhookServer> {
@@ -277,6 +314,7 @@ export async function startWebhookServer(params: {
       : requireTimerDelay(params.shutdownGraceMs, "Webhook shutdownGraceMs");
   let closing = false;
   const server = createServer(async (request, response) => {
+    const requestLifetime = trackRequestLifetime(request);
     try {
       if (closing) {
         drainRequestBodyWithDeadline(request, bodyTimeoutMs);
@@ -298,7 +336,22 @@ export async function startWebhookServer(params: {
         return;
       }
 
-      const fetchRequest = await toFetchRequest(request, url, maxBodyBytes, bodyTimeoutMs);
+      const preflightResponse = await params.preflight?.(
+        toFetchRequestMetadata(request, url, requestLifetime.signal),
+      );
+      if (preflightResponse) {
+        drainRequestBodyWithDeadline(request, bodyTimeoutMs);
+        await writeFetchResponse(response, preflightResponse);
+        return;
+      }
+
+      const fetchRequest = await toFetchRequest(
+        request,
+        url,
+        maxBodyBytes,
+        bodyTimeoutMs,
+        requestLifetime.signal,
+      );
       await writeFetchResponse(response, await params.handle(fetchRequest));
     } catch (error) {
       if (error instanceof ResponseDeliveryClosedError) {
@@ -341,6 +394,8 @@ export async function startWebhookServer(params: {
       } catch {
         response.destroy();
       }
+    } finally {
+      requestLifetime.dispose();
     }
   });
 
