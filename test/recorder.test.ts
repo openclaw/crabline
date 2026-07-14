@@ -55,6 +55,58 @@ function runAfterDelay<T>(operation: () => Promise<T>, delayMs = 25): Promise<T>
   });
 }
 
+type RecorderFileHandlePrototype = {
+  write(
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<{ buffer: Uint8Array; bytesWritten: number }>;
+  writeFile(data: string, encoding: BufferEncoding): Promise<void>;
+};
+
+function interceptRecorderWrites(
+  prototype: RecorderFileHandlePrototype,
+  intercept: (data: string, write: () => Promise<void>) => Promise<void>,
+): () => void {
+  const originalWrite = prototype.write;
+  const originalWriteFile = prototype.writeFile;
+  if (process.platform === "win32") {
+    prototype.write = async function (
+      this: FileHandle,
+      buffer: Uint8Array,
+      offset: number,
+      length: number,
+      position: number,
+    ) {
+      let result: { buffer: Uint8Array; bytesWritten: number } | undefined;
+      await intercept(
+        Buffer.from(buffer)
+          .subarray(offset, offset + length)
+          .toString("utf8"),
+        async () => {
+          result = await originalWrite.call(this, buffer, offset, length, position);
+        },
+      );
+      return result!;
+    };
+  } else {
+    prototype.writeFile = async function (
+      this: FileHandle,
+      data: string,
+      encoding: BufferEncoding,
+    ) {
+      await intercept(data, async () => {
+        await originalWriteFile.call(this, data, encoding);
+      });
+    };
+  }
+  return () => {
+    prototype.write = originalWrite;
+    prototype.writeFile = originalWriteFile;
+  };
+}
+
 describe("recorder", () => {
   it("returns an empty list for a missing recorder file", async () => {
     const filePath = await createRecorderPath();
@@ -990,11 +1042,8 @@ describe("recorder", () => {
     await appendRecordedInboundBatch(filePath, [{ ...event, id: "existing", text: "existing" }]);
 
     const probeHandle = await open(filePath, "a+");
-    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
-      writeFile(data: string, encoding: BufferEncoding): Promise<void>;
-    };
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as RecorderFileHandlePrototype;
     await probeHandle.close();
-    const originalWriteFile = fileHandlePrototype.writeFile;
     let releaseWrite!: () => void;
     let reportWrite!: () => void;
     const writeReported = new Promise<void>((resolve) => {
@@ -1004,18 +1053,14 @@ describe("recorder", () => {
       releaseWrite = resolve;
     });
     let interceptBatch = true;
-    fileHandlePrototype.writeFile = async function (
-      this: FileHandle,
-      data: string,
-      encoding: BufferEncoding,
-    ) {
-      await originalWriteFile.call(this, data, encoding);
+    const restoreWrites = interceptRecorderWrites(fileHandlePrototype, async (data, write) => {
+      await write();
       if (interceptBatch && data.includes('"recorderBatchVersion"')) {
         interceptBatch = false;
         reportWrite();
         await writeReleased;
       }
-    };
+    });
 
     const append = appendRecordedInboundBatch(filePath, [event]);
     try {
@@ -1026,7 +1071,7 @@ describe("recorder", () => {
       await expect(append).resolves.toEqual([expect.objectContaining({ id: "rotated-batch" })]);
     } finally {
       releaseWrite();
-      fileHandlePrototype.writeFile = originalWriteFile;
+      restoreWrites();
     }
 
     await expect(readRecordedInbound(filePath)).resolves.toEqual([
@@ -1051,11 +1096,8 @@ describe("recorder", () => {
     };
 
     const probeHandle = await open(filePath, "a+");
-    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
-      writeFile(data: string, encoding: BufferEncoding): Promise<void>;
-    };
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as RecorderFileHandlePrototype;
     await probeHandle.close();
-    const originalWriteFile = fileHandlePrototype.writeFile;
     let releaseWrite!: () => void;
     let reportWrite!: () => void;
     const writeReported = new Promise<void>((resolve) => {
@@ -1065,18 +1107,14 @@ describe("recorder", () => {
       releaseWrite = resolve;
     });
     let interceptAppend = true;
-    fileHandlePrototype.writeFile = async function (
-      this: FileHandle,
-      data: string,
-      encoding: BufferEncoding,
-    ) {
-      await originalWriteFile.call(this, data, encoding);
+    const restoreWrites = interceptRecorderWrites(fileHandlePrototype, async (data, write) => {
+      await write();
       if (interceptAppend && data.includes('"id":"rotated-single"')) {
         interceptAppend = false;
         reportWrite();
         await writeReleased;
       }
-    };
+    });
 
     const append = appendRecordedInbound(filePath, event);
     try {
@@ -1087,7 +1125,7 @@ describe("recorder", () => {
       await expect(append).resolves.toMatchObject({ id: event.id });
     } finally {
       releaseWrite();
-      fileHandlePrototype.writeFile = originalWriteFile;
+      restoreWrites();
     }
 
     await expect(readRecordedInbound(filePath)).resolves.toEqual([
@@ -1115,11 +1153,8 @@ describe("recorder", () => {
     };
 
     const probeHandle = await open(firstTarget, "a+");
-    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
-      writeFile(data: string, encoding: BufferEncoding): Promise<void>;
-    };
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as RecorderFileHandlePrototype;
     await probeHandle.close();
-    const originalWriteFile = fileHandlePrototype.writeFile;
     let releaseWrite!: () => void;
     let reportWrite!: () => void;
     const writeReported = new Promise<void>((resolve) => {
@@ -1129,18 +1164,14 @@ describe("recorder", () => {
       releaseWrite = resolve;
     });
     let interceptBatch = true;
-    fileHandlePrototype.writeFile = async function (
-      this: FileHandle,
-      data: string,
-      encoding: BufferEncoding,
-    ) {
-      await originalWriteFile.call(this, data, encoding);
+    const restoreWrites = interceptRecorderWrites(fileHandlePrototype, async (data, write) => {
+      await write();
       if (interceptBatch && data.includes('"recorderBatchVersion"')) {
         interceptBatch = false;
         reportWrite();
         await writeReleased;
       }
-    };
+    });
 
     const append = appendRecordedInboundBatch(filePath, [event]);
     try {
@@ -1151,7 +1182,7 @@ describe("recorder", () => {
       await expect(append).resolves.toEqual([expect.objectContaining({ id: "symlink-batch" })]);
     } finally {
       releaseWrite();
-      fileHandlePrototype.writeFile = originalWriteFile;
+      restoreWrites();
     }
 
     await expect(readRecordedInbound(filePath)).resolves.toEqual([
@@ -1176,11 +1207,8 @@ describe("recorder", () => {
     };
 
     const probeHandle = await open(path.dirname(filePath), "r");
-    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
-      writeFile(data: string, encoding: BufferEncoding): Promise<void>;
-    };
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as RecorderFileHandlePrototype;
     await probeHandle.close();
-    const originalWriteFile = fileHandlePrototype.writeFile;
     let releaseFirstWrite!: () => void;
     let reportFirstWrite!: () => void;
     const firstWriteReported = new Promise<void>((resolve) => {
@@ -1190,18 +1218,14 @@ describe("recorder", () => {
       releaseFirstWrite = resolve;
     });
     let pauseFirstBatch = true;
-    fileHandlePrototype.writeFile = async function (
-      this: FileHandle,
-      data: string,
-      encoding: BufferEncoding,
-    ) {
+    const restoreWrites = interceptRecorderWrites(fileHandlePrototype, async (data, write) => {
       if (pauseFirstBatch && data.includes('"recorderBatchVersion"')) {
         pauseFirstBatch = false;
         reportFirstWrite();
         await firstWriteReleased;
       }
-      await originalWriteFile.call(this, data, encoding);
-    };
+      await write();
+    });
 
     const first = appendRecordedInboundBatch(filePath, [event]);
     try {
@@ -1213,7 +1237,7 @@ describe("recorder", () => {
       expect(results.map((result) => result.length).toSorted()).toEqual([0, 1]);
     } finally {
       releaseFirstWrite();
-      fileHandlePrototype.writeFile = originalWriteFile;
+      restoreWrites();
     }
 
     await expect(readRecordedInbound(filePath)).resolves.toEqual([
