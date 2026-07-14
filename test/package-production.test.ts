@@ -490,8 +490,9 @@ describe("production package", () => {
       "Matrix webhook ingress currently has no provider-native authentication mode",
     );
     expect(readme).toContain(
-      "WhatsApp Cloud API users: digits-only `wa_id` values such as `15551234567`",
+      "Built-in WhatsApp Cloud API users: digits-only `wa_id` values such as",
     );
+    expect(readme).toContain("OpenClaw WhatsApp bridge groups: `120363001234567890@g.us`");
     expect(readme).not.toContain("WhatsApp users: `+15551234567`");
   });
 
