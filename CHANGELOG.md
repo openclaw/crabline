@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Bound shared HTTP responses, Matrix sync payloads, stalled webhook DNS recovery, unmatched request bodies, and admitted local-mock hook cleanup.
+- Preserve Zalo polling arrival order until each older HTTP response commits.
 - Stream Telegram multipart uploads with bounded parser metadata instead of copying complete files through `FormData`.
 - Keep Unix recorder identity locks in one validated private per-user namespace across processes and recorder path changes.
 - Reject non-positive Telegram admin message IDs and enforce native Mattermost channel types and unique normalized usernames.

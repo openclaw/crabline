@@ -792,82 +792,99 @@ describe("Zalo local provider server", () => {
     });
   });
 
-  it("restores reverse-order poll failures ahead of a waiting poll", async () => {
-    const server = await startZaloServer({ botToken: "sample" });
-    servers.push(server);
-    for (const text of ["first", "second"]) {
-      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
-        body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text }),
-        headers: adminHeaders(server),
-        method: "POST",
+  it.each(["success", "failure"] as const)(
+    "waits for an older poll response to commit before %s delivery",
+    async (firstOutcome) => {
+      let polls = 0;
+      let reportSecondPoll!: () => void;
+      const secondPollObserved = new Promise<void>((resolve) => {
+        reportSecondPoll = resolve;
       });
-      expect(inbound.status).toBe(200);
-    }
-
-    const responsePrototype = ServerResponse.prototype as unknown as {
-      end: (...args: unknown[]) => ServerResponse;
-    };
-    const originalEnd = responsePrototype.end;
-    let failedResponses = 0;
-    let reportLaterFailure!: () => void;
-    const laterFailureReported = new Promise<void>((resolve) => {
-      reportLaterFailure = resolve;
-    });
-    responsePrototype.end = function (this: ServerResponse, ...args: unknown[]) {
-      if (this.req?.url?.includes("/getUpdates") && failedResponses < 2) {
-        const responseIndex = failedResponses++;
-        const delayMs = responseIndex === 0 ? 100 : 10;
-        setTimeout(() => {
-          if (responseIndex === 1) {
-            reportLaterFailure();
+      const server = await startZaloServer({
+        botToken: "sample",
+        onEvent(event) {
+          if (event.path === "/bot<redacted>/getUpdates" && ++polls === 2) {
+            reportSecondPoll();
           }
-          this.destroy(new Error("simulated response failure"));
-        }, delayMs);
-        return this;
+        },
+      });
+      servers.push(server);
+      for (const text of ["first", "second"]) {
+        const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+          body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text }),
+          headers: adminHeaders(server),
+          method: "POST",
+        });
+        expect(inbound.status).toBe(200);
       }
-      return Reflect.apply(originalEnd, this, args) as ServerResponse;
-    };
 
-    try {
-      const failedPolls = Promise.allSettled([
-        requestHttp({
+      const responsePrototype = ServerResponse.prototype as unknown as {
+        end: (...args: unknown[]) => ServerResponse;
+      };
+      const originalEnd = responsePrototype.end;
+      let heldResponse: ServerResponse | undefined;
+      let heldArgs: unknown[] | undefined;
+      let reportHeldResponse!: () => void;
+      const heldResponseObserved = new Promise<void>((resolve) => {
+        reportHeldResponse = resolve;
+      });
+      responsePrototype.end = function (this: ServerResponse, ...args: unknown[]) {
+        if (this.req?.url?.includes("/getUpdates") && !heldResponse) {
+          heldResponse = this;
+          heldArgs = args;
+          reportHeldResponse();
+          return this;
+        }
+        return Reflect.apply(originalEnd, this, args) as ServerResponse;
+      };
+
+      try {
+        const firstPoll = requestHttp({
           method: "GET",
           url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`,
-        }),
-        requestHttp({
+        });
+        await heldResponseObserved;
+        let secondSettled = false;
+        const secondPoll = requestHttp({
           method: "GET",
-          url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`,
-        }),
-      ]);
-      const waitingPoll = requestHttp({
-        method: "GET",
-        url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=1`,
-      });
-      await laterFailureReported;
-      const thirdInbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
-        body: JSON.stringify({ chatId: "chat-1", senderId: "user-1", text: "third" }),
-        headers: adminHeaders(server),
-        method: "POST",
-      });
-      expect(thirdInbound.status).toBe(200);
-      const waitingResponse = await waitingPoll;
-      expect(JSON.parse(waitingResponse.body)).toMatchObject({
-        ok: true,
-        result: { message: { text: "first" } },
-      });
-      await failedPolls;
-    } finally {
-      responsePrototype.end = originalEnd;
-    }
+          url: `${server.manifest.baseUrl}/botsample/getUpdates?timeout=2`,
+        }).finally(() => {
+          secondSettled = true;
+        });
+        await secondPollObserved;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(secondSettled).toBe(false);
 
-    for (const text of ["second", "third"]) {
-      const update = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`);
-      await expect(update.json()).resolves.toMatchObject({
-        ok: true,
-        result: { message: { text } },
-      });
-    }
-  });
+        if (firstOutcome === "success") {
+          Reflect.apply(originalEnd, heldResponse!, heldArgs!) as ServerResponse;
+          const firstResponse = await firstPoll;
+          expect(JSON.parse(firstResponse.body)).toMatchObject({
+            ok: true,
+            result: { message: { text: "first" } },
+          });
+        } else {
+          heldResponse!.destroy(new Error("simulated response failure"));
+          await expect(firstPoll).rejects.toThrow();
+        }
+
+        const secondResponse = await secondPoll;
+        expect(JSON.parse(secondResponse.body)).toMatchObject({
+          ok: true,
+          result: { message: { text: firstOutcome === "success" ? "second" : "first" } },
+        });
+      } finally {
+        responsePrototype.end = originalEnd;
+      }
+
+      if (firstOutcome === "failure") {
+        const update = await fetch(`${server.manifest.baseUrl}/botsample/getUpdates?timeout=0`);
+        await expect(update.json()).resolves.toMatchObject({
+          ok: true,
+          result: { message: { text: "second" } },
+        });
+      }
+    },
+  );
 
   it("rejects webhook activation while a poll delivery is reserved", async () => {
     const webhook = createServer((_request, response) => {
