@@ -499,7 +499,10 @@ $ancestorReplacementRights = (
   [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
   [System.Security.AccessControl.FileSystemRights]::TakeOwnership
 )
-$ancestorReplacementMask = [uint32][int32]$ancestorReplacementRights
+$ancestorReplacementMask = [BitConverter]::ToUInt32(
+  [BitConverter]::GetBytes([int32]$ancestorReplacementRights),
+  0
+)
 $genericAll = [uint32]0x10000000
 $inheritOnly = [System.Security.AccessControl.PropagationFlags]::InheritOnly
 
@@ -514,7 +517,10 @@ $rules = @($actual.GetAccessRules(
   [System.Security.Principal.SecurityIdentifier]
 ))
 foreach ($rule in $rules) {
-  $ruleAccessMask = [uint32][int32]$rule.FileSystemRights
+  $ruleAccessMask = [BitConverter]::ToUInt32(
+    [BitConverter]::GetBytes([int32]$rule.FileSystemRights),
+    0
+  )
   $appliesToDirectory = ($rule.PropagationFlags -band $inheritOnly) -eq 0
   if (
     $appliesToDirectory -and
@@ -556,7 +562,10 @@ $mutationRights = (
   [System.Security.AccessControl.FileSystemRights]::TakeOwnership
 )
 $genericMutationRights = [uint32]0x50000000
-$mutationAccessMask = [uint32][int32]$mutationRights
+$mutationAccessMask = [BitConverter]::ToUInt32(
+  [BitConverter]::GetBytes([int32]$mutationRights),
+  0
+)
 
 $actual = Get-Acl -LiteralPath $directoryPath
 $ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
@@ -569,7 +578,10 @@ $rules = @($actual.GetAccessRules(
   [System.Security.Principal.SecurityIdentifier]
 ))
 foreach ($rule in $rules) {
-  $ruleAccessMask = [uint32][int32]$rule.FileSystemRights
+  $ruleAccessMask = [BitConverter]::ToUInt32(
+    [BitConverter]::GetBytes([int32]$rule.FileSystemRights),
+    0
+  )
   if (
     $rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
     $trustedSids -notcontains $rule.IdentityReference.Value -and
