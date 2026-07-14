@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { CrablineError, ensureErrorMessage } from "../src/core/errors.js";
 import { EXIT_CODES } from "../src/core/exit-codes.js";
-import { formatJson, formatRunResultText, sanitizeTerminalText } from "../src/core/reporters.js";
+import {
+  formatJson,
+  formatJsonResult,
+  formatRunResultText,
+  sanitizeTerminalText,
+} from "../src/core/reporters.js";
 
 const ansiPattern = new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, "g");
 
@@ -81,10 +86,12 @@ describe("errors and reporters", () => {
 
   it("escapes visually unsafe Unicode controls without changing parsed JSON values", () => {
     const controls =
-      "\u061c\u200e\u200f\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069";
+      "\u007f\u0080\u0085\u009f\u061c\u200e\u200f\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069";
     const output = formatJson({ [controls]: controls });
 
-    expect(output).not.toMatch(/[\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u);
+    expect(output).not.toMatch(
+      /[\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u,
+    );
     for (const character of controls) {
       expect(output).toContain(
         String.raw`\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
@@ -110,7 +117,9 @@ describe("errors and reporters", () => {
     const expectedOutput = JSON.stringify(expected, null, 2);
 
     for (const value of [cyclic, { value: 1n }, throwingValue]) {
-      const output = formatJson(value);
+      const result = formatJsonResult(value);
+      const output = result.output;
+      expect(result.ok).toBe(false);
       expect(output).toBe(expectedOutput);
       expect(output).not.toContain("sensitive serialization detail");
     }
