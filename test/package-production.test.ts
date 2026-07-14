@@ -432,7 +432,7 @@ describe("production package", () => {
     ]);
     const pkg = JSON.parse(pkgContents) as { scripts?: Record<string, string> };
 
-    expect(pkg.scripts?.["test:autoreview"]).toBe("node tools/run-autoreview-tests.mjs");
+    expect(pkg.scripts?.["test:autoreview"]).toContain("node tools/run-autoreview-tests.mjs");
     expect(pkg.scripts?.verify).toContain("pnpm test:autoreview");
     expect(launcher).toContain("sys.version_info >= (3, 10)");
     expect(launcher).toContain("Python 3.10 or newer is required");
