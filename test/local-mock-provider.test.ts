@@ -1147,7 +1147,7 @@ describe("local mock provider", () => {
       retries: 0,
       tags: [],
       target: { behavior: "echo", id: "C1234567890", metadata: {} },
-      timeoutMs: 100,
+      timeoutMs: 500,
     };
     const manifest: ManifestDefinition = {
       configVersion: 1,

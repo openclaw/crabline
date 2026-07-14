@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Give the recorder-scan roundtrip regression enough time to complete on loaded CI workers.
 - Reject invalid shared HTTP body limits, webhook deadlines, and signed-JWT cache timings before starting I/O.
 - Parse Google signing certificates as X.509 and redact Discord and Slack webhook tokens before recorder persistence.
 - Contain WhatsApp acceptance timeout cleanup failures, enforce compressed binary-node payload limits, and require explicit interop JID server tokens.
