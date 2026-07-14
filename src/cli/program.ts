@@ -6,8 +6,14 @@ import nodePath from "node:path";
 import { finished } from "node:stream/promises";
 import { lock } from "proper-lockfile";
 import { loadManifest } from "../config/load.js";
+import { EXIT_CODES } from "../core/exit-codes.js";
 import { createRegistry } from "../providers/registry.js";
-import { formatJson, formatRunResultText, sanitizeTerminalText } from "../core/reporters.js";
+import {
+  formatJson,
+  formatJsonResult,
+  formatRunResultText,
+  sanitizeTerminalText,
+} from "../core/reporters.js";
 import {
   assertScriptStdinPayloadSize,
   computeExitCode,
@@ -381,6 +387,13 @@ export function createProgram(
   const publish = dependencies.publishReadyFile ?? publishReadyFileUnlocked;
   const removeReady = dependencies.removeReadyFile ?? removeReadyFileIfOwned;
   const startServer = dependencies.startServer ?? startCrablineServer;
+  const formatCliJson = (value: unknown): string => {
+    const formatted = formatJsonResult(value);
+    if (!formatted.ok) {
+      setExitCode(EXIT_CODES.FAILURE);
+    }
+    return formatted.output;
+  };
 
   program
     .exitOverride()
@@ -407,7 +420,7 @@ export function createProgram(
         })),
         support: registry.catalog,
       };
-      await print(options.json ? formatJson(payload) : renderProvidersText(payload));
+      await print(options.json ? formatCliJson(payload) : renderProvidersText(payload));
     });
 
   program
@@ -418,7 +431,7 @@ export function createProgram(
       const { manifest } = await loadManifest(options.config);
       await print(
         options.json
-          ? formatJson(manifest.fixtures)
+          ? formatCliJson(manifest.fixtures)
           : manifest.fixtures
               .map(
                 (fixture) =>
@@ -446,8 +459,8 @@ export function createProgram(
         modeOverride: "probe",
         registry,
       });
-      await print(options.json ? formatJson(result) : formatRunResultText(result));
       setExitCode(computeExitCode(result));
+      await print(options.json ? formatCliJson(result) : formatRunResultText(result));
     });
 
   for (const mode of ["send", "roundtrip", "agent"] as const) {
@@ -465,8 +478,8 @@ export function createProgram(
           modeOverride: mode,
           registry,
         });
-        await print(options.json ? formatJson(result) : formatRunResultText(result));
         setExitCode(computeExitCode(result));
+        await print(options.json ? formatCliJson(result) : formatRunResultText(result));
       });
   }
 
@@ -483,8 +496,8 @@ export function createProgram(
         manifestPath: path,
         registry,
       });
-      await print(options.json ? formatJson(result) : formatRunResultText(result));
       setExitCode(computeExitCode(result));
+      await print(options.json ? formatCliJson(result) : formatRunResultText(result));
     });
 
   program
@@ -555,7 +568,7 @@ export function createProgram(
             const message = result.value;
             const written = await print(
               options.json
-                ? formatJson(message)
+                ? formatCliJson(message)
                 : `${sanitizeTerminalText(message.sentAt, true)} ${sanitizeTerminalText(message.author, true)} ${sanitizeTerminalText(message.text, true)}`,
             );
             if (!written) {
@@ -752,7 +765,11 @@ export function createProgram(
           } else {
             let outputWritten = true;
             try {
-              const payload = formatJson(server.manifest);
+              const formatted = formatJsonResult(server.manifest);
+              if (!formatted.ok) {
+                throw new Error("Unable to serialize server manifest.");
+              }
+              const payload = formatted.output;
               if (commandOptions.readyFile) {
                 const readyContents = `${payload}\n`;
                 publishedReady = {
@@ -815,8 +832,8 @@ export function createProgram(
       const findings = diagnose(manifest);
       const ok = findings.length === 0;
       const payload = { findings, ok };
-      await print(options.json ? formatJson(payload) : ok ? "doctor ok" : findings.join("\n"));
       setExitCode(ok ? 0 : 10);
+      await print(options.json ? formatCliJson(payload) : ok ? "doctor ok" : findings.join("\n"));
     });
 
   return program;

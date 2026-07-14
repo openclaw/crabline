@@ -118,6 +118,30 @@ describe("cli", () => {
     expect(captured.stdout.join("")).toContain("roundtrip-fixture");
   });
 
+  it("returns failure when successful JSON output cannot be serialized", async () => {
+    const configPath = await createConfig();
+    let exitCode = -1;
+    const captured = await captureWrites(async () => {
+      exitCode = await runCli(
+        ["node", "crabline", "--json", "--config", configPath, "providers"],
+        {
+          dependencies: {
+            createRegistry: () =>
+              ({
+                catalog: [{ value: 1n }],
+              }) as never,
+          },
+        },
+      );
+    });
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(captured.stdout.join(""))).toEqual({
+      error: { message: "Unable to serialize JSON output." },
+      ok: false,
+    });
+  });
+
   it("sanitizes user-controlled fixture fields in text output", async () => {
     const directory = await createTempDir();
     directories.push(directory);
