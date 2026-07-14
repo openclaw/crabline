@@ -300,7 +300,7 @@ describe("slack provider", () => {
     expect(response.status).toBe(200);
     await expect(waiting).resolves.toMatchObject({
       author: "user",
-      id: "1700000001.000200",
+      id: "1700000002.000300",
       text: "edited ACK edited-nonce",
       threadId: "C1234567890:thread:1700000000.000100",
     });

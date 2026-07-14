@@ -203,13 +203,6 @@ function pruneInactiveWaitCursors(cursors: Map<string, WaitCursorState>): void {
   }
 }
 
-function pruneSettledWaitCursors(cursors: Map<string, WaitCursorState>): void {
-  if ([...cursors.values()].some((state) => state.active > 0)) {
-    return;
-  }
-  pruneInactiveWaitCursors(cursors);
-}
-
 export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   readonly #config: ProviderConfig;
   readonly #env: WhatsAppEnvironment;
@@ -352,7 +345,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
       ) {
         this.#waitCursors.delete(cursorKey);
       }
-      pruneSettledWaitCursors(this.#waitCursors);
+      pruneInactiveWaitCursors(this.#waitCursors);
     }
   }
 
