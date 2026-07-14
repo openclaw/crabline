@@ -169,6 +169,71 @@ describe("script provider Windows cleanup", () => {
     },
   );
 
+  it("retries Job Object helper bootstrap after a transient failure", async () => {
+    vi.resetModules();
+    execFileMock.mockImplementationOnce(() => {
+      throw new Error("transient bootstrap failure");
+    });
+    const firstScriptChild = createFakeChild(1110);
+    const secondScriptChild = createFakeChild(1111);
+    spawnMock.mockReturnValueOnce(firstScriptChild).mockReturnValueOnce(secondScriptChild);
+    const { ScriptProviderAdapter: IsolatedScriptProviderAdapter } =
+      await import("../src/providers/builtin/script.js");
+    const context = createContext();
+    const provider = new IsolatedScriptProviderAdapter(context);
+
+    const firstFailure = provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce-1",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    await flushScriptSpawn();
+    firstScriptChild.emit("close", 7, null);
+    await firstFailure;
+
+    const secondFailure = provider
+      .send({
+        ...context,
+        mode: "send",
+        nonce: "nonce-2",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    await flushScriptSpawn();
+    secondScriptChild.emit("close", 7, null);
+    await secondFailure;
+
+    expect(execFileMock).toHaveBeenCalledTimes(3);
+    expect(spawnMock.mock.calls[0]?.[0]).toBe("node send.mjs");
+    expect(spawnMock.mock.calls[1]?.[0]).toMatch(/crabline-script-job\.exe$/u);
+  });
+
+  it("does not bootstrap the Job Object helper for an already-aborted spawn", async () => {
+    vi.resetModules();
+    const { ScriptProviderAdapter: IsolatedScriptProviderAdapter } =
+      await import("../src/providers/builtin/script.js");
+    const context = createContext();
+    const controller = new AbortController();
+    const cancellation = new Error("watch cancelled");
+    context.signal = controller.signal;
+    Object.defineProperty(context.fixture.target, "id", {
+      configurable: true,
+      get() {
+        controller.abort(cancellation);
+        return "thread-1";
+      },
+    });
+    const provider = new IsolatedScriptProviderAdapter(context);
+
+    await expect(provider.watch(context).next()).rejects.toBe(cancellation);
+
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("counts Job Object helper bootstrap against the command timeout", async () => {
     vi.resetModules();
     execFileMock.mockReset();
