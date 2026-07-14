@@ -311,13 +311,24 @@ function consumeRecordedChunk(
   return events;
 }
 
-async function appendJsonLine(filePath: string, line: string): Promise<void> {
+async function appendJsonLine(
+  filePath: string,
+  line: string,
+  firstCreatedDirectory?: string,
+): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
       await serializeAppend(
         filePath,
         async (publicationPath, logicalPath, _lockCreatedFile, lockedIdentity) => {
-          await appendCommittedLine(publicationPath, logicalPath, line, true, lockedIdentity);
+          await appendCommittedLine(
+            publicationPath,
+            logicalPath,
+            line,
+            true,
+            lockedIdentity,
+            firstCreatedDirectory,
+          );
         },
       );
       return;
@@ -418,6 +429,39 @@ async function syncParentDirectory(filePath: string): Promise<void> {
   }
 }
 
+async function syncRecorderPathAncestry(
+  filePath: string,
+  firstCreatedDirectory?: string,
+): Promise<void> {
+  if (process.platform === "win32") {
+    return;
+  }
+  const resolvedFilePath = path.resolve(filePath);
+  let currentPath = resolvedFilePath;
+  const syncThroughPath =
+    firstCreatedDirectory === undefined ? undefined : path.resolve(firstCreatedDirectory);
+  for (;;) {
+    const directoryPath = path.dirname(currentPath);
+    const mandatory = syncThroughPath !== undefined || currentPath === resolvedFilePath;
+    try {
+      await syncParentDirectory(currentPath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!mandatory && (code === "EACCES" || code === "EPERM")) {
+        return;
+      }
+      throw error;
+    }
+    if (currentPath === syncThroughPath) {
+      return;
+    }
+    if (path.dirname(directoryPath) === directoryPath) {
+      return;
+    }
+    currentPath = directoryPath;
+  }
+}
+
 async function prepareRecorderTailForAppend(
   handle: Awaited<ReturnType<typeof open>>,
 ): Promise<boolean> {
@@ -509,6 +553,7 @@ async function appendCommittedLine(
   line: string,
   durable: boolean,
   expectedIdentity?: RecorderFileIdentity,
+  firstCreatedDirectory?: string,
 ): Promise<void> {
   const opened = await openRecorderForAppend(publicationPath);
   const { handle } = opened;
@@ -530,7 +575,9 @@ async function appendCommittedLine(
       await handle.sync();
     }
     if (durable) {
-      await syncParentDirectory(publicationPath);
+      const firstCreatedPath =
+        firstCreatedDirectory ?? (opened.created ? publicationPath : undefined);
+      await syncRecorderPathAncestry(publicationPath, firstCreatedPath);
     }
   } catch (error) {
     operationError = published ? new ProviderRecorderCommittedError(logicalPath, error) : error;
@@ -970,7 +1017,7 @@ export async function appendRecordedInbound(
   filePath: string,
   event: RecordableInboundEnvelope,
 ): Promise<RecordedInboundEnvelope> {
-  await mkdir(path.dirname(filePath), { recursive: true });
+  const firstCreatedDirectory = await mkdir(path.dirname(filePath), { recursive: true });
 
   const recorded = {
     ...event,
@@ -983,7 +1030,7 @@ export async function appendRecordedInbound(
       `Recorder record exceeded ${MAX_PENDING_RECORD_BYTES} bytes without a newline.`,
     );
   }
-  await appendJsonLine(filePath, line);
+  await appendJsonLine(filePath, line, firstCreatedDirectory);
   return recorded;
 }
 
@@ -994,7 +1041,7 @@ export async function appendRecordedInboundBatch(
   if (events.length === 0) {
     return [];
   }
-  await mkdir(path.dirname(filePath), { recursive: true });
+  const firstCreatedDirectory = await mkdir(path.dirname(filePath), { recursive: true });
   for (let attempt = 0; ; attempt++) {
     try {
       return await serializeAppend(
@@ -1038,6 +1085,7 @@ export async function appendRecordedInboundBatch(
               line,
               true,
               generation.identity,
+              firstCreatedDirectory,
             );
             await syncRecordIdentityIndex(publicationPath);
           } else if (

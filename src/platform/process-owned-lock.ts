@@ -6,15 +6,16 @@ import { performance } from "node:perf_hooks";
 import { resolveWindowsPowerShellPath } from "./windows-acl.js";
 
 type LockOwner = {
+  machineIdentity: string | null;
   pid: number;
   processIdentity: string | null;
   processNamespace: string | null;
   processStartedAtMs: number;
   token: string;
-  version: 1 | 2;
+  version: 1 | 2 | 3;
 };
 
-type OwnerStatus = "active" | "dead" | "superseded" | "unknown";
+type OwnerStatus = "active" | "dead" | "foreign" | "superseded" | "unknown";
 
 type ParsedLockOwner = {
   owner: LockOwner;
@@ -228,6 +229,47 @@ function readProcessNamespace(pid: number): string | null {
   }
 }
 
+function readMachineIdentity(): string | null {
+  if (process.platform === "linux") {
+    try {
+      const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      return /^[0-9a-f-]{16,64}$/iu.test(bootId) ? `linux:${bootId}` : null;
+    } catch {
+      return null;
+    }
+  }
+  if (process.platform === "darwin") {
+    const result = spawnSync("/usr/sbin/ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      timeout: 1000,
+    });
+    const platformUuid = /"IOPlatformUUID"\s*=\s*"([^"]+)"/u.exec(result.stdout)?.[1];
+    return result.status === 0 && platformUuid ? `darwin:${platformUuid.toLowerCase()}` : null;
+  }
+  if (process.platform !== "win32") {
+    return null;
+  }
+  let powershellPath: string;
+  try {
+    powershellPath = resolveWindowsPowerShellPath(process.env.SystemRoot);
+  } catch {
+    return null;
+  }
+  const result = spawnSync(
+    powershellPath,
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "(Get-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography' -Name MachineGuid -ErrorAction Stop).MachineGuid",
+    ],
+    { encoding: "utf8", timeout: 1000, windowsHide: true },
+  );
+  const machineGuid = result.status === 0 ? result.stdout.trim() : "";
+  return /^[0-9a-f-]{16,64}$/iu.test(machineGuid) ? `windows:${machineGuid.toLowerCase()}` : null;
+}
+
 let cachedLinuxClockTicks: number | undefined;
 
 function readLegacyProcessStartedAtMs(pid: number): number | null {
@@ -349,6 +391,7 @@ function lockOwnerMatches(
 }
 
 let cachedCurrentProcessIdentity: string | undefined;
+let cachedCurrentMachineIdentity: string | undefined;
 
 function readProcessIdentityWithRetry(
   pid: number,
@@ -389,12 +432,17 @@ function parseOpenedOwner(ownerHandle: number): ParsedLockOwner | undefined {
   }
   const value = JSON.parse(raw.toString("utf8")) as Partial<LockOwner>;
   if (
-    (value.version !== 1 && value.version !== 2) ||
+    (value.version !== 1 && value.version !== 2 && value.version !== 3) ||
     !isValidProcessId(value.pid ?? 0) ||
     typeof value.token !== "string" ||
     value.token.length === 0 ||
     value.token.length > 128 ||
     !Number.isSafeInteger(value.processStartedAtMs) ||
+    (value.machineIdentity !== undefined &&
+      value.machineIdentity !== null &&
+      (typeof value.machineIdentity !== "string" ||
+        value.machineIdentity.length === 0 ||
+        value.machineIdentity.length > 256)) ||
     (value.processNamespace !== undefined &&
       value.processNamespace !== null &&
       (typeof value.processNamespace !== "string" ||
@@ -407,7 +455,7 @@ function parseOpenedOwner(ownerHandle: number): ParsedLockOwner | undefined {
     return undefined;
   }
   if (
-    value.version === 2 &&
+    (value.version === 2 || value.version === 3) &&
     (value.processIdentity === null ||
       !isExactProcessIdentityForCurrentPlatform(value.processIdentity) ||
       (process.platform === "linux" &&
@@ -417,9 +465,18 @@ function parseOpenedOwner(ownerHandle: number): ParsedLockOwner | undefined {
   ) {
     return undefined;
   }
+  if (
+    value.version === 3 &&
+    (value.machineIdentity === null ||
+      value.machineIdentity === undefined ||
+      !/^(darwin|linux|windows):.+$/u.test(value.machineIdentity))
+  ) {
+    return undefined;
+  }
   return {
     owner: {
       ...(value as LockOwner),
+      machineIdentity: value.machineIdentity ?? null,
       processNamespace: value.processNamespace ?? null,
     },
     publishedAtMs: stats.mtimeMs,
@@ -470,7 +527,7 @@ function syntheticStaleStat(stats: fs.Stats): fs.Stats {
   return stale;
 }
 
-function isRecoverableOwnerlessLock(stats: Pick<fs.Stats, "mtimeMs">): boolean {
+function isRecoverableOwnerlessClaim(stats: Pick<fs.Stats, "mtimeMs">): boolean {
   return Date.now() - stats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
 }
 
@@ -484,8 +541,21 @@ function isRecoverableUnverifiableOwner(candidate: ParsedLockOwner, status: Owne
   );
 }
 
+function isRecoverableForeignOwner(
+  candidate: ParsedLockOwner,
+  status: OwnerStatus,
+  stats: Pick<fs.Stats, "mtimeMs">,
+): boolean {
+  return (
+    status === "foreign" &&
+    candidate.owner.version >= 2 &&
+    Date.now() - stats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS
+  );
+}
+
 export function createProcessOwnedLockFileSystem(
   options: {
+    machineIdentityReader?: () => string | null;
     processIdentityReader?: (pid: number) => string | null;
   } = {},
 ): typeof fs {
@@ -513,6 +583,21 @@ export function createProcessOwnedLockFileSystem(
   if (currentProcessIdentity === null || !isExactProcessIdentity(currentProcessIdentity)) {
     throw new Error("Recorder lock process identity is unavailable.");
   }
+  let currentMachineIdentity: string | null;
+  if (options.machineIdentityReader) {
+    currentMachineIdentity = options.machineIdentityReader();
+  } else {
+    if (cachedCurrentMachineIdentity === undefined) {
+      const machineIdentity = readMachineIdentity();
+      if (machineIdentity !== null) {
+        cachedCurrentMachineIdentity = machineIdentity;
+      }
+    }
+    currentMachineIdentity = cachedCurrentMachineIdentity ?? null;
+  }
+  if (currentMachineIdentity === null) {
+    throw new Error("Recorder lock machine identity is unavailable.");
+  }
   const currentProcessNamespace = readProcessNamespaceWithRetry(process.pid);
   if (process.platform === "linux" && currentProcessNamespace === null) {
     throw new Error("Recorder lock process namespace is unavailable.");
@@ -528,12 +613,13 @@ export function createProcessOwnedLockFileSystem(
       }
     | undefined;
   const owner: LockOwner = {
+    machineIdentity: currentMachineIdentity,
     pid: process.pid,
     processIdentity: currentProcessIdentity,
     processNamespace: currentProcessNamespace,
     processStartedAtMs: CURRENT_PROCESS_STARTED_AT_MS,
     token,
-    version: 2,
+    version: 3,
   };
 
   const publishOwner = (directory: string): void => {
@@ -616,13 +702,23 @@ export function createProcessOwnedLockFileSystem(
       return "dead";
     }
     if (
+      claim.version === 3 &&
+      claim.machineIdentity !== null &&
+      claim.machineIdentity !== currentMachineIdentity
+    ) {
+      return "foreign";
+    }
+    if (
       process.platform === "linux" &&
-      claim.version === 2 &&
+      claim.version >= 2 &&
       (claim.processNamespace === null ||
         currentProcessNamespace === null ||
         claim.processNamespace !== currentProcessNamespace)
     ) {
-      return "unknown";
+      return "foreign";
+    }
+    if (claim.version === 2 && (process.platform === "darwin" || process.platform === "win32")) {
+      return "foreign";
     }
     if (!isProcessAlive(claim.pid)) {
       if (process.platform === "linux" && claim.version === 1 && claim.processNamespace === null) {
@@ -694,13 +790,26 @@ export function createProcessOwnedLockFileSystem(
       const existingClaim = parseOwner(claimPath);
       let existingFingerprint: string | undefined;
       if (existingClaim) {
-        if (ownerStatus(existingClaim) === "dead") {
+        const status = ownerStatus(existingClaim);
+        let recoverableForeign = false;
+        if (status === "foreign") {
+          try {
+            recoverableForeign = isRecoverableForeignOwner(
+              existingClaim,
+              status,
+              fs.statSync(claimPath),
+            );
+          } catch {
+            recoverableForeign = false;
+          }
+        }
+        if (status === "dead" || recoverableForeign) {
           existingFingerprint = `owner:${existingClaim.owner.token}`;
         }
       } else if (existingClaim === undefined) {
         try {
           const stats = fs.statSync(claimPath);
-          if (isRecoverableOwnerlessLock(stats)) {
+          if (isRecoverableOwnerlessClaim(stats)) {
             existingFingerprint = `ownerless:${stats.dev}:${stats.ino}:${stats.mtimeMs}`;
           }
         } catch {
@@ -841,6 +950,10 @@ export function createProcessOwnedLockFileSystem(
       }
       const candidate = parseOwner(filePath);
       const status = ownerStatus(candidate);
+      const recoverableForeign =
+        candidate !== undefined &&
+        candidate !== null &&
+        isRecoverableForeignOwner(candidate, status, stats);
       if (candidate && abandonedOwnerTokens.has(candidate.owner.token)) {
         callback(null, syntheticStaleStat(stats));
         return;
@@ -849,10 +962,10 @@ export function createProcessOwnedLockFileSystem(
         null,
         candidate?.owner.token === token ||
           status === "dead" ||
+          recoverableForeign ||
           (candidate !== undefined &&
             candidate !== null &&
-            isRecoverableUnverifiableOwner(candidate, status)) ||
-          (candidate === undefined && isRecoverableOwnerlessLock(stats))
+            isRecoverableUnverifiableOwner(candidate, status))
           ? stats
           : syntheticFreshStat(stats),
       );
@@ -922,13 +1035,23 @@ export function createProcessOwnedLockFileSystem(
         return;
       }
       let ownerlessStats: fs.Stats | undefined;
-      let recoverableOwnerless = false;
+      let foreignStats: fs.Stats | undefined;
       let recoverableAbandoned = false;
       const status = ownerStatus(candidate);
       const recoverableUnverifiable =
         candidate !== undefined &&
         candidate !== null &&
         isRecoverableUnverifiableOwner(candidate, status);
+      let recoverableForeign = false;
+      if (candidate !== undefined && candidate !== null && status === "foreign") {
+        try {
+          foreignStats = fs.statSync(directoryPath);
+          recoverableForeign = isRecoverableForeignOwner(candidate, status, foreignStats);
+        } catch (error) {
+          finish(error as NodeJS.ErrnoException);
+          return;
+        }
+      }
       if (candidate === undefined || candidate === null) {
         try {
           ownerlessStats = fs.statSync(directoryPath);
@@ -936,8 +1059,6 @@ export function createProcessOwnedLockFileSystem(
             abandonedDirectoryIdentities.get(coordinationKey),
             ownerlessStats,
           );
-          recoverableOwnerless =
-            candidate === undefined && isRecoverableOwnerlessLock(ownerlessStats);
         } catch (error) {
           finish(error as NodeJS.ErrnoException);
           return;
@@ -945,8 +1066,8 @@ export function createProcessOwnedLockFileSystem(
       }
       if (
         status !== "dead" &&
+        !recoverableForeign &&
         !recoverableUnverifiable &&
-        !recoverableOwnerless &&
         !recoverableAbandoned
       ) {
         finish(
@@ -963,21 +1084,26 @@ export function createProcessOwnedLockFileSystem(
         candidate !== null &&
         lockOwnerMatches(candidate, refreshed) &&
         (refreshedStatus === "dead" ||
+          (recoverableForeign &&
+            refreshed !== undefined &&
+            refreshed !== null &&
+            foreignStats !== undefined &&
+            (() => {
+              try {
+                const refreshedStats = fs.statSync(directoryPath);
+                return (
+                  refreshedStats.dev === foreignStats.dev &&
+                  refreshedStats.ino === foreignStats.ino &&
+                  refreshedStats.mtimeMs === foreignStats.mtimeMs &&
+                  isRecoverableForeignOwner(refreshed, refreshedStatus, refreshedStats)
+                );
+              } catch {
+                return false;
+              }
+            })()) ||
           (refreshed !== undefined &&
             refreshed !== null &&
             isRecoverableUnverifiableOwner(refreshed, refreshedStatus)));
-      if (candidate === undefined && refreshed === undefined && ownerlessStats) {
-        try {
-          const refreshedStats = fs.statSync(directoryPath);
-          recoveryStillAuthorized =
-            refreshedStats.dev === ownerlessStats.dev &&
-            refreshedStats.ino === ownerlessStats.ino &&
-            refreshedStats.mtimeMs === ownerlessStats.mtimeMs &&
-            isRecoverableOwnerlessLock(refreshedStats);
-        } catch {
-          recoveryStillAuthorized = false;
-        }
-      }
       if (recoverableAbandoned && ownerlessStats) {
         try {
           recoveryStillAuthorized = directoryIdentityMatches(
