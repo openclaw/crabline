@@ -878,6 +878,11 @@ describe("whatsapp local provider server", () => {
       sendInbound("wamid.FAKE00000001"),
     ]);
     expect(duplicateIngress.map((response) => response.status).sort()).toEqual([200, 400]);
+    const oversized = await sendInbound(`wamid.FAKE${"9".repeat(129)}`);
+    expect(oversized.status).toBe(400);
+    await expect(oversized.json()).resolves.toMatchObject({
+      error: { error_data: { details: expect.stringContaining("128 UTF-8 bytes") } },
+    });
 
     const outbound = await fetch(server.manifest.endpoints.messagesUrl, {
       body: JSON.stringify({
@@ -1805,6 +1810,63 @@ describe("whatsapp local provider server", () => {
 
     await expect(persist(firstNode)).resolves.toBe(true);
     expect(events).toHaveLength(2);
+  });
+
+  it("decrypts messages after recursively skipping unknown protobuf groups", async () => {
+    const recipientJid = "15551234567@s.whatsapp.net";
+    const senderJid = "15550000001@s.whatsapp.net";
+    const receiver = new WhatsAppSignalBundleStore(1);
+    const bundle = receiver.resolveMany([recipientJid])[0]!;
+    const senderIdentity = Curve.generateKeyPair();
+    const senderStorage = createSignalTestStorage(senderIdentity, 2);
+    const senderAddress = new ProtocolAddress("15551234567", 0);
+    await new SessionBuilder(senderStorage, senderAddress).initOutgoing({
+      identityKey: signalTestKeyPair(bundle.identityKey).pubKey,
+      preKey: {
+        keyId: bundle.preKeyId,
+        publicKey: signalTestKeyPair(bundle.preKey).pubKey,
+      },
+      registrationId: bundle.registrationId,
+      signedPreKey: {
+        keyId: bundle.signedPreKey.keyId,
+        publicKey: signalTestKeyPair(bundle.signedPreKey.keyPair).pubKey,
+        signature: bundle.signedPreKey.signature,
+      },
+    });
+    const text = Buffer.from("text after unknown groups", "utf8");
+    const plaintext = Buffer.concat([
+      Buffer.from([0x13, 0x1b, 0x20, 0x01, 0x1c, 0x14, 0x0a, text.byteLength]),
+      text,
+    ]);
+    const encrypted = await new SessionCipher(senderStorage, senderAddress).encrypt(
+      padSignalMessage(plaintext),
+    );
+    const events: Array<{ accepted?: boolean; body?: unknown }> = [];
+
+    await expect(
+      persistAcceptedBaileysMessage({
+        appendEvent: async (event) => {
+          events.push(event);
+        },
+        node: signalMessageNode({
+          ciphertext: signalCiphertext(encrypted.body),
+          id: "unknown-groups",
+          recipientJid,
+          type: encrypted.type,
+        }),
+        path: "/ws/chat",
+        remoteJid: senderJid,
+        signalBundles: receiver,
+      }),
+    ).resolves.toBe(true);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        accepted: true,
+        body: expect.objectContaining({
+          message: { conversation: "text after unknown groups" },
+        }),
+      }),
+    );
   });
 
   it("commits and acknowledges decryptable unsupported payloads before later text", async () => {

@@ -8,6 +8,7 @@
 - Reject blank Mattermost readiness usernames and non-native Matrix thread IDs while preserving valid legacy smoke-only artifact generations.
 - Provision CI Go from the tools module, lint both workflow YAML extensions, and build distributable output before package verification.
 - Tighten native target correlation and conversation state across Slack, Signal, Zalo, Discord, and Matrix.
+- Close cancelled WhatsApp webhook startups, bound injected message IDs, skip nested protobuf groups, and enforce Telegram topic capability from bot identity.
 - Give the recorder-scan roundtrip regression enough time to complete on loaded CI workers.
 - Reject invalid shared HTTP body limits, webhook deadlines, and signed-JWT cache timings before starting I/O.
 - Cancel provider-created webhook responses when recorder persistence fails before delivery.

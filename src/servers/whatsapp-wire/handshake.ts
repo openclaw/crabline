@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 
 type BytesField = Buffer | undefined;
+const MAX_PROTOBUF_GROUP_DEPTH = 64;
 
 export type HandshakeMessage = {
   clientFinish?: {
@@ -48,7 +49,7 @@ export function decodeHandshakeMessage(data: Uint8Array): HandshakeMessage {
         ...decodeClientFinish(reader.bytes()),
       };
     } else {
-      reader.skip(tag & 7);
+      reader.skip(field, tag & 7);
     }
   }
   return message;
@@ -94,7 +95,7 @@ function decodeClientHello(data: Uint8Array): NonNullable<HandshakeMessage["clie
       requireBytesWireType(tag, field);
       extendedCiphertext = reader.bytes();
     } else {
-      reader.skip(tag & 7);
+      reader.skip(field, tag & 7);
     }
   }
   return {
@@ -128,7 +129,7 @@ function decodeServerHello(data: Uint8Array): NonNullable<HandshakeMessage["serv
       requireBytesWireType(tag, field);
       extendedStatic = reader.bytes();
     } else {
-      reader.skip(tag & 7);
+      reader.skip(field, tag & 7);
     }
   }
   return {
@@ -157,7 +158,7 @@ function decodeClientFinish(data: Uint8Array): NonNullable<HandshakeMessage["cli
       requireBytesWireType(tag, field);
       extendedCiphertext = reader.bytes();
     } else {
-      reader.skip(tag & 7);
+      reader.skip(field, tag & 7);
     }
   }
   return {
@@ -254,7 +255,7 @@ class ProtoReader {
     return value;
   }
 
-  skip(wireType: number): void {
+  skip(field: number, wireType: number, groupDepth = 0): void {
     if (wireType === 0) {
       this.#skipVarint();
       return;
@@ -269,6 +270,27 @@ class ProtoReader {
       this.#require(length);
       this.#offset += length;
       return;
+    }
+    if (wireType === 3) {
+      if (groupDepth >= MAX_PROTOBUF_GROUP_DEPTH) {
+        throw new Error("WhatsApp handshake protobuf group nesting exceeds the supported depth.");
+      }
+      while (!this.done()) {
+        const tag = this.tag();
+        const nestedField = tag >>> 3;
+        const nestedWireType = tag & 7;
+        if (nestedWireType === 4) {
+          if (nestedField !== field) {
+            throw new Error("Mismatched WhatsApp handshake protobuf end group.");
+          }
+          return;
+        }
+        this.skip(nestedField, nestedWireType, groupDepth + 1);
+      }
+      throw new Error("Unterminated WhatsApp handshake protobuf group.");
+    }
+    if (wireType === 4) {
+      throw new Error("Unexpected WhatsApp handshake protobuf end group.");
     }
     if (wireType === 5) {
       this.#require(4);

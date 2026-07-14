@@ -2030,6 +2030,8 @@ function readWhatsAppConversation(message: Uint8Array): string | undefined {
   return nestedMessage ? readWhatsAppConversation(nestedMessage) : undefined;
 }
 
+const MAX_WHATSAPP_PROTOBUF_GROUP_DEPTH = 64;
+
 function readProtobufLengthDelimitedFields(value: Uint8Array): Map<number, Uint8Array[]> {
   const fields = new Map<number, Uint8Array[]>();
   let offset = 0;
@@ -2055,20 +2057,79 @@ function readProtobufLengthDelimitedFields(value: Uint8Array): Map<number, Uint8
       continue;
     }
     if (wireType === 0) {
-      offset = readProtobufVarint(value, offset).offset;
+      offset = skipWhatsAppProtobufField(value, offset, fieldNumber, wireType, 0);
       continue;
     }
-    if (wireType === 1) {
-      offset += 8;
-      continue;
-    }
-    if (wireType === 5) {
-      offset += 4;
-      continue;
-    }
-    throw new Error(`Unsupported WhatsApp protobuf wire type: ${wireType}.`);
+    offset = skipWhatsAppProtobufField(value, offset, fieldNumber, wireType, 0);
   }
   return fields;
+}
+
+function skipWhatsAppProtobufField(
+  value: Uint8Array,
+  offset: number,
+  fieldNumber: number,
+  wireType: number,
+  groupDepth: number,
+): number {
+  if (wireType === 0) {
+    return readProtobufVarint(value, offset).offset;
+  }
+  if (wireType === 1) {
+    const end = offset + 8;
+    if (end > value.length) {
+      throw new Error("Invalid WhatsApp protobuf fixed64 field.");
+    }
+    return end;
+  }
+  if (wireType === 2) {
+    const length = readProtobufVarint(value, offset);
+    const end = length.offset + length.value;
+    if (end > value.length) {
+      throw new Error("Invalid WhatsApp protobuf length.");
+    }
+    return end;
+  }
+  if (wireType === 3) {
+    if (groupDepth >= MAX_WHATSAPP_PROTOBUF_GROUP_DEPTH) {
+      throw new Error("WhatsApp protobuf group nesting exceeds the supported depth.");
+    }
+    let nestedOffset = offset;
+    while (nestedOffset < value.length) {
+      const tag = readProtobufVarint(value, nestedOffset);
+      nestedOffset = tag.offset;
+      const nestedFieldNumber = tag.value >>> 3;
+      const nestedWireType = tag.value & 7;
+      if (nestedFieldNumber < 1) {
+        throw new Error("Invalid WhatsApp protobuf field.");
+      }
+      if (nestedWireType === 4) {
+        if (nestedFieldNumber !== fieldNumber) {
+          throw new Error("Mismatched WhatsApp protobuf end group.");
+        }
+        return nestedOffset;
+      }
+      nestedOffset = skipWhatsAppProtobufField(
+        value,
+        nestedOffset,
+        nestedFieldNumber,
+        nestedWireType,
+        groupDepth + 1,
+      );
+    }
+    throw new Error("Unterminated WhatsApp protobuf group.");
+  }
+  if (wireType === 4) {
+    throw new Error("Unexpected WhatsApp protobuf end group.");
+  }
+  if (wireType === 5) {
+    const end = offset + 4;
+    if (end > value.length) {
+      throw new Error("Invalid WhatsApp protobuf fixed32 field.");
+    }
+    return end;
+  }
+  throw new Error(`Unsupported WhatsApp protobuf wire type: ${wireType}.`);
 }
 
 function readProtobufVarint(value: Uint8Array, start: number): { offset: number; value: number } {

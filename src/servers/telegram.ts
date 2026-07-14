@@ -138,6 +138,7 @@ type TelegramServerState = {
   activeWebhookValidations: Set<AbortController>;
   adminToken: string;
   allowLoopbackHttpWebhook: boolean;
+  botHasTopicsEnabled: boolean;
   botId: number;
   botToken: string;
   botUsername: string;
@@ -191,6 +192,7 @@ type TelegramMimeParameter = {
 
 type TelegramChat = {
   id: number;
+  is_forum?: true;
   title?: string;
   type: "channel" | "group" | "private" | "supergroup";
   username?: string;
@@ -285,6 +287,7 @@ export type StartedTelegramServer = {
 
 export type StartTelegramServerParams = {
   adminToken?: string | undefined;
+  botHasTopicsEnabled?: boolean | undefined;
   botId?: number | undefined;
   botToken?: string | undefined;
   botUsername?: string | undefined;
@@ -889,7 +892,7 @@ function createBotUser(state: TelegramServerState) {
     can_join_groups: true,
     can_read_all_group_messages: true,
     first_name: "Crabline",
-    has_topics_enabled: true,
+    ...(state.botHasTopicsEnabled ? { has_topics_enabled: true } : {}),
     id: state.botId,
     is_bot: true,
     supports_inline_queries: false,
@@ -942,6 +945,7 @@ function registerTelegramChat(state: TelegramServerState, chat: TelegramChat): v
   const username = telegramStoredUsername(chat.username);
   const stored: TelegramChat = {
     id: chat.id,
+    ...(chat.type === "supergroup" && chat.is_forum === true ? { is_forum: true } : {}),
     ...(chat.title ? { title: chat.title } : {}),
     type: chat.type,
     ...(username ? { username } : {}),
@@ -994,12 +998,28 @@ function telegramChatFromRecord(value: unknown): TelegramChat | undefined {
   }
   const username = telegramStoredUsername(value.username);
   const title = toStringValue(value.title);
+  const isForum = value.is_forum === true;
+  if (isForum && type !== "supergroup") {
+    return undefined;
+  }
   return {
     id,
+    ...(isForum ? { is_forum: true } : {}),
     ...(title ? { title } : {}),
     type,
     ...(username ? { username } : {}),
   };
+}
+
+function registerTelegramMessageChat(
+  state: TelegramServerState,
+  message: Record<string, unknown>,
+): void {
+  const chat = telegramChatFromRecord(message.chat);
+  if (!chat) {
+    return;
+  }
+  registerTelegramChat(state, chat);
 }
 
 function registerTelegramUpdateChats(state: TelegramServerState, body: Record<string, unknown>) {
@@ -1008,17 +1028,13 @@ function registerTelegramUpdateChats(state: TelegramServerState, body: Record<st
     if (!isJsonObject(message)) {
       continue;
     }
-    const chat = telegramChatFromRecord(message.chat);
-    if (chat) {
-      registerTelegramChat(state, chat);
-    }
+    registerTelegramMessageChat(state, message);
   }
   const callbackQuery = isJsonObject(body.callback_query) ? body.callback_query : undefined;
   const callbackMessage =
     callbackQuery && isJsonObject(callbackQuery.message) ? callbackQuery.message : undefined;
-  const callbackChat = telegramChatFromRecord(callbackMessage?.chat);
-  if (callbackChat) {
-    registerTelegramChat(state, callbackChat);
+  if (callbackMessage) {
+    registerTelegramMessageChat(state, callbackMessage);
   }
   for (const field of TELEGRAM_CHAT_UPDATE_FIELDS) {
     const update = body[field];
@@ -1062,6 +1078,9 @@ function createOutboundMessage(
   if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
+  if (parsedThreadId !== undefined && !canTargetTelegramTopic(state, chat)) {
+    return undefined;
+  }
   const messageId = takeNextTelegramMessageId(state, chat.id);
   if (messageId === undefined) {
     return undefined;
@@ -1091,6 +1110,9 @@ function createOutboundMediaMessage(
   }
   const parsedThreadId = telegramMessageThreadId(body.message_thread_id);
   if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
+    return undefined;
+  }
+  if (parsedThreadId !== undefined && !canTargetTelegramTopic(state, chat)) {
     return undefined;
   }
   const messageId = takeNextTelegramMessageId(state, chat.id);
@@ -1164,6 +1186,9 @@ function createEditedMessage(
   if (body.message_thread_id !== undefined && parsedThreadId === undefined) {
     return undefined;
   }
+  if (parsedThreadId !== undefined && !canTargetTelegramTopic(state, chat)) {
+    return undefined;
+  }
   return {
     chat,
     date: Math.floor(Date.now() / 1000),
@@ -1199,8 +1224,10 @@ function createInboundUpdate(
   const messageId = toIntegerValue(messageIdValue);
   const updateId = toIntegerValue(updateIdValue);
   const explicitChatType = telegramChatType(body.chatType ?? body.chat_type);
+  const isForumValue = body.isForum ?? body.is_forum;
   if (
     ((body.chatType !== undefined || body.chat_type !== undefined) && !explicitChatType) ||
+    (isForumValue !== undefined && typeof isForumValue !== "boolean") ||
     (fromIdValue !== undefined && (fromId === undefined || fromId < 1)) ||
     (fromUsernameValue !== undefined && !fromUsername) ||
     (threadIdValue !== undefined && threadId === undefined) ||
@@ -1213,9 +1240,23 @@ function createInboundUpdate(
   if (body.entities !== undefined && !entities) {
     return undefined;
   }
+  const inboundChat: TelegramChat = {
+    ...chat,
+    ...(explicitChatType ? { type: explicitChatType } : {}),
+    ...(isForumValue === true ? { is_forum: true } : {}),
+  };
+  if (isForumValue === false) {
+    delete inboundChat.is_forum;
+  }
+  if (inboundChat.is_forum === true && inboundChat.type !== "supergroup") {
+    return undefined;
+  }
+  if (threadId !== undefined && !canTargetTelegramTopic(state, inboundChat)) {
+    return undefined;
+  }
   return {
     message: {
-      chat: explicitChatType ? { ...chat, type: explicitChatType } : chat,
+      chat: inboundChat,
       date: Math.floor(Date.now() / 1000),
       from: {
         first_name: toStringValue(body.fromName ?? body.from_name) ?? "QA User",
@@ -1300,6 +1341,71 @@ function hasTelegramMedia(value: Record<string, unknown>): boolean {
 function telegramMessageThreadId(value: unknown): number | undefined {
   const threadId = toIntegerValue(value);
   return threadId !== undefined && threadId > 0 ? threadId : undefined;
+}
+
+function canTargetTelegramTopic(state: TelegramServerState, chat: TelegramChat): boolean {
+  if (chat.type === "supergroup") {
+    return chat.is_forum === true;
+  }
+  if (chat.type === "private") {
+    return state.botHasTopicsEnabled;
+  }
+  return false;
+}
+
+function telegramMessageTargetsValidTopic(
+  state: TelegramServerState,
+  message: Record<string, unknown>,
+): boolean {
+  if (message.message_thread_id === undefined) {
+    return true;
+  }
+  const chat = telegramChatFromRecord(message.chat);
+  if (!chat) {
+    return false;
+  }
+  return canTargetTelegramTopic(state, chat);
+}
+
+function hasValidTelegramTopicDestinations(
+  state: TelegramServerState,
+  body: Record<string, unknown>,
+): boolean {
+  const topLevelThreadId = body.messageThreadId ?? body.message_thread_id;
+  if (topLevelThreadId !== undefined) {
+    const chat = resolveTelegramChat(state, body.chatId ?? body.chat_id);
+    const explicitType = telegramChatType(body.chatType ?? body.chat_type);
+    if (!chat || ((body.chatType !== undefined || body.chat_type !== undefined) && !explicitType)) {
+      return false;
+    }
+    const topicChat: TelegramChat = {
+      ...chat,
+      ...(explicitType ? { type: explicitType } : {}),
+      ...((body.isForum ?? body.is_forum) === true ? { is_forum: true } : {}),
+    };
+    if ((body.isForum ?? body.is_forum) === false) {
+      delete topicChat.is_forum;
+    }
+    if (
+      (body.isForum !== undefined || body.is_forum !== undefined) &&
+      typeof (body.isForum ?? body.is_forum) !== "boolean"
+    ) {
+      return false;
+    }
+    if (!canTargetTelegramTopic(state, topicChat)) {
+      return false;
+    }
+  }
+  for (const field of TELEGRAM_MESSAGE_UPDATE_FIELDS) {
+    const message = body[field];
+    if (isJsonObject(message) && !telegramMessageTargetsValidTopic(state, message)) {
+      return false;
+    }
+  }
+  const callbackQuery = isJsonObject(body.callback_query) ? body.callback_query : undefined;
+  const callbackMessage =
+    callbackQuery && isJsonObject(callbackQuery.message) ? callbackQuery.message : undefined;
+  return !callbackMessage || telegramMessageTargetsValidTopic(state, callbackMessage);
 }
 
 function hasValidTelegramMessageThreadIds(body: Record<string, unknown>): boolean {
@@ -1627,6 +1733,7 @@ async function handleTelegramAdminInbound(params: {
       messageChatId === undefined ? undefined : nextTelegramMessageId(params.state, messageChatId);
     if (
       !hasValidTelegramMessageThreadIds(params.body) ||
+      !hasValidTelegramTopicDestinations(params.state, params.body) ||
       explicitMessageId === undefined ||
       explicitMessageChatId === false ||
       explicitUpdateId === undefined ||
@@ -2044,14 +2151,29 @@ async function handleTelegramApi(params: {
       return telegramOk(createBotUser(params.state));
     case "setmycommands":
     case "deletemycommands":
-    case "sendchataction":
     case "answercallbackquery":
     case "deletemessage":
     case "pinchatmessage":
     case "unpinchatmessage":
     case "setmessagereaction":
-    case "editforumtopic":
       return telegramOk(true);
+    case "sendchataction": {
+      if (params.body.message_thread_id === undefined) {
+        return telegramOk(true);
+      }
+      const chat = resolveTelegramChat(params.state, params.body.chat_id);
+      const messageThreadId = telegramMessageThreadId(params.body.message_thread_id);
+      return chat && messageThreadId !== undefined && canTargetTelegramTopic(params.state, chat)
+        ? telegramOk(true)
+        : telegramError("Bad Request: chat is not a forum or message_thread_id is invalid");
+    }
+    case "editforumtopic": {
+      const chat = resolveTelegramChat(params.state, params.body.chat_id);
+      const messageThreadId = telegramMessageThreadId(params.body.message_thread_id);
+      return chat && messageThreadId !== undefined && canTargetTelegramTopic(params.state, chat)
+        ? telegramOk(true)
+        : telegramError("Bad Request: chat is not a forum or message_thread_id is invalid");
+    }
     case "setwebhook": {
       if (params.body.url === "") {
         await replaceTelegramWebhook(
@@ -2135,6 +2257,9 @@ async function handleTelegramApi(params: {
       const chat = resolveTelegramChat(params.state, params.body.chat_id);
       if (!chat) {
         return telegramError("Bad Request: chat_id is required");
+      }
+      if (!canTargetTelegramTopic(params.state, chat)) {
+        return telegramError("Bad Request: chat is not a forum");
       }
       const messageThreadId = takeNextTelegramMessageId(params.state, chat.id);
       if (messageThreadId === undefined) {
@@ -2449,6 +2574,9 @@ export async function startTelegramServer(
   params: StartTelegramServerParams = {},
 ): Promise<StartedTelegramServer> {
   const host = params.host ?? "127.0.0.1";
+  if (params.botHasTopicsEnabled !== undefined && typeof params.botHasTopicsEnabled !== "boolean") {
+    throw new Error("botHasTopicsEnabled must be a boolean.");
+  }
   const botId = params.botId ?? 424242;
   if (!Number.isSafeInteger(botId) || botId < 1) {
     throw new Error("botId must be a positive safe integer.");
@@ -2464,6 +2592,7 @@ export async function startTelegramServer(
     activeWebhookValidations: new Set(),
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
     allowLoopbackHttpWebhook: isLoopbackHost(host),
+    botHasTopicsEnabled: params.botHasTopicsEnabled ?? true,
     botId,
     botToken:
       params.botToken ??

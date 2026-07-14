@@ -50,9 +50,9 @@ afterEach(async () => {
 
 describe("telegram local provider server", () => {
   it("accepts only GET and POST and resolves Bot API methods case-insensitively", async () => {
-    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    const server = await startTelegramServer({ botToken: "sample" });
     servers.push(server);
-    const apiRoot = `${server.manifest.baseUrl}/bottest-token-placeholder`;
+    const apiRoot = `${server.manifest.baseUrl}/botsample`;
 
     const getMe = await fetch(`${apiRoot}/gEtMe`);
     await expect(getMe.json()).resolves.toMatchObject({
@@ -138,6 +138,21 @@ describe("telegram local provider server", () => {
       result: { chat: { id: -1001234567890, type: "supergroup" } },
     });
 
+    expect(
+      (
+        await injectUpdate(server, {
+          my_chat_member: {
+            chat: {
+              id: -1002222222222,
+              is_forum: true,
+              type: "supergroup",
+              username: "crabline_channel",
+            },
+          },
+          update_id: 1,
+        })
+      ).status,
+    ).toBe(200);
     const usernameTopic = await fetch(
       `${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`,
       {
@@ -196,6 +211,21 @@ describe("telegram local provider server", () => {
   it("resolves username chats case-insensitively to one message sequence", async () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
+    expect(
+      (
+        await injectUpdate(server, {
+          my_chat_member: {
+            chat: {
+              id: -1002222222222,
+              is_forum: true,
+              type: "supergroup",
+              username: "crabline_channel",
+            },
+          },
+          update_id: 1,
+        })
+      ).status,
+    ).toBe(200);
     const sendMessage = (chatId: string, text: string, messageThreadId?: number) =>
       fetch(`${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`, {
         body: JSON.stringify({
@@ -405,6 +435,91 @@ describe("telegram local provider server", () => {
     });
   });
 
+  it("requires native forum state for supergroup and private topic destinations", async () => {
+    const server = await startTelegramServer({
+      botHasTopicsEnabled: false,
+      botToken: "sample",
+    });
+    servers.push(server);
+    const apiRoot = `${server.manifest.baseUrl}/botsample`;
+    const sendTopic = (chatId: number, text: string) =>
+      fetch(`${apiRoot}/sendMessage`, {
+        body: JSON.stringify({ chat_id: chatId, message_thread_id: 7, text }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+    expect((await sendTopic(-1001234567890, "unknown supergroup")).status).toBe(400);
+    const sendChatAction = () =>
+      fetch(`${apiRoot}/sendChatAction`, {
+        body: JSON.stringify({
+          action: "typing",
+          chat_id: -1001234567890,
+          message_thread_id: 7,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+    expect((await sendChatAction()).status).toBe(400);
+    expect(
+      (
+        await injectUpdate(server, {
+          my_chat_member: {
+            chat: { id: -1001234567890, is_forum: true, type: "supergroup" },
+          },
+          update_id: 1,
+        })
+      ).status,
+    ).toBe(200);
+    await expect(
+      (await sendTopic(-1001234567890, "forum supergroup")).json(),
+    ).resolves.toMatchObject({
+      result: {
+        chat: { id: -1001234567890, is_forum: true, type: "supergroup" },
+        message_thread_id: 7,
+      },
+    });
+    expect((await sendChatAction()).status).toBe(200);
+
+    expect((await sendTopic(42, "private without topics")).status).toBe(400);
+    const getMe = (await (await fetch(`${apiRoot}/getMe`)).json()) as {
+      result: Record<string, unknown>;
+    };
+    expect(getMe.result).not.toHaveProperty("has_topics_enabled");
+    expect(
+      (
+        await injectUpdate(server, {
+          message: {
+            chat: { id: 42, type: "private" },
+            from: {
+              first_name: "Topic User",
+              has_topics_enabled: true,
+              id: 42,
+              is_bot: false,
+            },
+            message_id: 0,
+            photo: [{ file_id: "photo", file_unique_id: "unique", height: 1, width: 1 }],
+          },
+          update_id: 2,
+        })
+      ).status,
+    ).toBe(200);
+    expect((await sendTopic(42, "sender field does not enable topics")).status).toBe(400);
+
+    const topicsServer = await startTelegramServer({ botToken: "sample" });
+    servers.push(topicsServer);
+    const topicsApiRoot = `${topicsServer.manifest.baseUrl}/botsample`;
+    await expect((await fetch(`${topicsApiRoot}/getMe`)).json()).resolves.toMatchObject({
+      result: { has_topics_enabled: true },
+    });
+    const privateTopic = await fetch(`${topicsApiRoot}/sendMessage`, {
+      body: JSON.stringify({ chat_id: 42, message_thread_id: 7, text: "private with topics" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(privateTopic.status).toBe(200);
+  });
+
   it("serves Telegram Bot API calls and queues injected inbound updates", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -496,7 +611,6 @@ describe("telegram local provider server", () => {
     const sendMessage = await fetch(`${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`, {
       body: JSON.stringify({
         chat_id: "-1001234567890",
-        message_thread_id: 42,
         text: "hello fake telegram",
       }),
       headers: { "content-type": "Application/JSON; Charset=UTF-8" },
@@ -506,14 +620,12 @@ describe("telegram local provider server", () => {
       ok: true,
       result: {
         chat: { id: -1001234567890, type: "supergroup" },
-        message_thread_id: 42,
         text: "hello fake telegram",
       },
     });
 
     const mediaBody = new FormData();
     mediaBody.set("chat_id", "-1001234567890");
-    mediaBody.set("message_thread_id", "42");
     mediaBody.set("caption", "hello fake telegram media");
     mediaBody.set("photo", new Blob(["png"], { type: "image/png" }), "fixture.png");
     const sendPhoto = await fetch(`${server.manifest.baseUrl}/bot123456:fake-token/sendPhoto`, {
@@ -528,7 +640,6 @@ describe("telegram local provider server", () => {
       result: {
         caption: "hello fake telegram media",
         chat: { id: -1001234567890, type: "supergroup" },
-        message_thread_id: 42,
         photo: [{ height: 1, width: 1 }],
       },
     });
@@ -634,7 +745,9 @@ describe("telegram local provider server", () => {
     const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
         chatId: "-1001234567890",
+        chatType: "supergroup",
         fromId: 100001,
+        isForum: true,
         messageThreadId: 42,
         entities: [{ length: 5, offset: 0, type: "bot_command" }],
         text: "user nonce-1",
@@ -2642,6 +2755,9 @@ describe("telegram local provider server", () => {
     await expect(startTelegramServer({ botUsername: "abcd" })).rejects.toThrow(
       "botUsername must be a valid 5-32 character Telegram username.",
     );
+    await expect(
+      startTelegramServer({ botHasTopicsEnabled: "yes" as unknown as boolean }),
+    ).rejects.toThrow("botHasTopicsEnabled must be a boolean.");
   });
 
   it.each([0, -0, "0", "-0"])("rejects zero-valued chat IDs: %s", async (chatId) => {

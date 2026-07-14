@@ -194,7 +194,11 @@ describe("WhatsApp provider lifecycle", () => {
     let resolveStart:
       | ((server: { close(): Promise<void>; endpointUrl: string }) => void)
       | undefined;
-    const close = vi.fn(async () => undefined);
+    let releaseClose: (() => void) | undefined;
+    const closeBlocked = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    const close = vi.fn(async () => await closeBlocked);
     webhookMocks.startWebhookServer.mockReturnValueOnce(
       new Promise((resolve) => {
         resolveStart = resolve;
@@ -205,18 +209,33 @@ describe("WhatsApp provider lifecycle", () => {
     const context = createContext(config);
 
     const probe = provider.probe(context);
+    const probeFailure = probe.catch((error: unknown) => error);
     await vi.waitFor(() => expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1));
 
     const cleanup = provider.cleanup();
+    let cleanupResolved = false;
+    void cleanup.then(
+      () => {
+        cleanupResolved = true;
+      },
+      () => undefined,
+    );
     await expect(provider.probe(context)).rejects.toThrow(/has been cleaned up/u);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(cleanupResolved).toBe(false);
     resolveStart?.({
       close,
       endpointUrl: "http://127.0.0.1:43210/whatsapp/webhook",
     });
 
-    await expect(probe).rejects.toThrow(/has been cleaned up/u);
+    await expect(probeFailure).resolves.toMatchObject({
+      message: expect.stringMatching(/has been cleaned up/u),
+    });
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    expect(cleanupResolved).toBe(false);
+    releaseClose?.();
     await cleanup;
-    expect(close).toHaveBeenCalledTimes(1);
+    expect(cleanupResolved).toBe(true);
     expect(webhookMocks.startWebhookServer).toHaveBeenCalledTimes(1);
   });
 
@@ -257,7 +276,16 @@ describe("WhatsApp provider lifecycle", () => {
   });
 
   it("cancels operations and bounds cleanup when listener startup never settles", async () => {
-    webhookMocks.startWebhookServer.mockReturnValueOnce(new Promise(() => undefined));
+    webhookMocks.startWebhookServer.mockImplementationOnce(
+      ({ signal }: { signal?: AbortSignal | undefined }) =>
+        new Promise((_, reject) => {
+          const abort = () => reject(signal?.reason);
+          signal?.addEventListener("abort", abort, { once: true });
+          if (signal?.aborted) {
+            abort();
+          }
+        }),
+    );
     const config = createConfig();
     const provider = new WhatsAppProviderAdapter("whatsapp", config, "crabline");
     const context = createContext(config);
