@@ -119,7 +119,7 @@ describe("registry", () => {
   });
 
   it("enforces Telegram's native username length in shared target normalization", () => {
-    expect(normalizeBuiltinTarget("telegram", { id: "@abcd", metadata: {} })).toMatchObject({
+    expect(normalizeBuiltinTarget("telegram", { id: "@Abcd", metadata: {} })).toMatchObject({
       channelId: "@abcd",
     });
     expect(
@@ -127,11 +127,22 @@ describe("registry", () => {
     ).toMatchObject({
       channelId: `@${"a".repeat(32)}`,
     });
-    for (const id of ["@abc", `@${"a".repeat(33)}`]) {
+    for (const id of ["abcd", "@abc", `@${"a".repeat(33)}`]) {
       expect(() => normalizeBuiltinTarget("telegram", { id, metadata: {} })).toThrow(
         /native Telegram chat id/u,
       );
     }
+    expect(
+      normalizeBuiltinTarget("telegram", {
+        channelId: "@ExampleGroup",
+        id: "topic",
+        metadata: {},
+        threadId: "@examplegroup:42",
+      }),
+    ).toMatchObject({
+      channelId: "@examplegroup",
+      threadId: "@examplegroup:42",
+    });
   });
 
   it("enforces Discord snowflake uint64 bounds", () => {

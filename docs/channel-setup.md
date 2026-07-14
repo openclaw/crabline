@@ -557,6 +557,9 @@ as `telegram:`, `discord:`, or `slack:`.
 - Slack threads: `1700000000.000100`
 - Telegram chats: `-1001234567890` or `@channelusername`
 - Telegram topics: `42`
+- Telegram username targets require `@`, contain 4-32 letters, digits, or
+  underscores, and normalize to lowercase. Numeric chat IDs must be nonzero and
+  have an absolute value no greater than `2^52 - 1`.
 - Built-in WhatsApp Cloud API users: digits-only `wa_id` values such as
   `15551234567`
 - OpenClaw WhatsApp bridge users: `15551234567@s.whatsapp.net`

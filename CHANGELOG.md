@@ -9,6 +9,7 @@
 - Track actionlint updates, container image pins, and pull-request governance in the repository security checks.
 - Revalidate release tags before idempotent publication success and enforce the development toolchain's Node floor.
 - Honor HTTP response age when caching JWT keys, reject unsupported critical JWS headers and malformed provider key metadata, preserve signing-service failure status, and protect webhook routing and framing headers.
+- Enforce Telegram destination prefixes, username canonicalization, topic IDs, and signed 52-bit chat identifier boundaries.
 - Verify downloaded npm tarball integrity, retry transient provenance lookups, and revalidate release tags immediately before publication mutations.
 - Validate effective fixture mode overrides and stop retrying permanent provider send failures.
 - Bound watch iterator return and provider cleanup during CLI shutdown, forcing process exit after deadline failures.
