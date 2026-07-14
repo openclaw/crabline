@@ -47,9 +47,14 @@ describe("iMessage thread matching", () => {
         "+15551234567",
         { id: "+15551234567" },
         {
-          message: {
-            chat_guid: "iMessage;-;chat-guid-1",
-            chat_identifier: "+15551234567",
+          jsonrpc: "2.0",
+          method: "message",
+          params: {
+            message: {
+              chat_guid: "iMessage;-;chat-guid-1",
+              chat_identifier: "+15551234567",
+            },
+            subscription: 1,
           },
         },
       ),
@@ -172,12 +177,17 @@ describe("iMessage thread matching", () => {
       });
       const response = await fetch(endpoint!, {
         body: JSON.stringify({
-          message: {
-            chat_guid: "iMessage;-;chat-guid-1",
-            chat_identifier: "+15551234567",
-            guid: "imsg-native-nested",
-            is_from_me: false,
-            text: "native nested envelope",
+          jsonrpc: "2.0",
+          method: "message",
+          params: {
+            message: {
+              chat_guid: "iMessage;-;chat-guid-1",
+              chat_identifier: "+15551234567",
+              guid: "imsg-native-nested",
+              is_from_me: false,
+              text: "native nested envelope",
+            },
+            subscription: 1,
           },
         }),
         headers: { "content-type": "application/json" },
