@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { Agent, createServer, request as httpRequest, type IncomingMessage } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -466,6 +467,17 @@ describe("telegram local provider server", () => {
       error_code: 413,
       ok: false,
     });
+    const oversizedMultipart = await requestHttp({
+      agent: new Agent({ keepAlive: false }),
+      headers: {
+        connection: "close",
+        "content-length": String(50 * 1024 * 1024 + 1),
+        "content-type": "multipart/form-data; boundary=CrablineOversizedBoundary",
+      },
+      method: "POST",
+      url: `${server.manifest.baseUrl}/bot123456:fake-token/sendDocument`,
+    });
+    expect(oversizedMultipart.status).toBe(413);
 
     const sendMessage = await fetch(`${server.manifest.baseUrl}/bot123456:fake-token/sendMessage`, {
       body: JSON.stringify({
@@ -2222,6 +2234,149 @@ describe("telegram local provider server", () => {
         },
       },
     });
+  });
+
+  it("streams multipart files across chunk-split boundaries without retaining upload bytes", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const boundary = "CrablineStreamingBoundary";
+    const fileBytes = Buffer.from(
+      `binary\0payload\r\n--${boundary}--not-a-boundary\r\n--${boundary}not-a-boundary\r\nwith trailing bytes`,
+      "utf8",
+    );
+    const body = Buffer.concat([
+      Buffer.from(`preamble\r\n--${boundary}--not-a-boundary\r\n`, "utf8"),
+      Buffer.from(
+        [
+          `--${boundary}`,
+          'Content-Disposition: form-data; name="chat_id"',
+          "",
+          "700",
+          `--${boundary} \t`,
+          'Content-Disposition: form-data; name="document"; filename=" split%22name%20\\folder.bin "',
+          "Content-Type: application/octet-stream",
+          "",
+          "",
+        ].join("\r\n"),
+        "utf8",
+      ),
+      fileBytes,
+      Buffer.from(`\r\n--${boundary}--\t \r\n`, "utf8"),
+    ]);
+
+    const response = await new Promise<{ body: string; status: number }>((resolve, reject) => {
+      const request = httpRequest(
+        `${server.manifest.baseUrl}/bottest-token-placeholder/sendDocument`,
+        {
+          headers: {
+            "content-type": `multipart/form-data; note="x; boundary=fake; y=z"; boundary="${boundary}"`,
+            "transfer-encoding": "chunked",
+          },
+          method: "POST",
+        },
+        (incoming) => {
+          const chunks: Buffer[] = [];
+          incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+          incoming.once("end", () => {
+            resolve({
+              body: Buffer.concat(chunks).toString("utf8"),
+              status: incoming.statusCode ?? 0,
+            });
+          });
+        },
+      );
+      request.once("error", reject);
+      let offset = 0;
+      const writeNext = () => {
+        if (offset >= body.length) {
+          request.end();
+          return;
+        }
+        const nextOffset = Math.min(body.length, offset + 7);
+        request.write(body.subarray(offset, nextOffset));
+        offset = nextOffset;
+        setImmediate(writeNext);
+      };
+      writeNext();
+    });
+
+    expect(response.status).toBe(200);
+    const payload = JSON.parse(response.body) as {
+      result: { document: { file_name: string; file_unique_id: string } };
+    };
+    expect(payload.result.document.file_name).toBe(' split"name%20\\folder.bin ');
+    expect(payload.result.document.file_unique_id).toBe(
+      `crabline-document-unique-${createHash("sha256").update(fileBytes).digest("base64url").slice(0, 32)}`,
+    );
+  });
+
+  it("bounds retained multipart text independently of streamed file data", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const boundary = "CrablineTextBudgetBoundary";
+    const body = Buffer.from(
+      [
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="chat_id"',
+        "",
+        "800",
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="document"',
+        "",
+        "x".repeat(1024 * 1024),
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="caption"',
+        "",
+        "overflow",
+        `--${boundary}--`,
+        "",
+      ].join("\r\n"),
+      "utf8",
+    );
+    const response = await requestHttp({
+      body,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      method: "POST",
+      timeoutMs: 5_000,
+      url: `${server.manifest.baseUrl}/bottest-token-placeholder/sendDocument`,
+    });
+
+    expect(response.status).toBe(413);
+    expect(JSON.parse(response.body)).toEqual({
+      description: "Request Entity Too Large",
+      error_code: 413,
+      ok: false,
+    });
+  });
+
+  it("drains malformed multipart requests before reusing a keep-alive connection", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+    try {
+      const malformed = await requestHttp({
+        agent,
+        body: "malformed multipart",
+        headers: { "content-type": "multipart/form-data" },
+        method: "POST",
+        url: `${server.manifest.baseUrl}/bottest-token-placeholder/sendDocument`,
+      });
+      expect(malformed.status).toBe(400);
+
+      const valid = await requestHttp({
+        agent,
+        body: "chat_id=900&text=connection+reused",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        method: "POST",
+        url: `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      });
+      expect(valid.status).toBe(200);
+      expect(JSON.parse(valid.body)).toMatchObject({
+        result: { text: "connection reused" },
+      });
+    } finally {
+      agent.destroy();
+    }
   });
 
   it("tracks explicit message IDs independently per chat", async () => {
