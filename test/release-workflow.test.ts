@@ -368,6 +368,12 @@ describe("release workflow", () => {
     await expect(runMetadataCheck(script, "## 1.2.3-beta - 2026-07-12\n")).rejects.toThrow(
       CHANGELOG_HEADING_ERROR,
     );
+    await expect(runMetadataCheck(script, "## 1.2.3 - 2024-02-29\n")).resolves.toBeUndefined();
+    for (const invalidDate of ["2025-02-29", "2026-02-30", "2026-00-10", "2026-13-01"]) {
+      await expect(runMetadataCheck(script, `## 1.2.3 - ${invalidDate}\n`)).rejects.toThrow(
+        CHANGELOG_HEADING_ERROR,
+      );
+    }
   });
 
   it("extracts pack metadata around lifecycle output", async () => {
