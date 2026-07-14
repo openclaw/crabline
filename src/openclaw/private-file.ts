@@ -2117,10 +2117,25 @@ async function acquireHardLinkPrivateMutationClaim(
 
 const PRIVATE_MUTATION_DIRECTORY_OWNER_FILE = "owner.json";
 
-async function readPrivateMutationDirectoryClaim(claimPath: string): Promise<{
+type PrivateMutationDirectoryClaimRecord = {
   identity: FileIdentity;
   metadata: PrivateMutationClaimRecord;
-} | null> {
+};
+
+function samePrivateMutationDirectoryClaim(
+  actual: PrivateMutationDirectoryClaimRecord,
+  expected: PrivateMutationDirectoryClaimRecord,
+): boolean {
+  return (
+    actual.identity.device === expected.identity.device &&
+    actual.identity.inode === expected.identity.inode &&
+    actual.metadata.contents === expected.metadata.contents
+  );
+}
+
+async function readPrivateMutationDirectoryClaim(
+  claimPath: string,
+): Promise<PrivateMutationDirectoryClaimRecord | null> {
   let stats;
   try {
     stats = await fs.lstat(claimPath, { bigint: true });
@@ -2278,7 +2293,7 @@ async function acquireDirectoryPrivateMutationClaim(
   let candidate: Awaited<ReturnType<typeof createCandidate>> | undefined;
   let claimPath = rootClaimPath;
   let installedClaimPath: string | undefined;
-  let expectedRootIdentity: FileIdentity | undefined;
+  let expectedRootClaim: PrivateMutationDirectoryClaimRecord | undefined;
   try {
     candidate = await createCandidate();
     for (;;) {
@@ -2304,17 +2319,16 @@ async function acquireDirectoryPrivateMutationClaim(
           continue;
         }
         if (claimPath === rootClaimPath) {
-          expectedRootIdentity = revalidated.identity;
+          expectedRootClaim = revalidated;
         } else {
           const revalidatedRoot = await readPrivateMutationDirectoryClaim(rootClaimPath);
           if (
-            expectedRootIdentity === undefined ||
+            expectedRootClaim === undefined ||
             revalidatedRoot === null ||
-            revalidatedRoot.identity.device !== expectedRootIdentity.device ||
-            revalidatedRoot.identity.inode !== expectedRootIdentity.inode
+            !samePrivateMutationDirectoryClaim(revalidatedRoot, expectedRootClaim)
           ) {
             claimPath = rootClaimPath;
-            expectedRootIdentity = undefined;
+            expectedRootClaim = undefined;
             continue;
           }
         }
@@ -2333,10 +2347,9 @@ async function acquireDirectoryPrivateMutationClaim(
       if (claimPath !== rootClaimPath) {
         const revalidatedRoot = await readPrivateMutationDirectoryClaim(rootClaimPath);
         if (
-          expectedRootIdentity === undefined ||
+          expectedRootClaim === undefined ||
           revalidatedRoot === null ||
-          revalidatedRoot.identity.device !== expectedRootIdentity.device ||
-          revalidatedRoot.identity.inode !== expectedRootIdentity.inode
+          !samePrivateMutationDirectoryClaim(revalidatedRoot, expectedRootClaim)
         ) {
           await removeInstalledPrivateMutationDirectoryClaim(
             claimPath,
@@ -2348,7 +2361,7 @@ async function acquireDirectoryPrivateMutationClaim(
           installedClaimPath = undefined;
           candidate = await createCandidate();
           claimPath = rootClaimPath;
-          expectedRootIdentity = undefined;
+          expectedRootClaim = undefined;
           continue;
         }
         const terminalRelativePath = path.relative(rootClaimPath, claimPath);
@@ -2363,9 +2376,7 @@ async function acquireDirectoryPrivateMutationClaim(
         ]);
         if (
           movedRoot === null ||
-          movedRoot.identity.device !== revalidatedRoot.identity.device ||
-          movedRoot.identity.inode !== revalidatedRoot.identity.inode ||
-          movedRoot.metadata.contents !== revalidatedRoot.metadata.contents ||
+          !samePrivateMutationDirectoryClaim(movedRoot, revalidatedRoot) ||
           movedClaim === null ||
           movedClaim.identity.device !== candidate.identity.device ||
           movedClaim.identity.inode !== candidate.identity.inode ||
@@ -2421,7 +2432,7 @@ async function acquireDirectoryPrivateMutationClaim(
           installedClaimPath = undefined;
           candidate = await createCandidate();
           claimPath = rootClaimPath;
-          expectedRootIdentity = undefined;
+          expectedRootClaim = undefined;
           continue;
         }
         installedClaimPath = rootClaimPath;
@@ -2437,7 +2448,7 @@ async function acquireDirectoryPrivateMutationClaim(
         await fs.rm(staleTreePath, { force: true, recursive: true });
         await syncParentDirectory(rootClaimPath, platform);
         claimPath = rootClaimPath;
-        expectedRootIdentity = undefined;
+        expectedRootClaim = undefined;
       }
       break;
     }
@@ -2459,9 +2470,8 @@ async function acquireDirectoryPrivateMutationClaim(
     }
     if (
       claimPath !== rootClaimPath &&
-      (expectedRootIdentity === undefined ||
-        rootClaim.identity.device !== expectedRootIdentity.device ||
-        rootClaim.identity.inode !== expectedRootIdentity.inode)
+      (expectedRootClaim === undefined ||
+        !samePrivateMutationDirectoryClaim(rootClaim, expectedRootClaim))
     ) {
       throw new Error("Private mutation directory claim root changed during acquisition.");
     }
@@ -2481,8 +2491,7 @@ async function acquireDirectoryPrivateMutationClaim(
       ]);
       if (
         observedRoot === null ||
-        observedRoot.identity.device !== rootClaim.identity.device ||
-        observedRoot.identity.inode !== rootClaim.identity.inode ||
+        !samePrivateMutationDirectoryClaim(observedRoot, rootClaim) ||
         observed === null ||
         observed.identity.device !== claimed.identity.device ||
         observed.identity.inode !== claimed.identity.inode ||
@@ -2520,8 +2529,7 @@ async function acquireDirectoryPrivateMutationClaim(
         ]);
         if (
           observedRoot === null ||
-          observedRoot.identity.device !== rootClaim.identity.device ||
-          observedRoot.identity.inode !== rootClaim.identity.inode ||
+          !samePrivateMutationDirectoryClaim(observedRoot, rootClaim) ||
           observed === null ||
           observed.identity.device !== claimed.identity.device ||
           observed.identity.inode !== claimed.identity.inode ||
@@ -2546,8 +2554,7 @@ async function acquireDirectoryPrivateMutationClaim(
         ]);
         if (
           movedRoot === null ||
-          movedRoot.identity.device !== rootClaim.identity.device ||
-          movedRoot.identity.inode !== rootClaim.identity.inode ||
+          !samePrivateMutationDirectoryClaim(movedRoot, rootClaim) ||
           moved === null ||
           moved.identity.device !== claimed.identity.device ||
           moved.identity.inode !== claimed.identity.inode ||
