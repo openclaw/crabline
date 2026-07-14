@@ -11,12 +11,12 @@ import {
 import { mattermostId } from "../../servers/mattermost.js";
 import { throwProbeHttpError } from "./probe-response.js";
 
-function nativeId(value: string): string {
+function nativeId(value: string, label = "Mattermost target"): string {
   const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error("Mattermost target is required.");
+  if (!/^[a-z0-9]{26}$/u.test(trimmed)) {
+    throw new Error(`${label} must be exactly 26 lowercase alphanumeric characters.`);
   }
-  return /^[a-z0-9]{26}$/u.test(trimmed) ? trimmed : mattermostId(trimmed);
+  return trimmed;
 }
 
 function directChannelId(botUserId: string, userId: string): string {
@@ -28,8 +28,7 @@ function targetKey(channelId: string, rootId?: string): string {
 }
 
 function threadRootId(channelId: string, value: string): string {
-  const trimmed = value.trim();
-  return /^[a-z0-9]{26}$/u.test(trimmed) ? trimmed : mattermostId(`thread:${channelId}:${trimmed}`);
+  return nativeId(value, `Mattermost root post for channel ${channelId}`);
 }
 
 export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({

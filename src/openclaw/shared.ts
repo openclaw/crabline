@@ -161,7 +161,12 @@ export function createOpenClawCrablineProviderBridge<
   const createAdapter = (manifest: ProviderManifest): OpenClawCrablineProviderAdapter => {
     const adapter = params.createAdapter(manifest);
     return {
-      ...adapter,
+      createAgentDelivery(parsed) {
+        return adapter.createAgentDelivery(parsed);
+      },
+      createBinding() {
+        return adapter.createBinding();
+      },
       createInbound(input) {
         if (!readNonBlankString(input.text)) {
           throw new Error("OpenClaw Crabline inbound message text is required.");
@@ -170,6 +175,12 @@ export function createOpenClawCrablineProviderBridge<
           throw new Error("OpenClaw Crabline inbound conversation kind must be direct or group.");
         }
         return adapter.createInbound(input);
+      },
+      createOutboundFromRecorderEvent(outboundParams) {
+        return adapter.createOutboundFromRecorderEvent(outboundParams);
+      },
+      probe(signal) {
+        return adapter.probe(signal);
       },
     };
   };
