@@ -1655,6 +1655,36 @@ describe("Mattermost local provider server", () => {
     });
   });
 
+  it("commits concurrent REST posts within one aggregate byte budget", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "fake",
+      maxCommittedStateBytes: 1_500,
+    });
+    servers.push(server);
+    const registered = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ channelId: CHANNEL_ID, senderId: USER_ID, text: "register" }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(registered.status).toBe(200);
+
+    const sendPost = () =>
+      fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+        body: JSON.stringify({ channel_id: CHANNEL_ID, message: "x".repeat(400) }),
+        headers: {
+          authorization: "Bearer fake",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+    const responses = await Promise.all([sendPost(), sendPost()]);
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 503]);
+  });
+
   it("bounds disconnected pending events by aggregate bytes and releases the budget", async () => {
     const server = await startMattermostServer({
       adminToken: "admin",
