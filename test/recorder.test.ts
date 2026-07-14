@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   appendFile,
   chmod,
@@ -16,6 +17,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createOwnerOnlyWindowsDirectory,
+  readWindowsDirectorySecurityDescriptor,
   type WindowsAclRunner,
 } from "../src/platform/windows-acl.js";
 import {
@@ -31,6 +33,7 @@ import {
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const directories: string[] = [];
+const readOwnerOnlyWindowsDirectorySecurityDescriptor = async (): Promise<string> => "owner-only";
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
@@ -116,6 +119,7 @@ describe("recorder", () => {
           await mkdir(directoryPath);
           secured.push(directoryPath);
         },
+        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
       }),
     ).resolves.toBe(lockRoot);
     await mkdir(path.join(lockRoot, "active-lock"));
@@ -125,6 +129,7 @@ describe("recorder", () => {
         createWindowsDirectory: async () => {
           throw new Error("cached Windows lock root was re-secured");
         },
+        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
       }),
     ).resolves.toBe(lockRoot);
 
@@ -142,12 +147,14 @@ describe("recorder", () => {
     await secureProviderRecorderLockRoot(lockRoot, undefined, {
       createWindowsDirectory,
       platform: "win32",
+      readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
     });
     await rm(lockRoot, { force: true, recursive: true });
     await expect(
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         createWindowsDirectory,
         platform: "win32",
+        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
       }),
     ).resolves.toBe(lockRoot);
     await expect(stat(lockRoot)).resolves.toBeDefined();
@@ -166,6 +173,7 @@ describe("recorder", () => {
     await secureProviderRecorderLockRoot(lockRoot, undefined, {
       createWindowsDirectory,
       platform: "win32",
+      readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
     });
     await rm(lockRoot, { force: true, recursive: true });
     await mkdir(lockRoot);
@@ -173,10 +181,12 @@ describe("recorder", () => {
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         createWindowsDirectory,
         platform: "win32",
+        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
       }),
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         createWindowsDirectory,
         platform: "win32",
+        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
       }),
     ]);
 
@@ -194,8 +204,41 @@ describe("recorder", () => {
         createWindowsDirectory: async (directoryPath) => {
           await writeFile(directoryPath, "not a directory");
         },
+        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
       }),
     ).rejects.toThrow("Provider recorder lock directory is not a private directory.");
+  });
+
+  it("re-secures a cached Windows recorder lock root after its ACL changes", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const lockRoot = path.join(directory, "acl-replaced-locks");
+    let createCount = 0;
+    let securityDescriptor = "owner-only";
+    const createWindowsDirectory = async (directoryPath: string) => {
+      createCount += 1;
+      await mkdir(directoryPath, { recursive: true });
+      securityDescriptor = "owner-only";
+    };
+    const readSecurityDescriptor = async () => securityDescriptor;
+
+    await secureProviderRecorderLockRoot(lockRoot, undefined, {
+      createWindowsDirectory,
+      platform: "win32",
+      readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+    });
+    await mkdir(path.join(lockRoot, "acl-change-trigger"));
+    securityDescriptor = "unsafe";
+
+    await expect(
+      secureProviderRecorderLockRoot(lockRoot, undefined, {
+        createWindowsDirectory,
+        platform: "win32",
+        readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+      }),
+    ).resolves.toBe(lockRoot);
+
+    expect(createCount).toBe(2);
   });
 
   it("creates Windows recorder lock roots with their final ACL atomically", async () => {
@@ -219,6 +262,25 @@ describe("recorder", () => {
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
   });
 
+  it("reads a stable Windows directory security descriptor fingerprint", async () => {
+    const calls: Parameters<WindowsAclRunner>[] = [];
+    const run: WindowsAclRunner = async (...args) => {
+      calls.push(args);
+      return "descriptor-base64\r\n";
+    };
+    const directoryPath = String.raw`C:\Temp\crabline-recorder-locks`;
+
+    await expect(
+      readWindowsDirectorySecurityDescriptor(directoryPath, run, String.raw`C:\Windows`),
+    ).resolves.toBe("descriptor-base64");
+
+    const [, args, options] = calls[0]!;
+    const script = args.at(-1);
+    expect(script).toContain("GetSecurityDescriptorBinaryForm()");
+    expect(script).toContain("[Convert]::ToBase64String($descriptor)");
+    expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
+  });
+
   it.runIf(process.platform === "win32")(
     "migrates existing Windows recorder lock roots to owner-only ACLs",
     async () => {
@@ -231,6 +293,29 @@ describe("recorder", () => {
       await expect(stat(lockRoot)).resolves.toMatchObject({
         isDirectory: expect.any(Function),
       });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "repairs a cached Windows recorder lock root after its ACL is downgraded",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const lockRoot = path.join(directory, "downgraded-lock-root");
+
+      await secureProviderRecorderLockRoot(lockRoot, undefined);
+      const securedDescriptor = await readWindowsDirectorySecurityDescriptor(lockRoot);
+      execFileSync("icacls.exe", [lockRoot, "/inheritance:r", "/grant", "*S-1-1-0:(F)"], {
+        windowsHide: true,
+      });
+      await expect(readWindowsDirectorySecurityDescriptor(lockRoot)).resolves.not.toBe(
+        securedDescriptor,
+      );
+
+      await expect(secureProviderRecorderLockRoot(lockRoot, undefined)).resolves.toBe(lockRoot);
+      await expect(readWindowsDirectorySecurityDescriptor(lockRoot)).resolves.toBe(
+        securedDescriptor,
+      );
     },
   );
 
