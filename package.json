@@ -51,7 +51,7 @@
     "check": "pnpm verify"
   },
   "dependencies": {
-    "@types/node": "^22.20.1",
+    "@types/node": "^26.1.1",
     "commander": "^15.0.0",
     "curve25519-js": "^0.0.4",
     "libsignal": "6.0.0",
