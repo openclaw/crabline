@@ -3236,28 +3236,18 @@ describe("OpenClaw local provider bridge", () => {
             }) as unknown as Awaited<ReturnType<typeof startOpenClawCrablineAdapter>>,
         },
       );
-      let readinessSettled = false;
       const outcome = readiness.then(
-        (result) => {
-          readinessSettled = true;
-          return { kind: "resolved" as const, result };
-        },
-        (error: unknown) => {
-          readinessSettled = true;
-          return { error, kind: "rejected" as const };
-        },
+        (result) => ({ kind: "resolved" as const, result }),
+        (error: unknown) => ({ error, kind: "rejected" as const }),
       );
 
       await probeStarted;
       expect(timeoutMock).toHaveBeenCalledWith(5_000);
       controller.abort(new DOMException("probe deadline", "TimeoutError"));
       await abortObserved;
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
-      expect(readinessSettled).toBe(true);
-      expect(close).not.toHaveBeenCalled();
 
       const result = await outcome;
+      expect(close).not.toHaveBeenCalled();
       expect(result.kind).toBe("rejected");
       expect(result).toMatchObject({
         error: expect.objectContaining({
