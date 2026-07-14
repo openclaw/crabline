@@ -256,6 +256,24 @@ describe("Microsoft Teams webhook authentication", () => {
         body,
       ),
     ).resolves.toMatchObject({ status: 401 });
+
+    const differentEndorsementAuthenticator = createMsTeamsWebhookAuthenticator(config, {
+      fetch: async (input: string | URL | Request) =>
+        String(input).includes("openidconfiguration")
+          ? Response.json({ jwks_uri: "https://login.example.test/keys" })
+          : Response.json({
+              keys: [{ ...jwk, endorsements: ["msteams-extra"], kid: "test-key" }],
+            }),
+      now: () => now,
+    });
+    await expect(
+      differentEndorsementAuthenticator!(
+        new Request(url, {
+          headers: { authorization: `Bearer ${header}.${payload}.${signature}` },
+        }),
+        body,
+      ),
+    ).resolves.toMatchObject({ status: 401 });
   });
 
   it("distinguishes Bot Connector signing infrastructure failures from invalid credentials", async () => {
@@ -326,6 +344,24 @@ describe("Microsoft Teams webhook authentication", () => {
         JSON.stringify({ channelId: "msteams", serviceUrl, type: "message" }),
       ),
     ).resolves.toMatchObject({ status: 503 });
+
+    for (const endorsements of ["prefix-msteams-suffix", ["msteams", 1]]) {
+      const malformedEndorsementsAuthenticator = createMsTeamsWebhookAuthenticator(config, {
+        fetch: async (input: string | URL | Request) =>
+          String(input).includes("openidconfiguration")
+            ? Response.json({ jwks_uri: "https://login.example.test/keys" })
+            : Response.json({ keys: [{ endorsements, kid: "test-key", kty: "RSA" }] }),
+        now: () => now,
+      });
+      await expect(
+        malformedEndorsementsAuthenticator!(
+          new Request("https://bot.example.test/msteams/webhook", {
+            headers: { authorization: `Bearer ${signedRequest}` },
+          }),
+          JSON.stringify({ channelId: "msteams", serviceUrl, type: "message" }),
+        ),
+      ).resolves.toMatchObject({ status: 503 });
+    }
   });
 
   it("acknowledges authenticated non-message activities without recording them", async () => {

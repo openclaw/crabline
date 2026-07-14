@@ -46,6 +46,17 @@ function decodeJsonPart(value: string): Record<string, unknown> {
 }
 
 function readHeader(value: Record<string, unknown>): JwtHeader {
+  if ("crit" in value) {
+    const critical = value.crit;
+    if (
+      !Array.isArray(critical) ||
+      critical.length === 0 ||
+      !critical.every((name): name is string => typeof name === "string" && name.length > 0)
+    ) {
+      throw new Error("JWT crit header must be a non-empty array of parameter names.");
+    }
+    throw new Error("JWT critical header parameters are unsupported.");
+  }
   if (value.alg !== "RS256" || typeof value.kid !== "string" || !value.kid) {
     throw new Error("JWT must use RS256 and include a key id.");
   }
@@ -114,46 +125,60 @@ function cacheControlDirectiveName(value: string): string | undefined {
   return /^[ \t]*([!#$%&'*+\-.^_`|~0-9A-Za-z]+)/u.exec(value)?.[1]?.toLowerCase();
 }
 
-export function resolveHttpCacheExpiry(response: Response, now: number): number {
+export function resolveHttpCacheExpiry(response: Response, requestTime: number): number {
   const cacheControl = response.headers.get("cache-control");
   const cacheControlDirectives = splitCacheControlDirectives(cacheControl ?? "");
   if (!cacheControlDirectives) {
-    return now;
+    return requestTime;
   }
   if (/(?:^|,)\s*(?:no-cache|no-store)(?:\s*(?:=|,|$))/iu.test(cacheControl ?? "")) {
-    return now;
+    return requestTime;
   }
   const ageHeader = response.headers.get("age");
   const ageSeconds = ageHeader && /^\d+$/u.test(ageHeader) ? Number.parseInt(ageHeader, 10) : 0;
+  const dateHeader = response.headers.get("date");
+  const parsedDate = dateHeader === null ? Number.NaN : Date.parse(dateHeader);
+  const dateValue = Number.isFinite(parsedDate) ? parsedDate : undefined;
+  const apparentAgeMs = dateValue === undefined ? 0 : Math.max(0, requestTime - dateValue);
+  const currentAgeMs = Math.max(apparentAgeMs, ageSeconds * 1_000);
   const maxAgeDirectives = cacheControlDirectives.filter(
     (directive) => cacheControlDirectiveName(directive) === "max-age",
   );
   if (maxAgeDirectives.length > 0) {
     if (maxAgeDirectives.length !== 1) {
-      return now;
+      return requestTime;
     }
     const maxAge = /^[ \t]*max-age[ \t]*=[ \t]*(?:"(\d+)"|(\d+))[ \t]*$/iu.exec(
       maxAgeDirectives[0]!,
     );
     if (!maxAge) {
-      return now;
+      return requestTime;
     }
     const maxAgeSeconds = Number(maxAge[1] ?? maxAge[2]);
     if (!Number.isSafeInteger(maxAgeSeconds)) {
-      return now;
+      return requestTime;
     }
     return (
-      now + Math.min(MAX_HTTP_CACHE_AGE_SECONDS, Math.max(0, maxAgeSeconds - ageSeconds)) * 1_000
+      requestTime +
+      Math.min(
+        MAX_HTTP_CACHE_AGE_SECONDS * 1_000,
+        Math.max(0, maxAgeSeconds * 1_000 - currentAgeMs),
+      )
     );
   }
   const expiresHeader = response.headers.get("expires");
   if (expiresHeader === null) {
-    return now + Math.max(0, 60 * 60 - ageSeconds) * 1_000;
+    return requestTime + Math.max(0, 60 * 60 * 1_000 - currentAgeMs);
   }
   const expires = Date.parse(expiresHeader);
-  return Number.isFinite(expires) && expires > now
-    ? Math.min(expires, now + MAX_HTTP_CACHE_AGE_SECONDS * 1_000)
-    : now;
+  if (!Number.isFinite(expires)) {
+    return requestTime;
+  }
+  const freshnessLifetimeMs = Math.max(0, expires - (dateValue ?? requestTime));
+  return (
+    requestTime +
+    Math.min(MAX_HTTP_CACHE_AGE_SECONDS * 1_000, Math.max(0, freshnessLifetimeMs - currentAgeMs))
+  );
 }
 
 function validateRemoteJwtKeySet<T>(

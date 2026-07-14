@@ -1,4 +1,4 @@
-import { createPublicKey } from "node:crypto";
+import { createPublicKey, type KeyObject } from "node:crypto";
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
@@ -6,6 +6,7 @@ import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
 import {
   createCachedJwtKeyResolver,
+  JwtKeyInfrastructureError,
   readBearerToken,
   resolveHttpCacheExpiry,
   verifySignedJwt,
@@ -52,8 +53,8 @@ type GoogleChatAuthRuntime = {
 };
 
 type GoogleCertificate = {
-  certificate: string;
   kid: string;
+  key: KeyObject;
 };
 
 export function createGoogleChatWebhookAuthenticator(
@@ -76,22 +77,41 @@ export function createGoogleChatWebhookAuthenticator(
   const createCertificateResolver = (certificateUrl: string) => {
     return createCachedJwtKeyResolver<GoogleCertificate>({
       async fetchKeys(signal) {
-        const fetchedAt = runtime.now?.() ?? Date.now();
-        const response = await fetchImpl(certificateUrl, { signal });
-        if (!response.ok) {
-          throw new Error(`Google certificate fetch failed with HTTP ${response.status}.`);
+        try {
+          const requestedAt = runtime.now?.() ?? Date.now();
+          const response = await fetchImpl(certificateUrl, { signal });
+          if (!response.ok) {
+            throw new Error(`Google certificate fetch failed with HTTP ${response.status}.`);
+          }
+          const body: unknown = await response.json();
+          if (!isRecord(body)) {
+            throw new Error("Google certificate response must be an object.");
+          }
+          const values = Object.entries(body).map(([kid, certificate]) => {
+            if (typeof certificate !== "string") {
+              throw new Error("Google certificate response values must be strings.");
+            }
+            const key = createPublicKey(certificate);
+            if (key.asymmetricKeyType !== "rsa") {
+              throw new Error("Google certificate response keys must use RSA.");
+            }
+            return { kid, key };
+          });
+          if (values.length === 0) {
+            throw new Error("Google certificate response must include signing keys.");
+          }
+          return {
+            expiresAt: resolveHttpCacheExpiry(response, requestedAt),
+            values,
+          };
+        } catch (error) {
+          throw error instanceof JwtKeyInfrastructureError
+            ? error
+            : new JwtKeyInfrastructureError(
+                error instanceof Error ? error.message : "Google certificate fetch failed.",
+                { cause: error },
+              );
         }
-        const body: unknown = await response.json();
-        if (!isRecord(body)) {
-          throw new Error("Google certificate response must be an object.");
-        }
-        const values = Object.entries(body).flatMap(([kid, certificate]) =>
-          typeof certificate === "string" ? [{ certificate, kid }] : [],
-        );
-        return {
-          expiresAt: resolveHttpCacheExpiry(response, fetchedAt),
-          values,
-        };
       },
       keyId: (value) => value.kid,
       now: runtime.now,
@@ -144,7 +164,7 @@ export function createGoogleChatWebhookAuthenticator(
           const certificate = await (certificateUrl === GOOGLE_OAUTH_CERTS_URL
             ? resolveGoogleIdentityCertificate(header)
             : resolveGoogleChatCertificate(header));
-          return createPublicKey(certificate.certificate);
+          return certificate.key;
         },
         token,
       });
@@ -164,13 +184,20 @@ export function createGoogleChatWebhookAuthenticator(
         throw new Error("Google Chat ID token identity is invalid.");
       }
       return undefined;
-    } catch {
-      return new Response("unauthorized", {
-        headers: { "www-authenticate": "Bearer" },
-        status: 401,
-      });
+    } catch (error) {
+      return googleAuthenticationResponse(error instanceof JwtKeyInfrastructureError ? 503 : 401);
     }
   };
+}
+
+function googleAuthenticationResponse(status: 401 | 503): Response {
+  return new Response(status === 401 ? "unauthorized" : "service unavailable", {
+    headers: {
+      "cache-control": "no-store",
+      ...(status === 401 ? { "www-authenticate": "Bearer" } : {}),
+    },
+    status,
+  });
 }
 
 export function matchesGoogleChatThread(
