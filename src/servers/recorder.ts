@@ -6,6 +6,7 @@ import path from "node:path";
 import { lock } from "proper-lockfile";
 import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
 import { createOwnerOnlyWindowsDirectory } from "../platform/windows-acl.js";
+import { secureCachedWindowsLockRoot } from "../platform/windows-lock-root.js";
 import type { ServerRequestEvent } from "./http.js";
 
 export type ServerEventObserver = (event: ServerRequestEvent) => void | Promise<void>;
@@ -385,50 +386,14 @@ export async function secureServerRecorderWindowsLockRoot(
   } = {},
 ): Promise<string> {
   const cacheKey = path.win32.normalize(path.resolve(root)).toLowerCase();
-  for (;;) {
-    let secured = securedWindowsLockRoots.get(cacheKey);
-    if (!secured) {
-      secured = (async () => {
-        await (options.createWindowsDirectory ?? createOwnerOnlyWindowsDirectory)(root);
-        const identity = await lstat(root, { bigint: true });
-        if (!identity.isDirectory() || identity.isSymbolicLink()) {
-          throw new Error("Server recorder Windows lock root is not a private directory.");
-        }
-        return { dev: identity.dev, ino: identity.ino };
-      })();
-      securedWindowsLockRoots.set(cacheKey, secured);
-      void secured.catch(() => {
-        if (securedWindowsLockRoots.get(cacheKey) === secured) {
-          securedWindowsLockRoots.delete(cacheKey);
-        }
-      });
-    }
-    const expected = await secured;
-    let current: Awaited<ReturnType<typeof lstat>>;
-    try {
-      current = await lstat(root, { bigint: true });
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") {
-        throw error;
-      }
-      if (securedWindowsLockRoots.get(cacheKey) === secured) {
-        securedWindowsLockRoots.delete(cacheKey);
-      }
-      continue;
-    }
-    if (
-      current.isDirectory() &&
-      !current.isSymbolicLink() &&
-      current.dev === expected.dev &&
-      current.ino === expected.ino
-    ) {
-      return root;
-    }
-    if (securedWindowsLockRoots.get(cacheKey) === secured) {
-      securedWindowsLockRoots.delete(cacheKey);
-    }
-  }
+  return secureCachedWindowsLockRoot({
+    cache: securedWindowsLockRoots,
+    cacheKey,
+    createDirectory: () =>
+      (options.createWindowsDirectory ?? createOwnerOnlyWindowsDirectory)(root),
+    errorPrefix: "Server recorder Windows lock root",
+    root,
+  });
 }
 
 function serverRecorderWindowsLockRoot(): string {
