@@ -482,6 +482,16 @@ describe("registry", () => {
     expect(() => registry.resolve("missing", "fixture")).toThrow(/Unknown provider/);
   });
 
+  it.each(["constructor", "__proto__"])(
+    "rejects inherited provider registry key %s",
+    (providerId) => {
+      const registry = createRegistry(manifest, "/tmp/crabline.yaml");
+      expect(() => registry.resolve(providerId, "fixture")).toThrow(
+        `Unknown provider: ${providerId}`,
+      );
+    },
+  );
+
   it("rejects resolving a fixture through a different provider", () => {
     const mismatchedManifest: ManifestDefinition = {
       ...manifest,

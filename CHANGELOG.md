@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Forward lazy cleanup admission fences synchronously to materialized providers.
+- Reject prototype-inherited provider registry keys during resolution.
 - Bind private-directory ACL and recorder-lock mutations to verified identities, quarantine process locks before artifact cleanup, and preserve Windows ancestry rollback failures.
 - Require explicit remote iMessage API keys and decode legacy loopback channel metadata consistently.
 - Preserve configured Mattermost bot identity during admin ingress and avoid overwriting retained channels on direct-channel ID collisions.
