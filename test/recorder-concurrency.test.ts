@@ -570,6 +570,54 @@ describe("recorder append serialization", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")(
+    "keeps configured and local identity locks distinct when their roots match",
+    async () => {
+      const homeDirectory = await mkdtemp(path.join(tmpdir(), "crabline-server-lock-home-"));
+      const lockRoot = path.join(homeDirectory, ".cache", "crabline", "locks", "server-recorder");
+      await mkdir(lockRoot, { mode: 0o700, recursive: true });
+      const canonicalLockRoot = await realpath(lockRoot);
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-server-recorder-aliased-lock-root-${process.pid}-${Date.now()}.jsonl`,
+      );
+      const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
+      osMocks.userInfo.mockImplementationOnce(() => ({
+        ...actualOs.userInfo(),
+        homedir: homeDirectory,
+      }));
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+      fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
+      fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", canonicalLockRoot);
+
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/aliased-lock-root",
+              query: {},
+              type: "api",
+            },
+            onEvent: undefined,
+            recorderPath,
+          }),
+        ).resolves.toBeUndefined();
+
+        expect(fsMocks.lock.mock.calls.map(([lockPath]) => String(lockPath))).toEqual([
+          path.join(fsMocks.serverDirectory, path.basename(recorderPath)),
+          path.join(canonicalLockRoot, "recorder-1-2"),
+          path.join(canonicalLockRoot, "recorder-2"),
+        ]);
+      } finally {
+        await rm(homeDirectory, { force: true, recursive: true });
+      }
+    },
+  );
+
   it("rejects hardlinked server recorders without a shared lock namespace", async () => {
     const recorderPath = path.join(
       "/tmp",
