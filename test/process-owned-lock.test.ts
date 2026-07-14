@@ -822,6 +822,25 @@ describe("process-owned lock filesystem", () => {
     await nextRelease();
   });
 
+  it("recovers an aged coarse owner from a departed current-process execution context", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    await mkdir(lockDirectory);
+    const ownerPath = await writeOwner(lockDirectory, {
+      executionIdentity: randomUUID(),
+      pid: process.pid,
+      processIdentity: `darwin:1.1:s:${Math.trunc(performance.timeOrigin / 1000)}`,
+      processStartedAtMs: Math.trunc(performance.timeOrigin),
+      version: 1,
+    });
+    await utimes(ownerPath, new Date(0), new Date(0));
+    await utimes(lockDirectory, new Date(0), new Date(0));
+
+    const nextRelease = await acquire(target);
+    expect(nextRelease).toBeTypeOf("function");
+    await nextRelease();
+  });
+
   it("treats a version-4 owner from another machine as foreign", async () => {
     const target = await createLockTarget();
     const lockDirectory = `${target}.lock`;
