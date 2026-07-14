@@ -7,9 +7,11 @@ import { lock } from "proper-lockfile";
 import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
 import {
   createOwnerOnlyWindowsDirectory,
+  readWindowsDirectoryNamespaceSecuritySnapshot,
   readWindowsDirectorySecuritySnapshot,
   type WindowsDirectorySecuritySnapshot,
 } from "../platform/windows-acl.js";
+import { isManagedRecorderDirectory } from "../platform/recorder-directory.js";
 import {
   secureCachedWindowsLockRoot,
   type WindowsLockRootIdentity,
@@ -63,6 +65,7 @@ const pendingAdmissions = new Map<string, Promise<void>>();
 const pendingLogicalObservers = new Map<string, ObserverTask>();
 const pendingPublicationObservers = new Map<string, ObserverTask>();
 const securedWindowsLockRoots = new Map<string, Promise<WindowsLockRootIdentity>>();
+const securedWindowsRecorderDirectories = new Map<string, Promise<WindowsLockRootIdentity>>();
 const MAX_RECOVERY_VALIDATION_BYTES = 64 * 1024 * 1024;
 const MAX_RECOVERY_SCAN_BYTES = MAX_RECOVERY_VALIDATION_BYTES + 1;
 const RECORDER_LOCK_RETRY_MS = 100;
@@ -73,13 +76,6 @@ const RECORDER_LOCK_DIRECTORY_ENV = "CRABLINE_RECORDER_LOCK_DIR";
 const RECORDER_PATH_ATTEMPTS = 3;
 const RECORDER_ROTATION_ATTEMPTS = 3;
 const TAIL_SCAN_CHUNK_BYTES = 64 * 1024;
-
-function isManagedRecorderDirectory(directory: string): boolean {
-  return (
-    directory === path.resolve(".crabline", "servers") ||
-    directory === path.resolve("artifacts", "crabline")
-  );
-}
 
 async function readBufferAt(
   file: Awaited<ReturnType<typeof open>>,
@@ -173,7 +169,7 @@ async function openRecorderFile(
       created: false,
       file: await open(
         filePath,
-        // A non-creating Windows open cannot materialize a dangling reparse target.
+        // Windows callers secure the publication directory before reaching this open.
         process.platform === "win32"
           ? "r+"
           : fsConstants.O_RDWR |
@@ -596,6 +592,33 @@ export async function secureServerRecorderWindowsLockRoot(
     errorPrefix: "Server recorder Windows lock root",
     readSecuritySnapshot: () =>
       (options.readWindowsDirectorySecuritySnapshot ?? readWindowsDirectorySecuritySnapshot)(root),
+    root,
+  });
+}
+
+async function secureServerRecorderWindowsDirectory(root: string): Promise<string> {
+  const cacheKey = path.win32.normalize(path.resolve(root)).toLowerCase();
+  return secureCachedWindowsLockRoot({
+    cache: securedWindowsRecorderDirectories,
+    cacheKey,
+    createDirectory: async () => {
+      try {
+        const identity = await lstat(root);
+        if (!identity.isDirectory() || identity.isSymbolicLink()) {
+          throw new Error("Server recorder Windows directory is not a private directory.");
+        }
+        if (isManagedRecorderDirectory(root)) {
+          await createOwnerOnlyWindowsDirectory(root);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error;
+        }
+        await createOwnerOnlyWindowsDirectory(root);
+      }
+    },
+    errorPrefix: "Server recorder Windows directory",
+    readSecuritySnapshot: () => readWindowsDirectoryNamespaceSecuritySnapshot(root),
     root,
   });
 }
@@ -1087,9 +1110,14 @@ async function appendResolvedJsonLine(params: {
       let observerActivated = false;
       try {
         const directory = path.dirname(key);
-        const createdDirectory = await mkdir(directory, { mode: 0o700, recursive: true });
-        if (createdDirectory !== undefined || isManagedRecorderDirectory(directory)) {
-          await chmod(directory, 0o700);
+        let createdDirectory: string | undefined;
+        if (process.platform === "win32") {
+          await secureServerRecorderWindowsDirectory(directory);
+        } else {
+          createdDirectory = await mkdir(directory, { mode: 0o700, recursive: true });
+          if (createdDirectory !== undefined || isManagedRecorderDirectory(directory)) {
+            await chmod(directory, 0o700);
+          }
         }
         // Keep the cross-process lock through append verification.
         const committed = await withRecorderLock(key, logicalPath, async () => {
