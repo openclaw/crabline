@@ -204,6 +204,7 @@ describe("CI workflow hardening", () => {
 
     expect(codeowners).toContain("/.github/actions/ @openclaw/openclaw-secops");
     expect(codeowners).toContain("/.github/pull_request_template.md @openclaw/openclaw-secops");
+    expect(codeowners).toContain("/AGENTS.md @openclaw/openclaw-secops");
     expect(codeowners).toContain("/tools/ @openclaw/openclaw-secops");
     expect(codeqlWorkflow.on?.push?.paths).toContain(".github/actions/**");
     expect(codeqlWorkflow.on?.pull_request?.paths).toContain(".github/actions/**");

@@ -34,6 +34,9 @@ describe("channel setup contracts", () => {
     const targetId = manifest.fixtures.find((fixture) => fixture.provider === "mattermost")?.target
       .id;
     expect(targetId).toMatch(/^[a-z0-9]{26}$/u);
+    expect(manifest.fixtures.find((fixture) => fixture.provider === "imessage")?.target.id).toBe(
+      "iMessage;-;chat-guid",
+    );
   });
 
   it("keeps documented support lists synchronized with schema and catalog", async () => {

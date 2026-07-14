@@ -8,6 +8,16 @@ import { describe, expect, it } from "vitest";
 const execFileAsync = promisify(execFile);
 
 describe("autoreview tooling", () => {
+  it("runs this contract test from the dedicated autoreview suite", async () => {
+    const packageJson = JSON.parse(await fs.readFile("package.json", "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(packageJson.scripts?.["test:autoreview"]).toContain(
+      "vitest run test/autoreview-tooling.test.ts",
+    );
+  });
+
   it("requires Python 3.10 across every launcher", async () => {
     const [runner, shellLauncher, powershellLauncher, harness] = await Promise.all([
       fs.readFile("tools/run-autoreview-tests.mjs", "utf8"),
