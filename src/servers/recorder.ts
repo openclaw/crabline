@@ -44,6 +44,19 @@ export class ServerRecorderCommittedError extends AggregateError {
 
 class ServerRecorderRotationError extends Error {}
 
+class ServerRecorderDirectorySyncError extends AggregateError {
+  constructor(
+    readonly syncError: unknown,
+    readonly closeError: unknown,
+  ) {
+    super(
+      [syncError, closeError],
+      "Server recorder directory sync and handle cleanup both failed.",
+      { cause: syncError },
+    );
+  }
+}
+
 type RecorderFileIdentity = {
   dev: bigint;
   ino: bigint;
@@ -244,10 +257,26 @@ async function syncDirectory(directoryPath: string): Promise<void> {
     return;
   }
   const directory = await open(directoryPath, "r");
+  let syncError: unknown;
   try {
     await directory.sync();
-  } finally {
+  } catch (error) {
+    syncError = error;
+  }
+  let closeError: unknown;
+  try {
     await directory.close();
+  } catch (error) {
+    closeError = error;
+  }
+  if (syncError !== undefined && closeError !== undefined) {
+    throw new ServerRecorderDirectorySyncError(syncError, closeError);
+  }
+  if (syncError !== undefined) {
+    throw syncError;
+  }
+  if (closeError !== undefined) {
+    throw closeError;
   }
 }
 
@@ -1270,6 +1299,14 @@ async function appendRecorderAttempt(params: {
           } catch (error) {
             if (error instanceof ServerRecorderCommittedError) {
               throw error;
+            }
+            if (error instanceof ServerRecorderDirectorySyncError) {
+              throw new ServerRecorderCommittedError(
+                params.logicalPath,
+                error.syncError,
+                [error.closeError],
+                true,
+              );
             }
             throw new ServerRecorderCommittedError(params.logicalPath, error, [], true);
           }
