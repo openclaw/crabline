@@ -85,14 +85,13 @@ export function matchesMatrixThread(
   if (!expectedThreadId) {
     return true;
   }
-  const scopedExpected =
-    target.channelId && isMatrixEventId(expectedThreadId)
-      ? matrixThreadKey(target.channelId, expectedThreadId)
-      : expectedThreadId;
+  if (target.channelId && isMatrixEventId(expectedThreadId)) {
+    return candidateThreadId === matrixThreadKey(target.channelId, expectedThreadId);
+  }
   return (
     candidateThreadId === expectedThreadId ||
-    candidateThreadId === scopedExpected ||
-    (isMatrixRoomId(scopedExpected) && candidateThreadId.startsWith(`${scopedExpected}:thread:`))
+    (isMatrixRoomId(expectedThreadId) &&
+      candidateThreadId.startsWith(`${expectedThreadId}:thread:`))
   );
 }
 

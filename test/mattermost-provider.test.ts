@@ -244,11 +244,20 @@ describe("Mattermost webhook normalizer", () => {
     });
   });
 
-  it("matches local thread replies before native channel scoping", () => {
+  it("requires native thread roots to carry their channel scope", () => {
     expect(
       matchesMattermostThread("bbbbbbbbbbbbbbbbbbbbbbbbbb", "bbbbbbbbbbbbbbbbbbbbbbbbbb", {
         channelId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
       }),
+    ).toBe(false);
+    expect(
+      matchesMattermostThread(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaa:thread:bbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+        {
+          channelId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+      ),
     ).toBe(true);
   });
 

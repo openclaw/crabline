@@ -143,11 +143,20 @@ describe("Matrix webhook normalizer", () => {
     ).toThrow(/content\.body/u);
   });
 
-  it("matches local thread replies before native room scoping", () => {
+  it("requires native thread roots to carry their room scope", () => {
     expect(
       matchesMatrixThread("$event123:matrix.org", "$event123:matrix.org", {
         channelId: "!abc123:matrix.org",
       }),
+    ).toBe(false);
+    expect(
+      matchesMatrixThread(
+        "!abc123:matrix.org:thread:$event123:matrix.org",
+        "$event123:matrix.org",
+        {
+          channelId: "!abc123:matrix.org",
+        },
+      ),
     ).toBe(true);
   });
 
