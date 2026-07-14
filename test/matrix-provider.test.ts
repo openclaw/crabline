@@ -57,6 +57,35 @@ describe("Matrix webhook normalizer", () => {
     }
   });
 
+  it("preserves spec-valid whitespace in scoped Matrix identifiers", async () => {
+    const config = await createLocalMockConfig("matrix", "/matrix/webhook");
+    const provider = new MatrixProviderAdapter("matrix", config, "crabline");
+    const roomId = "!room with space:matrix.test";
+    const eventId = "$event with space:matrix.test";
+
+    try {
+      expect(
+        provider.normalizeTarget({
+          channelId: roomId,
+          id: roomId,
+          metadata: {},
+          threadId: eventId,
+        }),
+      ).toMatchObject({ channelId: roomId, threadId: eventId });
+      expect(
+        normalizeMatrixWebhookPayload({
+          message: {
+            id: eventId,
+            text: "whitespace identifiers",
+            threadId: roomId,
+          },
+        }),
+      ).toMatchObject({ message: { id: eventId }, threadId: roomId });
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
   it("rejects externally reachable webhooks without native authentication", async () => {
     const config = await createLocalMockConfig("matrix", "/matrix/webhook");
     config.matrix!.webhook.host = "0.0.0.0";
