@@ -36,6 +36,7 @@ const WHATSAPP_GENERATED_MESSAGE_ID_RE = /^wamid\.FAKE(\d{8,})$/u;
 const DEFAULT_GRAPH_VERSION = "v25.0";
 const MAX_WHATSAPP_READABLE_MESSAGE_IDS = 10_000;
 const MAX_WHATSAPP_RECENT_MESSAGE_IDS = 10_000;
+const MAX_WHATSAPP_TEXT_MESSAGE_CHARACTERS = 4_096;
 
 function createDefaultAccessToken(): string {
   return `EAA${randomBytes(24).toString("base64url")}`;
@@ -311,6 +312,12 @@ function readTextMessageBody(body: Record<string, unknown>): string | Response {
     return graphParameterError(
       "(#100) Missing required parameter: text.body",
       "A WhatsApp text send requires text.body.",
+    );
+  }
+  if ([...text].length > MAX_WHATSAPP_TEXT_MESSAGE_CHARACTERS) {
+    return graphParameterError(
+      "(#100) Invalid parameter: text.body",
+      `text.body must not exceed ${MAX_WHATSAPP_TEXT_MESSAGE_CHARACTERS} characters.`,
     );
   }
   return text;

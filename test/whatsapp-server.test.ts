@@ -501,6 +501,47 @@ describe("whatsapp local provider server", () => {
       messaging_product: "whatsapp",
     });
 
+    const maximumText = await fetch(server.manifest.endpoints.messagesUrl, {
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        text: { body: "x".repeat(4_096) },
+        to: "15551234567",
+        type: "text",
+      }),
+      headers: {
+        authorization: "Bearer fake-whatsapp-token",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(maximumText.status).toBe(200);
+
+    const oversizedText = await fetch(server.manifest.endpoints.messagesUrl, {
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        text: { body: "x".repeat(4_097) },
+        to: "15551234567",
+        type: "text",
+      }),
+      headers: {
+        authorization: "Bearer fake-whatsapp-token",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(oversizedText.status).toBe(400);
+    await expect(oversizedText.json()).resolves.toMatchObject({
+      error: {
+        code: 100,
+        error_data: {
+          details: "text.body must not exceed 4096 characters.",
+          messaging_product: "whatsapp",
+        },
+        message: "(#100) Invalid parameter: text.body",
+        type: "OAuthException",
+      },
+    });
+
     const invalidProduct = await fetch(server.manifest.endpoints.messagesUrl, {
       body: JSON.stringify({
         messaging_product: "messenger",
@@ -1464,8 +1505,10 @@ describe("whatsapp local provider server", () => {
   it("fences late Signal mutation after acceptance timeout", async () => {
     const recipientJid = "15551234567@s.whatsapp.net";
     const senderJid = "15550000001@s.whatsapp.net";
-    const receiver = new WhatsAppSignalBundleStore(1, 1, undefined, undefined, undefined, {
+    let now = 0;
+    const receiver = new WhatsAppSignalBundleStore(1, 1, undefined, undefined, () => now, {
       messageAcceptanceTimeoutMs: 100,
+      preKeyReservationTtlMs: 1,
     });
     const bundle = receiver.resolveMany([recipientJid])[0]!;
     const senderIdentity = Curve.generateKeyPair();
@@ -1519,6 +1562,8 @@ describe("whatsapp local provider server", () => {
       });
       expect(receiver.sessionCount).toBe(0);
 
+      now = 1;
+      receiver.resolveMany([recipientJid]);
       releaseAppend();
       await vi.advanceTimersByTimeAsync(0);
       expect(receiver.sessionCount).toBe(0);
@@ -1532,7 +1577,7 @@ describe("whatsapp local provider server", () => {
           signalBundles: receiver,
         }),
       ).resolves.toBe(true);
-      expect(retryAppend).toHaveBeenCalledOnce();
+      expect(retryAppend).not.toHaveBeenCalled();
       expect(receiver.sessionCount).toBe(1);
       expect(receiver.resolveMany([recipientJid])[0]!.preKeyId).toBeGreaterThan(bundle.preKeyId);
     } finally {

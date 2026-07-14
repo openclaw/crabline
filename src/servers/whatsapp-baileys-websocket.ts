@@ -145,12 +145,13 @@ type StoredSignalBundle = Omit<MockSignalBundle, "preKey" | "preKeyId"> & {
   pendingPreKeyIds: Set<number>;
   preKeyReservations: Map<number, number>;
   preKeys: Map<number, KeyPair>;
+  protectedPreKeyIds: Map<number, number>;
 };
 
 type WhatsAppMessageAcceptanceOptions = {
   onTerminalTimeout?: (() => void) | undefined;
   signal?: AbortSignal | undefined;
-  terminalDrain?: (() => Promise<"acknowledged" | "retryable">) | undefined;
+  terminalDrain?: (() => Promise<"acknowledged" | "persisted" | "retryable">) | undefined;
   timeoutMs?: number | undefined;
 };
 
@@ -186,9 +187,11 @@ export class WhatsAppSignalBundleStore {
   readonly #maxPreKeysPerBundle: number;
   readonly #maxSessionsPerBundle: number;
   readonly #maxTerminalAcceptances: number;
+  readonly #messagePreKeyProtections = new Map<string, Map<string, Set<number>>>();
   readonly #messageAcceptanceTimeoutMs: number;
   readonly #pendingAcknowledgements = new Map<string, PendingWhatsAppAcknowledgement>();
   readonly #pendingTransactions = new Map<string, Promise<void>>();
+  readonly #persistedMessageIds = new Map<string, true>();
   readonly #preKeyReservationTtlMs: number;
   readonly #sessions = new Map<string, Map<string, SessionRecord>>();
   readonly #terminalAcceptances = new Map<string, TerminalWhatsAppAcceptance>();
@@ -403,6 +406,37 @@ export class WhatsAppSignalBundleStore {
     }
   }
 
+  hasPersistedMessage(messageKey: string): boolean {
+    return this.#persistedMessageIds.has(messageKey);
+  }
+
+  clearPersistedMessage(messageKey: string): void {
+    this.#persistedMessageIds.delete(messageKey);
+    this.releaseMessagePreKeyProtection(messageKey);
+  }
+
+  releaseMessagePreKeyProtection(messageKey: string): void {
+    const protections = this.#messagePreKeyProtections.get(messageKey);
+    if (!protections) {
+      return;
+    }
+    this.#messagePreKeyProtections.delete(messageKey);
+    for (const [identityKey, preKeyIds] of protections) {
+      const bundle = this.#bundles.get(identityKey);
+      if (!bundle) {
+        continue;
+      }
+      for (const preKeyId of preKeyIds) {
+        const references = bundle.protectedPreKeyIds.get(preKeyId) ?? 0;
+        if (references <= 1) {
+          bundle.protectedPreKeyIds.delete(preKeyId);
+        } else {
+          bundle.protectedPreKeyIds.set(preKeyId, references - 1);
+        }
+      }
+    }
+  }
+
   associateLid(phoneNumberJid: string, lidJid: string): void {
     const phoneNumber = canonicalizeWhatsAppUserCorrelationJid(phoneNumberJid);
     const lid = canonicalizeWhatsAppUserCorrelationJid(lidJid);
@@ -469,7 +503,10 @@ export class WhatsAppSignalBundleStore {
         const preKeys = new Map(bundle.preKeys);
         const preKeyReservations = new Map(bundle.preKeyReservations);
         for (const [preKeyId, reservedAt] of preKeyReservations) {
-          if (reservationNow - reservedAt >= this.#preKeyReservationTtlMs) {
+          if (
+            reservationNow - reservedAt >= this.#preKeyReservationTtlMs &&
+            !bundle.protectedPreKeyIds.has(preKeyId)
+          ) {
             preKeyReservations.delete(preKeyId);
             preKeys.delete(preKeyId);
           }
@@ -560,6 +597,7 @@ export class WhatsAppSignalBundleStore {
   async transactDirectMessage<T>(params: {
     accept(plaintext: Buffer): Promise<T | undefined>;
     ciphertext: Uint8Array;
+    messageKey?: string | undefined;
     recipientJid: string;
     remoteJid: string;
     signal?: AbortSignal | undefined;
@@ -608,8 +646,11 @@ export class WhatsAppSignalBundleStore {
           stagedSessions.set(id, cloneSignalSession(session));
         },
         isTrustedIdentity: () => true,
-        async loadPreKey(id) {
+        loadPreKey: async (id) => {
           const preKey = bundle.preKeys.get(Number(id));
+          if (preKey && params.messageKey) {
+            this.#protectMessagePreKey(params.messageKey, identityKey, Number(id));
+          }
           return preKey ? signalKeyPair(preKey) : undefined;
         },
         removePreKey(id) {
@@ -689,6 +730,7 @@ export class WhatsAppSignalBundleStore {
       pendingPreKeyIds: new Set<number>(),
       preKeyReservations: new Map<number, number>(),
       preKeys: new Map<number, KeyPair>(),
+      protectedPreKeyIds: new Map<number, number>(),
       registrationId: 1,
       signedPreKey: signedKeyPair(identityKey, 1),
     };
@@ -739,10 +781,43 @@ export class WhatsAppSignalBundleStore {
     }
   }
 
+  #rememberPersistedMessage(messageKey: string): void {
+    this.#persistedMessageIds.delete(messageKey);
+    this.#persistedMessageIds.set(messageKey, true);
+    if (this.#persistedMessageIds.size > this.maxRecentAcknowledgements) {
+      const oldestMessageKey = this.#persistedMessageIds.keys().next().value;
+      if (oldestMessageKey !== undefined) {
+        this.#persistedMessageIds.delete(oldestMessageKey);
+        this.releaseMessagePreKeyProtection(oldestMessageKey);
+      }
+    }
+  }
+
+  #protectMessagePreKey(messageKey: string, identityKey: string, preKeyId: number): void {
+    let protections = this.#messagePreKeyProtections.get(messageKey);
+    if (!protections) {
+      protections = new Map<string, Set<number>>();
+      this.#messagePreKeyProtections.set(messageKey, protections);
+    }
+    let preKeyIds = protections.get(identityKey);
+    if (!preKeyIds) {
+      preKeyIds = new Set<number>();
+      protections.set(identityKey, preKeyIds);
+    }
+    if (preKeyIds.has(preKeyId)) {
+      return;
+    }
+    preKeyIds.add(preKeyId);
+    const bundle = this.#bundles.get(identityKey);
+    if (bundle) {
+      bundle.protectedPreKeyIds.set(preKeyId, (bundle.protectedPreKeyIds.get(preKeyId) ?? 0) + 1);
+    }
+  }
+
   #rememberTerminalAcceptance(
     messageKey: string,
     error: Error,
-    drain: Promise<"acknowledged" | "retryable">,
+    drain: Promise<"acknowledged" | "persisted" | "retryable">,
   ): void {
     const terminalAcceptance = { error };
     this.#terminalAcceptances.set(messageKey, terminalAcceptance);
@@ -752,6 +827,8 @@ export class WhatsAppSignalBundleStore {
       }
       if (disposition === "acknowledged") {
         this.#rememberAcknowledgedMessage(messageKey);
+      } else if (disposition === "persisted") {
+        this.#rememberPersistedMessage(messageKey);
       }
     });
   }
@@ -1713,7 +1790,9 @@ export async function persistAcceptedBaileysMessage(params: {
   if (!peer || !messageId) {
     return false;
   }
-  let persistenceSucceeded = false;
+  const messageKey = `${peer}\0${messageId}`;
+  const wasPreviouslyPersisted = params.signalBundles.hasPersistedMessage(messageKey);
+  let persistenceSucceeded = wasPreviouslyPersisted;
   let operationSettled!: () => void;
   const operationSettlement = new Promise<void>((resolve) => {
     operationSettled = resolve;
@@ -1732,37 +1811,47 @@ export async function persistAcceptedBaileysMessage(params: {
     );
     return operation;
   };
-  const drainAcceptanceOperations = async (): Promise<"acknowledged" | "retryable"> => {
+  const drainAcceptanceOperations = async (): Promise<
+    "acknowledged" | "persisted" | "retryable"
+  > => {
     while (pendingAcceptanceOperations.size > 0) {
       await Promise.allSettled([...pendingAcceptanceOperations]);
     }
     await operationSettlement;
-    return persistenceSucceeded && (!requiresSignalCommit || signalCommitSucceeded)
-      ? "acknowledged"
-      : "retryable";
+    if (!persistenceSucceeded) {
+      params.signalBundles.releaseMessagePreKeyProtection(messageKey);
+      return "retryable";
+    }
+    if (!requiresSignalCommit || signalCommitSucceeded) {
+      params.signalBundles.releaseMessagePreKeyProtection(messageKey);
+      return "acknowledged";
+    }
+    return "persisted";
   };
-  return await params.signalBundles.acceptMessageOnce(
-    `${peer}\0${messageId}`,
+  const accepted = await params.signalBundles.acceptMessageOnce(
+    messageKey,
     async (acceptanceSignal) => {
       try {
         acceptanceSignal.throwIfAborted();
         const candidates = encryptedMessageCandidates(params.node);
         requiresSignalCommit = candidates.length > 0;
         if (candidates.length === 0) {
-          await awaitWithAbort(
-            trackAcceptanceOperation(
-              params.appendEvent({
-                accepted: true,
-                at: new Date().toISOString(),
-                body: sanitizeNodeForJson(params.node),
-                method: "WEBSOCKET",
-                path: params.path,
-                query: {},
-                type: "api",
-              } as ServerRequestEvent & { accepted: true }),
-            ),
-            acceptanceSignal,
-          );
+          if (!wasPreviouslyPersisted) {
+            await awaitWithAbort(
+              trackAcceptanceOperation(
+                params.appendEvent({
+                  accepted: true,
+                  at: new Date().toISOString(),
+                  body: sanitizeNodeForJson(params.node),
+                  method: "WEBSOCKET",
+                  path: params.path,
+                  query: {},
+                  type: "api",
+                } as ServerRequestEvent & { accepted: true }),
+              ),
+              acceptanceSignal,
+            );
+          }
           return true;
         }
         const remoteCorrelationJid = canonicalizeWhatsAppUserCorrelationJid(params.remoteJid);
@@ -1793,23 +1882,26 @@ export async function persistAcceptedBaileysMessage(params: {
                     messageTimestamp: Math.floor(Date.now() / 1000),
                   }
                 : undefined;
-              await awaitWithAbort(
-                trackAcceptanceOperation(
-                  params.appendEvent({
-                    accepted: true,
-                    at: new Date().toISOString(),
-                    body: message ?? sanitizeNodeForJson(params.node),
-                    method: "WEBSOCKET",
-                    path: params.path,
-                    query: {},
-                    type: "api",
-                  } as ServerRequestEvent & { accepted: true }),
-                ),
-                acceptanceSignal,
-              );
+              if (!wasPreviouslyPersisted) {
+                await awaitWithAbort(
+                  trackAcceptanceOperation(
+                    params.appendEvent({
+                      accepted: true,
+                      at: new Date().toISOString(),
+                      body: message ?? sanitizeNodeForJson(params.node),
+                      method: "WEBSOCKET",
+                      path: params.path,
+                      query: {},
+                      type: "api",
+                    } as ServerRequestEvent & { accepted: true }),
+                  ),
+                  acceptanceSignal,
+                );
+              }
               return true;
             },
             ciphertext: candidate.ciphertext,
+            messageKey,
             recipientJid: candidate.recipientJid,
             remoteJid: params.remoteJid,
             signal: acceptanceSignal,
@@ -1822,6 +1914,9 @@ export async function persistAcceptedBaileysMessage(params: {
         }
         return false;
       } finally {
+        if (!acceptanceSignal.aborted && !signalCommitSucceeded) {
+          params.signalBundles.releaseMessagePreKeyProtection(messageKey);
+        }
         operationSettled();
       }
     },
@@ -1831,6 +1926,10 @@ export async function persistAcceptedBaileysMessage(params: {
       terminalDrain: drainAcceptanceOperations,
     },
   );
+  if (accepted) {
+    params.signalBundles.clearPersistedMessage(messageKey);
+  }
+  return accepted;
 }
 
 function encryptedMessageCandidates(node: BinaryNode): Array<{
