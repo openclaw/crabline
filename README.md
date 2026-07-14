@@ -437,8 +437,11 @@ Examples:
 - Telegram username targets require `@`, contain 4-32 letters, digits, or
   underscores, and normalize to lowercase. Numeric chat IDs must be nonzero and
   have an absolute value no greater than `2^52 - 1`.
-- WhatsApp Cloud API users: digits-only `wa_id` values such as `15551234567`
-- WhatsApp groups: `120363001234567890@g.us`
+- Built-in WhatsApp Cloud API users: digits-only `wa_id` values such as
+  `15551234567`
+- OpenClaw WhatsApp bridge users: `15551234567@s.whatsapp.net`
+  (legacy `15551234567@c.us` inputs are accepted and canonicalized)
+- OpenClaw WhatsApp bridge groups: `120363001234567890@g.us`
 - Discord channels and threads: Discord snowflake ids such as
   `123456789012345678`
 - iMessage recipients: E.164 phone numbers such as `+15551234567`, email
