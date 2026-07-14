@@ -38,7 +38,8 @@ function isNativeIMessageData(data: Record<string, unknown>): boolean {
 
 function iMessageNativeData(payload: Record<string, unknown>): Record<string, unknown> {
   const data = optionalRecord(payload, "data") ?? payload;
-  const message = optionalRecord(data, "message");
+  const params = optionalRecord(data, "params");
+  const message = optionalRecord(params ?? {}, "message") ?? optionalRecord(data, "message");
   if (message && isNativeIMessageData(message)) {
     return message;
   }
