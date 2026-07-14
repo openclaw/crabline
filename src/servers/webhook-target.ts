@@ -524,7 +524,7 @@ export async function validateWebhookTarget(params: {
   if (params.url.protocol !== "https:" && !allowThisLoopbackHttp) {
     return { error: "https-required" };
   }
-  if (!params.restrictPrivateAddresses) {
+  if (!params.restrictPrivateAddresses && !allowThisLoopbackHttp) {
     return { addresses: undefined };
   }
 

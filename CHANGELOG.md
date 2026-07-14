@@ -11,6 +11,7 @@
 - Preserve probe HTTP failures when response cancellation stalls and close readiness adapters before returning probe failures.
 - Run the TypeScript autoreview contract in the dedicated suite, protect root agent policy, and ship a provider-native iMessage fixture target.
 - Normalize nullish compiled-regex candidates and reject unsafe OpenClaw integers and whitespace-only webhook secrets without rewriting valid secret bytes.
+- Verify resolved loopback webhook addresses and complete HEAD responses without consuming representation bodies.
 - Bind private-directory ACL and recorder-lock mutations to verified identities, quarantine process locks before artifact cleanup, and preserve Windows ancestry rollback failures.
 - Require explicit remote iMessage API keys and decode legacy loopback channel metadata consistently.
 - Preserve configured Mattermost bot identity during admin ingress and avoid overwriting retained channels on direct-channel ID collisions.
