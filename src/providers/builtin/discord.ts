@@ -2,7 +2,7 @@ import { createPublicKey, verify, type KeyObject } from "node:crypto";
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { LocalMockProviderAdapter } from "../local-mock.js";
+import { LocalMockProviderAdapter, resolveGeneratedLocalMockRecorderPath } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
 import { DISCORD_SNOWFLAKE_RULE, getBuiltinTargetCodec } from "../target-normalizers.js";
 import {
@@ -172,7 +172,7 @@ function toRecorderPath(providerId: string, config: ProviderConfig): string {
   const configuredPath = config.discord?.recorder.path;
   return configuredPath
     ? path.resolve(configuredPath)
-    : path.resolve(".crabline", "recorders", `${providerId}.jsonl`);
+    : resolveGeneratedLocalMockRecorderPath(providerId);
 }
 
 export function normalizeDiscordWebhookPayload(payload: unknown) {

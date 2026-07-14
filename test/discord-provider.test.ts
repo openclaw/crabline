@@ -219,6 +219,15 @@ function createContext(config: ProviderConfig): ProviderContext {
 }
 
 describe("discord provider", () => {
+  it("confines generated recorder paths to the recorder directory", async () => {
+    const config = await createDiscordConfig(0);
+    config.discord!.recorder = {};
+
+    expect(() => new DiscordProviderAdapter("../escaped", config, "crabline", { env: {} })).toThrow(
+      /Provider ID cannot contain absolute or parent-directory paths/u,
+    );
+  });
+
   it("requires signatures for externally reachable interaction endpoints", async () => {
     const config = await createDiscordConfig(0);
     config.discord!.webhook.host = "0.0.0.0";
