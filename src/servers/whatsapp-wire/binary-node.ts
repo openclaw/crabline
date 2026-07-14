@@ -399,12 +399,14 @@ function decodeDecompressedBinaryNode(
     const user = readString(readByte());
     const device = readInt(2);
     const integrator = readInt(2);
-    const beforeServer = indexRef.index;
-    let server = "interop";
+    let server: string;
     try {
       server = readString(readByte());
-    } catch {
-      indexRef.index = beforeServer;
+    } catch (error) {
+      throw new Error("Invalid WhatsApp interop JID server.", { cause: error });
+    }
+    if (server !== "interop") {
+      throw new Error(`Invalid WhatsApp interop JID server: ${server}.`);
     }
     return `${integrator}-${user}:${device}@${server}`;
   };

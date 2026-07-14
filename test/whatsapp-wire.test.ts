@@ -739,6 +739,42 @@ describe("WhatsApp binary nodes", () => {
     expect(decoded.attrs["__proto__"]).toBe("polluted");
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
+
+  it("decodes an explicit interop JID server before the next attribute", async () => {
+    const frame = Buffer.concat([
+      Buffer.from([0, 248, 5, 19, 6, 245, 252, 4]),
+      Buffer.from("user"),
+      Buffer.from([0, 7, 0, 42, 252, 7]),
+      Buffer.from("interop"),
+      Buffer.from([8, 252, 10]),
+      Buffer.from("message-id"),
+    ]);
+
+    await expect(decodeBinaryNode(frame)).resolves.toMatchObject({
+      attrs: {
+        from: "42-user:7@interop",
+        id: "message-id",
+      },
+      tag: "message",
+    });
+  });
+
+  it.each([
+    ["omitted", Buffer.alloc(0)],
+    [
+      "invalid",
+      Buffer.concat([Buffer.from([252, 11]), Buffer.from("not-interop")]),
+    ],
+  ])("rejects an %s interop JID server", async (_label, serverToken) => {
+    const frame = Buffer.concat([
+      Buffer.from([0, 248, 3, 19, 6, 245, 252, 4]),
+      Buffer.from("user"),
+      Buffer.from([0, 7, 0, 42]),
+      serverToken,
+    ]);
+
+    await expect(decodeBinaryNode(frame)).rejects.toThrow("Invalid WhatsApp interop JID server");
+  });
 });
 
 describe("WhatsApp signal bundle store", () => {
