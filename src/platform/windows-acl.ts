@@ -636,10 +636,22 @@ function Assert-SafeParentNamespace([string]$candidate) {
   $parentDirectory = [CrablineWindowsDirectoryHandle]::Open($candidate, $false)
   try {
     $parentIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($parentDirectory)
-    $parentAcl = [System.Security.AccessControl.DirectorySecurity]::new()
-    $parentAcl.SetSecurityDescriptorBinaryForm(
-      [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($parentDirectory)
+    $parentDescriptor = [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor(
+      $parentDirectory
     )
+    $parentRawDescriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new(
+      $parentDescriptor,
+      0
+    )
+    if (
+      (($parentRawDescriptor.ControlFlags -band
+        [System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -eq 0) -or
+      $null -eq $parentRawDescriptor.DiscretionaryAcl
+    ) {
+      throw "Private directory parent namespace has a null DACL."
+    }
+    $parentAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $parentAcl.SetSecurityDescriptorBinaryForm($parentDescriptor)
     $parentOwner = $parentAcl.GetOwner(
       [System.Security.Principal.SecurityIdentifier]
     )

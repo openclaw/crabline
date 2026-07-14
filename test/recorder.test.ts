@@ -565,6 +565,9 @@ describe("recorder", () => {
     expect(script).toContain("GetSecurityInfo(");
     expect(script).toContain("SetSecurityInfo(");
     expect(script).toContain("Assert-SafeParentNamespace");
+    expect(script).toContain("RawSecurityDescriptor");
+    expect(script).toContain("DiscretionaryAclPresent");
+    expect(script).toContain("Private directory parent namespace has a null DACL.");
     expect(script).toContain("DeleteSubdirectoriesAndFiles");
     expect(script).toContain("Private directory parent namespace permits untrusted replacement.");
     expect(script).toContain("[CrablineWindowsDirectoryHandle]::Create(\n      $candidate,");
@@ -737,6 +740,54 @@ describe("recorder", () => {
         "Could not atomically create or verify an owner-only Windows directory",
       );
       await expect(stat(missingTarget)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "rejects Windows recorder lock roots beneath a null-DACL parent",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const parent = path.join(directory, "null-dacl-parent");
+      const lockRoot = path.join(parent, "lock-root");
+      await mkdir(parent);
+
+      const powershellPath = path.join(
+        process.env.SystemRoot ?? String.raw`C:\Windows`,
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      execFileSync(
+        powershellPath,
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          [
+            "$acl = Get-Acl -LiteralPath $env:CRABLINE_TEST_NULL_DACL",
+            [
+              '$acl.SetSecurityDescriptorSddlForm("D:NO_ACCESS_CONTROL",',
+              "[System.Security.AccessControl.AccessControlSections]::Access)",
+            ].join(" "),
+            "Set-Acl -LiteralPath $env:CRABLINE_TEST_NULL_DACL -AclObject $acl",
+          ].join("; "),
+        ],
+        {
+          env: {
+            ...process.env,
+            CRABLINE_TEST_NULL_DACL: parent,
+          },
+          windowsHide: true,
+        },
+      );
+
+      await expect(createOwnerOnlyWindowsDirectory(lockRoot)).rejects.toThrow(
+        "Could not atomically create or verify an owner-only Windows directory",
+      );
+      await expect(stat(lockRoot)).rejects.toMatchObject({ code: "ENOENT" });
     },
   );
 
