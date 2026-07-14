@@ -309,6 +309,85 @@ describe("Mattermost local provider server", () => {
     });
   });
 
+  it("rejects admin ingress that would mutate the configured bot identity", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "fake",
+      botUsername: "configured_bot",
+    });
+    servers.push(server);
+
+    const mutation = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        channelId: CHANNEL_ID,
+        senderId: server.manifest.botUserId,
+        senderName: "mutated_bot",
+        text: "identity mutation",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(mutation.status).toBe(400);
+    await expect(mutation.json()).resolves.toEqual({
+      error: "senderName must match the configured bot username",
+      ok: false,
+    });
+
+    const me = await fetch(`${server.manifest.endpoints.apiRoot}/users/me`, {
+      headers: { authorization: "Bearer fake" },
+    });
+    await expect(me.json()).resolves.toMatchObject({
+      id: server.manifest.botUserId,
+      username: "configured_bot",
+    });
+    const mutatedUser = await fetch(
+      `${server.manifest.endpoints.apiRoot}/users/username/mutated_bot`,
+      { headers: { authorization: "Bearer fake" } },
+    );
+    expect(mutatedUser.status).toBe(404);
+
+    const registered = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ channelId: CHANNEL_ID, senderId: USER_ID, text: "register channel" }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(registered.status).toBe(200);
+
+    const socket = new WebSocket(server.manifest.endpoints.websocketUrl);
+    await waitForSocketOpen(socket);
+    const authenticated = nextMessages(socket, 3);
+    socket.send(
+      JSON.stringify({
+        action: "authentication_challenge",
+        data: { token: "fake" },
+        seq: 1,
+      }),
+    );
+    await authenticated;
+
+    const posted = nextMessage(socket);
+    const response = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+      body: JSON.stringify({ channel_id: CHANNEL_ID, message: "configured identity" }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(response.status).toBe(201);
+    await expect(posted).resolves.toMatchObject({
+      data: { sender_name: "configured_bot" },
+      event: "posted",
+    });
+    socket.close();
+  });
+
   it("returns native route errors with request IDs and parses Bearer credentials exactly", async () => {
     const server = await startMattermostServer({ botToken: "fake" });
     servers.push(server);
@@ -796,6 +875,70 @@ describe("Mattermost local provider server", () => {
       expect(response.status).toBe(status);
       await expect(response.json()).resolves.toMatchObject(message ? { message } : { type: "D" });
     }
+  });
+
+  it("preserves unrelated retained channels when direct-channel IDs collide", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "fake",
+      maxCommittedChannels: 2,
+    });
+    servers.push(server);
+    const participantIds = [server.manifest.botUserId, USER_ID].sort();
+    const directName = participantIds.join("__");
+    const collidingChannelId = mattermostId(`dm:${participantIds.join(":")}`);
+
+    const retained = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        channelDisplayName: "Retained channel",
+        channelId: collidingChannelId,
+        channelName: "retained-channel",
+        channelType: "O",
+        senderId: USER_ID,
+        senderName: "alice",
+        text: "retain me",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(retained.status).toBe(200);
+
+    const direct = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
+      body: JSON.stringify(participantIds),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(direct.status).toBe(201);
+    const directChannel = (await direct.json()) as { id: string; name: string; type: string };
+    expect(directChannel).toMatchObject({ name: directName, type: "D" });
+    expect(directChannel.id).not.toBe(collidingChannelId);
+
+    const preserved = await fetch(
+      `${server.manifest.endpoints.apiRoot}/channels/${collidingChannelId}`,
+      { headers: { authorization: "Bearer fake" } },
+    );
+    await expect(preserved.json()).resolves.toMatchObject({
+      display_name: "Retained channel",
+      id: collidingChannelId,
+      name: "retained-channel",
+      type: "O",
+    });
+
+    const repeated = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
+      body: JSON.stringify(participantIds),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    await expect(repeated.json()).resolves.toMatchObject({ id: directChannel.id });
   });
 
   it("uses root_id for post threading and restricts mutations to bot-owned posts", async () => {
