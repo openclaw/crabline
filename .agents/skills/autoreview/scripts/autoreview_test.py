@@ -47,6 +47,22 @@ DRAFT_REPORT = {
 }
 
 
+class AutoreviewSecretTests(unittest.TestCase):
+    def test_allows_the_static_local_imessage_mock_key(self) -> None:
+        assignment = (
+            'apiKey: config.imessage?.apiKey ?? env.IMESSAGE_API_KEY ?? '
+            '"local-mock-imessage-api-key",'
+        )
+
+        self.assertFalse(AUTOREVIEW.secret_text_risk(assignment))
+        unsafe_value = "-".join(("live-looking", "imessage", "api-key"))
+        unsafe_assignment = "api" + (
+            'Key: config.imessage?.apiKey ?? env.IMESSAGE_API_KEY ?? '
+            f'"{unsafe_value}",'
+        )
+        self.assertTrue(AUTOREVIEW.secret_text_risk(unsafe_assignment))
+
+
 class AutoreviewCursorTests(unittest.TestCase):
     def test_extract_json_prefers_terminal_result_event(self) -> None:
         stream = "\n".join(

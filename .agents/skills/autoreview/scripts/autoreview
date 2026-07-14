@@ -275,6 +275,7 @@ SECRET_PLACEHOLDER_VALUES = {
     "example",
     "fake",
     "gateway-token",
+    "local-mock-imessage-api-key",
     "not-a-real",
     "placeholder",
     "redacted",
