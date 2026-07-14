@@ -530,23 +530,127 @@ async function serverRecorderUnixLockRoot(currentUserId: number): Promise<string
   );
 }
 
-async function secureRecorderLockRoot(root: string): Promise<string> {
-  const canonicalRoot = await realpath(root);
-  if (path.relative(root, canonicalRoot) !== "") {
+type SecuredRecorderLockRoot = {
+  assertIdentity(): Promise<void>;
+  close(): Promise<void>;
+  root: string;
+};
+
+type SecuredRecorderLockArtifact = {
+  assertIdentity(): Promise<void>;
+  close(): Promise<void>;
+};
+
+type RecorderLockArtifactIdentity = {
+  dev: bigint;
+  ino: bigint;
+};
+
+async function secureRecorderLockArtifact(
+  lockTarget: string,
+  expectedIdentity: RecorderLockArtifactIdentity,
+): Promise<SecuredRecorderLockArtifact> {
+  const lockDirectory = `${lockTarget}.lock`;
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(
+      lockDirectory,
+      process.platform === "win32"
+        ? "r"
+        : fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+    );
+  } catch (error) {
+    throw new Error("Server recorder shared lock artifact changed during acquisition.", {
+      cause: error,
+    });
+  }
+  try {
+    const identity = await handle.stat({ bigint: true });
+    const current = await lstat(lockDirectory, { bigint: true });
+    if (
+      !identity.isDirectory() ||
+      !current.isDirectory() ||
+      current.isSymbolicLink() ||
+      identity.dev !== expectedIdentity.dev ||
+      identity.ino !== expectedIdentity.ino ||
+      identity.dev !== current.dev ||
+      identity.ino !== current.ino
+    ) {
+      throw new Error("Server recorder shared lock artifact changed during acquisition.");
+    }
+    return {
+      async assertIdentity() {
+        const held = await handle.stat({ bigint: true });
+        const candidate = await lstat(lockDirectory, { bigint: true });
+        if (
+          !held.isDirectory() ||
+          !candidate.isDirectory() ||
+          candidate.isSymbolicLink() ||
+          held.dev !== identity.dev ||
+          held.ino !== identity.ino ||
+          candidate.dev !== identity.dev ||
+          candidate.ino !== identity.ino
+        ) {
+          throw new Error("Server recorder shared lock artifact changed after acquisition.");
+        }
+      },
+      async close() {
+        await handle.close();
+      },
+    };
+  } catch (error) {
+    try {
+      await handle.close();
+    } catch (closeError) {
+      const aggregateError = new AggregateError(
+        [error, closeError],
+        "Server recorder shared lock validation and handle cleanup both failed.",
+      );
+      aggregateError.cause = closeError;
+      throw aggregateError;
+    }
+    throw error;
+  }
+}
+
+async function secureRecorderLockRoot(root: string): Promise<SecuredRecorderLockRoot> {
+  const configuredRoot = path.resolve(root);
+  let windowsNamespace:
+    | {
+        path: string;
+        snapshot: WindowsDirectorySecuritySnapshot;
+      }
+    | undefined;
+  let currentUserId: number | undefined;
+  if (process.platform === "win32") {
+    const namespacePath = path.dirname(configuredRoot);
+    // Writers may share the root ACL, but its parent namespace must not permit
+    // an untrusted principal to replace that root.
+    windowsNamespace = {
+      path: namespacePath,
+      snapshot: await readWindowsDirectoryNamespaceSecuritySnapshot(namespacePath),
+    };
+  } else {
+    currentUserId = process.geteuid?.();
+    if (currentUserId === undefined) {
+      throw new Error("Server recorder identity locking requires a current user id.");
+    }
+    await verifyPrivateServerRecorderLockAncestry(path.dirname(configuredRoot), currentUserId);
+  }
+  const canonicalRoot = await realpath(configuredRoot);
+  if (path.relative(configuredRoot, canonicalRoot) !== "") {
     throw new Error(
       `${RECORDER_LOCK_DIRECTORY_ENV} must name a canonical directory without symlink components.`,
     );
   }
-  if (process.platform === "win32") {
-    const identity = await lstat(canonicalRoot);
-    if (!identity.isDirectory() || identity.isSymbolicLink()) {
-      throw new Error("Server recorder lock directory is not a private directory.");
-    }
-    return canonicalRoot;
+  if (currentUserId !== undefined) {
+    await verifyPrivateServerRecorderLockAncestry(path.dirname(canonicalRoot), currentUserId);
   }
   const handle = await open(
     canonicalRoot,
-    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+    process.platform === "win32"
+      ? "r"
+      : fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
   );
   try {
     const identity = await handle.stat({ bigint: true });
@@ -554,15 +658,79 @@ async function secureRecorderLockRoot(root: string): Promise<string> {
     if (
       !identity.isDirectory() ||
       !current.isDirectory() ||
+      current.isSymbolicLink() ||
       identity.dev !== current.dev ||
       identity.ino !== current.ino
     ) {
       throw new Error("Server recorder lock directory changed while opening it.");
     }
-  } finally {
-    await handle.close();
+    if (
+      currentUserId !== undefined &&
+      ((identity.mode & 0o002n) !== 0n || (current.mode & 0o002n) !== 0n)
+    ) {
+      throw new Error("Server recorder shared lock directory is writable by every local user.");
+    }
+    if (windowsNamespace) {
+      const currentNamespace = await readWindowsDirectoryNamespaceSecuritySnapshot(
+        windowsNamespace.path,
+      );
+      if (
+        currentNamespace.identity !== windowsNamespace.snapshot.identity ||
+        currentNamespace.securityDescriptor !== windowsNamespace.snapshot.securityDescriptor
+      ) {
+        throw new Error("Server recorder shared lock directory changed while opening it.");
+      }
+    }
+    return {
+      async assertIdentity() {
+        if (currentUserId !== undefined) {
+          await verifyPrivateServerRecorderLockAncestry(path.dirname(canonicalRoot), currentUserId);
+        }
+        const held = await handle.stat({ bigint: true });
+        const candidate = await lstat(canonicalRoot, { bigint: true });
+        if (
+          !held.isDirectory() ||
+          !candidate.isDirectory() ||
+          candidate.isSymbolicLink() ||
+          held.dev !== identity.dev ||
+          held.ino !== identity.ino ||
+          candidate.dev !== identity.dev ||
+          candidate.ino !== identity.ino ||
+          (currentUserId !== undefined &&
+            ((held.mode & 0o002n) !== 0n || (candidate.mode & 0o002n) !== 0n))
+        ) {
+          throw new Error("Server recorder shared lock directory changed after validation.");
+        }
+        if (windowsNamespace) {
+          const currentNamespace = await readWindowsDirectoryNamespaceSecuritySnapshot(
+            windowsNamespace.path,
+          );
+          if (
+            currentNamespace.identity !== windowsNamespace.snapshot.identity ||
+            currentNamespace.securityDescriptor !== windowsNamespace.snapshot.securityDescriptor
+          ) {
+            throw new Error("Server recorder shared lock directory changed after validation.");
+          }
+        }
+      },
+      async close() {
+        await handle.close();
+      },
+      root: canonicalRoot,
+    };
+  } catch (error) {
+    try {
+      await handle.close();
+    } catch (closeError) {
+      const aggregateError = new AggregateError(
+        [error, closeError],
+        "Server recorder lock-root validation and handle cleanup both failed.",
+      );
+      aggregateError.cause = closeError;
+      throw aggregateError;
+    }
+    throw error;
   }
-  return canonicalRoot;
 }
 
 function recorderIdentityLockPath(root: string, identity: RecorderFileIdentity): string {
@@ -574,18 +742,29 @@ function recorderSharedIdentityLockPath(root: string, identity: RecorderFileIden
   return path.join(root, `recorder-${identity.ino}`);
 }
 
-function deduplicateRecorderLockTargets(targets: string[]): string[] {
-  const seen = new Set<string>();
-  return targets.filter((target) => {
-    const resolved = path.resolve(target);
+type RecorderLockTarget = {
+  namespaces: SecuredRecorderLockRoot[];
+  path: string;
+};
+
+function deduplicateRecorderLockTargets(targets: RecorderLockTarget[]): RecorderLockTarget[] {
+  const retained = new Map<string, RecorderLockTarget>();
+  for (const target of targets) {
+    const resolved = path.resolve(target.path);
     const key =
       process.platform === "win32" ? path.win32.normalize(resolved).toLowerCase() : resolved;
-    if (seen.has(key)) {
-      return false;
+    const existing = retained.get(key);
+    if (existing) {
+      for (const namespace of target.namespaces) {
+        if (!existing.namespaces.includes(namespace)) {
+          existing.namespaces.push(namespace);
+        }
+      }
+      continue;
     }
-    seen.add(key);
-    return true;
-  });
+    retained.set(key, { namespaces: [...target.namespaces], path: target.path });
+  }
+  return [...retained.values()];
 }
 
 export async function secureServerRecorderWindowsLockRoot(
@@ -674,39 +853,65 @@ async function recorderLocalIdentityLockTarget(
   return recorderIdentityLockPath(await serverRecorderUnixLockRoot(currentUserId), fileIdentity);
 }
 
-async function recorderIdentityLockTargets(fileIdentity: RecorderFileIdentity): Promise<string[]> {
+async function recorderIdentityLockTargets(
+  fileIdentity: RecorderFileIdentity,
+): Promise<RecorderLockTarget[]> {
   const configuredRoot = process.env[RECORDER_LOCK_DIRECTORY_ENV]?.trim();
   if (configuredRoot) {
     if (!path.isAbsolute(configuredRoot)) {
       throw new Error(`${RECORDER_LOCK_DIRECTORY_ENV} must be an absolute path.`);
     }
     const sharedRoot = await secureRecorderLockRoot(configuredRoot);
-    // Lock every configured writer in the shared namespace before a first hardlink can appear.
-    return deduplicateRecorderLockTargets([
-      await recorderLocalIdentityLockTarget(fileIdentity),
-      recorderSharedIdentityLockPath(sharedRoot, fileIdentity),
-    ]);
+    try {
+      // Lock every configured writer in the shared namespace before a first hardlink can appear.
+      return deduplicateRecorderLockTargets([
+        { namespaces: [], path: await recorderLocalIdentityLockTarget(fileIdentity) },
+        {
+          namespaces: [sharedRoot],
+          path: recorderSharedIdentityLockPath(sharedRoot.root, fileIdentity),
+        },
+      ]);
+    } catch (error) {
+      await sharedRoot.close();
+      throw error;
+    }
   }
   if (fileIdentity.nlink > 1n) {
     throw new Error(
       `Server recorder hardlinks require ${RECORDER_LOCK_DIRECTORY_ENV} to name one shared writable lock directory for every writer.`,
     );
   }
-  return deduplicateRecorderLockTargets([await recorderLocalIdentityLockTarget(fileIdentity)]);
+  return deduplicateRecorderLockTargets([
+    { namespaces: [], path: await recorderLocalIdentityLockTarget(fileIdentity) },
+  ]);
 }
 
-async function acquireSingleRecorderLock(filePath: string): Promise<() => Promise<void>> {
+type AcquiredRecorderLock = {
+  artifactIdentity: RecorderLockArtifactIdentity | undefined;
+  release(): Promise<void>;
+};
+
+async function acquireSingleRecorderLock(filePath: string): Promise<AcquiredRecorderLock> {
   const deadline = performance.now() + RECORDER_LOCK_STALE_MS + RECORDER_LOCK_WAIT_MARGIN_MS;
-  const lockFileSystem = createProcessOwnedLockFileSystem();
+  const lockDirectory = path.resolve(`${filePath}.lock`);
+  let artifactIdentity: RecorderLockArtifactIdentity | undefined;
+  const lockFileSystem = createProcessOwnedLockFileSystem({
+    onDirectoryOwned(directoryPath, identity) {
+      if (path.resolve(directoryPath) === lockDirectory) {
+        artifactIdentity = identity;
+      }
+    },
+  });
   for (;;) {
     try {
-      return await lock(filePath, {
+      const release = await lock(filePath, {
         fs: lockFileSystem,
         realpath: false,
         retries: 0,
         stale: RECORDER_LOCK_STALE_MS,
         update: RECORDER_LOCK_UPDATE_MS,
       });
+      return { artifactIdentity, release };
     } catch (error) {
       if (!isRecorderLockContention(error)) {
         throw error;
@@ -742,16 +947,21 @@ async function releaseRecorderLockSet(releases: Array<() => Promise<void>>): Pro
 async function acquireRecorderLock(
   filePath: string,
   useProcessLocalWindowsTarget = true,
-): Promise<() => Promise<void>> {
+): Promise<AcquiredRecorderLock> {
   if (process.platform !== "win32" || !useProcessLocalWindowsTarget) {
     return await acquireSingleRecorderLock(filePath);
   }
-  const localRelease = await acquireSingleRecorderLock(await recorderProcessLockTarget(filePath));
+  const localLock = await acquireSingleRecorderLock(await recorderProcessLockTarget(filePath));
   try {
-    const sharedRelease = await acquireSingleRecorderLock(filePath);
-    return async () => await releaseRecorderLockSet([localRelease, sharedRelease]);
+    const sharedLock = await acquireSingleRecorderLock(filePath);
+    return {
+      artifactIdentity: sharedLock.artifactIdentity,
+      async release() {
+        await releaseRecorderLockSet([localLock.release, sharedLock.release]);
+      },
+    };
   } catch (error) {
-    const [releaseResult] = await Promise.allSettled([localRelease()]);
+    const [releaseResult] = await Promise.allSettled([localLock.release()]);
     if (releaseResult?.status === "rejected") {
       throw recorderLockAcquisitionReleaseError(filePath, error, releaseResult.reason);
     }
@@ -759,13 +969,62 @@ async function acquireRecorderLock(
   }
 }
 
-async function acquireRecorderIdentityLock(
-  identity: RecorderFileIdentity,
-): Promise<() => Promise<void>> {
+async function acquireRecorderIdentityLock(identity: RecorderFileIdentity): Promise<{
+  assertNamespace(): Promise<void>;
+  release(): Promise<void>;
+}> {
   const releases: Array<() => Promise<void>> = [];
+  const artifacts = new Set<SecuredRecorderLockArtifact>();
+  const namespaces = new Set<SecuredRecorderLockRoot>();
+  const closeBindings = async (): Promise<unknown[]> => {
+    const closeResults = await Promise.allSettled(
+      [...artifacts, ...namespaces].map(async (binding) => binding.close()),
+    );
+    return closeResults
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
+  };
+  const assertNamespaces = async (): Promise<void> => {
+    for (const namespace of namespaces) {
+      await namespace.assertIdentity();
+    }
+    for (const artifact of artifacts) {
+      await artifact.assertIdentity();
+    }
+  };
   try {
-    for (const target of await recorderIdentityLockTargets(identity)) {
-      releases.push(await acquireRecorderLock(target, false));
+    const targets = await recorderIdentityLockTargets(identity);
+    for (const target of targets) {
+      for (const namespace of target.namespaces) {
+        namespaces.add(namespace);
+      }
+    }
+    for (const target of targets) {
+      for (const namespace of target.namespaces) {
+        await namespace.assertIdentity();
+      }
+      const acquired = await acquireRecorderLock(target.path, false);
+      try {
+        if (target.namespaces.length > 0) {
+          if (!acquired.artifactIdentity) {
+            throw new Error(
+              "Server recorder shared lock identity is unavailable after acquisition.",
+            );
+          }
+          artifacts.add(await secureRecorderLockArtifact(target.path, acquired.artifactIdentity));
+        }
+      } catch (error) {
+        try {
+          await acquired.release();
+        } catch (releaseError) {
+          throw recorderLockAcquisitionReleaseError(target.path, error, releaseError);
+        }
+        throw error;
+      }
+      releases.push(acquired.release);
+      for (const namespace of target.namespaces) {
+        await namespace.assertIdentity();
+      }
     }
   } catch (error) {
     const releaseResults = await Promise.allSettled(
@@ -774,12 +1033,43 @@ async function acquireRecorderIdentityLock(
     const releaseErrors = releaseResults
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
       .map((result) => result.reason);
-    if (releaseErrors.length > 0) {
-      throw recorderIdentityLockAcquisitionReleaseError(error, releaseErrors);
+    const cleanupErrors = [...releaseErrors, ...(await closeBindings())];
+    if (cleanupErrors.length > 0) {
+      throw recorderIdentityLockAcquisitionReleaseError(error, cleanupErrors);
     }
     throw error;
   }
-  return async () => await releaseRecorderLockSet(releases);
+  return {
+    assertNamespace: assertNamespaces,
+    async release() {
+      let releaseError: unknown;
+      try {
+        await releaseRecorderLockSet(releases);
+      } catch (error) {
+        releaseError = error;
+      }
+      const closeErrors = await closeBindings();
+      if (releaseError !== undefined) {
+        if (closeErrors.length > 0) {
+          throw new AggregateError(
+            [releaseError, ...closeErrors],
+            "Server recorder identity lock and namespace cleanup both failed.",
+            { cause: releaseError },
+          );
+        }
+        throw releaseError;
+      }
+      if (closeErrors.length === 1) {
+        throw closeErrors[0];
+      }
+      if (closeErrors.length > 1) {
+        throw new AggregateError(
+          closeErrors,
+          "Multiple server recorder lock namespaces failed to close.",
+        );
+      }
+    },
+  };
 }
 
 async function withRecorderLock(
@@ -787,7 +1077,7 @@ async function withRecorderLock(
   logicalPath: string,
   operation: () => Promise<boolean | undefined>,
 ): Promise<boolean | undefined> {
-  const release = await acquireRecorderLock(lockPath);
+  const { release } = await acquireRecorderLock(lockPath);
   let operationFailed = false;
   let operationError: unknown;
   let result: boolean | undefined;
@@ -866,7 +1156,12 @@ async function appendRecorderAttempt(params: {
   let committed = false;
   let operationFailed = false;
   let operationError: unknown;
-  let releaseIdentityLock: (() => Promise<void>) | undefined;
+  let identityLock:
+    | {
+        assertNamespace(): Promise<void>;
+        release(): Promise<void>;
+      }
+    | undefined;
   let result: "committed" | "retargeted" | "retry" | undefined;
   try {
     const openedStats = await file.stat({ bigint: true });
@@ -883,7 +1178,8 @@ async function appendRecorderAttempt(params: {
     } else if (!(await recorderPathHasIdentity(params.publicationPath, identity))) {
       result = "retry";
     } else {
-      releaseIdentityLock = await acquireRecorderIdentityLock(lockedIdentity);
+      identityLock = await acquireRecorderIdentityLock(lockedIdentity);
+      await identityLock.assertNamespace();
       // Lock acquisition may have blocked while another writer repaired or appended.
       let stats = await file.stat({ bigint: true });
       const currentIdentity = requireRecorderFileIdentity(stats);
@@ -914,11 +1210,13 @@ async function appendRecorderAttempt(params: {
             }
             try {
               JSON.parse(tail.toString("utf8"));
+              await identityLock.assertNamespace();
               await appendRecorderText(file, "\n", fileSize);
             } catch (error) {
               if (!(error instanceof SyntaxError)) {
                 throw error;
               }
+              await identityLock.assertNamespace();
               if (
                 !(await truncateRecorderFile(file, params.publicationPath, identity, tailStart))
               ) {
@@ -939,6 +1237,7 @@ async function appendRecorderAttempt(params: {
           result = "retry";
         } else if (result === undefined) {
           try {
+            await identityLock.assertNamespace();
             await appendRecorderText(file, params.line, recorderFileSize(stats.size));
             await file.sync();
             if (
@@ -981,9 +1280,9 @@ async function appendRecorderAttempt(params: {
     operationFailed = true;
     operationError = error;
   }
-  if (releaseIdentityLock) {
+  if (identityLock) {
     try {
-      await releaseIdentityLock();
+      await identityLock.release();
     } catch (releaseError) {
       if (operationFailed) {
         operationError = recorderLockReleaseError(params.logicalPath, operationError, releaseError);

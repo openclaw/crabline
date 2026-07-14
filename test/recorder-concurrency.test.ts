@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   realpath,
+  rename,
   rm,
   stat,
   symlink,
@@ -41,6 +42,9 @@ const fsMocks = vi.hoisted(() => ({
   serverFileExists: false,
   serverFileStat:
     vi.fn<() => Promise<{ dev: number; ino: number; nlink?: number; size: number }>>(),
+  serverLockRootClose: vi.fn<() => void>(),
+  serverLockRootPath: "",
+  serverSharedLockAfterMkdir: vi.fn<(filePath: string) => Promise<void>>(),
   serverOpen: vi.fn<(filePath: string, flags: number | string) => void>(),
   serverStat: vi.fn<(filePath: string) => Promise<{ dev: number; ino: number; size: number }>>(),
   serverSync: vi.fn<(filePath: string) => Promise<void>>(),
@@ -58,7 +62,46 @@ vi.mock("proper-lockfile", async (importOriginal) => {
   const actual = await importOriginal<typeof import("proper-lockfile")>();
   return {
     ...actual,
-    lock: fsMocks.lock,
+    lock: async (filePath: string, options?: unknown) => {
+      const release = await fsMocks.lock(filePath, options);
+      const configuredRoot = process.env.CRABLINE_RECORDER_LOCK_DIR?.trim();
+      if (!configuredRoot || !filePath.startsWith(`${configuredRoot}${path.sep}recorder-`)) {
+        return release;
+      }
+      const lockDirectory = `${filePath}.lock`;
+      const lockFileSystem = (options as { fs: typeof import("node:fs") }).fs;
+      await new Promise<void>((resolve, reject) => {
+        lockFileSystem.mkdir(lockDirectory, (error) => (error ? reject(error) : resolve()));
+      });
+      await fsMocks.serverSharedLockAfterMkdir(filePath);
+      return async () => {
+        let removalError: unknown;
+        await new Promise<void>((resolve) => {
+          lockFileSystem.rmdir(lockDirectory, (error) => {
+            if (error && error.code !== "ENOENT") {
+              removalError = error;
+            }
+            resolve();
+          });
+        });
+        try {
+          await release();
+        } catch (error) {
+          if (removalError !== undefined) {
+            const aggregateError = new AggregateError(
+              [removalError, error],
+              "Mock lock cleanup failed.",
+            );
+            aggregateError.cause = error;
+            throw aggregateError;
+          }
+          throw error;
+        }
+        if (removalError !== undefined) {
+          throw removalError;
+        }
+      };
+    },
   };
 });
 
@@ -111,6 +154,15 @@ vi.mock("node:fs/promises", async (importOriginal) => {
           close: async () => {},
           sync: async () => await fsMocks.providerDirectorySync(filePath),
         } as unknown as Awaited<ReturnType<typeof actual.open>>;
+      }
+      if (filePath === fsMocks.serverLockRootPath) {
+        const handle = await actual.open(...args);
+        const close = handle.close.bind(handle);
+        handle.close = async () => {
+          fsMocks.serverLockRootClose();
+          await close();
+        };
+        return handle;
       }
       if (
         (args[1] === "a+" || args[1] === "ax+" || args[1] === serverRecorderExistingOpenFlags) &&
@@ -232,6 +284,10 @@ beforeEach(() => {
   fsMocks.serverFileExists = false;
   fsMocks.serverFileStat.mockReset();
   fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, nlink: 1, size: 0 });
+  fsMocks.serverLockRootClose.mockReset();
+  fsMocks.serverLockRootPath = "";
+  fsMocks.serverSharedLockAfterMkdir.mockReset();
+  fsMocks.serverSharedLockAfterMkdir.mockResolvedValue();
   fsMocks.serverOpen.mockReset();
   fsMocks.serverStat.mockReset();
   fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 1, size: 0 });
@@ -447,7 +503,8 @@ describe("recorder append serialization", () => {
       fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
       fsMocks.serverWrite.mockResolvedValue(undefined);
       fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, nlink: 2, size: 0 });
-      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", await realpath(tmpdir()));
+      const lockRoot = await mkdtemp(path.join(tmpdir(), "crabline-server-release-lock-"));
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", await realpath(lockRoot));
       const pathRelease = vi.fn(async () => {});
       const localIdentityRelease = vi.fn(async () => {});
       const releaseFailure = new Error("identity lock cleanup failed");
@@ -460,33 +517,37 @@ describe("recorder append serialization", () => {
         .mockResolvedValueOnce(sharedIdentityRelease);
       const observer = vi.fn();
 
-      await expect(
-        recordServerEvent({
-          event: {
-            at: "2026-07-12T10:00:00.000Z",
-            method: "POST",
-            path: "/committed-hardlink-release",
-            query: {},
-            type: "api",
-          },
-          onEvent: observer,
-          recorderPath,
-        }),
-      ).rejects.toMatchObject({
-        cause: releaseFailure,
-        committed: true,
-        indeterminate: false,
-        name: "ServerRecorderCommittedError",
-      });
-      expect(observer).not.toHaveBeenCalled();
-      expect(pathRelease).toHaveBeenCalledOnce();
-      expect(localIdentityRelease).toHaveBeenCalledOnce();
-      expect(sharedIdentityRelease).toHaveBeenCalledOnce();
-      expect(
-        fsMocks.lock.mock.calls.some(([lockPath]) =>
-          path.basename(String(lockPath)).startsWith("recorder-"),
-        ),
-      ).toBe(true);
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/committed-hardlink-release",
+              query: {},
+              type: "api",
+            },
+            onEvent: observer,
+            recorderPath,
+          }),
+        ).rejects.toMatchObject({
+          cause: releaseFailure,
+          committed: true,
+          indeterminate: false,
+          name: "ServerRecorderCommittedError",
+        });
+        expect(observer).not.toHaveBeenCalled();
+        expect(pathRelease).toHaveBeenCalledOnce();
+        expect(localIdentityRelease).toHaveBeenCalledOnce();
+        expect(sharedIdentityRelease).toHaveBeenCalledOnce();
+        expect(
+          fsMocks.lock.mock.calls.some(([lockPath]) =>
+            path.basename(String(lockPath)).startsWith("recorder-"),
+          ),
+        ).toBe(true);
+      } finally {
+        await rm(lockRoot, { force: true, recursive: true });
+      }
     },
   );
 
@@ -500,7 +561,8 @@ describe("recorder append serialization", () => {
       fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
       fsMocks.serverWrite.mockResolvedValue(undefined);
       fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, nlink: 2, size: 0 });
-      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", await realpath(tmpdir()));
+      const lockRoot = await mkdtemp(path.join(tmpdir(), "crabline-server-unavailable-lock-"));
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", await realpath(lockRoot));
       const sharedFailure = Object.assign(new Error("shared lock filesystem full"), {
         code: "ENOSPC",
       });
@@ -511,22 +573,26 @@ describe("recorder append serialization", () => {
         .mockResolvedValueOnce(localIdentityRelease)
         .mockRejectedValueOnce(sharedFailure);
 
-      await expect(
-        recordServerEvent({
-          event: {
-            at: "2026-07-12T10:00:00.000Z",
-            method: "POST",
-            path: "/shared-lock-unavailable",
-            query: {},
-            type: "api",
-          },
-          onEvent: undefined,
-          recorderPath,
-        }),
-      ).rejects.toBe(sharedFailure);
-      expect(fsMocks.serverWrite).not.toHaveBeenCalled();
-      expect(pathRelease).toHaveBeenCalledOnce();
-      expect(localIdentityRelease).toHaveBeenCalledOnce();
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/shared-lock-unavailable",
+              query: {},
+              type: "api",
+            },
+            onEvent: undefined,
+            recorderPath,
+          }),
+        ).rejects.toBe(sharedFailure);
+        expect(fsMocks.serverWrite).not.toHaveBeenCalled();
+        expect(pathRelease).toHaveBeenCalledOnce();
+        expect(localIdentityRelease).toHaveBeenCalledOnce();
+      } finally {
+        await rm(lockRoot, { force: true, recursive: true });
+      }
     },
   );
 
@@ -564,6 +630,162 @@ describe("recorder append serialization", () => {
         expect(fsMocks.lock.mock.calls.map(([lockPath]) => String(lockPath))).toContain(
           path.join(canonicalLockRoot, "recorder-2"),
         );
+      } finally {
+        await rm(lockRoot, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a configured shared lock root replaced during lock acquisition",
+    async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "crabline-server-root-race-"));
+      const lockRoot = path.join(directory, "shared-locks");
+      const displacedRoot = `${lockRoot}.displaced`;
+      const replacementRoot = `${lockRoot}.replacement`;
+      await mkdir(lockRoot, { mode: 0o700 });
+      const canonicalLockRoot = await realpath(lockRoot);
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-server-recorder-root-race-${process.pid}-${Date.now()}.jsonl`,
+      );
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+      fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
+      fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", canonicalLockRoot);
+      const pathRelease = vi.fn(async () => {});
+      const localIdentityRelease = vi.fn(async () => {});
+      const sharedIdentityRelease = vi.fn(async () => {});
+      fsMocks.lock
+        .mockResolvedValueOnce(pathRelease)
+        .mockResolvedValueOnce(localIdentityRelease)
+        .mockImplementationOnce(async () => {
+          await rm(displacedRoot, { force: true, recursive: true });
+          await rm(replacementRoot, { force: true, recursive: true });
+          await rename(lockRoot, displacedRoot);
+          await mkdir(lockRoot, { mode: 0o700 });
+          return sharedIdentityRelease;
+        });
+      fsMocks.serverSharedLockAfterMkdir.mockImplementationOnce(async () => {
+        await rename(lockRoot, replacementRoot);
+        await rename(displacedRoot, lockRoot);
+      });
+
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/replaced-shared-lock-root",
+              query: {},
+              type: "api",
+            },
+            onEvent: undefined,
+            recorderPath,
+          }),
+        ).rejects.toMatchObject({
+          cause: {
+            message: "Server recorder shared lock artifact changed during acquisition.",
+          },
+        });
+
+        expect(fsMocks.serverWrite).not.toHaveBeenCalled();
+        expect(pathRelease).toHaveBeenCalledOnce();
+        expect(localIdentityRelease).toHaveBeenCalledOnce();
+        expect(sharedIdentityRelease).toHaveBeenCalledOnce();
+      } finally {
+        await rm(directory, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a configured shared lock artifact replaced after creation",
+    async () => {
+      const lockRoot = await mkdtemp(path.join(tmpdir(), "crabline-server-artifact-race-"));
+      const canonicalLockRoot = await realpath(lockRoot);
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-server-recorder-artifact-race-${process.pid}-${Date.now()}.jsonl`,
+      );
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+      fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
+      fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", canonicalLockRoot);
+      fsMocks.serverSharedLockAfterMkdir.mockImplementationOnce(async (lockTarget) => {
+        const lockDirectory = `${lockTarget}.lock`;
+        await rename(lockDirectory, `${lockDirectory}.displaced`);
+        await mkdir(lockDirectory, { mode: 0o700 });
+      });
+
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/replaced-shared-lock-artifact",
+              query: {},
+              type: "api",
+            },
+            onEvent: undefined,
+            recorderPath,
+          }),
+        ).rejects.toMatchObject({
+          cause: {
+            message: "Server recorder shared lock artifact changed during acquisition.",
+          },
+        });
+
+        expect(fsMocks.serverWrite).not.toHaveBeenCalled();
+      } finally {
+        await rm(lockRoot, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "closes a configured shared lock root when the local identity lock fails",
+    async () => {
+      const lockRoot = await mkdtemp(path.join(tmpdir(), "crabline-server-root-close-"));
+      const canonicalLockRoot = await realpath(lockRoot);
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-server-recorder-root-close-${process.pid}-${Date.now()}.jsonl`,
+      );
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverLockRootPath = canonicalLockRoot;
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+      fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
+      fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", canonicalLockRoot);
+      const pathRelease = vi.fn(async () => {});
+      const localFailure = Object.assign(new Error("local identity lock denied"), {
+        code: "EACCES",
+      });
+      fsMocks.lock.mockResolvedValueOnce(pathRelease).mockRejectedValueOnce(localFailure);
+
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/local-lock-failure",
+              query: {},
+              type: "api",
+            },
+            onEvent: undefined,
+            recorderPath,
+          }),
+        ).rejects.toBe(localFailure);
+
+        expect(fsMocks.serverWrite).not.toHaveBeenCalled();
+        expect(fsMocks.serverLockRootClose).toHaveBeenCalledOnce();
+        expect(pathRelease).toHaveBeenCalledOnce();
       } finally {
         await rm(lockRoot, { force: true, recursive: true });
       }
@@ -682,6 +904,127 @@ describe("recorder append serialization", () => {
       await rm(directory, { force: true, recursive: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects configured server recorder lock roots in a replaceable namespace",
+    async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "crabline-server-lock-namespace-"));
+      const unsafeParent = path.join(directory, "unsafe");
+      const lockRoot = path.join(unsafeParent, "shared-locks");
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-server-recorder-unsafe-lock-root-${process.pid}-${Date.now()}.jsonl`,
+      );
+      await mkdir(lockRoot, { mode: 0o700, recursive: true });
+      await chmod(unsafeParent, 0o777);
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+      fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
+      fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", await realpath(lockRoot));
+      const pathRelease = vi.fn(async () => {});
+      fsMocks.lock.mockResolvedValueOnce(pathRelease);
+
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/unsafe-shared-lock-root",
+              query: {},
+              type: "api",
+            },
+            onEvent: undefined,
+            recorderPath,
+          }),
+        ).rejects.toThrow("parent namespace is not trusted");
+
+        expect(fsMocks.serverWrite).not.toHaveBeenCalled();
+        expect(pathRelease).toHaveBeenCalledOnce();
+      } finally {
+        await rm(directory, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects world-writable configured server recorder lock roots",
+    async () => {
+      const lockRoot = await mkdtemp(path.join(tmpdir(), "crabline-server-lock-mode-"));
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-server-recorder-peer-writable-lock-${process.pid}-${Date.now()}.jsonl`,
+      );
+      await chmod(lockRoot, 0o777);
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+      fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
+      fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", await realpath(lockRoot));
+      const pathRelease = vi.fn(async () => {});
+      fsMocks.lock.mockResolvedValueOnce(pathRelease);
+
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/peer-writable-shared-lock-root",
+              query: {},
+              type: "api",
+            },
+            onEvent: undefined,
+            recorderPath,
+          }),
+        ).rejects.toThrow("shared lock directory is writable by every local user");
+
+        expect(fsMocks.serverWrite).not.toHaveBeenCalled();
+        expect(pathRelease).toHaveBeenCalledOnce();
+      } finally {
+        await rm(lockRoot, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "accepts group-writable configured server recorder lock roots",
+    async () => {
+      const lockRoot = await mkdtemp(path.join(tmpdir(), "crabline-server-lock-group-"));
+      const canonicalLockRoot = await realpath(lockRoot);
+      const recorderPath = path.join(
+        "/tmp",
+        `crabline-server-recorder-group-lock-${process.pid}-${Date.now()}.jsonl`,
+      );
+      await chmod(lockRoot, 0o770);
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+      fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 2, nlink: 1, size: 0 });
+      fsMocks.serverStat.mockResolvedValue({ dev: 1, ino: 2, size: 0 });
+      vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", canonicalLockRoot);
+
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/group-shared-lock-root",
+              query: {},
+              type: "api",
+            },
+            onEvent: undefined,
+            recorderPath,
+          }),
+        ).resolves.toBeUndefined();
+
+        expect(fsMocks.serverWrite).toHaveBeenCalledOnce();
+      } finally {
+        await rm(lockRoot, { force: true, recursive: true });
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "rejects configured server recorder lock paths with symlink components",

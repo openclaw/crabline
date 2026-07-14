@@ -454,54 +454,59 @@ function removeVerifiedLockDirectorySync(
   expectedIdentity: DirectoryIdentity,
   expectedMtimeMs?: bigint,
   beforeRemove?: (directoryPath: string) => void,
+  afterClaim?: (directoryPath: string) => void,
 ): void {
   if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity, expectedMtimeMs)) {
-    return;
-  }
-  const entries = fs.readdirSync(directoryPath);
-  if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
-    return;
-  }
-  const artifacts: string[] = [];
-  for (const entry of entries) {
-    if (!isLockArtifactName(entry)) {
-      throw lockCleanupError("Recorder lock cleanup found an unexpected artifact.");
-    }
-    if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
-      return;
-    }
-    const artifactPath = path.join(String(directoryPath), entry);
-    const artifact = fs.lstatSync(artifactPath, { bigint: true });
-    if (!artifact.isFile() || artifact.isSymbolicLink()) {
-      throw lockCleanupError("Recorder lock cleanup found an unsafe artifact.");
-    }
-    artifacts.push(artifactPath);
-  }
-  artifacts.sort(
-    (left, right) =>
-      Number(path.basename(left) === OWNER_FILE) - Number(path.basename(right) === OWNER_FILE),
-  );
-  for (const artifactPath of artifacts) {
-    if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
-      return;
-    }
-    const artifact = fs.lstatSync(artifactPath, { bigint: true });
-    if (!artifact.isFile() || artifact.isSymbolicLink()) {
-      throw lockCleanupError("Recorder lock cleanup artifact changed.");
-    }
-    fs.unlinkSync(artifactPath);
-  }
-  if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
     return;
   }
   const sourcePath = String(directoryPath);
   const quarantinePath = `${sourcePath}.cleanup.${randomUUID()}`;
   beforeRemove?.(sourcePath);
+  if (!verifiedLockDirectoryStats(sourcePath, expectedIdentity, expectedMtimeMs)) {
+    return;
+  }
   fs.renameSync(directoryPath, quarantinePath);
-  if (!verifiedLockDirectoryStats(quarantinePath, expectedIdentity)) {
+  if (!verifiedLockDirectoryStats(quarantinePath, expectedIdentity, expectedMtimeMs)) {
     throw lockCleanupError("Recorder lock cleanup target disappeared.");
   }
+  afterClaim?.(quarantinePath);
   try {
+    const entries = fs.readdirSync(quarantinePath);
+    if (!verifiedLockDirectoryStats(quarantinePath, expectedIdentity)) {
+      throw lockCleanupError("Recorder lock cleanup target changed.");
+    }
+    const artifacts: string[] = [];
+    for (const entry of entries) {
+      if (!isLockArtifactName(entry)) {
+        throw lockCleanupError("Recorder lock cleanup found an unexpected artifact.");
+      }
+      if (!verifiedLockDirectoryStats(quarantinePath, expectedIdentity)) {
+        throw lockCleanupError("Recorder lock cleanup target changed.");
+      }
+      const artifactPath = path.join(quarantinePath, entry);
+      const artifact = fs.lstatSync(artifactPath, { bigint: true });
+      if (!artifact.isFile() || artifact.isSymbolicLink()) {
+        throw lockCleanupError("Recorder lock cleanup found an unsafe artifact.");
+      }
+      artifacts.push(artifactPath);
+    }
+    artifacts.sort(
+      (left, right) =>
+        Number(path.basename(left) === OWNER_FILE) - Number(path.basename(right) === OWNER_FILE),
+    );
+    for (const artifactPath of artifacts) {
+      if (!verifiedLockDirectoryStats(quarantinePath, expectedIdentity)) {
+        throw lockCleanupError("Recorder lock cleanup target changed.");
+      }
+      const artifact = fs.lstatSync(artifactPath, { bigint: true });
+      if (!artifact.isFile() || artifact.isSymbolicLink()) {
+        throw lockCleanupError("Recorder lock cleanup artifact changed.");
+      }
+      fs.unlinkSync(artifactPath);
+    }
+    if (!verifiedLockDirectoryStats(quarantinePath, expectedIdentity)) {
+      throw lockCleanupError("Recorder lock cleanup target disappeared.");
+    }
     fs.rmdirSync(quarantinePath);
   } catch (error) {
     try {
@@ -907,6 +912,7 @@ export function createProcessOwnedLockFileSystem(
   options: {
     beforeDirectoryRemoval?: (directoryPath: string) => void;
     machineIdentityReader?: () => string | null;
+    onDirectoryOwned?: (directoryPath: string, identity: { dev: bigint; ino: bigint }) => void;
     processIdentityReader?: (pid: number) => string | null;
   } = {},
 ): typeof fs {
@@ -922,12 +928,14 @@ export function createProcessOwnedLockFileSystem(
     directoryPath: fs.PathLike,
     expectedIdentity: DirectoryIdentity,
     expectedMtimeMs?: bigint,
+    afterClaim?: (directoryPath: string) => void,
   ): void => {
     removeVerifiedLockDirectorySync(
       directoryPath,
       expectedIdentity,
       expectedMtimeMs,
       options.beforeDirectoryRemoval,
+      afterClaim,
     );
   };
   const identityReader = options.processIdentityReader ?? readProcessIdentity;
@@ -1305,7 +1313,14 @@ export function createProcessOwnedLockFileSystem(
     const removeActiveClaim = (): void => {
       let activeError: NodeJS.ErrnoException | null = null;
       try {
-        removeLockDirectorySync(claim.activePath, claim.activeIdentity);
+        removeLockDirectorySync(
+          claim.activePath,
+          claim.activeIdentity,
+          undefined,
+          (claimedPath) => {
+            claim.activePath = claimedPath;
+          },
+        );
       } catch (error) {
         activeError = error as NodeJS.ErrnoException;
       }
@@ -1508,10 +1523,9 @@ export function createProcessOwnedLockFileSystem(
           if (!publishedDirectory) {
             throw new Error("Recorder lock directory changed during owner publication.");
           }
-          ownedDirectories.set(
-            canonicalLockDirectoryPath(directory),
-            directoryIdentity(publishedDirectory),
-          );
+          const publishedIdentity = directoryIdentity(publishedDirectory);
+          options.onDirectoryOwned?.(directory, { ...publishedIdentity });
+          ownedDirectories.set(canonicalLockDirectoryPath(directory), publishedIdentity);
           interruptedPublicationIdentities.delete(canonicalLockDirectoryPath(directory));
         } catch (ownerError) {
           publicationError = ownerError as NodeJS.ErrnoException;
@@ -1656,7 +1670,12 @@ export function createProcessOwnedLockFileSystem(
             throw lockCleanupError("Recorder lock recovery target is not a directory.");
           }
         } catch (error) {
-          finish(error as NodeJS.ErrnoException);
+          const pathError = error as NodeJS.ErrnoException;
+          finish(
+            pathError.code === "ENOENT" && ownedDirectories.has(coordinationKey)
+              ? lockCleanupError("Recorder lock owned release target disappeared.")
+              : pathError,
+          );
           return;
         }
         if (candidate !== undefined && candidate !== null) {
