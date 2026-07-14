@@ -747,7 +747,7 @@ function createInboundUpdate(
     (fromIdValue !== undefined && (fromId === undefined || fromId < 1)) ||
     (fromUsernameValue !== undefined && !fromUsername) ||
     (threadIdValue !== undefined && threadId === undefined) ||
-    (messageIdValue !== undefined && (messageId === undefined || messageId < 0)) ||
+    (messageIdValue !== undefined && (messageId === undefined || messageId < 1)) ||
     (updateIdValue !== undefined && (updateId === undefined || updateId < 1))
   ) {
     return undefined;

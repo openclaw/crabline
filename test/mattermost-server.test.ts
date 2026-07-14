@@ -233,6 +233,82 @@ describe("Mattermost local provider server", () => {
     }
   });
 
+  it("validates native channel types and unique normalized usernames on admin ingress", async () => {
+    const server = await startMattermostServer({ adminToken: "admin", botToken: "fake" });
+    servers.push(server);
+    const inject = (body: Record<string, unknown>) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify(body),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+
+    for (const channelType of ["", "X", "BO"]) {
+      const response = await inject({
+        channelId: CHANNEL_ID,
+        channelType,
+        senderId: USER_ID,
+        text: "invalid channel type",
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: "channelType is not supported",
+        ok: false,
+      });
+    }
+
+    const missingChannel = await fetch(
+      `${server.manifest.endpoints.apiRoot}/channels/${CHANNEL_ID}`,
+      { headers: { authorization: "Bearer fake" } },
+    );
+    expect(missingChannel.status).toBe(404);
+
+    const accepted = await inject({
+      channelId: CHANNEL_ID,
+      channelType: "O",
+      senderId: USER_ID,
+      senderName: "Alice",
+      text: "normalized sender",
+    });
+    expect(accepted.status).toBe(200);
+    const normalizedUser = await fetch(
+      `${server.manifest.endpoints.apiRoot}/users/username/ALICE`,
+      { headers: { authorization: "Bearer fake" } },
+    );
+    await expect(normalizedUser.json()).resolves.toMatchObject({
+      id: USER_ID,
+      username: "alice",
+    });
+
+    for (const senderName of ["ALICE", "bad name", "system", "a".repeat(65)]) {
+      const response = await inject({
+        channelId: OTHER_CHANNEL_ID,
+        senderId: OTHER_USER_ID,
+        senderName,
+        text: "invalid sender name",
+      });
+      expect(response.status).toBe(400);
+    }
+
+    const defaulted = await inject({
+      channelId: OTHER_CHANNEL_ID,
+      senderId: OTHER_USER_ID,
+      text: "default sender name",
+    });
+    expect(defaulted.status).toBe(200);
+    const defaultUser = await fetch(
+      `${server.manifest.endpoints.apiRoot}/users/username/${OTHER_USER_ID}`,
+      { headers: { authorization: "Bearer fake" } },
+    );
+    await expect(defaultUser.json()).resolves.toMatchObject({
+      id: OTHER_USER_ID,
+      username: OTHER_USER_ID,
+    });
+  });
+
   it("returns native route errors with request IDs and parses Bearer credentials exactly", async () => {
     const server = await startMattermostServer({ botToken: "fake" });
     servers.push(server);
@@ -988,7 +1064,7 @@ describe("Mattermost local provider server", () => {
     const user = await fetch(`${server.manifest.endpoints.apiRoot}/users/${USER_ID}`, {
       headers: { authorization: "Bearer fake" },
     });
-    await expect(user.json()).resolves.toMatchObject({ username: "Alice" });
+    await expect(user.json()).resolves.toMatchObject({ username: "alice" });
     const channel = await fetch(`${server.manifest.endpoints.apiRoot}/channels/${CHANNEL_ID}`, {
       headers: { authorization: "Bearer fake" },
     });

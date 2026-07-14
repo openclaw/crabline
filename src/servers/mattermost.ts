@@ -34,6 +34,9 @@ const DEFAULT_MAX_COMMITTED_CHANNELS = 1_000;
 const DEFAULT_MAX_COMMITTED_POSTS = 1_000;
 const DEFAULT_MAX_COMMITTED_USERS = 1_000;
 const MATTERMOST_ID_PATTERN = /^[a-z0-9]{26}(?![\s\S])/u;
+const MATTERMOST_USERNAME_PATTERN = /^[a-z0-9._-]{1,64}$/u;
+const MATTERMOST_CHANNEL_TYPES = new Set(["D", "G", "O", "P"]);
+const MATTERMOST_RESTRICTED_USERNAMES = new Set(["all", "channel", "matterbot", "system"]);
 
 function resolvePositiveLimit(value: number | undefined, name: string, fallback: number): number {
   if (value === undefined) {
@@ -95,6 +98,7 @@ type MattermostServerState = {
   pendingEvents: MattermostWebSocketEvent[];
   posts: Map<string, MattermostPost>;
   recorderPath: string;
+  userIdsByUsername: Map<string, string>;
   users: Map<string, { id: string; username: string; update_at: number }>;
   websocketClients: Map<WebSocket, number>;
 };
@@ -196,6 +200,17 @@ function readMattermostId(value: unknown): string | undefined {
 
 function isMattermostId(value: string): boolean {
   return MATTERMOST_ID_PATTERN.test(value);
+}
+
+function normalizeMattermostUsername(value: unknown): string | undefined {
+  if (typeof value !== "string" || value !== value.trim()) {
+    return undefined;
+  }
+  const normalized = value.toLowerCase();
+  return MATTERMOST_USERNAME_PATTERN.test(normalized) &&
+    !MATTERMOST_RESTRICTED_USERNAMES.has(normalized)
+    ? normalized
+    : undefined;
 }
 
 function requestHasJsonMediaType(request: IncomingMessage): boolean {
@@ -455,8 +470,26 @@ function handleAdminInbound(params: {
   const previousUser = params.state.users.get(senderId);
   const previousChannel = params.state.channels.get(channelId);
   const senderName =
-    readMattermostString(params.body.senderName) ?? previousUser?.username ?? senderId;
-  const channelType = readMattermostString(params.body.channelType) ?? previousChannel?.type ?? "D";
+    params.body.senderName === undefined
+      ? (previousUser?.username ?? senderId)
+      : normalizeMattermostUsername(params.body.senderName);
+  if (!senderName) {
+    return jsonResponse(
+      { error: "senderName must be a valid Mattermost username", ok: false },
+      400,
+    );
+  }
+  const usernameOwner = params.state.userIdsByUsername.get(senderName);
+  if (usernameOwner && usernameOwner !== senderId) {
+    return jsonResponse({ error: "senderName is already in use", ok: false }, 400);
+  }
+  const channelType =
+    params.body.channelType === undefined
+      ? (previousChannel?.type ?? "D")
+      : readMattermostString(params.body.channelType);
+  if (!channelType || !MATTERMOST_CHANNEL_TYPES.has(channelType)) {
+    return jsonResponse({ error: "channelType is not supported", ok: false }, 400);
+  }
   const channelName =
     readMattermostString(params.body.channelName ?? params.body.channel_name) ??
     previousChannel?.name ??
@@ -514,6 +547,10 @@ function handleAdminInbound(params: {
     return jsonResponse({ error: "Inbound event is too large", ok: false }, 413);
   }
   const previousNextPost = params.state.nextPost;
+  if (previousUser?.username !== senderName) {
+    params.state.userIdsByUsername.delete(previousUser?.username ?? "");
+  }
+  params.state.userIdsByUsername.set(senderName, senderId);
   params.state.users.set(senderId, { id: senderId, update_at: Date.now(), username: senderName });
   params.state.channels.set(channelId, channel);
   if (rootPost) {
@@ -528,8 +565,12 @@ function handleAdminInbound(params: {
     params.state.nextPost = previousNextPost;
     if (previousUser) {
       params.state.users.set(senderId, previousUser);
+      params.state.userIdsByUsername.set(previousUser.username, senderId);
     } else {
       params.state.users.delete(senderId);
+    }
+    if (previousUser?.username !== senderName) {
+      params.state.userIdsByUsername.delete(senderName);
     }
     if (previousChannel) {
       params.state.channels.set(channelId, previousChannel);
@@ -560,7 +601,8 @@ async function handleApi(params: {
     if (username instanceof Response) {
       return username;
     }
-    const user = [...state.users.values()].find((entry) => entry.username === username);
+    const userId = state.userIdsByUsername.get(username.toLowerCase());
+    const user = userId ? state.users.get(userId) : undefined;
     return user ? jsonResponse(user) : mattermostError("User not found", 404);
   }
   const userMatch = /^\/users\/([^/]+)$/u.exec(apiPath);
@@ -966,7 +1008,10 @@ export async function startMattermostServer(
 ): Promise<StartedMattermostServer> {
   const host = params.host ?? "127.0.0.1";
   const botUserId = params.botUserId ?? mattermostId("crabline-mattermost-bot");
-  const botUsername = params.botUsername ?? "crabline_bot";
+  const botUsername = normalizeMattermostUsername(params.botUsername ?? "crabline_bot");
+  if (!botUsername) {
+    throw new Error("botUsername must be a valid Mattermost username.");
+  }
   const maxWebSocketMessageBytes = resolvePositiveLimit(
     params.maxWebSocketMessageBytes,
     "maxWebSocketMessageBytes",
@@ -1011,6 +1056,7 @@ export async function startMattermostServer(
     pendingEvents: [],
     posts: new Map(),
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "mattermost.jsonl"),
+    userIdsByUsername: new Map([[botUsername, botUserId]]),
     users: new Map([[botUserId, { id: botUserId, update_at: Date.now(), username: botUsername }]]),
     websocketClients: new Map(),
   };

@@ -2016,24 +2016,21 @@ describe("telegram local provider server", () => {
     });
   });
 
-  it("accepts scheduled message ID zero without advancing generated IDs", async () => {
+  it("rejects message ID zero on admin ingress without advancing generated IDs", async () => {
     const server = await startTelegramServer({ botToken: "test-token-placeholder" });
     servers.push(server);
 
-    const scheduled = await injectUpdate(server, {
+    const rejected = await injectUpdate(server, {
       chatId: 123,
       messageId: 0,
-      text: "scheduled message",
+      text: "invalid message",
       updateId: 1,
     });
-    expect(scheduled.status).toBe(200);
-    await expect(scheduled.json()).resolves.toMatchObject({
-      update: { message: { message_id: 0 }, update_id: 1 },
-    });
+    expect(rejected.status).toBe(400);
 
     const generated = await injectUpdate(server, { chatId: 123, text: "generated message" });
     await expect(generated.json()).resolves.toMatchObject({
-      update: { message: { message_id: 1 }, update_id: 2 },
+      update: { message: { message_id: 1 }, update_id: 1 },
     });
   });
 
