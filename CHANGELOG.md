@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bind agent acknowledgements to the expected nonce instead of accepting an unrelated ACK.
 - Verify downloaded npm tarball integrity, retry transient provenance lookups, and revalidate release tags immediately before publication mutations.
 - Validate effective fixture mode overrides and stop retrying permanent provider send failures.
 - Bound watch iterator return and provider cleanup during CLI shutdown, forcing process exit after deadline failures.

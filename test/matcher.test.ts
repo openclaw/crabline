@@ -101,7 +101,9 @@ describe("nonce + matcher", () => {
     expect(matchesReply(`ACKNOWLEDGED ${nonce}`)).toBe(false);
     expect(matchesReply(`ack ${nonce}`)).toBe(false);
     expect(matchesReply(`ACK ${otherNonce}`)).toBe(false);
+    expect(matchesReply(`ACK ${otherNonce} then ${nonce}`)).toBe(false);
     expect(matchesReply(`ACK ${nonce}-suffix`)).toBe(false);
+    expect(matchesReply(`ACK ${nonce}-suffix then ${nonce}`)).toBe(false);
     expect(matchesReply(`\u0301ACK ${nonce}`)).toBe(false);
     expect(matchesReply(`ACK\u0301 ${nonce}`)).toBe(false);
     expect(matchesReply(`\u20ddACK ${nonce}`)).toBe(false);

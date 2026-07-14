@@ -2,8 +2,31 @@ import { extractNonces } from "./nonces.js";
 import { compileInboundRegex } from "./safe-regex.js";
 import type { InboundEnvelope, InboundMatchConfig } from "../providers/types.js";
 
-const EXACT_ACK_TOKEN =
-  /(?<![\p{ID_Continue}\p{Mark}\p{Cf}])ACK(?![\p{ID_Continue}\p{Mark}\p{Cf}])/u;
+const EXACT_ACK_WORD =
+  /(?<![\p{ID_Continue}\p{Mark}\p{Cf}])ACK(?![\p{ID_Continue}\p{Mark}\p{Cf}])/gu;
+const ACK_SEPARATOR = /[\p{White_Space}\p{P}\p{S}]/u;
+const IDENTIFIER_CONTINUATION = /[a-z0-9-]/iu;
+
+function hasAcknowledgementForNonce(text: string, nonce: string): boolean {
+  for (const match of text.matchAll(EXACT_ACK_WORD)) {
+    let offset = match.index + match[0].length;
+    while (offset < text.length) {
+      const character = String.fromCodePoint(text.codePointAt(offset)!);
+      if (!ACK_SEPARATOR.test(character)) {
+        break;
+      }
+      offset += character.length;
+    }
+    const followingCharacter = text[offset + nonce.length];
+    if (
+      text.startsWith(nonce, offset) &&
+      (!followingCharacter || !IDENTIFIER_CONTINUATION.test(followingCharacter))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export function matchesInbound(
   envelope: InboundEnvelope,
@@ -20,7 +43,7 @@ export function matchesInbound(
 
   if (
     options?.requireAcknowledgement &&
-    (!EXACT_ACK_TOKEN.test(text) || !extractedNonces.includes(nonce))
+    (!extractedNonces.includes(nonce) || !hasAcknowledgementForNonce(text, nonce))
   ) {
     return false;
   }
