@@ -1217,7 +1217,7 @@ export async function appendRecordedInbound(
 
 export async function appendRecordedInboundBatch(
   filePath: string,
-  events: InboundEnvelope[],
+  events: RecordableInboundEnvelope[],
 ): Promise<RecordedInboundEnvelope[]> {
   if (events.length === 0) {
     return [];

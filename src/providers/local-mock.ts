@@ -4,6 +4,7 @@ import type { ProviderConfig, ProviderPlatform } from "../config/schema.js";
 import { isJsonMediaType } from "../servers/http.js";
 import {
   appendRecordedInbound,
+  appendRecordedInboundBatch,
   cloneRecordedInboundCursor,
   createRecordedInboundCursor,
   waitForRecordedInbound,
@@ -53,6 +54,9 @@ export type LocalMockAdapterOptions = {
   ) => Promise<Response | undefined> | Response | undefined;
   normalizeWebhookPayload?: (payload: unknown) => unknown;
   platform: ProviderPlatform;
+  preflightWebhookRequest?: (
+    request: Request,
+  ) => Promise<Response | undefined> | Response | undefined;
   publicUrl?: string | undefined;
   recorderPath?: string | undefined;
   settleWebhookRequest?: (params: { accepted: boolean; payload: unknown; rawBody: string }) => void;
@@ -389,25 +393,27 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     const threadId = this.#codec.resolveThreadId(context.fixture.target);
     const messageId = createMessageId(this.platform);
     signal?.throwIfAborted();
-    await appendRecordedInbound(this.#recorderPath, {
-      author: "user",
-      id: messageId,
-      provider: this.id,
-      raw: {
-        direction: "outbound",
-        mode: context.mode,
-        platform: this.platform,
+    const events: Parameters<typeof appendRecordedInboundBatch>[1] = [
+      {
+        author: "user",
+        id: messageId,
+        provider: this.id,
+        raw: {
+          direction: "outbound",
+          mode: context.mode,
+          platform: this.platform,
+        },
+        recordedDirection: "outbound",
+        sentAt: new Date().toISOString(),
+        text: context.text,
+        threadId,
       },
-      recordedDirection: "outbound",
-      sentAt: new Date().toISOString(),
-      text: context.text,
-      threadId,
-    });
+    ];
 
     if (context.mode !== "send" && context.fixture.target.behavior !== "sink") {
       await sleep(this.#config.loopback?.delayMs ?? 25, signal);
       signal?.throwIfAborted();
-      await appendRecordedInbound(this.#recorderPath, {
+      events.push({
         author: "assistant",
         id: `${messageId}-reply`,
         provider: this.id,
@@ -422,6 +428,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         threadId,
       });
     }
+    await appendRecordedInboundBatch(this.#recorderPath, events);
 
     return {
       accepted: true,
@@ -708,6 +715,9 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
             (this.#options.handleWebhookPayload ? ["GET", "POST"] : ["POST"]),
           path: webhookPath,
           port,
+          ...(this.#options.preflightWebhookRequest
+            ? { preflight: this.#options.preflightWebhookRequest }
+            : {}),
         });
       } catch (error) {
         throw new CrablineError(
