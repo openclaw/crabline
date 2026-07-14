@@ -252,12 +252,19 @@ function isSuccessfulProbe(
       return value.ok === true;
     case "telegram": {
       const result = value.result;
+      const tokenBotId =
+        typeof manifest.botToken === "string"
+          ? /^([1-9]\d*):/u.exec(manifest.botToken)?.[1]
+          : undefined;
+      const expectedBotId = tokenBotId === undefined ? undefined : Number(tokenBotId);
       return (
         value.ok === true &&
         isRecord(result) &&
         typeof result.id === "number" &&
         Number.isSafeInteger(result.id) &&
         result.id > 0 &&
+        Number.isSafeInteger(expectedBotId) &&
+        result.id === expectedBotId &&
         result.is_bot === true &&
         typeof result.first_name === "string" &&
         result.first_name.length > 0

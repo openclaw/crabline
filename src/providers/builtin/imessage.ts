@@ -2,6 +2,7 @@ import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
+import { matchesNativeId } from "../native-ids.js";
 import type { ProviderAdapter } from "../types.js";
 import { getBuiltinTargetCodec, IMESSAGE_THREAD_RULE } from "../target-normalizers.js";
 import {
@@ -137,7 +138,9 @@ function normalizeIMessageWebhookPayload(payload: unknown) {
   }
 
   const data = iMessageNativeData(payload);
-  const threadId = iMessageThreadIdentifiers(data)[0];
+  const threadId = iMessageThreadIdentifiers(data).find((candidate) =>
+    matchesNativeId(candidate, IMESSAGE_THREAD_RULE),
+  );
   const text = optionalString(data, "text") ?? optionalString(data, "message");
   if (!threadId || !text) {
     throw new CrablineError(

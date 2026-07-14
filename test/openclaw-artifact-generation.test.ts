@@ -704,6 +704,31 @@ describe("OpenClaw artifact generation publication", () => {
       },
     },
     {
+      label: "readiness artifact for a different Telegram bot",
+      path: "providerReadinessArtifactPath",
+      corrupt: (artifact: Record<string, unknown>) => {
+        const providerReadiness = artifact.providerReadiness as Record<string, unknown>;
+        const result = providerReadiness.result as Record<string, unknown>;
+        const probe = result.probe as Record<string, unknown>;
+        return {
+          ...artifact,
+          providerReadiness: {
+            ...providerReadiness,
+            result: {
+              ...result,
+              probe: {
+                ...probe,
+                result: {
+                  ...((probe.result as Record<string, unknown>) ?? {}),
+                  id: 424_243,
+                },
+              },
+            },
+          },
+        };
+      },
+    },
+    {
       label: "readiness artifact with the wrong source",
       path: "providerReadinessArtifactPath",
       corrupt: (artifact: Record<string, unknown>) => ({

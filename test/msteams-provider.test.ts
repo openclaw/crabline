@@ -53,6 +53,29 @@ describe("Microsoft Teams webhook authentication", () => {
     ).toThrow(/channelId=msteams/u);
   });
 
+  it("accepts attachment-only messages and rejects contentless activities", () => {
+    expect(
+      normalizeMsTeamsWebhookPayload({
+        attachments: [{ contentType: "image/png", contentUrl: "https://example.test/image.png" }],
+        channelId: "msteams",
+        conversation: { id: conversationId },
+        type: "message",
+      }),
+    ).toMatchObject({
+      text: "<media:image>",
+      threadId: conversationId,
+    });
+    expect(() =>
+      normalizeMsTeamsWebhookPayload({
+        attachments: [{}],
+        channelId: "msteams",
+        conversation: { id: conversationId },
+        text: " \n\t",
+        type: "message",
+      }),
+    ).toThrow(/text or attachments/u);
+  });
+
   it("returns the Bot Framework unsupported status for invoke activities", async () => {
     const response = handleMsTeamsWebhookPayload({
       channelId: "msteams",

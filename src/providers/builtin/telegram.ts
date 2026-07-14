@@ -93,9 +93,7 @@ function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {
         kind: "inbound",
       });
     }
-    if (threadId !== channelId) {
-      canonicalTopic = { chatId: channelId, topicId: threadId };
-    }
+    canonicalTopic = { chatId: channelId, topicId: threadId };
   }
   const genericPayload = canonicalTopic
     ? message

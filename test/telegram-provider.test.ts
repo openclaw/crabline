@@ -342,6 +342,23 @@ describe("telegram provider", () => {
     });
   });
 
+  it("canonicalizes equal generic chat and topic ids", () => {
+    const payload = {
+      authorIsBot: true,
+      channelId: "42",
+      id: "generic-equal-topic",
+      text: "equal topic",
+      threadId: "42",
+    };
+
+    expect(normalizeTelegramWebhookPayload(payload)).toMatchObject({
+      id: "generic-equal-topic",
+      raw: payload,
+      text: "equal topic",
+      threadId: "42:42",
+    });
+  });
+
   it("probes and sends through the local mock service", async () => {
     const config = await createTelegramConfig(0);
     const provider = new TelegramProviderAdapter("telegram", config, "crabline");

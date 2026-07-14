@@ -157,6 +157,46 @@ describe("signed JWT remote key cache", () => {
     }
   });
 
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "rejects non-finite verification clocks: %s",
+    async (now) => {
+      const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+      const token = signedJwt(keys.privateKey, {
+        aud: "crabline",
+        exp: 1_800_000_000,
+        iss: "issuer",
+      });
+
+      await expect(
+        verifySignedJwt({
+          audience: "crabline",
+          issuers: ["issuer"],
+          now: () => now,
+          resolveKey: async () => keys.publicKey,
+          token,
+        }),
+      ).rejects.toThrow(/JWT clock must return a finite number/u);
+    },
+  );
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "rejects non-finite key-cache clocks: %s",
+    async (now) => {
+      const fetchKeys = vi.fn(async () => ({ expiresAt: 1_800_000_000_000, values: ["key"] }));
+      const resolveKey = createCachedJwtKeyResolver({
+        fetchKeys,
+        keyId: (value: string) => value,
+        now: () => now,
+        unknownKeyMessage: "unknown key",
+      });
+
+      await expect(resolveKey({ alg: "RS256", kid: "key" })).rejects.toThrow(
+        /JWT clock must return a finite number/u,
+      );
+      expect(fetchKeys).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects critical JWS extensions before resolving a signing key", async () => {
     const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const now = 1_700_000_000_000;

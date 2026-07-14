@@ -74,6 +74,28 @@ describe("manifest schema", () => {
     }
   });
 
+  it("rejects oversized inbound regexes before native syntax validation", () => {
+    expect(() =>
+      ManifestSchema.parse({
+        configVersion: 1,
+        fixtures: [
+          {
+            id: "oversized-regex",
+            inboundMatch: {
+              nonce: "ignore",
+              pattern: `${"a".repeat(512)}(`,
+              strategy: "regex",
+            },
+            mode: "roundtrip",
+            provider: "local",
+            target: { id: "echo-bot" },
+          },
+        ],
+        providers: { local: { adapter: "loopback", platform: "loopback" } },
+      }),
+    ).toThrow(/inboundMatch\.pattern must contain at most 512 characters/u);
+  });
+
   it("accepts linear-time alternation and repetition", () => {
     for (const pattern of [
       "^(yes|no)$",
