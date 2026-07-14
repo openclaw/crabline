@@ -53,13 +53,15 @@ export const IMESSAGE_THREAD_RULE: NativeIdRule = {
 export const MATRIX_ROOM_ID_RULE: NativeIdRule = {
   example: "!abcdef:matrix.org",
   name: "Matrix room id",
-  pattern: /^!(?:[^:\s]+:[^\s]+|[A-Za-z0-9_-]{43})$/u,
+  pattern: /^!/u,
+  validate: isMatrixRoomId,
 };
 
 export const MATRIX_EVENT_ID_RULE: NativeIdRule = {
   example: "$eventid:matrix.org",
   name: "Matrix event id",
-  pattern: /^\$[^\s]+(?::[^\s]+)?$/u,
+  pattern: /^\$/u,
+  validate: isMatrixEventId,
 };
 
 export { isMatrixEventId, isMatrixRoomId } from "../matrix-ids.js";
