@@ -68,11 +68,11 @@ describe("imessage provider default runtime", () => {
   });
 
   it("uses ambient gateway metadata for remote mode", () => {
-    vi.stubEnv("IMESSAGE_API_KEY", "ambient-api-key");
+    vi.stubEnv("IMESSAGE_API_KEY", "sample");
     vi.stubEnv("IMESSAGE_SERVER_URL", "https://ambient-imessage.example.com");
 
     expect(resolveIMessageAdapterConfig(createConfig({ local: false }))).toEqual({
-      apiKey: "ambient-api-key",
+      apiKey: "sample",
       local: false,
       serverUrl: "https://ambient-imessage.example.com",
     });
