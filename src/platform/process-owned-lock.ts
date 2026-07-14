@@ -453,6 +453,7 @@ function removeVerifiedLockDirectorySync(
   directoryPath: fs.PathLike,
   expectedIdentity: DirectoryIdentity,
   expectedMtimeMs?: bigint,
+  beforeRemove?: (directoryPath: string) => void,
 ): void {
   if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity, expectedMtimeMs)) {
     return;
@@ -493,12 +494,19 @@ function removeVerifiedLockDirectorySync(
   if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
     return;
   }
+  const sourcePath = String(directoryPath);
+  const quarantinePath = `${sourcePath}.cleanup.${randomUUID()}`;
+  beforeRemove?.(sourcePath);
+  fs.renameSync(directoryPath, quarantinePath);
+  if (!verifiedLockDirectoryStats(quarantinePath, expectedIdentity)) {
+    throw lockCleanupError("Recorder lock cleanup target disappeared.");
+  }
   try {
-    fs.rmdirSync(directoryPath);
+    fs.rmdirSync(quarantinePath);
   } catch (error) {
     try {
-      if (verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
-        fs.utimesSync(directoryPath, new Date(0), new Date(0));
+      if (verifiedLockDirectoryStats(quarantinePath, expectedIdentity)) {
+        fs.utimesSync(quarantinePath, new Date(0), new Date(0));
       }
     } catch {
       // Do not mutate a replacement directory after cleanup loses its identity fence.
@@ -897,6 +905,7 @@ function isRecoverableUnknownOwner(
 
 export function createProcessOwnedLockFileSystem(
   options: {
+    beforeDirectoryRemoval?: (directoryPath: string) => void;
     machineIdentityReader?: () => string | null;
     processIdentityReader?: (pid: number) => string | null;
   } = {},
@@ -909,6 +918,18 @@ export function createProcessOwnedLockFileSystem(
     return fs;
   }
   const token = randomUUID();
+  const removeLockDirectorySync = (
+    directoryPath: fs.PathLike,
+    expectedIdentity: DirectoryIdentity,
+    expectedMtimeMs?: bigint,
+  ): void => {
+    removeVerifiedLockDirectorySync(
+      directoryPath,
+      expectedIdentity,
+      expectedMtimeMs,
+      options.beforeDirectoryRemoval,
+    );
+  };
   const identityReader = options.processIdentityReader ?? readProcessIdentity;
   let currentProcessIdentity: string | null;
   if (options.processIdentityReader) {
@@ -1175,7 +1196,7 @@ export function createProcessOwnedLockFileSystem(
         } catch (ownerError) {
           if (createdIdentity) {
             try {
-              removeVerifiedLockDirectorySync(claimPath, createdIdentity);
+              removeLockDirectorySync(claimPath, createdIdentity);
             } catch {
               // Preserve an unverified replacement instead of deleting it by pathname.
             }
@@ -1284,7 +1305,7 @@ export function createProcessOwnedLockFileSystem(
     const removeActiveClaim = (): void => {
       let activeError: NodeJS.ErrnoException | null = null;
       try {
-        removeVerifiedLockDirectorySync(claim.activePath, claim.activeIdentity);
+        removeLockDirectorySync(claim.activePath, claim.activeIdentity);
       } catch (error) {
         activeError = error as NodeJS.ErrnoException;
       }
@@ -1365,11 +1386,7 @@ export function createProcessOwnedLockFileSystem(
         return;
       }
       try {
-        removeVerifiedLockDirectorySync(
-          superseded.path,
-          superseded.identity,
-          superseded.identity.mtimeMs,
-        );
+        removeLockDirectorySync(superseded.path, superseded.identity, superseded.identity.mtimeMs);
       } catch {
         if (!removedSupersededPath) {
           preserveActiveClaim();
@@ -1510,7 +1527,7 @@ export function createProcessOwnedLockFileSystem(
             }
           } else if (createdIdentity) {
             try {
-              removeVerifiedLockDirectorySync(directoryPath, createdIdentity);
+              removeLockDirectorySync(directoryPath, createdIdentity);
             } catch {
               // Preserve an unverified replacement instead of deleting it by pathname.
             }
@@ -1662,7 +1679,7 @@ export function createProcessOwnedLockFileSystem(
             abandonedDirectoryIdentities.delete(coordinationKey);
             abandonedOwnerKeys.delete(abandonedOwnerKey(directory, token));
             try {
-              removeVerifiedLockDirectorySync(tombstonePath, directoryIdentity(initialStats));
+              removeLockDirectorySync(tombstonePath, directoryIdentity(initialStats));
               finish(null);
             } catch (error) {
               finish(error as NodeJS.ErrnoException);
@@ -1831,7 +1848,7 @@ export function createProcessOwnedLockFileSystem(
             return;
           }
           try {
-            removeVerifiedLockDirectorySync(tombstonePath, directoryIdentity(initialStats));
+            removeLockDirectorySync(tombstonePath, directoryIdentity(initialStats));
             if (candidate) {
               abandonedOwnerKeys.delete(
                 abandonedOwnerKey(candidate.lockDirectory, candidate.owner.token),
@@ -1894,14 +1911,11 @@ export function createProcessOwnedLockFileSystem(
       }
       const tombstonePath = `${claimPath}.${token}.release`;
       fs.renameSync(directoryPath, tombstonePath);
-      removeVerifiedLockDirectorySync(tombstonePath, directoryIdentity(ownedDirectory));
+      removeLockDirectorySync(tombstonePath, directoryIdentity(ownedDirectory));
       ownedDirectories.delete(canonicalLockDirectoryPath(directory));
     } finally {
       try {
-        removeVerifiedLockDirectorySync(
-          coordinationClaim.activePath,
-          coordinationClaim.activeIdentity,
-        );
+        removeLockDirectorySync(coordinationClaim.activePath, coordinationClaim.activeIdentity);
       } catch {
         // Exit cleanup is best-effort; a live coordination claim is safer than an ABA race.
       }
