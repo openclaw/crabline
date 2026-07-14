@@ -620,6 +620,109 @@ describe("local mock provider", () => {
     });
   });
 
+  it("constructs the provider success response before committing the webhook", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "success-response-abort.jsonl");
+    let handleRequest: ((request: Request) => Promise<Response>) | undefined;
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handleRequest = params.handle;
+      return {
+        async close() {},
+        endpointUrl: "http://127.0.0.1:43210/slack/events",
+      };
+    });
+    const settleWebhookRequest = vi.fn();
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        createWebhookSuccessResponse() {
+          throw new DOMException("response construction aborted", "AbortError");
+        },
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+        recorderPath,
+        settleWebhookRequest,
+      },
+    });
+    providers.push(provider);
+    await provider.probe(createContext(config));
+
+    await expect(
+      handleRequest!(
+        new Request("http://127.0.0.1:43210/slack/events", {
+          body: JSON.stringify({ id: "event-1", text: "hello", threadId: "C1234567890" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      ),
+    ).rejects.toThrow(/response construction aborted/u);
+
+    await expect(readFile(recorderPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(settleWebhookRequest).toHaveBeenCalledOnce();
+    expect(settleWebhookRequest).toHaveBeenCalledWith(expect.objectContaining({ accepted: false }));
+  });
+
+  it("preserves accepted webhook success when post-commit settlement fails", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "settlement-failure.jsonl");
+    let handleRequest: ((request: Request) => Promise<Response>) | undefined;
+    webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {
+      handleRequest = params.handle;
+      return {
+        async close() {},
+        endpointUrl: "http://127.0.0.1:43210/slack/events",
+      };
+    });
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const config = createConfig();
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+        recorderPath,
+        settleWebhookRequest() {
+          throw new Error("settlement failed");
+        },
+      },
+    });
+    providers.push(provider);
+    await provider.probe(createContext(config));
+
+    try {
+      const response = await handleRequest!(
+        new Request("http://127.0.0.1:43210/slack/events", {
+          body: JSON.stringify({ id: "event-1", text: "hello", threadId: "C1234567890" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ id: "event-1", ok: true });
+      expect(JSON.parse((await readFile(recorderPath, "utf8")).trim())).toMatchObject({
+        id: "event-1",
+        text: "hello",
+        threadId: "C1234567890",
+      });
+      expect(emitWarning).toHaveBeenCalledWith(
+        expect.stringContaining("settlement failed"),
+        expect.objectContaining({ code: "CRABLINE_WEBHOOK_SETTLEMENT" }),
+      );
+    } finally {
+      emitWarning.mockRestore();
+    }
+  });
+
   it("rejects an empty webhook thread id", async () => {
     let handleRequest: ((request: Request) => Promise<Response>) | undefined;
     webhookMocks.startWebhookServer.mockImplementationOnce(async (params) => {

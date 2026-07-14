@@ -251,6 +251,20 @@ function mockReplyText(params: { platform: ProviderPlatform; text: string }) {
   return `[${params.platform} mock] ${params.text}`;
 }
 
+function reportPostCommitWebhookSettlementFailure(providerId: string, error: unknown): void {
+  try {
+    process.emitWarning(
+      `Webhook acceptance committed for provider ${JSON.stringify(providerId)}, but settlement failed: ${ensureErrorMessage(error)}`,
+      {
+        code: "CRABLINE_WEBHOOK_SETTLEMENT",
+        type: "ProviderWebhookWarning",
+      },
+    );
+  } catch {
+    // Error reporting must not change the result of an accepted webhook.
+  }
+}
+
 export class LocalMockProviderAdapter implements ProviderAdapter {
   readonly id;
   readonly platform;
@@ -546,6 +560,21 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
       settle(response.ok);
       return response;
     };
+    const settleCommittedAcceptance = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        this.#options.settleWebhookRequest?.({
+          accepted: true,
+          payload: rawPayload,
+          rawBody,
+        });
+      } catch (error) {
+        reportPostCommitWebhookSettlementFailure(this.id, error);
+      }
+    };
     try {
       const directResponse = await this.#options.handleWebhookPayload?.(
         rawPayload,
@@ -580,6 +609,12 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
           new Response("payload requires message.threadId and message.text", { status: 400 }),
         );
       }
+      const successResponse =
+        (await this.#options.createWebhookSuccessResponse?.(rawPayload, id)) ??
+        new Response(JSON.stringify({ ok: true, id }), {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        });
       await appendRecordedInbound(this.#recorderPath, {
         author: authorFromPayload(payload),
         id,
@@ -590,13 +625,8 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         text,
         threadId,
       });
-      return respond(
-        (await this.#options.createWebhookSuccessResponse?.(rawPayload, id)) ??
-          new Response(JSON.stringify({ ok: true, id }), {
-            headers: { "content-type": "application/json" },
-            status: 200,
-          }),
-      );
+      settleCommittedAcceptance();
+      return successResponse;
     } catch (error) {
       settle(false);
       throw error;
