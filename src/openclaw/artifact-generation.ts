@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { CrablineServerManifest } from "../servers/index.js";
 import {
   captureDirectoryIdentity,
@@ -81,6 +82,215 @@ function isMissingPathError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasNonEmptyStringFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+): boolean {
+  return fields.every((field) => typeof value[field] === "string" && value[field].length > 0);
+}
+
+function isGeneratedManifest(value: Record<string, unknown>): boolean {
+  if (
+    value.version !== 1 ||
+    !hasNonEmptyStringFields(value, ["adminToken", "baseUrl", "provider"]) ||
+    !isRecord(value.endpoints) ||
+    !isRecord(value.env)
+  ) {
+    return false;
+  }
+  const endpoints = value.endpoints;
+  const env = value.env;
+  const baseUrl = value.baseUrl as string;
+  switch (value.provider) {
+    case "mattermost":
+      return (
+        hasNonEmptyStringFields(value, ["botToken", "botUserId"]) &&
+        hasNonEmptyStringFields(endpoints, ["adminInboundUrl", "apiRoot", "websocketUrl"]) &&
+        hasNonEmptyStringFields(env, ["MATTERMOST_BOT_TOKEN", "MATTERMOST_URL"]) &&
+        endpoints.adminInboundUrl === `${baseUrl}/crabline/mattermost/inbound` &&
+        endpoints.apiRoot === `${baseUrl}/api/v4` &&
+        endpoints.websocketUrl === `${baseUrl.replace(/^http/u, "ws")}/api/v4/websocket` &&
+        env.MATTERMOST_BOT_TOKEN === value.botToken &&
+        env.MATTERMOST_URL === baseUrl
+      );
+    case "matrix":
+      return (
+        hasNonEmptyStringFields(value, ["accessToken", "botUserId", "deviceId"]) &&
+        hasNonEmptyStringFields(endpoints, ["adminInboundUrl", "clientApiRoot", "syncUrl"]) &&
+        hasNonEmptyStringFields(env, [
+          "MATRIX_ACCESS_TOKEN",
+          "MATRIX_BASE_URL",
+          "MATRIX_USER_ID",
+        ]) &&
+        endpoints.adminInboundUrl === `${baseUrl}/crabline/matrix/inbound` &&
+        endpoints.clientApiRoot === `${baseUrl}/_matrix/client/v3` &&
+        endpoints.syncUrl === `${endpoints.clientApiRoot as string}/sync` &&
+        env.MATRIX_ACCESS_TOKEN === value.accessToken &&
+        env.MATRIX_BASE_URL === baseUrl &&
+        env.MATRIX_USER_ID === value.botUserId
+      );
+    case "signal":
+      return (
+        hasNonEmptyStringFields(value, ["account"]) &&
+        hasNonEmptyStringFields(endpoints, ["adminInboundUrl", "apiRoot", "eventsUrl", "rpcUrl"]) &&
+        endpoints.adminInboundUrl === `${baseUrl}/crabline/signal/inbound` &&
+        endpoints.apiRoot === baseUrl &&
+        endpoints.eventsUrl === `${baseUrl}/api/v1/events` &&
+        endpoints.rpcUrl === `${baseUrl}/api/v1/rpc` &&
+        Object.keys(env).length === 0
+      );
+    case "slack":
+      return (
+        hasNonEmptyStringFields(value, ["botToken", "signingSecret"]) &&
+        hasNonEmptyStringFields(endpoints, ["adminInboundUrl", "apiRoot", "eventsUrl"]) &&
+        hasNonEmptyStringFields(env, [
+          "SLACK_API_URL",
+          "SLACK_BOT_TOKEN",
+          "SLACK_SIGNING_SECRET",
+        ]) &&
+        endpoints.adminInboundUrl === `${baseUrl}/crabline/slack/inbound` &&
+        endpoints.apiRoot === `${baseUrl}/api/` &&
+        endpoints.eventsUrl === `${baseUrl}/slack/events` &&
+        env.SLACK_API_URL === endpoints.apiRoot &&
+        env.SLACK_BOT_TOKEN === value.botToken &&
+        env.SLACK_SIGNING_SECRET === value.signingSecret
+      );
+    case "telegram":
+      return (
+        hasNonEmptyStringFields(value, ["botToken"]) &&
+        hasNonEmptyStringFields(endpoints, ["adminInboundUrl", "apiRoot"]) &&
+        hasNonEmptyStringFields(env, ["TELEGRAM_BOT_TOKEN"]) &&
+        endpoints.adminInboundUrl === `${baseUrl}/crabline/telegram/inbound` &&
+        endpoints.apiRoot === baseUrl &&
+        env.TELEGRAM_BOT_TOKEN === value.botToken
+      );
+    case "whatsapp":
+      return (
+        hasNonEmptyStringFields(value, [
+          "accessToken",
+          "graphVersion",
+          "phoneNumberId",
+          "selfJid",
+        ]) &&
+        hasNonEmptyStringFields(endpoints, [
+          "adminInboundUrl",
+          "apiRoot",
+          "baileysWebSocketUrl",
+          "messagesUrl",
+          "phoneNumberUrl",
+          "statusUrl",
+        ]) &&
+        hasNonEmptyStringFields(env, [
+          "CLOUD_API_ACCESS_TOKEN",
+          "CLOUD_API_VERSION",
+          "WA_BASE_URL",
+          "WA_PHONE_NUMBER_ID",
+        ]) &&
+        endpoints.adminInboundUrl === `${baseUrl}/_crabline/admin/whatsapp/inbound` &&
+        endpoints.apiRoot === `${baseUrl}/${value.graphVersion as string}` &&
+        endpoints.phoneNumberUrl ===
+          `${endpoints.apiRoot as string}/${value.phoneNumberId as string}` &&
+        endpoints.messagesUrl === `${endpoints.phoneNumberUrl as string}/messages` &&
+        endpoints.statusUrl === endpoints.messagesUrl &&
+        endpoints.baileysWebSocketUrl ===
+          `${baseUrl.replace(/^http/u, "ws")}/ws/chat?access_token=${encodeURIComponent(
+            value.accessToken as string,
+          )}` &&
+        env.CLOUD_API_ACCESS_TOKEN === value.accessToken &&
+        env.CLOUD_API_VERSION === value.graphVersion &&
+        env.WA_BASE_URL === baseUrl &&
+        env.WA_PHONE_NUMBER_ID === value.phoneNumberId
+      );
+    case "zalo":
+      return (
+        hasNonEmptyStringFields(value, ["botId", "botToken"]) &&
+        hasNonEmptyStringFields(endpoints, ["adminInboundUrl", "apiRoot"]) &&
+        hasNonEmptyStringFields(env, ["ZALO_API_URL", "ZALO_BOT_TOKEN"]) &&
+        endpoints.adminInboundUrl === `${baseUrl}/crabline/zalo/inbound` &&
+        endpoints.apiRoot === baseUrl &&
+        env.ZALO_API_URL === baseUrl &&
+        env.ZALO_BOT_TOKEN === value.botToken
+      );
+    default:
+      return false;
+  }
+}
+
+function isSuccessfulProbe(
+  value: unknown,
+  manifest: Record<string, unknown>,
+): value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    return false;
+  }
+  switch (manifest.provider) {
+    case "mattermost":
+      return (
+        value.id === manifest.botUserId &&
+        typeof value.username === "string" &&
+        value.username.length > 0 &&
+        typeof value.update_at === "number" &&
+        Number.isSafeInteger(value.update_at) &&
+        value.update_at >= 0
+      );
+    case "matrix":
+      return value.user_id === manifest.botUserId;
+    case "signal":
+      return (
+        value.ok === true &&
+        typeof value.status === "number" &&
+        Number.isInteger(value.status) &&
+        value.status >= 200 &&
+        value.status < 300
+      );
+    case "slack":
+      return value.ok === true;
+    case "telegram": {
+      const result = value.result;
+      return (
+        value.ok === true &&
+        isRecord(result) &&
+        typeof result.id === "number" &&
+        Number.isSafeInteger(result.id) &&
+        result.id > 0 &&
+        result.is_bot === true &&
+        typeof result.first_name === "string" &&
+        result.first_name.length > 0
+      );
+    }
+    case "whatsapp":
+      return value.id === manifest.phoneNumberId;
+    case "zalo":
+      return value.ok === true && isRecord(value.result) && value.result.id === manifest.botId;
+    default:
+      return false;
+  }
+}
+
+function isReadinessSection(
+  value: unknown,
+  manifest: Record<string, unknown>,
+  manifestPath: string,
+  requireCurrentFields: boolean,
+): value is Record<string, unknown> {
+  if (!isRecord(value) || value.manifestPath !== manifestPath || !isRecord(value.result)) {
+    return false;
+  }
+  const result = value.result;
+  return (
+    result.ok === true &&
+    result.provider === manifest.provider &&
+    isRecord(result.endpoints) &&
+    isDeepStrictEqual(result.endpoints, manifest.endpoints) &&
+    isSuccessfulProbe(result.probe, manifest) &&
+    (!requireCurrentFields || (result.proof === "provider-api-probe" && result.ready === true))
+  );
+}
+
 function assertGenerationName(value: unknown, field: string): asserts value is string {
   if (typeof value !== "string" || !GENERATION_NAME_PATTERN.test(value)) {
     throw new Error(`OpenClaw Crabline artifact pointer ${field} is malformed.`);
@@ -128,7 +338,7 @@ function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer
   } catch (error) {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.", { cause: error });
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+  if (!isRecord(parsed)) {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.");
   }
   const value = parsed as Partial<OpenClawCrablineArtifactPointerBase> & {
@@ -280,25 +490,19 @@ async function assertCurrentGenerationExists(
       await assertGenerationIdentity();
       const value = JSON.parse(await fs.readFile(path.join(outputDir, artifactPath), "utf8"));
       await assertGenerationIdentity();
-      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      if (!isRecord(value)) {
         throw new Error("artifact is not an object");
       }
-      return value as Record<string, unknown>;
+      return value;
     } catch (error) {
       throw new Error("OpenClaw Crabline current artifact generation is incomplete.", {
         cause: error,
       });
     }
   };
-  const readNestedRecorderPath = (value: unknown): string | undefined => {
-    if (value === null || typeof value !== "object" || Array.isArray(value)) {
-      return undefined;
-    }
-    const result = (value as Record<string, unknown>).result;
-    if (result === null || typeof result !== "object" || Array.isArray(result)) {
-      return undefined;
-    }
-    const recorderPath = (result as Record<string, unknown>).recorderPath;
+  const readNestedRecorderPath = (value: Record<string, unknown>): string | undefined => {
+    const result = value.result as Record<string, unknown>;
+    const recorderPath = result.recorderPath;
     if (recorderPath !== undefined && typeof recorderPath !== "string") {
       throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
     }
@@ -308,7 +512,10 @@ async function assertCurrentGenerationExists(
   const manifest = await readArtifactObject(pointer.manifestPath);
   const capabilityMatrix = await readArtifactObject(pointer.capabilityMatrixPath);
   const readiness = await readArtifactObject(pointer.providerReadinessArtifactPath);
+  const providerReadiness = readiness.providerReadiness;
+  const smoke = readiness.smoke;
   if (
+    !isGeneratedManifest(manifest) ||
     capabilityMatrix.version !== 1 ||
     capabilityMatrix.source !== "openclaw/crabline" ||
     capabilityMatrix.manifestPath !== pointer.manifestPath ||
@@ -318,14 +525,35 @@ async function assertCurrentGenerationExists(
     capabilityMatrix.selectedChannel.length === 0 ||
     capabilityMatrix.report === null ||
     typeof capabilityMatrix.report !== "object" ||
-    Array.isArray(capabilityMatrix.report)
+    Array.isArray(capabilityMatrix.report) ||
+    readiness.version !== 1 ||
+    readiness.source !== "openclaw/crabline" ||
+    readiness.manifestPath !== pointer.manifestPath ||
+    readiness.channelDriver !== capabilityMatrix.channelDriver ||
+    readiness.selectedChannel !== capabilityMatrix.selectedChannel ||
+    manifest.provider !== readiness.selectedChannel ||
+    !isReadinessSection(
+      smoke,
+      manifest,
+      pointer.manifestPath,
+      pointer.version === 2 || providerReadiness !== undefined,
+    ) ||
+    (pointer.version === 2 &&
+      (!isReadinessSection(providerReadiness, manifest, pointer.manifestPath, true) ||
+        !isDeepStrictEqual(providerReadiness, smoke))) ||
+    (pointer.version === 1 &&
+      providerReadiness !== undefined &&
+      (!isReadinessSection(providerReadiness, manifest, pointer.manifestPath, true) ||
+        !isDeepStrictEqual(providerReadiness, smoke)))
   ) {
     throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
   }
   const manifestRecorderPath =
     typeof manifest.recorderPath === "string" ? manifest.recorderPath : undefined;
-  const providerReadinessRecorderPath = readNestedRecorderPath(readiness.providerReadiness);
-  const smokeRecorderPath = readNestedRecorderPath(readiness.smoke);
+  const providerReadinessRecorderPath = isRecord(providerReadiness)
+    ? readNestedRecorderPath(providerReadiness)
+    : undefined;
+  const smokeRecorderPath = readNestedRecorderPath(smoke);
   const recorderPaths = [manifestRecorderPath, providerReadinessRecorderPath, smokeRecorderPath];
   if (manifest.recorderPath !== undefined && typeof manifest.recorderPath !== "string") {
     throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
@@ -602,6 +830,10 @@ export async function publishOpenClawCrablineArtifactGeneration(
     await store.assertIdentityAt();
 
     await dependencies.beforePointerSwitch?.(pointer);
+    await output.assertIdentityAt();
+    await store.assertIdentityAt();
+    await staging.assertIdentityAt(generationPath);
+    await assertCurrentGenerationExists(outputDir, pointer);
     await output.assertIdentityAt();
     await store.assertIdentityAt();
     await staging.assertIdentityAt(generationPath);

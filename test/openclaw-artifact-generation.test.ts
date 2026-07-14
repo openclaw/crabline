@@ -56,8 +56,27 @@ function publishParams(outputDir: string, lock = createLock()) {
     outputDir,
     selection: resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" }),
     providerReadiness: {
-      result: { proof: "provider-api-probe", provider: "telegram", ready: true },
+      result: providerReadinessResult(),
     },
+  };
+}
+
+function providerReadinessResult(extra: Record<string, unknown> = {}) {
+  return {
+    endpoints: manifest.endpoints,
+    ok: true,
+    probe: {
+      ok: true,
+      result: {
+        first_name: "Crabline",
+        id: 424_242,
+        is_bot: true,
+      },
+    },
+    proof: "provider-api-probe",
+    provider: "telegram",
+    ready: true,
+    ...extra,
   };
 }
 
@@ -244,12 +263,9 @@ describe("OpenClaw artifact generation publication", () => {
     const paramsWithRecorderReference = {
       ...params,
       providerReadiness: {
-        result: {
-          proof: "provider-api-probe",
-          provider: "telegram",
-          ready: true,
+        result: providerReadinessResult({
           recorderPath: "/tmp/crabline/telegram.jsonl",
-        },
+        }),
       },
     };
     try {
@@ -496,6 +512,131 @@ describe("OpenClaw artifact generation publication", () => {
       await disposeTempDir(outputDir);
     }
   });
+
+  it.each([
+    {
+      label: "empty manifest",
+      path: "manifestPath",
+      corrupt: () => ({}),
+    },
+    {
+      label: "empty readiness artifact",
+      path: "providerReadinessArtifactPath",
+      corrupt: () => ({}),
+    },
+    {
+      label: "manifest with empty endpoint metadata",
+      path: "manifestPath",
+      corrupt: (artifact: Record<string, unknown>) => ({
+        ...artifact,
+        endpoints: {},
+      }),
+    },
+    {
+      label: "manifest with mismatched environment credentials",
+      path: "manifestPath",
+      corrupt: (artifact: Record<string, unknown>) => ({
+        ...artifact,
+        env: {
+          ...(artifact.env as Record<string, unknown>),
+          TELEGRAM_BOT_TOKEN: "placeholder",
+        },
+      }),
+    },
+    {
+      label: "readiness artifact with an empty result",
+      path: "providerReadinessArtifactPath",
+      corrupt: (artifact: Record<string, unknown>) => ({
+        ...artifact,
+        providerReadiness: {
+          ...(artifact.providerReadiness as Record<string, unknown>),
+          result: {},
+        },
+      }),
+    },
+    {
+      label: "readiness artifact with a malformed probe",
+      path: "providerReadinessArtifactPath",
+      corrupt: (artifact: Record<string, unknown>) => {
+        const providerReadiness = artifact.providerReadiness as Record<string, unknown>;
+        return {
+          ...artifact,
+          providerReadiness: {
+            ...providerReadiness,
+            result: {
+              ...(providerReadiness.result as Record<string, unknown>),
+              probe: null,
+            },
+          },
+        };
+      },
+    },
+    {
+      label: "readiness artifact with the wrong source",
+      path: "providerReadinessArtifactPath",
+      corrupt: (artifact: Record<string, unknown>) => ({
+        ...artifact,
+        source: "other/source",
+      }),
+    },
+    {
+      label: "readiness artifact with a mismatched manifest path",
+      path: "providerReadinessArtifactPath",
+      corrupt: (artifact: Record<string, unknown>) => ({
+        ...artifact,
+        manifestPath: "other-manifest.json",
+      }),
+    },
+    {
+      label: "provider readiness with a mismatched manifest reference",
+      path: "providerReadinessArtifactPath",
+      corrupt: (artifact: Record<string, unknown>) => ({
+        ...artifact,
+        providerReadiness: {
+          ...(artifact.providerReadiness as Record<string, unknown>),
+          manifestPath: "other-manifest.json",
+        },
+      }),
+    },
+    {
+      label: "smoke readiness with a mismatched manifest reference",
+      path: "providerReadinessArtifactPath",
+      corrupt: (artifact: Record<string, unknown>) => ({
+        ...artifact,
+        smoke: {
+          ...(artifact.smoke as Record<string, unknown>),
+          manifestPath: "other-manifest.json",
+        },
+      }),
+    },
+  ] as const)(
+    "rejects a generated $label before pointer publication",
+    async ({ corrupt, path: field }) => {
+      const outputDir = await createTempDir();
+      try {
+        await expect(
+          publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+            beforePointerSwitch: async (pointer) => {
+              const artifactPath = path.join(outputDir, pointer[field]);
+              const artifact = JSON.parse(await fs.readFile(artifactPath, "utf8")) as Record<
+                string,
+                unknown
+              >;
+              await fs.writeFile(artifactPath, `${JSON.stringify(corrupt(artifact), null, 2)}\n`);
+            },
+            createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+          }),
+        ).rejects.toThrow("OpenClaw Crabline current artifact generation is incomplete.");
+
+        await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toBeNull();
+        await expect(
+          fs.readdir(path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY)),
+        ).resolves.toEqual([]);
+      } finally {
+        await disposeTempDir(outputDir);
+      }
+    },
+  );
 
   it("rejects publication when current recorder references are removed", async () => {
     const outputDir = await createTempDir();
@@ -795,7 +936,7 @@ describe("OpenClaw artifact generation publication", () => {
           manifest,
           outputDir,
           selection,
-          providerReadiness: { result: { generation: "successor" } },
+          providerReadiness: { result: providerReadinessResult({ generation: "successor" }) },
         },
         {
           beforePointerSwitch: async () => {
@@ -816,7 +957,7 @@ describe("OpenClaw artifact generation publication", () => {
             manifest,
             outputDir,
             selection,
-            providerReadiness: { result: { generation: "expired" } },
+            providerReadiness: { result: providerReadinessResult({ generation: "expired" }) },
           },
           { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
         ),
@@ -880,7 +1021,7 @@ describe("OpenClaw artifact generation publication", () => {
           manifest,
           outputDir,
           selection,
-          providerReadiness: { result: { generation: "old" } },
+          providerReadiness: { result: providerReadinessResult({ generation: "old" }) },
         },
         { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
       );
@@ -905,7 +1046,7 @@ describe("OpenClaw artifact generation publication", () => {
           manifest,
           outputDir,
           selection,
-          providerReadiness: { result: { generation: "successor" } },
+          providerReadiness: { result: providerReadinessResult({ generation: "successor" }) },
         },
         { createGenerationId: () => "22222222-2222-4222-8222-222222222222" },
       );
@@ -997,7 +1138,7 @@ describe("OpenClaw artifact generation publication", () => {
           outputDir,
           selection: resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" }),
           providerReadiness: {
-            result: { proof: "provider-api-probe", ready: true },
+            result: providerReadinessResult(),
           },
         }),
       ).rejects.toMatchObject({ code: "ENOENT" });
