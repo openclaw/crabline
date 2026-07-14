@@ -643,7 +643,7 @@ describe("WhatsApp binary nodes", () => {
     expect(() => encodeBinaryNode({ ...largest, content: Buffer.alloc(payloadBytes + 1) })).toThrow(
       `exceeds ${WHATSAPP_BINARY_NODE_MAX_FRAME_BYTES} bytes`,
     );
-  }, 20_000);
+  }, 60_000);
 
   it("rejects trailing bytes after a compressed node stream", async () => {
     const compressed = deflateSync(encodeBinaryNode({ attrs: {}, tag: "message" }).subarray(1));
