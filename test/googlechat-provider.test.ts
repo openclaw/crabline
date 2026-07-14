@@ -194,6 +194,51 @@ describe("Google Chat webhook authentication", () => {
     ).resolves.toMatchObject({ status: 401 });
   });
 
+  it("distinguishes Google signing infrastructure failures from invalid credentials", async () => {
+    const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = Date.now();
+    const body = JSON.stringify({ chat: { messagePayload: {} } });
+    const signedRequest = signedJwt(keys.privateKey, {
+      aud: config.googlechat!.endpointUrl,
+      email: "chat@system.gserviceaccount.com",
+      email_verified: true,
+      exp: Math.floor(now / 1000) + 60,
+      iss: "https://accounts.google.com",
+    });
+    const request = () =>
+      new Request(config.googlechat!.endpointUrl!, {
+        headers: { authorization: `Bearer ${signedRequest}` },
+      });
+
+    for (const fetchImpl of [
+      async () => {
+        throw new Error("Google certificate service unavailable");
+      },
+      async () => Response.json({ "test-key": "not a certificate" }),
+    ]) {
+      const authenticate = createGoogleChatWebhookAuthenticator(config, {
+        fetch: fetchImpl,
+        now: () => now,
+      });
+      const response = await authenticate!(request(), body);
+      expect(response?.status).toBe(503);
+      expect(response?.headers.get("cache-control")).toBe("no-store");
+      expect(response?.headers.get("www-authenticate")).toBeNull();
+      await expect(response?.text()).resolves.toBe("service unavailable");
+    }
+
+    const authenticate = createGoogleChatWebhookAuthenticator(config, {
+      fetch: async () =>
+        Response.json({
+          "other-key": keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+        }),
+      now: () => now,
+    });
+    await expect(authenticate!(request(), body)).resolves.toMatchObject({ status: 401 });
+  });
+
   it("acknowledges authenticated lifecycle events without recording them", async () => {
     const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
     config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";

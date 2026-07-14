@@ -52,6 +52,20 @@ type BotConnectorKey = JsonWebKey & {
   kid?: string | undefined;
 };
 
+function parseBotConnectorKey(value: unknown): BotConnectorKey {
+  if (!isRecord(value)) {
+    throw new Error("Bot Connector signing key must be an object.");
+  }
+  if (
+    value.endorsements !== undefined &&
+    (!Array.isArray(value.endorsements) ||
+      !value.endorsements.every((endorsement) => typeof endorsement === "string"))
+  ) {
+    throw new Error("Bot Connector signing key endorsements must be a string array.");
+  }
+  return value as BotConnectorKey;
+}
+
 export function createMsTeamsWebhookAuthenticator(
   config: ProviderConfig,
   runtime: MsTeamsAuthRuntime = {},
@@ -64,30 +78,31 @@ export function createMsTeamsWebhookAuthenticator(
   const resolveSigningKey = createCachedJwtKeyResolver<BotConnectorKey>({
     async fetchKeys(signal) {
       try {
-        const fetchedAt = runtime.now?.() ?? Date.now();
+        const metadataRequestedAt = runtime.now?.() ?? Date.now();
         const metadataResponse = await fetchImpl(BOT_CONNECTOR_OPENID_URL, { signal });
         if (!metadataResponse.ok) {
           throw new Error(
             `Bot Connector metadata fetch failed with HTTP ${metadataResponse.status}.`,
           );
         }
-        const metadataExpiry = resolveHttpCacheExpiry(metadataResponse, fetchedAt);
+        const metadataExpiry = resolveHttpCacheExpiry(metadataResponse, metadataRequestedAt);
         const metadata = (await metadataResponse.json()) as { jwks_uri?: unknown };
         if (typeof metadata.jwks_uri !== "string") {
           throw new Error("Bot Connector metadata omitted jwks_uri.");
         }
+        const keysRequestedAt = runtime.now?.() ?? Date.now();
         const keysResponse = await fetchImpl(metadata.jwks_uri, { signal });
         if (!keysResponse.ok) {
           throw new Error(`Bot Connector key fetch failed with HTTP ${keysResponse.status}.`);
         }
-        const keyExpiry = resolveHttpCacheExpiry(keysResponse, fetchedAt);
+        const keyExpiry = resolveHttpCacheExpiry(keysResponse, keysRequestedAt);
         const keys = (await keysResponse.json()) as { keys?: unknown };
         if (!Array.isArray(keys.keys)) {
           throw new Error("Bot Connector key response omitted keys.");
         }
         return {
           expiresAt: Math.min(metadataExpiry, keyExpiry),
-          values: keys.keys as BotConnectorKey[],
+          values: keys.keys.map(parseBotConnectorKey),
         };
       } catch (error) {
         throw error instanceof JwtKeyInfrastructureError
@@ -129,7 +144,11 @@ export function createMsTeamsWebhookAuthenticator(
             throw new Error("Bot Connector JWT key does not endorse the activity channel.");
           }
           try {
-            return createPublicKey({ format: "jwk", key });
+            const publicKey = createPublicKey({ format: "jwk", key });
+            if (publicKey.asymmetricKeyType !== "rsa") {
+              throw new Error("Bot Connector JWT signing key must use RSA.");
+            }
+            return publicKey;
           } catch (error) {
             throw new JwtKeyInfrastructureError("Bot Connector JWT signing key is invalid.", {
               cause: error,

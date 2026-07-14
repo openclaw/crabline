@@ -405,4 +405,26 @@ describe("webhook target validation", () => {
       );
     }
   });
+
+  it.each([
+    "Connection",
+    "Content-Length",
+    "Expect",
+    "Host",
+    "Keep-Alive",
+    "Proxy-Connection",
+    "TE",
+    "Trailer",
+    "Transfer-Encoding",
+    "Upgrade",
+  ])("rejects sender-controlled custom webhook header %s", async (name) => {
+    await expect(
+      postWebhookRequest({
+        body: "{}",
+        headerEntries: [[name, "unsafe"]],
+        timeoutMs: 100,
+        url: new URL("http://127.0.0.1:1/webhook"),
+      }),
+    ).rejects.toThrow(`Webhook header "${name}" is controlled by the sender.`);
+  });
 });

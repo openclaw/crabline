@@ -10,10 +10,11 @@ import {
 function signedJwt(
   privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
   claims: Record<string, unknown>,
+  headerOverrides: Record<string, unknown> = {},
 ): string {
-  const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "test-key" })).toString(
-    "base64url",
-  );
+  const header = Buffer.from(
+    JSON.stringify({ alg: "RS256", kid: "test-key", ...headerOverrides }),
+  ).toString("base64url");
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString(
     "base64url",
@@ -111,6 +112,56 @@ describe("signed JWT remote key cache", () => {
     }
   });
 
+  it("rejects critical JWS extensions before resolving a signing key", async () => {
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = 1_700_000_000_000;
+    const resolveKey = vi.fn(async () => keys.publicKey);
+    const claims = {
+      aud: "crabline",
+      exp: Math.floor(now / 1000) + 60,
+      iss: "issuer",
+    };
+    const signedRequest = signedJwt(keys.privateKey, claims, {
+      crit: ["custom"],
+      custom: true,
+    });
+
+    await expect(
+      verifySignedJwt({
+        audience: "crabline",
+        issuers: ["issuer"],
+        now: () => now,
+        resolveKey,
+        ["token"]: signedRequest,
+      }),
+    ).rejects.toThrow(/critical header parameters are unsupported/u);
+    expect(resolveKey).not.toHaveBeenCalled();
+  });
+
+  it.each([[], "custom", [""], [1]])("rejects malformed JWS crit headers: %j", async (crit) => {
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = 1_700_000_000_000;
+    const signedRequest = signedJwt(
+      keys.privateKey,
+      {
+        aud: "crabline",
+        exp: Math.floor(now / 1000) + 60,
+        iss: "issuer",
+      },
+      { crit },
+    );
+
+    await expect(
+      verifySignedJwt({
+        audience: "crabline",
+        issuers: ["issuer"],
+        now: () => now,
+        resolveKey: async () => keys.publicKey,
+        ["token"]: signedRequest,
+      }),
+    ).rejects.toThrow(/crit header must be a non-empty array/u);
+  });
+
   it("does not cache responses marked no-cache or no-store", () => {
     const now = 1_700_000_000_000;
 
@@ -159,6 +210,70 @@ describe("signed JWT remote key cache", () => {
         now,
       ),
     ).toBe(now + 86_400_000);
+  });
+
+  it("uses the greater of apparent Date age and Age header age", () => {
+    const now = 1_700_000_000_000;
+
+    expect(
+      resolveHttpCacheExpiry(
+        new Response(null, {
+          headers: {
+            age: "120",
+            "cache-control": "public, max-age=3600",
+            date: new Date(now - 600_000).toUTCString(),
+          },
+        }),
+        now,
+      ),
+    ).toBe(now + 3_000_000);
+    expect(
+      resolveHttpCacheExpiry(
+        new Response(null, {
+          headers: {
+            age: "900",
+            "cache-control": "public, max-age=3600",
+            date: new Date(now - 600_000).toUTCString(),
+          },
+        }),
+        now,
+      ),
+    ).toBe(now + 2_700_000);
+  });
+
+  it("ignores malformed or future Date values when calculating apparent age", () => {
+    const now = 1_700_000_000_000;
+
+    for (const date of ["not-a-date", new Date(now + 600_000).toUTCString()]) {
+      expect(
+        resolveHttpCacheExpiry(
+          new Response(null, {
+            headers: {
+              age: "120",
+              "cache-control": "public, max-age=3600",
+              date,
+            },
+          }),
+          now,
+        ),
+      ).toBe(now + 3_480_000);
+    }
+  });
+
+  it("expires cache entries when apparent response age reaches the freshness boundary", () => {
+    const now = 1_700_000_000_000;
+
+    expect(
+      resolveHttpCacheExpiry(
+        new Response(null, {
+          headers: {
+            "cache-control": "public, max-age=3600",
+            date: new Date(now - 3_600_000).toUTCString(),
+          },
+        }),
+        now,
+      ),
+    ).toBe(now);
   });
 
   it("clamps absurd cache lifetimes and rejects unsafe max-age values", () => {

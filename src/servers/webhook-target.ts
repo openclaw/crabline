@@ -34,6 +34,18 @@ const GLOBAL_IPV6_EXCEPTIONS = createGlobalIpv6Exceptions();
 const ALLOCATED_GLOBAL_IPV6_RANGES = createAllocatedGlobalIpv6Ranges();
 const RFC6052_PREFIX_LENGTHS = [32, 40, 48, 56, 64, 96] as const;
 const IPV4ONLY_ADDRESSES = new Set(["192.0.0.170", "192.0.0.171"]);
+const SENDER_CONTROLLED_WEBHOOK_HEADERS = new Set([
+  "connection",
+  "content-length",
+  "expect",
+  "host",
+  "keep-alive",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
 
 type WebhookDnsLookupResult = ReadonlyArray<{ address: string; family: number }>;
 type WebhookDnsLookup = (hostname: string) => Promise<WebhookDnsLookupResult>;
@@ -518,10 +530,29 @@ type PostWebhookRequestParams = {
   url: URL;
 };
 
+function webhookRequestHeaders(
+  body: string,
+  headerEntries: PostWebhookRequestParams["headerEntries"],
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    "content-length": String(Buffer.byteLength(body)),
+    "content-type": "application/json",
+  };
+  for (const [name, value] of headerEntries ?? []) {
+    const normalizedName = name.toLowerCase();
+    if (SENDER_CONTROLLED_WEBHOOK_HEADERS.has(normalizedName)) {
+      throw new Error(`Webhook header "${name}" is controlled by the sender.`);
+    }
+    headers[normalizedName] = value;
+  }
+  return headers;
+}
+
 async function sendWebhookRequest(
   params: PostWebhookRequestParams,
   resolveOnHeaders: boolean,
 ): Promise<WebhookResponse> {
+  const headers = webhookRequestHeaders(params.body, params.headerEntries);
   return await new Promise<WebhookResponse>((resolve, reject) => {
     const address = params.address;
     let settled = false;
@@ -542,11 +573,7 @@ async function sendWebhookRequest(
       {
         agent: false,
         ...(address ? { family: address.family } : {}),
-        headers: {
-          "content-length": String(Buffer.byteLength(params.body)),
-          "content-type": "application/json",
-          ...Object.fromEntries(params.headerEntries ?? []),
-        },
+        headers,
         ...(address
           ? {
               lookup: (_hostname, _options, callback) =>
