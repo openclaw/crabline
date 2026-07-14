@@ -150,7 +150,7 @@ function recorderProbeLine(extra: Record<string, unknown> = {}): string {
     accepted: true,
     at: "2026-07-13T00:00:00.000Z",
     method: "GET",
-    path: "/probe",
+    path: "/bot<redacted>/getMe",
     query: {},
     type: "api",
     ...extra,
@@ -2838,7 +2838,7 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
-  it("probes Crabline provider readiness without claiming OpenClaw execution", async () => {
+  it("accepts exact provider API route evidence without claiming OpenClaw execution", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-provider-readiness-"));
     try {
       const legacyManifestPath = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
@@ -3113,6 +3113,8 @@ describe("OpenClaw local provider bridge", () => {
     ["unrelated object", "{}\n"],
     ["rejected event", recorderProbeLine({ accepted: false })],
     ["non-boolean acceptance", recorderProbeLine({ accepted: "true" })],
+    ["admin-only event", recorderProbeLine({ type: "admin" })],
+    ["wrong API route", recorderProbeLine({ path: "/bot<redacted>/sendMessage" })],
     ["valid event followed by malformed JSON", `${recorderProbeLine()}not-json\n`],
   ])("fails closed on %s readiness recorder evidence", async (_label, recorderContents) => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-invalid-"));
