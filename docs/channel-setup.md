@@ -56,6 +56,37 @@ remove stale config blocks or split them into separate provider ids.
 `loopback` has no externally meaningful webhook surface and is primarily useful
 for local direct adapter checks.
 
+## OpenClaw Support Matrix
+
+`ready` platforms have built-in local mock adapters. `bridge` platforms use the
+`script` adapter with commands supplied by the manifest owner.
+
+| Platform        | Status   |
+| --------------- | -------- |
+| `bluebubbles`   | `bridge` |
+| `discord`       | `ready`  |
+| `feishu`        | `ready`  |
+| `googlechat`    | `ready`  |
+| `imessage`      | `ready`  |
+| `irc`           | `bridge` |
+| `line`          | `bridge` |
+| `loopback`      | `ready`  |
+| `matrix`        | `ready`  |
+| `mattermost`    | `ready`  |
+| `msteams`       | `ready`  |
+| `nextcloudtalk` | `bridge` |
+| `nostr`         | `bridge` |
+| `signal`        | `bridge` |
+| `slack`         | `ready`  |
+| `synologychat`  | `bridge` |
+| `telegram`      | `ready`  |
+| `tlon`          | `bridge` |
+| `twitch`        | `bridge` |
+| `webchat`       | `bridge` |
+| `whatsapp`      | `ready`  |
+| `zalo`          | `ready`  |
+| `zalouser`      | `bridge` |
+
 ## Mock Config
 
 ```yaml
@@ -278,6 +309,9 @@ root event ID, such as `$eventid:matrix.org`; Crabline emits it as both the
 `m.room.message` event is delivered through Matrix `/sync`. Outbound room sends
 through `PUT /_matrix/client/v3/rooms/:roomId/send/:eventType/:txnId` are
 written to the manifest recorder.
+
+Post admin inbound payloads to the manifest's `endpoints.adminInboundUrl` with
+its `adminToken` in the `X-Crabline-Admin-Token` header.
 
 The provider server implements the unencrypted Client-Server API subset needed
 by the normal Matrix SDK: versions, `whoami`, filters, push rules, joined rooms

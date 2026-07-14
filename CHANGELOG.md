@@ -22,6 +22,7 @@
 - Validate effective fixture mode overrides and stop retrying permanent provider send failures.
 - Bound watch iterator return and provider cleanup during CLI shutdown, forcing process exit after deadline failures.
 - Correct provider-native channel target examples, admin-ingress setup, and contract maintenance coverage.
+- Document the complete ready and script-bridge channel matrix and validate the shipped example against the manifest schema.
 - Preserve native Slack rich text and block fallbacks, isolate Feishu replay identities, ignore non-message Google Chat interactions, and fail closed on invalid Zalo adapter inputs.
 - Correlate complete NAT64 discovery pairs and retain DNS capacity until abandoned lookups settle.
 - Verify loopback bindings by their listening address, sanitize framing and connection-nominated Fetch response headers, and advertise usable endpoints for every wildcard address spelling.
