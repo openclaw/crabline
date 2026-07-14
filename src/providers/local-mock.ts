@@ -57,9 +57,11 @@ export type LocalMockAdapterOptions = {
   recorderPath?: string | undefined;
   settleWebhookRequest?: (params: { accepted: boolean; payload: unknown; rawBody: string }) => void;
   webhook?: LocalMockWebhookConfig | undefined;
+  webhookCleanupGraceMs?: number | undefined;
 };
 
 const MAX_WAIT_CURSORS = 64;
+const DEFAULT_WEBHOOK_CLEANUP_GRACE_MS = 250;
 
 type WaitCursorState = {
   active: number;
@@ -265,6 +267,32 @@ function reportPostCommitWebhookSettlementFailure(providerId: string, error: unk
   }
 }
 
+async function settleWebhookHandlers(
+  providerId: string,
+  handlers: readonly Promise<Response>[],
+  graceMs: number,
+): Promise<void> {
+  if (handlers.length === 0) {
+    return;
+  }
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new CrablineError(
+          `Provider "${providerId}" webhook handlers did not settle within ${graceMs}ms after cleanup.`,
+          { kind: "timeout" },
+        ),
+      );
+    }, graceMs);
+  });
+  try {
+    await Promise.race([Promise.allSettled(handlers).then(() => undefined), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class LocalMockProviderAdapter implements ProviderAdapter {
   readonly id;
   readonly platform;
@@ -276,6 +304,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   readonly #options: LocalMockAdapterOptions;
   readonly #publicUrl: string | undefined;
   readonly #recorderPath: string;
+  readonly #webhookCleanupGraceMs: number;
   readonly #activeSends = new Set<Promise<SendResult>>();
   readonly #activeWebhookHandlers = new Set<Promise<Response>>();
   readonly #cleanupController = new AbortController();
@@ -300,6 +329,14 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     this.#options = params.options;
     this.#publicUrl = params.options.publicUrl ?? params.options.webhook?.publicUrl;
     this.#recorderPath = toRecorderPath(params.id, params.options.recorderPath);
+    const webhookCleanupGraceMs =
+      params.options.webhookCleanupGraceMs ?? DEFAULT_WEBHOOK_CLEANUP_GRACE_MS;
+    if (!Number.isSafeInteger(webhookCleanupGraceMs) || webhookCleanupGraceMs < 1) {
+      throw new CrablineError("Webhook cleanup grace must be a positive safe integer.", {
+        kind: "config",
+      });
+    }
+    this.#webhookCleanupGraceMs = webhookCleanupGraceMs;
     this.#installCleanupFence();
   }
 
@@ -498,13 +535,18 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     this.#cleanupPromise ??= (async () => {
       const sends = [...this.#activeSends];
       const webhookHandlers = [...this.#activeWebhookHandlers];
-      const [serverResult] = await Promise.allSettled([
+      const results = await Promise.allSettled([
         this.#serverClosing,
         ...sends,
-        ...webhookHandlers,
+        settleWebhookHandlers(this.id, webhookHandlers, this.#webhookCleanupGraceMs),
       ]);
+      const serverResult = results[0];
       if (serverResult?.status === "rejected") {
         throw serverResult.reason;
+      }
+      const webhookResult = results.at(-1);
+      if (webhookResult?.status === "rejected") {
+        throw webhookResult.reason;
       }
     })();
     await this.#cleanupPromise;
@@ -514,7 +556,10 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
     if (this.#cleanupBegun) {
       return Promise.resolve(new Response("provider is shutting down", { status: 503 }));
     }
-    const handling = this.#handleAdmittedWebhook(request);
+    const admittedRequest = new Request(request, {
+      signal: this.#signalFor(request.signal),
+    });
+    const handling = this.#handleAdmittedWebhook(admittedRequest);
     this.#activeWebhookHandlers.add(handling);
     void handling.then(
       () => this.#activeWebhookHandlers.delete(handling),
