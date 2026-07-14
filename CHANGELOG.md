@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Deduplicate Slack Events API retries by outer event identity and correlate threaded DMs through their native D-channel.
 - Forward lazy cleanup admission fences synchronously to materialized providers.
 - Reject prototype-inherited provider registry keys during resolution.
 - Require the literal Crabline artifact channel driver and retry current-generation validation across concurrent artifact rotation.

@@ -18,6 +18,12 @@ export const SLACK_USER_ID_RULE: NativeIdRule = {
   pattern: /^[UW][A-Z0-9]{2,}$/u,
 };
 
+export const SLACK_EVENT_ID_RULE: NativeIdRule = {
+  example: "Ev1234567890",
+  name: "Slack event id",
+  pattern: /^Ev[A-Z0-9]{2,}$/u,
+};
+
 export const SLACK_TS_RULE: NativeIdRule = {
   example: "1700000000.000100",
   name: "Slack timestamp",

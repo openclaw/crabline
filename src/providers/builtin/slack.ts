@@ -6,6 +6,7 @@ import { LocalMockProviderAdapter } from "../local-mock.js";
 import {
   slackTargetKey,
   SLACK_CHANNEL_ID_RULE,
+  SLACK_EVENT_ID_RULE,
   SLACK_TS_RULE,
   SLACK_USER_ID_RULE,
 } from "../slack-ids.js";
@@ -21,8 +22,19 @@ import {
 import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
 const SLACK_SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
+const SLACK_EVENT_RETRY_RETENTION_MS = 10 * 60_000;
 
 type SlackEnvironment = Partial<Pick<NodeJS.ProcessEnv, "SLACK_SIGNING_SECRET">>;
+
+type SlackEventReservation = {
+  promise: Promise<boolean>;
+  resolve: (accepted: boolean) => void;
+};
+
+type SlackEventReplayState = {
+  accepted: Map<string, number>;
+  inFlight: Map<string, SlackEventReservation>;
+};
 
 export function resolveSlackAdapterConfig(
   config: ProviderConfig,
@@ -257,13 +269,20 @@ export function normalizeSlackEventsPayload(payload: unknown) {
       });
     }
     const threadTs = message.thread_ts;
-    const eventId = isMessageChanged
-      ? optionalString(event, "event_ts")
-      : optionalString(message, "ts");
+    const callbackEventId = optionalString(payload, "event_id");
+    const eventId =
+      callbackEventId ??
+      (isMessageChanged ? optionalString(event, "event_ts") : optionalString(message, "ts"));
     return {
       author: slackAuthorFromEvent(message),
       ...(eventId
-        ? { id: requireNativeInboundId(eventId, SLACK_TS_RULE, "Slack event timestamp") }
+        ? {
+            id: requireNativeInboundId(
+              eventId,
+              callbackEventId ? SLACK_EVENT_ID_RULE : SLACK_TS_RULE,
+              callbackEventId ? "Slack event_id" : "Slack event timestamp",
+            ),
+          }
         : {}),
       raw: safePayload,
       text,
@@ -330,12 +349,7 @@ function matchesSlackThread(
   ) {
     return true;
   }
-  if (
-    !target.channelId ||
-    !SLACK_USER_ID_RULE.pattern.test(target.channelId) ||
-    expectedThreadId !== target.channelId ||
-    !isRecord(raw)
-  ) {
+  if (!target.channelId || !SLACK_USER_ID_RULE.pattern.test(target.channelId) || !isRecord(raw)) {
     return false;
   }
   const event = optionalRecord(raw, "event");
@@ -344,10 +358,17 @@ function matchesSlackThread(
   const user =
     (event ? optionalString(event, "user") : undefined) ??
     (message ? optionalString(message, "user") : undefined);
+  if (!channel?.startsWith("D") || user !== target.channelId) {
+    return false;
+  }
+  if (expectedThreadId === target.channelId) {
+    return candidateThreadId === channel || candidateThreadId.startsWith(`${channel}:thread:`);
+  }
+  const messageThreadTs = message ? optionalString(message, "thread_ts") : undefined;
   return Boolean(
-    channel?.startsWith("D") &&
-    user === target.channelId &&
-    (candidateThreadId === channel || candidateThreadId.startsWith(`${channel}:thread:`)),
+    SLACK_TS_RULE.pattern.test(expectedThreadId) &&
+    messageThreadTs === expectedThreadId &&
+    candidateThreadId === slackTargetKey(channel, expectedThreadId),
   );
 }
 
@@ -391,6 +412,76 @@ export function handleSlackWebhookPayload(payload: unknown): Response | undefine
   return undefined;
 }
 
+async function handleSlackEventReplay(
+  payload: unknown,
+  state: SlackEventReplayState,
+): Promise<Response | undefined> {
+  if (!isRecord(payload) || payload.type !== "event_callback") {
+    return undefined;
+  }
+  const eventId = optionalString(payload, "event_id");
+  if (!eventId || !SLACK_EVENT_ID_RULE.pattern.test(eventId)) {
+    return undefined;
+  }
+  const now = Date.now();
+  pruneSlackEventReplayState(state, now);
+  for (;;) {
+    if (state.accepted.has(eventId)) {
+      return new Response(null, { status: 200 });
+    }
+    const pending = state.inFlight.get(eventId);
+    if (!pending) {
+      reserveSlackEvent(state, eventId);
+      return undefined;
+    }
+    if (await pending.promise) {
+      return new Response(null, { status: 200 });
+    }
+  }
+}
+
+function reserveSlackEvent(state: SlackEventReplayState, eventId: string): void {
+  let resolveReservation!: (accepted: boolean) => void;
+  const promise = new Promise<boolean>((resolve) => {
+    resolveReservation = resolve;
+  });
+  state.inFlight.set(eventId, {
+    promise,
+    resolve: resolveReservation,
+  });
+}
+
+function settleSlackEventReplay(
+  state: SlackEventReplayState,
+  payload: unknown,
+  accepted: boolean,
+): void {
+  if (!isRecord(payload)) {
+    return;
+  }
+  const eventId = optionalString(payload, "event_id");
+  if (!eventId) {
+    return;
+  }
+  const reservation = state.inFlight.get(eventId);
+  if (!reservation) {
+    return;
+  }
+  state.inFlight.delete(eventId);
+  if (accepted) {
+    state.accepted.set(eventId, Date.now() + SLACK_EVENT_RETRY_RETENTION_MS);
+  }
+  reservation.resolve(accepted);
+}
+
+function pruneSlackEventReplayState(state: SlackEventReplayState, now: number): void {
+  for (const [eventId, expiresAt] of state.accepted) {
+    if (now > expiresAt) {
+      state.accepted.delete(eventId);
+    }
+  }
+}
+
 export class SlackProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
   constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
     const resolvedConfig = resolveSlackAdapterConfig(config);
@@ -400,6 +491,10 @@ export class SlackProviderAdapter extends LocalMockProviderAdapter implements Pr
       requirement: "slack.signingSecret or SLACK_SIGNING_SECRET",
       webhook: config.slack?.webhook,
     });
+    const replayState: SlackEventReplayState = {
+      accepted: new Map(),
+      inFlight: new Map(),
+    };
     super({
       codec: getBuiltinTargetCodec("slack"),
       config,
@@ -414,7 +509,12 @@ export class SlackProviderAdapter extends LocalMockProviderAdapter implements Pr
           : {}),
         defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 8787 },
         endpointLabel: "events endpoint",
-        handleWebhookPayload: handleSlackWebhookPayload,
+        async handleWebhookPayload(payload) {
+          return (
+            handleSlackWebhookPayload(payload) ??
+            (await handleSlackEventReplay(payload, replayState))
+          );
+        },
         matchesThread: matchesSlackThread,
         normalizeWebhookPayload: normalizeSlackEventsPayload,
         platform: "slack",
@@ -422,6 +522,9 @@ export class SlackProviderAdapter extends LocalMockProviderAdapter implements Pr
         recorderPath: config.slack?.recorder.path
           ? path.resolve(config.slack.recorder.path)
           : undefined,
+        settleWebhookRequest({ accepted, payload }) {
+          settleSlackEventReplay(replayState, payload, accepted);
+        },
         webhook: config.slack?.webhook,
       },
     });
