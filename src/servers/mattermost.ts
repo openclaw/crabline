@@ -482,6 +482,17 @@ function commitNextPost(
   setCommittedValue(state, state.posts, pending.post.id, pending.post);
 }
 
+function commitNextPostIfCapacity(
+  state: MattermostServerState,
+  pending: ReturnType<typeof buildNextPost>,
+): boolean {
+  if (!canRetainCommittedValues(state, [[undefined, pending.post]])) {
+    return false;
+  }
+  commitNextPost(state, pending);
+  return true;
+}
+
 function nextDirectChannelId(state: MattermostServerState, seed: string): string {
   let collision = 0;
   let channelId: string;
@@ -808,11 +819,10 @@ async function handleApi(params: {
       userId: state.botUserId,
     });
     const { post } = pendingPost;
-    if (!canRetainCommittedValues(state, [[undefined, post]])) {
+    if (!commitNextPostIfCapacity(state, pendingPost)) {
       return mattermostError("Too much retained state", 503);
     }
     const event = postEvent("posted", post, state.botUsername, channel);
-    commitNextPost(state, pendingPost);
     broadcast(state, event, false);
     return jsonResponse(post, 201);
   }
