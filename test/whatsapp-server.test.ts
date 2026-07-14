@@ -1377,7 +1377,7 @@ describe("whatsapp local provider server", () => {
     releaseAcceptance(true);
     await expect(acceptance).resolves.toBe(true);
 
-    const duplicateOperation = vi.fn(async () => true);
+    const duplicateOperation = vi.fn<() => Promise<boolean>>(async () => true);
     await expect(receiver.acceptMessageOnce(messageKey, duplicateOperation)).resolves.toBe(true);
     expect(duplicateOperation).not.toHaveBeenCalled();
   });
@@ -1385,7 +1385,7 @@ describe("whatsapp local provider server", () => {
   it("does not invoke acceptance work for an already-aborted owner signal", async () => {
     const receiver = new WhatsAppSignalBundleStore(1);
     const reason = new Error("request already cancelled");
-    const operation = vi.fn(async () => true);
+    const operation = vi.fn<() => Promise<boolean>>(async () => true);
 
     await expect(
       receiver.acceptMessageOnce("peer\0pre-aborted", operation, {
