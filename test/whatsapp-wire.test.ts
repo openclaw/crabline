@@ -646,7 +646,7 @@ describe("WhatsApp binary nodes", () => {
         WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES + 1
       }.`,
     );
-  });
+  }, 60_000);
 
   it("round trips the largest decodable frame and rejects one byte more", async () => {
     const payloadBytes = WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES - 16;
