@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { isCanonicalHttpPath } from "../core/http-path.js";
 import {
   advertisedHostForBindAddress,
+  assertLoopbackBindAddress,
   closeServer,
   formatUrlHost,
   writeFetchResponseHeaders,
@@ -88,10 +89,11 @@ async function toFetchRequest(
   maxBodyBytes: number,
   bodyTimeoutMs: number,
 ): Promise<Request> {
+  const requestBody = await readRequestBody(request, maxBodyBytes, bodyTimeoutMs);
   const body =
-    request.method === "GET" || request.method === "HEAD"
+    request.method === "GET" || request.method === "HEAD" || requestBody.length === 0
       ? undefined
-      : await readRequestBody(request, maxBodyBytes, bodyTimeoutMs);
+      : requestBody;
 
   const init: RequestInit = {
     headers: request.headers as Record<string, string>,
@@ -303,6 +305,12 @@ export async function startWebhookServer(params: {
   const address = server.address();
   if (!address || typeof address === "string") {
     throw new Error("Unable to resolve webhook server address.");
+  }
+  try {
+    assertLoopbackBindAddress(params.host, address.address, "Webhook server");
+  } catch (error) {
+    await closeServer(server, params.shutdownGraceMs);
+    throw error;
   }
   const advertisedHost = advertisedHostForBindAddress(params.host, address.address);
 

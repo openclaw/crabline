@@ -229,6 +229,19 @@ export function advertisedHostForBindAddress(host: string, boundAddress: string)
   return isLoopbackHost(host) && isLoopbackAddress(boundAddress) ? boundAddress : host;
 }
 
+export function assertLoopbackBindAddress(
+  configuredHost: string,
+  boundAddress: string,
+  serverName: string,
+): void {
+  if (isLoopbackHost(configuredHost) && !isLoopbackAddress(boundAddress)) {
+    throw new CrablineError(
+      `${serverName} resolved a loopback hostname to non-loopback address ${boundAddress}.`,
+      { kind: "connectivity" },
+    );
+  }
+}
+
 export function writeFetchResponseHeaders(response: ServerResponse, fetchResponse: Response): void {
   const preserveRepresentationLength =
     response.req?.method === "HEAD" || fetchResponse.status === 304;
@@ -265,51 +278,88 @@ export async function writeResponse(
   response: ServerResponse,
   fetchResponse: Response,
 ): Promise<void> {
-  const body = Buffer.from(await fetchResponse.arrayBuffer());
-  response.statusCode = fetchResponse.status;
-  writeFetchResponseHeaders(response, fetchResponse);
-  await new Promise<void>((resolve, reject) => {
+  const reader = fetchResponse.body?.getReader();
+  let cancellation: Promise<void> | undefined;
+  let rejectStopped!: (error: Error) => void;
+  let stoppedError: Error | undefined;
+  const stopped = new Promise<never>((_, reject) => {
+    rejectStopped = reject;
+  });
+  void stopped.catch(() => {});
+
+  const cancelBody = (reason: Error) => {
+    if (!reader || cancellation) {
+      return;
+    }
+    cancellation = reader.cancel(reason).catch(() => {});
+  };
+  const stop = (error: Error) => {
+    if (stoppedError) {
+      return;
+    }
+    stoppedError = error;
+    cancelBody(error);
+    rejectStopped(error);
+  };
+  const onClose = () => {
+    if (!response.writableFinished) {
+      stop(new Error("HTTP response closed before delivery completed."));
+    }
+  };
+  const onError = (error: Error) => stop(error);
+  const onRequestAborted = () => stop(new Error("HTTP response request was aborted."));
+  response.once("close", onClose);
+  response.once("error", onError);
+  response.req?.once("aborted", onRequestAborted);
+
+  try {
     if (
       response.destroyed ||
       response.req?.aborted ||
       response.req?.socket.destroyed ||
       response.socket?.destroyed
     ) {
-      reject(new Error("HTTP response closed before delivery completed."));
-      return;
+      throw new Error("HTTP response closed before delivery completed.");
     }
-    const cleanup = () => {
-      response.off("close", onClose);
-      response.off("error", onError);
-      response.off("finish", onFinish);
-    };
-    const onClose = () => {
-      if (response.writableFinished) {
-        cleanup();
-        resolve();
-        return;
+
+    const chunks: Buffer[] = [];
+    let bodyLength = 0;
+    if (reader) {
+      while (true) {
+        const chunk = await Promise.race([reader.read(), stopped]);
+        if (chunk.done) {
+          break;
+        }
+        if (chunk.value.byteLength > 0) {
+          const buffer = Buffer.from(chunk.value);
+          chunks.push(buffer);
+          bodyLength += buffer.length;
+        }
       }
-      cleanup();
-      reject(new Error("HTTP response closed before delivery completed."));
-    };
-    const onError = (error: Error) => {
-      cleanup();
-      reject(error);
-    };
-    const onFinish = () => {
-      cleanup();
-      resolve();
-    };
-    response.once("close", onClose);
-    response.once("error", onError);
-    response.once("finish", onFinish);
+    }
+
+    const body = Buffer.concat(chunks, bodyLength);
+    response.statusCode = fetchResponse.status;
+    writeFetchResponseHeaders(response, fetchResponse);
+    let onFinish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      onFinish = resolve;
+      response.once("finish", onFinish);
+    });
     try {
       response.end(body);
-    } catch (error) {
-      cleanup();
-      reject(error);
+      await Promise.race([finished, stopped]);
+    } finally {
+      response.off("finish", onFinish);
     }
-  });
+  } catch (error) {
+    cancelBody(error instanceof Error ? error : new Error(String(error)));
+    throw error;
+  } finally {
+    response.off("close", onClose);
+    response.off("error", onError);
+    response.req?.off("aborted", onRequestAborted);
+  }
 }
 
 export function closeServer(
@@ -398,12 +448,11 @@ export async function startHttpJsonServer(params: {
       kind: "connectivity",
     });
   }
-  if (isLoopbackHost(params.host) && !isLoopbackAddress(address.address)) {
+  try {
+    assertLoopbackBindAddress(params.host, address.address, params.serverName);
+  } catch (error) {
     await closeServer(server);
-    throw new CrablineError(
-      `${params.serverName} resolved a loopback hostname to non-loopback address ${address.address}.`,
-      { kind: "connectivity" },
-    );
+    throw error;
   }
   const advertisedHost = advertisedHostForBindAddress(params.host, address.address);
   return {

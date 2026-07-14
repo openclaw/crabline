@@ -130,6 +130,19 @@ describe("external webhook authentication policy", () => {
     ).not.toThrow();
   });
 
+  it.each(["ftp://127.0.0.1/events", "file:///events", "ws://localhost/events"])(
+    "rejects non-HTTP callback protocol %s even on loopback",
+    (publicUrl) => {
+      expect(() =>
+        requireExternalWebhookAuthentication({
+          ...base,
+          authenticated: false,
+          webhook: { host: "127.0.0.1", publicUrl },
+        }),
+      ).toThrow(/require HTTPS/u);
+    },
+  );
+
   it.each([
     ["127.0.0.1", "http://127.0.0.1:8787/events"],
     ["localhost", "http://localhost:8787/events"],
