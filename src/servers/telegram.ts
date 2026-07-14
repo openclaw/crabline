@@ -382,7 +382,11 @@ function parseTelegramMimeParameters(
           if (index >= value.length) {
             break;
           }
-          parameterValue += value[index];
+          const quotedCharacter = value[index];
+          if (quotedCharacter === "\r" || quotedCharacter === "\n") {
+            break;
+          }
+          parameterValue += quotedCharacter;
           index += 1;
         } else if (character === '"') {
           closed = true;
@@ -472,7 +476,7 @@ function parseTelegramMultipartDisposition(headerBlock: Buffer): TelegramMultipa
     throw invalidTelegramMultipartBody("Multipart part is missing a form-data disposition.");
   }
 
-  const parsed = parseTelegramMimeParameters(contentDisposition);
+  const parsed = parseTelegramMimeParameters(contentDisposition, { decodeQuotedPairs: true });
   if (parsed.type !== "form-data") {
     throw invalidTelegramMultipartBody("Multipart part is missing a form-data disposition.");
   }
