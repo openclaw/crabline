@@ -173,11 +173,11 @@ async function decompressIfRequired(buffer: Buffer): Promise<Buffer> {
   }
   const flag = buffer.readUInt8();
   if ((flag & 2) !== 0) {
-    if (buffer.length > WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES) {
-      throw new Error(`Compressed WhatsApp binary node frame is too large: ${buffer.length}.`);
+    const compressed = buffer.subarray(1);
+    if (compressed.length > WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES) {
+      throw new Error(`Compressed WhatsApp binary node frame is too large: ${compressed.length}.`);
     }
     try {
-      const compressed = buffer.subarray(1);
       const inflated = await inflateWithInfo(compressed);
       if (inflated.engine.bytesWritten !== compressed.length) {
         throw new Error("Compressed WhatsApp binary node frame contains trailing data.");
