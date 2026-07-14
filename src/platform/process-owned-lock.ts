@@ -619,6 +619,7 @@ export function createProcessOwnedLockFileSystem(
     throw new Error("Recorder lock process namespace is unavailable.");
   }
   const ownedDirectories = new Map<string, DirectoryIdentity>();
+  const interruptedPublicationIdentities = new Map<string, DirectoryIdentity>();
   let cachedForeignIdentity:
     | {
         checkedAt: number;
@@ -719,7 +720,7 @@ export function createProcessOwnedLockFileSystem(
       return "dead";
     }
     if (
-      claim.version === 3 &&
+      claim.version >= 3 &&
       claim.machineIdentity !== null &&
       claim.machineIdentity !== currentMachineIdentity
     ) {
@@ -937,6 +938,25 @@ export function createProcessOwnedLockFileSystem(
       }
       fs.mkdir(directoryPath, (error) => {
         if (error) {
+          if (error.code === "EEXIST" && coordinationClaim.supersededPaths.length > 0) {
+            try {
+              const existing = fs.lstatSync(directoryPath);
+              const candidate = parseOwner(directoryPath);
+              if (
+                existing.isDirectory() &&
+                !existing.isSymbolicLink() &&
+                (candidate === undefined || candidate === null)
+              ) {
+                const coordinationKey = canonicalLockDirectoryPath(directory);
+                interruptedPublicationIdentities.set(coordinationKey, directoryIdentity(existing));
+                retainedCoordinationClaims.set(coordinationKey, coordinationClaim);
+                callback(error);
+                return;
+              }
+            } catch {
+              // Fall through to normal cleanup for a changing target.
+            }
+          }
           releaseRecoveryClaim(directory, coordinationClaim, () => callback(error));
           return;
         }
@@ -951,6 +971,7 @@ export function createProcessOwnedLockFileSystem(
             canonicalLockDirectoryPath(directory),
             directoryIdentity(publishedDirectory),
           );
+          interruptedPublicationIdentities.delete(canonicalLockDirectoryPath(directory));
         } catch (ownerError) {
           publicationError = ownerError as NodeJS.ErrnoException;
         }
@@ -980,6 +1001,13 @@ export function createProcessOwnedLockFileSystem(
       }
       const candidate = parseOwner(filePath);
       const status = ownerStatus(candidate);
+      if (candidate !== undefined && candidate !== null) {
+        interruptedPublicationIdentities.delete(coordinationKey);
+      }
+      const recoverableInterruptedPublication =
+        (candidate === undefined || candidate === null) &&
+        directoryIdentityMatches(interruptedPublicationIdentities.get(coordinationKey), stats) &&
+        Date.now() - stats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
       const recoverableForeign =
         candidate !== undefined &&
         candidate !== null &&
@@ -993,6 +1021,7 @@ export function createProcessOwnedLockFileSystem(
         candidate?.owner.token === token ||
           status === "dead" ||
           recoverableForeign ||
+          recoverableInterruptedPublication ||
           (candidate !== undefined &&
             candidate !== null &&
             isRecoverableUnverifiableOwner(candidate, status))
@@ -1024,6 +1053,9 @@ export function createProcessOwnedLockFileSystem(
         releaseRecoveryClaim(directory, coordinationClaim, () => callback(error));
       };
       const candidate = parseOwner(directoryPath);
+      if (candidate !== undefined && candidate !== null) {
+        interruptedPublicationIdentities.delete(coordinationKey);
+      }
       const ownedIdentity = ownedDirectories.get(coordinationKey);
       let ownsPublishedDirectory = false;
       if (ownedIdentity) {
@@ -1067,6 +1099,7 @@ export function createProcessOwnedLockFileSystem(
       let ownerlessStats: fs.Stats | undefined;
       let foreignStats: fs.Stats | undefined;
       let recoverableAbandoned = false;
+      let recoverableInterruptedPublication = false;
       const status = ownerStatus(candidate);
       const recoverableUnverifiable =
         candidate !== undefined &&
@@ -1089,6 +1122,11 @@ export function createProcessOwnedLockFileSystem(
             abandonedDirectoryIdentities.get(coordinationKey),
             ownerlessStats,
           );
+          recoverableInterruptedPublication =
+            directoryIdentityMatches(
+              interruptedPublicationIdentities.get(coordinationKey),
+              ownerlessStats,
+            ) && Date.now() - ownerlessStats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
         } catch (error) {
           finish(error as NodeJS.ErrnoException);
           return;
@@ -1098,7 +1136,8 @@ export function createProcessOwnedLockFileSystem(
         status !== "dead" &&
         !recoverableForeign &&
         !recoverableUnverifiable &&
-        !recoverableAbandoned
+        !recoverableAbandoned &&
+        !recoverableInterruptedPublication
       ) {
         finish(
           Object.assign(new Error("Recorder lock owner is still active or cannot be verified."), {
@@ -1144,6 +1183,23 @@ export function createProcessOwnedLockFileSystem(
           recoveryStillAuthorized = false;
         }
       }
+      if (recoverableInterruptedPublication && ownerlessStats) {
+        try {
+          const refreshedStats = fs.statSync(directoryPath);
+          recoveryStillAuthorized =
+            refreshed === undefined &&
+            refreshedStats.dev === ownerlessStats.dev &&
+            refreshedStats.ino === ownerlessStats.ino &&
+            refreshedStats.mtimeMs === ownerlessStats.mtimeMs &&
+            directoryIdentityMatches(
+              interruptedPublicationIdentities.get(coordinationKey),
+              refreshedStats,
+            ) &&
+            Date.now() - refreshedStats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
+        } catch {
+          recoveryStillAuthorized = false;
+        }
+      }
       if (!recoveryStillAuthorized) {
         finish(
           Object.assign(new Error("Recorder lock owner changed during recovery."), {
@@ -1166,6 +1222,7 @@ export function createProcessOwnedLockFileSystem(
           if (candidate) {
             abandonedOwnerTokens.delete(candidate.owner.token);
           }
+          interruptedPublicationIdentities.delete(coordinationKey);
           const abandonedIdentity = abandonedDirectoryIdentities.get(coordinationKey);
           if (abandonedIdentity) {
             abandonedOwnerTokens.delete(abandonedIdentity.ownerGenerationKey);

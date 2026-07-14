@@ -134,6 +134,34 @@ async function writeOwner(
   return ownerPath;
 }
 
+async function currentOwnerRecord(): Promise<Record<string, unknown>> {
+  const target = await createLockTarget();
+  const release = await acquire(target);
+  const owner = JSON.parse(
+    await readFile(path.join(`${target}.lock`, "crabline-owner.json"), "utf8"),
+  ) as Record<string, unknown>;
+  await release();
+  return owner;
+}
+
+async function writeDepartedExecutionOwner(
+  lockDirectory: string,
+  owner: Record<string, unknown>,
+): Promise<string> {
+  const token = randomUUID();
+  await writeFile(
+    path.join(lockDirectory, "crabline-owner.json"),
+    `${JSON.stringify({
+      ...owner,
+      executionIdentity: randomUUID(),
+      token,
+    })}\n`,
+    { mode: 0o600 },
+  );
+  await utimes(lockDirectory, new Date(0), new Date(0));
+  return token;
+}
+
 function recoveryClaimPath(lockDirectory: string, fingerprint = "coordination"): string {
   const canonicalDirectory = path.join(
     fs.realpathSync.native(path.dirname(lockDirectory)),
@@ -220,13 +248,14 @@ describe("process-owned lock filesystem", () => {
     const target = await createLockTarget();
     const lockDirectory = `${target}.lock`;
     const child = await startLockOwner(target);
+    const owner = await currentOwnerRecord();
     const baseClaim = recoveryClaimPath(lockDirectory);
     await mkdir(baseClaim);
-    await writeOwner(baseClaim, { pid: 2_147_483_647, processStartedAtMs: 1 });
-    const takeoverClaim = recoveryClaimPath(baseClaim, "owner:test-token-placeholder");
+    const baseToken = await writeDepartedExecutionOwner(baseClaim, owner);
+    const takeoverClaim = recoveryClaimPath(baseClaim, `owner:${baseToken}`);
     await mkdir(takeoverClaim);
-    await writeOwner(takeoverClaim, { pid: 2_147_483_647, processStartedAtMs: 1 });
-    const activeClaim = recoveryClaimPath(takeoverClaim, "owner:test-token-placeholder");
+    const takeoverToken = await writeDepartedExecutionOwner(takeoverClaim, owner);
+    const activeClaim = recoveryClaimPath(takeoverClaim, `owner:${takeoverToken}`);
     const remove = fs.rm.bind(fs);
     let failedBaseCleanup = false;
     const removeSpy = vi.spyOn(fs, "rm").mockImplementation(((
@@ -699,6 +728,43 @@ describe("process-owned lock filesystem", () => {
     const nextRelease = await acquire(target);
     expect(nextRelease).toBeTypeOf("function");
     await nextRelease();
+  });
+
+  it("treats a version-4 owner from another machine as foreign", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const owner = await currentOwnerRecord();
+    const platform = process.platform === "win32" ? "windows" : process.platform;
+    await mkdir(lockDirectory);
+    await writeFile(
+      path.join(lockDirectory, "crabline-owner.json"),
+      `${JSON.stringify({
+        ...owner,
+        machineIdentity: `${platform}:00000000-0000-0000-0000-000000000000`,
+        token: randomUUID(),
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await utimes(lockDirectory, new Date(0), new Date(0));
+
+    const release = await acquire(target);
+    expect(release).toBeTypeOf("function");
+    await release();
+  });
+
+  it("recovers an ownerless publication left behind with a dead coordination claim", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const owner = await currentOwnerRecord();
+    await mkdir(lockDirectory);
+    await utimes(lockDirectory, new Date(0), new Date(0));
+    const claimPath = recoveryClaimPath(lockDirectory);
+    await mkdir(claimPath);
+    await writeDepartedExecutionOwner(claimPath, owner);
+
+    const release = await acquire(target);
+    expect(release).toBeTypeOf("function");
+    await release();
   });
 
   it.runIf(process.platform === "linux")(
