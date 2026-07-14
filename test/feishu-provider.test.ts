@@ -1,5 +1,5 @@
 import { createCipheriv, createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import {
   createFeishuWebhookAuthenticator,
@@ -417,6 +417,36 @@ describe("Feishu webhook normalizer", () => {
     });
   });
 
+  it("removes verification tokens from normalized recorder payloads", () => {
+    const payload = {
+      event: {
+        message: {
+          chat_id: "oc_abc123",
+          content: JSON.stringify({ text: "redacted" }),
+          message_id: "om_redacted123",
+          message_type: "text",
+        },
+      },
+      header: { event_id: "event-redacted", token: "sample" },
+      schema: "2.0",
+      token: "sample",
+    };
+
+    const normalized = normalizeFeishuWebhookPayload(payload);
+    expect(normalized).toMatchObject({
+      raw: {
+        header: { event_id: "event-redacted" },
+        schema: "2.0",
+      },
+    });
+    expect(normalized.raw).not.toHaveProperty("token");
+    expect(normalized.raw).not.toHaveProperty("header.token");
+    expect(payload).toMatchObject({
+      header: { token: "sample" },
+      token: "sample",
+    });
+  });
+
   it("acknowledges unsupported and empty native messages without recording them", () => {
     expect(
       handleFeishuWebhookPayload({
@@ -644,6 +674,76 @@ describe("Feishu webhook normalizer", () => {
       };
       expect((await send(rejectedPayload)).status).toBe(400);
       expect((await send(rejectedPayload)).status).toBe(400);
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
+  it("releases replay reservations after recorder write failures", async () => {
+    const config = await createLocalMockConfig("feishu", "/feishu/webhook");
+    const encryptKey = "encrypt-key";
+    const now = 1_700_000_000_000;
+    const blockedDirectory = `${config.feishu!.recorder.path!}.blocked`;
+    await writeFile(blockedDirectory, "not a directory");
+    config.feishu!.encryptKey = encryptKey;
+    config.feishu!.verificationToken = "sample";
+    config.feishu!.recorder.path = `${blockedDirectory}/feishu.jsonl`;
+    const provider = new FeishuProviderAdapter("feishu", config, "crabline", {
+      env: {},
+      now: () => now,
+    });
+    const context = createProviderContext("feishu", config, {
+      id: "oc_abc123",
+      metadata: {},
+    });
+    const endpoint = (await provider.probe(context)).details
+      .find((detail) => detail.startsWith("webhook endpoint "))
+      ?.replace("webhook endpoint ", "");
+    expect(endpoint).toBeDefined();
+    const nativePayload = {
+      event: {
+        message: {
+          chat_id: "oc_abc123",
+          content: JSON.stringify({ text: "retry after recorder failure" }),
+          message_id: "om_retry123",
+          message_type: "text",
+        },
+      },
+      header: { event_id: "event-retry", token: "sample" },
+      schema: "2.0",
+    };
+    const rawBody = JSON.stringify({
+      encrypt: encryptFeishuPayload(nativePayload, encryptKey),
+    });
+    const timestamp = String(now / 1_000);
+    const nonce = "recorder-failure";
+    const signature = createHash("sha256")
+      .update(timestamp + nonce + encryptKey + rawBody)
+      .digest("hex");
+    const send = () =>
+      fetch(endpoint!, {
+        body: rawBody,
+        headers: {
+          "content-type": "application/json",
+          "x-lark-request-nonce": nonce,
+          "x-lark-request-timestamp": timestamp,
+          "x-lark-signature": signature,
+        },
+        method: "POST",
+      });
+
+    try {
+      expect((await send()).status).toBe(500);
+      await rm(blockedDirectory);
+      await mkdir(blockedDirectory);
+      expect((await send()).status).toBe(200);
+      expect((await send()).status).toBe(200);
+      const records = (await readFile(config.feishu!.recorder.path!, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { raw: unknown });
+      expect(records).toHaveLength(1);
+      expect(records[0]?.raw).not.toHaveProperty("header.token");
     } finally {
       await provider.cleanup();
     }

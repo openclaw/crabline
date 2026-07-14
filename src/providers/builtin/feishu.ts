@@ -256,12 +256,13 @@ export function normalizeFeishuWebhookPayload(payload: unknown) {
     throw new CrablineError("Feishu webhook payload must be an object", { kind: "inbound" });
   }
 
+  const recordedPayload = redactFeishuVerificationTokens(payload);
   const event = optionalRecord(payload, "event");
   const message = event ? optionalRecord(event, "message") : undefined;
   if (!message) {
     return genericMockPayloadWithNativeThread({
       channelRule: FEISHU_CHAT_ID_RULE,
-      payload,
+      payload: recordedPayload,
       threadRule: FEISHU_MESSAGE_ID_RULE,
     });
   }
@@ -300,12 +301,24 @@ export function normalizeFeishuWebhookPayload(payload: unknown) {
         : false,
     ),
     id: requireNativeInboundId(messageId, FEISHU_MESSAGE_ID_RULE, "Feishu message_id"),
-    raw: payload,
+    raw: recordedPayload,
     text,
     threadId: rootId
       ? requireNativeInboundId(rootId, FEISHU_MESSAGE_ID_RULE, "Feishu root_id")
       : requireNativeInboundId(chatId, FEISHU_CHAT_ID_RULE, "Feishu chat_id"),
   };
+}
+
+function redactFeishuVerificationTokens(payload: Record<string, unknown>): Record<string, unknown> {
+  const redacted = { ...payload };
+  delete redacted.token;
+  const header = optionalRecord(payload, "header");
+  if (header) {
+    const redactedHeader = { ...header };
+    delete redactedHeader.token;
+    redacted.header = redactedHeader;
+  }
+  return redacted;
 }
 
 function parseFeishuText(content: string | undefined): string | null | undefined {

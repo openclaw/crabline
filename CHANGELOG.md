@@ -5,6 +5,7 @@
 - Scope iMessage direct waits and Matrix and Mattermost thread correlation to their native conversations.
 - Escape visually unsafe Unicode controls in JSON reports, return a stable error document for unserializable values, and preserve Node write encoding semantics in test captures.
 - Ignore typeless Slack callbacks and redact URL fragments from Zalo recorder evidence.
+- Redact Feishu verification tokens from recorder payloads and release replay reservations after recorder failures.
 - Bind agent acknowledgements to the expected nonce instead of accepting an unrelated ACK.
 - Bound manifest file loading, honor probe retries, and reject empty resolved Zalo webhook secrets.
 - Require exact provider readiness recorder routes, explicit v2 artifact pointers, and normalized missing-generation corruption errors.
