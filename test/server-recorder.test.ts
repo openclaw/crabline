@@ -648,6 +648,35 @@ describe("server recorder", () => {
     expect(observer).toHaveBeenCalledWith(retryEvent);
   });
 
+  it("preserves a directory sync failure when handle cleanup also fails", async () => {
+    const recorderPath = path.join("/tmp", "recorder-sync-close-failure", "events.jsonl");
+    const syncFailure = new Error("recorder directory sync failed");
+    const closeFailure = new Error("recorder directory close failed");
+    const observer = vi.fn<(event: ServerRequestEvent) => void>();
+    fsMocks.directory.sync.mockRejectedValueOnce(syncFailure);
+    fsMocks.directory.close.mockImplementation(async () => {
+      if (fsMocks.directory.sync.mock.calls.length > 0) {
+        throw closeFailure;
+      }
+    });
+
+    const failure = await recordServerEvent({
+      event: serverEvent("/sync-close-failure"),
+      onEvent: observer,
+      recorderPath,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ServerRecorderCommittedError);
+    expect(failure).toMatchObject({
+      cause: syncFailure,
+      committed: true,
+      indeterminate: true,
+      name: "ServerRecorderCommittedError",
+    });
+    expect((failure as ServerRecorderCommittedError).errors).toEqual([syncFailure, closeFailure]);
+    expect(observer).not.toHaveBeenCalled();
+  });
+
   it("fails newly created recorder ancestry sync and retries the uncached inode", async () => {
     const firstParent = path.join("/tmp", "recorder-created-denied");
     const finalParent = path.join(firstParent, "nested");
