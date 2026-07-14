@@ -616,7 +616,7 @@ async function handleApi(params: {
     return channel ? jsonResponse(channel) : mattermostError("Channel not found", 404);
   }
   if (method === "POST" && apiPath === "/channels/direct") {
-    const userIds = Array.isArray(body) ? body.map(readMattermostString) : [];
+    const userIds = Array.isArray(body) ? body.map(readMattermostId) : [];
     if (userIds.length !== 2 || userIds.some((value) => !value)) {
       return mattermostError("Two user IDs are required", 400);
     }
@@ -644,7 +644,7 @@ async function handleApi(params: {
     return mattermostError("Request body must be a JSON object", 400);
   }
   if (method === "POST" && apiPath === "/users/me/typing") {
-    const channelId = readMattermostString(body.channel_id);
+    const channelId = readMattermostId(body.channel_id);
     if (!channelId) {
       return mattermostError("channel_id is required", 400);
     }
@@ -654,6 +654,7 @@ async function handleApi(params: {
     if (!state.channels.has(channelId)) {
       return mattermostError("Channel not found", 404);
     }
+    const parentId = readMattermostId(body.parent_id);
     broadcast(
       state,
       {
@@ -663,9 +664,7 @@ async function handleApi(params: {
         }),
         data: {
           channel_id: channelId,
-          ...(readMattermostString(body.parent_id)
-            ? { parent_id: readMattermostString(body.parent_id) }
-            : {}),
+          ...(parentId ? { parent_id: parentId } : {}),
           user_id: state.botUserId,
         },
         event: "typing",
@@ -675,12 +674,12 @@ async function handleApi(params: {
     return jsonResponse({ status: "OK" });
   }
   if (method === "POST" && apiPath === "/posts") {
-    const channelId = readMattermostString(body.channel_id);
+    const channelId = readMattermostId(body.channel_id);
     const message = readMattermostMessage(body.message);
     if (!channelId || !message) {
       return mattermostError("channel_id and message are required", 400);
     }
-    const rootId = readMattermostString(body.root_id);
+    const rootId = readMattermostId(body.root_id);
     if (body.root_id !== undefined && typeof body.root_id !== "string") {
       return mattermostError("root_id must be a string", 400);
     }
@@ -945,7 +944,7 @@ function attachWebSocketServer(params: {
         return;
       }
       if (message.action === "user_typing") {
-        const channelId = readTrimmedString(message.data?.channel_id);
+        const channelId = readMattermostId(message.data?.channel_id);
         if (!channelId || !params.state.channels.has(channelId)) {
           sendControlMessage(params.state, client, {
             error: {
@@ -966,7 +965,7 @@ function attachWebSocketServer(params: {
             }),
             data: {
               channel_id: channelId,
-              parent_id: readTrimmedString(message.data?.parent_id) ?? "",
+              parent_id: readMattermostId(message.data?.parent_id) ?? "",
               user_id: params.state.botUserId,
             },
             event: "typing",

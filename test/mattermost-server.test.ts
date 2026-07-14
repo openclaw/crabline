@@ -955,6 +955,76 @@ describe("Mattermost local provider server", () => {
     expect(rootMutation.status).toBe(403);
   });
 
+  it("does not trim opaque REST identifiers", async () => {
+    const server = await startMattermostServer({ adminToken: "admin", botToken: "fake" });
+    servers.push(server);
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ channelId: CHANNEL_ID, senderId: USER_ID, text: "root" }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    const root = (await inbound.json()) as { post: { id: string } };
+
+    const paddedChannel = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+      body: JSON.stringify({
+        channel_id: ` ${CHANNEL_ID} `,
+        message: "padded channel",
+      }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(paddedChannel.status).toBe(404);
+    await expect(paddedChannel.json()).resolves.toMatchObject({ message: "Channel not found" });
+
+    const paddedRoot = await fetch(`${server.manifest.endpoints.apiRoot}/posts`, {
+      body: JSON.stringify({
+        channel_id: CHANNEL_ID,
+        message: "padded root",
+        root_id: ` ${root.post.id} `,
+      }),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(paddedRoot.status).toBe(404);
+    await expect(paddedRoot.json()).resolves.toMatchObject({ message: "Root post not found" });
+
+    const paddedParticipant = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
+      body: JSON.stringify([server.manifest.botUserId, ` ${USER_ID} `]),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(paddedParticipant.status).toBe(404);
+    await expect(paddedParticipant.json()).resolves.toMatchObject({ message: "User not found" });
+
+    const paddedTypingChannel = await fetch(
+      `${server.manifest.endpoints.apiRoot}/users/me/typing`,
+      {
+        body: JSON.stringify({ channel_id: ` ${CHANNEL_ID} ` }),
+        headers: {
+          authorization: "Bearer fake",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      },
+    );
+    expect(paddedTypingChannel.status).toBe(404);
+    await expect(paddedTypingChannel.json()).resolves.toMatchObject({
+      message: "Channel not found",
+    });
+  });
+
   it("keeps typing channel-scoped, omitted from the sender, and ephemeral", async () => {
     const server = await startMattermostServer({ adminToken: "admin", botToken: "fake" });
     servers.push(server);
