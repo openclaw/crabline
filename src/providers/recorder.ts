@@ -62,8 +62,8 @@ type IncrementalReadState = {
   generation: number;
   identity:
     | {
-        dev: number;
-        ino: number;
+        dev: bigint;
+        ino: bigint;
       }
     | undefined;
   offset: number;
@@ -998,7 +998,8 @@ async function readRecordedInboundAppend(
 
   try {
     const stats = await handle.stat();
-    const identity = { dev: stats.dev, ino: stats.ino };
+    const identityStats = await handle.stat({ bigint: true });
+    const identity = { dev: identityStats.dev, ino: identityStats.ino };
     const sameFile = state.identity?.dev === identity.dev && state.identity.ino === identity.ino;
     const rotated = state.identity !== undefined && !sameFile;
     let hasContinuity = stats.size >= state.offset;

@@ -50,7 +50,14 @@ const fsMocks = vi.hoisted(() => {
         position: number,
       ) => Promise<{ bytesRead: number; buffer: Buffer }>
     >(),
-    stat: vi.fn<() => Promise<{ dev?: number; ino?: number; nlink?: number; size: number }>>(),
+    stat: vi.fn<
+      (options?: { bigint?: boolean }) => Promise<{
+        dev?: bigint | number;
+        ino?: bigint | number;
+        nlink?: bigint | number;
+        size: bigint | number;
+      }>
+    >(),
     sync: vi.fn<() => Promise<void>>(),
     truncate: vi.fn<(length: number) => Promise<void>>(),
   };
@@ -59,7 +66,10 @@ const fsMocks = vi.hoisted(() => {
     directory,
     file,
     lstat: vi.fn<
-      () => Promise<{
+      (
+        filePath: string,
+        options?: { bigint?: boolean },
+      ) => Promise<{
         dev: bigint;
         ino: bigint;
         isDirectory(): boolean;
@@ -83,7 +93,15 @@ const fsMocks = vi.hoisted(() => {
       ) => Promise<typeof directory | typeof file>
     >(),
     stat: vi.fn<
-      (filePath: string) => Promise<{ dev?: number; ino?: number; nlink?: number; size: number }>
+      (
+        filePath: string,
+        options?: { bigint?: boolean },
+      ) => Promise<{
+        dev?: bigint | number;
+        ino?: bigint | number;
+        nlink?: bigint | number;
+        size: bigint | number;
+      }>
     >(),
   };
 });
@@ -267,7 +285,7 @@ describe("server recorder", () => {
     expect(createWindowsDirectory).toHaveBeenCalledTimes(1);
     expect(createWindowsDirectory).toHaveBeenCalledWith(lockRoot);
     expect(fsMocks.lstat).toHaveBeenCalledTimes(3);
-    expect(fsMocks.lstat).toHaveBeenCalledWith(lockRoot);
+    expect(fsMocks.lstat).toHaveBeenCalledWith(lockRoot, { bigint: true });
   });
 
   it("recreates a cached Windows process-lock root after deletion", async () => {
@@ -282,6 +300,37 @@ describe("server recorder", () => {
     ).resolves.toBe(lockRoot);
 
     expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-secures a Windows process-lock root when wide file IDs differ", async () => {
+    const lockRoot = path.join("/tmp", "crabline-server-recorder-wide-id-locks");
+    const createWindowsDirectory = vi.fn(async () => undefined);
+    const originalInode = 2n ** 53n;
+    const replacementInode = originalInode + 1n;
+    fsMocks.lstat
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: originalInode,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: replacementInode,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      });
+
+    await expect(
+      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+    ).resolves.toBe(lockRoot);
+
+    expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
+    expect(fsMocks.lstat.mock.calls.every(([, options]) => options?.bigint === true)).toBe(true);
   });
 
   it("maps Windows path case aliases to the same process lock", () => {
@@ -1060,6 +1109,45 @@ describe("server recorder", () => {
       expect(repairAttempts).toBe(2);
       expect(fsMocks.file.truncate).toHaveBeenCalledWith(Buffer.byteLength(completed));
       expect(fsMocks.file.appendFile).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "rejects a replacement Windows repair handle with a colliding numeric file ID",
+    async () => {
+      const recorderPath = path.join("/tmp", "crabline-server-recorder-wide-file-id.jsonl");
+      const completed = `${JSON.stringify(serverEvent("/completed"))}\n`;
+      const contents = Buffer.from(`${completed}{"type":"api","path":"/torn"`);
+      const originalInode = 2n ** 53n;
+      const replacementInode = originalInode + 1n;
+      let handleStatCalls = 0;
+      fsMocks.file.stat.mockImplementation(async (options) => {
+        const inode = handleStatCalls++ % 3 === 2 ? replacementInode : originalInode;
+        return options?.bigint
+          ? { dev: 1n, ino: inode, nlink: 1n, size: BigInt(contents.length) }
+          : { dev: 1, ino: Number(inode), nlink: 1, size: contents.length };
+      });
+      fsMocks.stat.mockImplementation(async (_filePath, options) =>
+        options?.bigint
+          ? { dev: 1n, ino: originalInode, nlink: 1n, size: BigInt(contents.length) }
+          : { dev: 1, ino: Number(originalInode), nlink: 1, size: contents.length },
+      );
+      fsMocks.file.read.mockImplementation(async (buffer, offset, length, position) => {
+        const source = contents.subarray(position, position + length);
+        source.copy(buffer, offset);
+        return { buffer, bytesRead: source.length };
+      });
+
+      await expect(
+        recordServerEvent({
+          event: serverEvent("/after-wide-file-id-race"),
+          onEvent: undefined,
+          recorderPath,
+        }),
+      ).rejects.toThrow("Server recorder rotation retries exhausted");
+
+      expect(fsMocks.file.truncate).not.toHaveBeenCalled();
+      expect(fsMocks.file.appendFile).not.toHaveBeenCalled();
     },
   );
 
