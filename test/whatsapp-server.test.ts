@@ -1371,6 +1371,32 @@ describe("whatsapp local provider server", () => {
     }
   });
 
+  it("preserves the acceptance timeout when terminal timeout cleanup throws", async () => {
+    vi.useFakeTimers();
+    try {
+      const receiver = new WhatsAppSignalBundleStore(1, 1, 1, undefined, undefined, {
+        messageAcceptanceTimeoutMs: 100,
+      });
+      const stalled = receiver.acceptMessageOnce(
+        "peer\0throwing-timeout-cleanup",
+        async () => await new Promise<boolean>(() => undefined),
+        {
+          onTerminalTimeout: () => {
+            throw new Error("timeout cleanup failed");
+          },
+        },
+      );
+      const rejection = expect(stalled).rejects.toThrow(
+        "WhatsApp message acceptance timed out.",
+      );
+
+      await vi.advanceTimersByTimeAsync(100);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fences duplicate persistence until timed-out recorder work settles", async () => {
     const receiver = new WhatsAppSignalBundleStore(1, 1, undefined, undefined, undefined, {
       messageAcceptanceTimeoutMs: 100,
