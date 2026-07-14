@@ -111,7 +111,15 @@ export async function secureCachedWindowsLockRoot(options: {
         }
       });
     }
-    const expected = await secured;
+    let expected: WindowsLockRootIdentity;
+    try {
+      expected = await secured;
+    } catch (error) {
+      if (options.cache.get(options.cacheKey) === secured) {
+        options.cache.delete(options.cacheKey);
+      }
+      throw error;
+    }
     let current: WindowsLockRootIdentity;
     try {
       current = await readStableWindowsLockRootIdentity(options);
