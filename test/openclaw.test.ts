@@ -1098,9 +1098,9 @@ describe("OpenClaw local provider bridge", () => {
       },
     });
     expect(usernameGroupInbound.providerBody.chatId).not.toBe("@channelusername");
-    expect(BigInt(String(usernameGroupInbound.providerBody.chatId))).toBeLessThan(
-      -((1n << 52n) + (1n << 50n)),
-    );
+    const usernameGroupChatId = BigInt(String(usernameGroupInbound.providerBody.chatId));
+    expect(usernameGroupChatId).toBeLessThan(0n);
+    expect(-usernameGroupChatId).toBeLessThanOrEqual((1n << 52n) - 1n);
     expect(usernameGroupInbound.providerBody.chatId).not.toBe(symbolicGroupDelivery.to);
     expect(
       createOpenClawCrablineInbound({
