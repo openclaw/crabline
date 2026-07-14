@@ -20,16 +20,18 @@ export function resolveZaloAdapterConfig(
   config: ProviderConfig,
   env: ZaloEnvironment = process.env,
 ) {
-  if (
-    config.zalo?.webhookSecret === undefined &&
-    env.ZALO_WEBHOOK_SECRET !== undefined &&
-    !env.ZALO_WEBHOOK_SECRET.trim()
-  ) {
-    throw new Error("ZALO_WEBHOOK_SECRET must not be empty or whitespace-only.");
+  const configuredWebhookSecret = config.zalo?.webhookSecret;
+  const webhookSecret = configuredWebhookSecret ?? env.ZALO_WEBHOOK_SECRET;
+  if (webhookSecret !== undefined && !webhookSecret.trim()) {
+    throw new Error(
+      configuredWebhookSecret === undefined
+        ? "ZALO_WEBHOOK_SECRET must not be empty or whitespace-only."
+        : "Zalo webhookSecret must not be empty or whitespace-only.",
+    );
   }
   return {
     botToken: config.zalo?.botToken ?? env.ZALO_BOT_TOKEN ?? "local-mock-zalo-token",
-    webhookSecret: config.zalo?.webhookSecret ?? env.ZALO_WEBHOOK_SECRET,
+    webhookSecret,
   };
 }
 

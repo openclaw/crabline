@@ -572,6 +572,97 @@ describe("run behavior", () => {
     expect(abortedOperations).toBe(2);
   });
 
+  it.each(["error", "unhealthy"] as const)(
+    "retries a transient probe %s and succeeds",
+    async (firstOutcome) => {
+      let probeCalls = 0;
+      const provider: ProviderAdapter = {
+        id: "mock",
+        platform: "loopback",
+        status: "ready",
+        supports: ["probe"],
+        normalizeTarget(target) {
+          return { id: target.id, metadata: target.metadata };
+        },
+        probe: async () => {
+          probeCalls += 1;
+          if (probeCalls === 1) {
+            if (firstOutcome === "error") {
+              throw new CrablineError("transient probe failure", { kind: "connectivity" });
+            }
+            return { details: ["temporarily unavailable"], healthy: false };
+          }
+          return { details: ["ready"], healthy: true };
+        },
+        send: async () => {
+          throw new Error("send must not run");
+        },
+        waitForInbound: async () => {
+          throw new Error("wait must not run");
+        },
+      };
+      const retryingManifest = withAllCapabilities({
+        ...manifest,
+        fixtures: [{ ...manifest.fixtures[0]!, retries: 1 }],
+      });
+
+      const result = await runFixtureCommand({
+        fixtureId: "fixture",
+        manifest: retryingManifest,
+        manifestPath: "/tmp/crabline.yaml",
+        modeOverride: "probe",
+        registry: buildRegistry(provider),
+      });
+
+      expect(result).toMatchObject({ diagnostics: ["ready"], ok: true });
+      expect(probeCalls).toBe(2);
+    },
+  );
+
+  it.each(["auth", "config"] as const)(
+    "does not retry permanent %s probe failures",
+    async (failureKind) => {
+      let probeCalls = 0;
+      const provider: ProviderAdapter = {
+        id: "mock",
+        platform: "loopback",
+        status: "ready",
+        supports: ["probe"],
+        normalizeTarget(target) {
+          return { id: target.id, metadata: target.metadata };
+        },
+        probe: async () => {
+          probeCalls += 1;
+          throw new CrablineError(`permanent ${failureKind} probe failure`, {
+            kind: failureKind,
+          });
+        },
+        send: async () => {
+          throw new Error("send must not run");
+        },
+        waitForInbound: async () => {
+          throw new Error("wait must not run");
+        },
+      };
+      const retryingManifest = withAllCapabilities({
+        ...manifest,
+        fixtures: [{ ...manifest.fixtures[0]!, retries: 3 }],
+      });
+
+      const result = await runFixtureCommand({
+        fixtureId: "fixture",
+        manifest: retryingManifest,
+        manifestPath: "/tmp/crabline.yaml",
+        modeOverride: "probe",
+        registry: buildRegistry(provider),
+      });
+
+      expect(result).toMatchObject({ failureKind, ok: false });
+      expect(result.diagnostics).toContain(`permanent ${failureKind} probe failure`);
+      expect(probeCalls).toBe(1);
+    },
+  );
+
   it("classifies plain provider failures by execution stage", async () => {
     let stage: "probe" | "send" | "wait" = "probe";
     const provider: ProviderAdapter = {

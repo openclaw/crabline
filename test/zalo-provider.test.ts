@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { normalizeZaloWebhookPayload, ZaloProviderAdapter } from "../src/providers/builtin/zalo.js";
+import {
+  normalizeZaloWebhookPayload,
+  resolveZaloAdapterConfig,
+  ZaloProviderAdapter,
+} from "../src/providers/builtin/zalo.js";
 import {
   normalizeBuiltinTarget,
   ZALO_UNSUPPORTED_THREAD_TARGET_ERROR,
@@ -244,6 +248,37 @@ describe("Zalo webhook normalizer", () => {
       ).toThrow(/ZALO_WEBHOOK_SECRET must not be empty/u);
     },
   );
+
+  it.each(["", " \t"])(
+    "rejects explicitly empty webhook secrets from programmatic config",
+    async (secret) => {
+      const config = await createLocalMockConfig("zalo", "/zalo/webhook");
+      config.zalo!.webhookSecret = secret;
+
+      expect(
+        () =>
+          new ZaloProviderAdapter("zalo", config, "crabline", {
+            env: { ZALO_WEBHOOK_SECRET: "test-token-placeholder" },
+          }),
+      ).toThrow(/Zalo webhookSecret must not be empty/u);
+    },
+  );
+
+  it("preserves configured webhook secret precedence and environment fallback", async () => {
+    const config = await createLocalMockConfig("zalo", "/zalo/webhook");
+    config.zalo!.webhookSecret = "test-auth-token";
+
+    expect(
+      resolveZaloAdapterConfig(config, { ZALO_WEBHOOK_SECRET: "test-token-placeholder" })
+        .webhookSecret,
+    ).toBe("test-auth-token");
+
+    delete config.zalo!.webhookSecret;
+    expect(
+      resolveZaloAdapterConfig(config, { ZALO_WEBHOOK_SECRET: "test-token-placeholder" })
+        .webhookSecret,
+    ).toBe("test-token-placeholder");
+  });
 });
 
 runLocalMockProviderContract({

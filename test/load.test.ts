@@ -1,5 +1,6 @@
 import path from "node:path";
-import { mkdir, realpath, stat } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadManifest, resolveConfigPath } from "../src/config/load.js";
 import { createTempDir, disposeTempDir, writeJson, writeText } from "./test-helpers.js";
@@ -88,6 +89,35 @@ describe("config load", () => {
     expect(loaded.manifest.fixtures).toContainEqual(
       expect.objectContaining({ id: "loopback-roundtrip", provider: "local" }),
     );
+  });
+
+  it("rejects explicit non-regular config paths", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+
+    await expect(loadManifest(directory)).rejects.toThrow(/must be a regular file/u);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects an explicit FIFO without waiting for a writer",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const configPath = path.join(directory, "crabline.yaml");
+      execFileSync("mkfifo", [configPath]);
+
+      await expect(loadManifest(configPath)).rejects.toThrow(/must be a regular file/u);
+    },
+    1_000,
+  );
+
+  it("rejects oversized config files before parsing", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const configPath = path.join(directory, "crabline.yaml");
+    await writeFile(configPath, Buffer.alloc(1024 * 1024 + 1, 0x20));
+
+    await expect(loadManifest(configPath)).rejects.toThrow(/exceeds the 1048576-byte limit/u);
   });
 
   it("rejects invalid inbound regular expressions during config load", async () => {
