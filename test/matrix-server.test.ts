@@ -1558,4 +1558,67 @@ describe("Matrix local provider server", () => {
       error: "Sync response exceeds the configured byte limit",
     });
   });
+
+  it("reserves sync capacity for later rooms before adding optional history", async () => {
+    const server = await startMatrixServer({
+      accessToken: "test-token-placeholder",
+      adminToken: "test-auth-token",
+      maxSyncResponseBytes: 4_000,
+      roomId: "!first-budget:matrix.test",
+    });
+    servers.push(server);
+    for (let index = 0; index < 8; index += 1) {
+      const sent = await fetch(
+        `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!first-budget:matrix.test")}/send/m.room.message/first-${index}`,
+        {
+          body: JSON.stringify({ body: `${index}:${"x".repeat(300)}`, msgtype: "m.text" }),
+          headers: {
+            ...auth("test-token-placeholder"),
+            "content-type": "application/json",
+          },
+          method: "PUT",
+        },
+      );
+      expect(sent.status).toBe(200);
+    }
+    const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        roomId: "!second-budget:matrix.test",
+        senderId: "@alice:matrix.test",
+        text: "later room event",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: "test-auth-token",
+      },
+      method: "POST",
+    });
+    expect(inbound.status).toBe(200);
+
+    const response = await fetch(server.manifest.endpoints.syncUrl, {
+      headers: auth("test-token-placeholder"),
+    });
+    const rawBody = await response.text();
+    const body = JSON.parse(rawBody) as {
+      rooms: {
+        join: Record<
+          string,
+          { timeline: { events: Array<{ content: { body?: string } }>; limited: boolean } }
+        >;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(Buffer.byteLength(rawBody, "utf8")).toBeLessThanOrEqual(4_000);
+    expect(Object.keys(body.rooms.join).sort()).toEqual([
+      "!first-budget:matrix.test",
+      "!second-budget:matrix.test",
+    ]);
+    expect(body.rooms.join["!first-budget:matrix.test"]?.timeline.limited).toBe(true);
+    expect(
+      body.rooms.join["!second-budget:matrix.test"]?.timeline.events.some(
+        (event) => event.content.body === "later room event",
+      ),
+    ).toBe(true);
+  });
 });
