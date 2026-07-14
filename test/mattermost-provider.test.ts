@@ -245,6 +245,29 @@ describe("Mattermost webhook normalizer", () => {
     });
   });
 
+  it("scopes generic thread roots to their channel", () => {
+    const normalized = normalizeMattermostWebhookPayload({
+      message: {
+        channelId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        id: "cccccccccccccccccccccccccc",
+        text: "generic thread reply",
+        threadId: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+      },
+    });
+
+    expect(normalized).toMatchObject({
+      message: {
+        threadId: "aaaaaaaaaaaaaaaaaaaaaaaaaa:thread:bbbbbbbbbbbbbbbbbbbbbbbbbb",
+      },
+      threadId: "aaaaaaaaaaaaaaaaaaaaaaaaaa:thread:bbbbbbbbbbbbbbbbbbbbbbbbbb",
+    });
+    expect(
+      matchesMattermostThread(normalized.threadId, "bbbbbbbbbbbbbbbbbbbbbbbbbb", {
+        channelId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ).toBe(true);
+  });
+
   it("normalizes root posts to the channel target instead of their post id", () => {
     expect(
       normalizeMattermostWebhookPayload({
@@ -274,6 +297,24 @@ describe("Mattermost webhook normalizer", () => {
         },
       ),
     ).toBe(true);
+  });
+
+  it("rejects GET requests at the webhook route", async () => {
+    const config = await createLocalMockConfig("mattermost", "/mattermost/webhook");
+    const provider = new MattermostProviderAdapter("mattermost", config, "crabline");
+    const context = createProviderContext("mattermost", config, {
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      metadata: {},
+    });
+    try {
+      const endpoint = (await provider.probe(context)).details
+        .find((detail) => detail.includes("webhook endpoint"))!
+        .replace(/^.*?(https?:\/\/\S+)$/u, "$1");
+      const response = await fetch(endpoint);
+      expect(response.status).toBe(404);
+    } finally {
+      await provider.cleanup();
+    }
   });
 
   it("rejects malformed native post ids", () => {

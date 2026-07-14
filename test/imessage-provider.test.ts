@@ -206,6 +206,59 @@ describe("iMessage thread matching", () => {
     }
   });
 
+  it("accepts flat generic local-mock payloads with native targets", async () => {
+    const config = await createLocalMockConfig("imessage", "/imessage/webhook");
+    const provider = new IMessageProviderAdapter("imessage", config, "crabline");
+    const context = createProviderContext("imessage", config, {
+      id: "+15551234567",
+      metadata: {},
+    });
+    context.fixture.inboundMatch.author = "any";
+
+    try {
+      const endpoint = (await provider.probe(context)).details
+        .find((detail) => detail.startsWith("webhook endpoint "))
+        ?.replace("webhook endpoint ", "");
+      const since = new Date(Date.now() - 1000).toISOString();
+      const accepted = await fetch(endpoint!, {
+        body: JSON.stringify({
+          author: "user",
+          id: "imsg-flat-generic",
+          text: "flat generic payload",
+          threadId: "+15551234567",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(accepted.status).toBe(200);
+      await expect(
+        provider.waitForInbound({
+          ...context,
+          nonce: "flat generic payload",
+          since,
+          timeoutMs: 500,
+        }),
+      ).resolves.toMatchObject({
+        id: "imsg-flat-generic",
+        text: "flat generic payload",
+        threadId: "+15551234567",
+      });
+
+      const rejected = await fetch(endpoint!, {
+        body: JSON.stringify({
+          text: "invalid flat generic payload",
+          threadId: "chat-guid",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(rejected.status).toBe(400);
+      await expect(rejected.text()).resolves.toMatch(/native iMessage recipient or chat GUID/u);
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
   it("does not let an unrelated direct chat satisfy a recipient wait", async () => {
     const config = await createLocalMockConfig("imessage", "/imessage/webhook");
     const provider = new IMessageProviderAdapter("imessage", config, "crabline");

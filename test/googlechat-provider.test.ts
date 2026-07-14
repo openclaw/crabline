@@ -108,6 +108,7 @@ describe("Google Chat webhook authentication", () => {
       /Pub\/Sub service-account identity/u,
     );
 
+    delete config.googlechat!.pubsubAudience;
     config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
     config.googlechat!.disableSignatureVerification = true;
     expect(() => new GoogleChatProviderAdapter("googlechat", config, "crabline")).toThrow(
@@ -122,6 +123,19 @@ describe("Google Chat webhook authentication", () => {
       /require HTTPS/u,
     );
     config.googlechat!.webhook.publicUrl = "https://chat.example.test/googlechat/webhook";
+    expect(() => new GoogleChatProviderAdapter("googlechat", config, "crabline")).not.toThrow();
+  });
+
+  it("rejects mixed direct and incomplete Pub/Sub authentication configuration", async () => {
+    const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
+    config.googlechat!.pubsubAudience = "https://chat.example.test/pubsub";
+
+    expect(() => new GoogleChatProviderAdapter("googlechat", config, "crabline")).toThrow(
+      /Pub\/Sub service-account identity/u,
+    );
+
+    config.googlechat!.pubsubServiceAccountEmail = "chat-push@example.iam.gserviceaccount.com";
     expect(() => new GoogleChatProviderAdapter("googlechat", config, "crabline")).not.toThrow();
   });
 
@@ -377,6 +391,64 @@ describe("Google Chat webhook authentication", () => {
       await expect(readFile(config.googlechat!.recorder.path!, "utf8")).rejects.toMatchObject({
         code: "ENOENT",
       });
+    } finally {
+      await provider.cleanup();
+    }
+  });
+
+  it("exposes a POST-only route with an empty direct-event acknowledgement", async () => {
+    const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
+    const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = Date.now();
+    let certificateFetches = 0;
+    const provider = new GoogleChatProviderAdapter("googlechat", config, "crabline", {
+      fetch: async () => {
+        certificateFetches += 1;
+        return Response.json({
+          "test-key": keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+        });
+      },
+      now: () => now,
+    });
+    try {
+      const endpoint = endpointFromDetails(
+        (
+          await provider.probe(
+            createProviderContext("googlechat", config, {
+              id: "spaces/AAAABbbbCCC",
+              metadata: {},
+            }),
+          )
+        ).details,
+      );
+      const rejected = await fetch(endpoint);
+      expect(rejected.status).toBe(404);
+      expect(certificateFetches).toBe(0);
+
+      const jwt = signedJwt(keys.privateKey, {
+        aud: config.googlechat!.endpointUrl,
+        email: "chat@system.gserviceaccount.com",
+        email_verified: true,
+        exp: Math.floor(now / 1000) + 60,
+        iss: "https://accounts.google.com",
+      });
+      const accepted = await fetch(endpoint, {
+        body: JSON.stringify({
+          message: {
+            name: "spaces/AAAABbbbCCC/messages/msg-native",
+            sender: { type: "HUMAN" },
+            space: { name: "spaces/AAAABbbbCCC" },
+            text: "direct event",
+          },
+          type: "MESSAGE",
+        }),
+        headers: { authorization: `Bearer ${jwt}`, "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(accepted.status).toBe(200);
+      expect(accepted.headers.get("content-type")).toBeNull();
+      await expect(accepted.text()).resolves.toBe("");
     } finally {
       await provider.cleanup();
     }
