@@ -19,7 +19,7 @@
     "dist/src",
     "README.md",
     "docs/channel-setup.md",
-    "fixtures"
+    "fixtures/examples/crabline.example.yaml"
   ],
   "type": "module",
   "main": "./dist/src/index.js",
