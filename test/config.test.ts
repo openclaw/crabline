@@ -208,7 +208,7 @@ describe("manifest schema", () => {
         providers: {
           zalo: {
             adapter: "zalo",
-            zalo: { botToken: "bot-token", webhookSecret: "webhook-secret" },
+            zalo: { botToken: "placeholder", webhookSecret: "placeholder" },
           },
         },
       }),
