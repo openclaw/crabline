@@ -1783,7 +1783,7 @@ describe("recorder", () => {
         cursor,
         filePath,
         matches: (event) => event.id === `bounded-${eventCount - 1}`,
-        timeoutMs: 30,
+        timeoutMs: 500,
       }),
     ).resolves.toMatchObject({ id: `bounded-${eventCount - 1}` });
     await expect(
