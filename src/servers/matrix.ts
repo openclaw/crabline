@@ -151,8 +151,8 @@ export type StartMatrixServerParams = {
   serverName?: string | undefined;
 };
 
-function matrixId(prefix: "$" | "!", value: string, serverName: string): string {
-  return `${prefix}${createHash("sha256").update(value).digest("hex").slice(0, 16)}:${serverName}`;
+function matrixRoomId(value: string, serverName: string): string {
+  return `!${createHash("sha256").update(value).digest("hex").slice(0, 16)}:${serverName}`;
 }
 
 async function appendEvent(
@@ -204,7 +204,9 @@ function decodeMatrixPathSegment(value: string): string {
 }
 
 function eventId(state: MatrixServerState): string {
-  return matrixId("$", `event-${state.nextEvent++}`, state.serverName);
+  return `$${createHash("sha256")
+    .update(`event-${state.nextEvent++}`)
+    .digest("base64url")}`;
 }
 
 function notifySyncWaiters(state: MatrixServerState): void {
@@ -427,11 +429,30 @@ function transactionResponse(
   return response;
 }
 
-function readTimelineLimit(filter: Record<string, unknown> | undefined): number | undefined {
+function readTimelineLimit(
+  filter: Record<string, unknown> | undefined,
+): number | Response | undefined {
   const room = filter?.room;
-  const timeline = isJsonObject(room) ? room.timeline : undefined;
-  const limit = isJsonObject(timeline) ? readInteger(timeline.limit) : undefined;
-  return limit === undefined ? undefined : Math.max(0, limit);
+  if (room === undefined) {
+    return undefined;
+  }
+  if (!isJsonObject(room)) {
+    return matrixError("M_INVALID_PARAM", "Invalid room filter", 400);
+  }
+  const timeline = room.timeline;
+  if (timeline === undefined) {
+    return undefined;
+  }
+  if (!isJsonObject(timeline)) {
+    return matrixError("M_INVALID_PARAM", "Invalid timeline filter", 400);
+  }
+  if (!Object.hasOwn(timeline, "limit")) {
+    return undefined;
+  }
+  const limit = timeline.limit;
+  return typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0
+    ? limit
+    : matrixError("M_INVALID_PARAM", "Invalid timeline limit", 400);
 }
 
 function resolveSyncFilter(
@@ -610,6 +631,9 @@ async function handleSync(url: URL, state: MatrixServerState): Promise<Response>
     return filter;
   }
   const timelineLimit = readTimelineLimit(filter);
+  if (timelineLimit instanceof Response) {
+    return timelineLimit;
+  }
   const timeout = Math.min(readInteger(url.searchParams.get("timeout")) ?? 0, 1_000);
   const hasNewEvents =
     (state.directRoomsSequence !== undefined &&
@@ -1093,7 +1117,7 @@ export async function startMatrixServer(
     syncWaiters: new Set(),
     transactions: new Map(),
   };
-  const roomId = params.roomId ?? matrixId("!", "default-room", serverName);
+  const roomId = params.roomId ?? matrixRoomId("default-room", serverName);
   state.rooms.set(
     roomId,
     createRoom({

@@ -26,6 +26,8 @@ function auth(token: string) {
   return { authorization: `Bearer ${token}` };
 }
 
+const ROOM_V10_EVENT_ID = /^\$[A-Za-z0-9_-]{43}$/u;
+
 describe("Matrix local provider server", () => {
   it("serves the native client-server API and records room sends", async () => {
     const directory = await createTempDir();
@@ -76,21 +78,34 @@ describe("Matrix local provider server", () => {
         method: "PUT",
       },
     );
-    await expect(sent.json()).resolves.toMatchObject({ event_id: expect.stringMatching(/^\$/u) });
+    const sentBody = (await sent.json()) as { event_id: string };
+    expect(sentBody.event_id).toMatch(ROOM_V10_EVENT_ID);
 
     const sync = await fetch(`${server.manifest.endpoints.syncUrl}?timeout=0`, {
       headers: auth("test-token-placeholder"),
     });
     const syncBody = (await sync.json()) as {
-      rooms: { join: Record<string, { timeline: { events: unknown[] } }> };
+      rooms: {
+        join: Record<
+          string,
+          {
+            state: { events: Array<{ event_id: string }> };
+            timeline: { events: Array<{ event_id: string }> };
+          }
+        >;
+      };
     };
-    expect(syncBody.rooms.join["!qa:matrix.test"]?.timeline.events).toContainEqual(
+    const room = syncBody.rooms.join["!qa:matrix.test"];
+    expect(room?.timeline.events).toContainEqual(
       expect.objectContaining({
         content: { body: "hello Matrix", msgtype: "m.text" },
         sender: server.manifest.botUserId,
         type: "m.room.message",
       }),
     );
+    for (const event of [...(room?.state.events ?? []), ...(room?.timeline.events ?? [])]) {
+      expect(event.event_id).toMatch(ROOM_V10_EVENT_ID);
+    }
 
     const records = (await fs.readFile(recorderPath, "utf8"))
       .trim()
@@ -260,6 +275,24 @@ describe("Matrix local provider server", () => {
       error: "Cannot get filters for another user",
     });
   });
+
+  it.each(["1", -1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid timeline filter limit %j",
+    async (limit) => {
+      const server = await startMatrixServer({ accessToken: "test-token-placeholder" });
+      servers.push(server);
+      const filter = encodeURIComponent(JSON.stringify({ room: { timeline: { limit } } }));
+      const response = await fetch(`${server.manifest.endpoints.syncUrl}?filter=${filter}`, {
+        headers: auth("test-token-placeholder"),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        errcode: "M_INVALID_PARAM",
+        error: "Invalid timeline limit",
+      });
+    },
+  );
 
   it("bounds retained filters by count and aggregate bytes", async () => {
     const server = await startMatrixServer({ accessToken: "test-token-placeholder" });
