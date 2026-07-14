@@ -23,6 +23,7 @@ const DEFAULT_KEY_FETCH_TIMEOUT_MS = 5_000;
 const DEFAULT_UNKNOWN_KEY_COOLDOWN_MS = 30_000;
 const MAX_HTTP_CACHE_AGE_SECONDS = 24 * 60 * 60;
 const MAX_NEGATIVE_KEY_IDS = 128;
+const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
 const MAX_REMOTE_KEY_SET_SIZE = 128;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
@@ -33,9 +34,13 @@ function jwtKeyInfrastructureError(error: unknown): JwtKeyInfrastructureError {
 }
 
 function requireSafeDuration(value: number, name: string, allowZero = false): number {
-  if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1)) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < (allowZero ? 0 : 1) ||
+    value > MAX_NODE_TIMER_DELAY_MS
+  ) {
     throw new RangeError(
-      `${name} must be a ${allowZero ? "non-negative" : "positive"} safe integer.`,
+      `${name} must be a ${allowZero ? "non-negative" : "positive"} integer no greater than ${MAX_NODE_TIMER_DELAY_MS}.`,
     );
   }
   return value;

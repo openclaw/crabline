@@ -106,35 +106,58 @@ describe("webhook server", () => {
     },
   );
 
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1, 1.5])(
-    "rejects invalid bodyTimeoutMs before listening: %s",
-    async (bodyTimeoutMs) => {
-      await expect(
-        startWebhookServer({
-          bodyTimeoutMs,
-          handle: async () => new Response("ok"),
-          host: "127.0.0.1",
-          path: "/slack/events",
-          port: -1,
-        }),
-      ).rejects.toThrow(/bodyTimeoutMs must be a positive safe integer/u);
-    },
-  );
+  it.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    0,
+    -1,
+    1.5,
+    2_147_483_648,
+  ])("rejects invalid bodyTimeoutMs before listening: %s", async (bodyTimeoutMs) => {
+    await expect(
+      startWebhookServer({
+        bodyTimeoutMs,
+        handle: async () => new Response("ok"),
+        host: "127.0.0.1",
+        path: "/slack/events",
+        port: -1,
+      }),
+    ).rejects.toThrow(/bodyTimeoutMs must be a positive integer no greater than/u);
+  });
 
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1, 1.5])(
-    "rejects invalid shutdownGraceMs before listening: %s",
-    async (shutdownGraceMs) => {
-      await expect(
-        startWebhookServer({
-          handle: async () => new Response("ok"),
-          host: "127.0.0.1",
-          path: "/slack/events",
-          port: -1,
-          shutdownGraceMs,
-        }),
-      ).rejects.toThrow(/shutdownGraceMs must be a positive safe integer/u);
-    },
-  );
+  it.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    0,
+    -1,
+    1.5,
+    2_147_483_648,
+  ])("rejects invalid shutdownGraceMs before listening: %s", async (shutdownGraceMs) => {
+    await expect(
+      startWebhookServer({
+        handle: async () => new Response("ok"),
+        host: "127.0.0.1",
+        path: "/slack/events",
+        port: -1,
+        shutdownGraceMs,
+      }),
+    ).rejects.toThrow(/shutdownGraceMs must be a positive integer no greater than/u);
+  });
+
+  it("accepts the maximum Node timer delay", async () => {
+    const server = await startWebhookServer({
+      bodyTimeoutMs: 2_147_483_647,
+      handle: async () => new Response("ok"),
+      host: "127.0.0.1",
+      path: "/slack/events",
+      port: 0,
+      shutdownGraceMs: 2_147_483_647,
+    });
+
+    await expect(server.close()).resolves.toBeUndefined();
+  });
 
   it("can serve explicit GET webhook routes", async () => {
     const server = await startWebhookServer({
