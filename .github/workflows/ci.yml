@@ -19,7 +19,7 @@ jobs:
 
       - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
-          version: 10.32.1
+          version: 11.13.0
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -30,10 +30,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Validate workflows
-        # actionlint 1.7.7 predates GitHub's concurrency.queue schema.
+        # actionlint's schema does not yet include GitHub's concurrency.queue key.
         run: >-
-          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          cd tools &&
+          go run github.com/rhysd/actionlint/cmd/actionlint
+          -config-file ../.github/actionlint.yaml
           -ignore 'unexpected key "queue" for "concurrency" section'
+          ../.github/workflows/*.yml
 
       - name: Verify
         run: pnpm verify

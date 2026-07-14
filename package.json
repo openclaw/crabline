@@ -76,8 +76,15 @@
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vitest": "^4.1.10"
   },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "onFail": "error",
+      "version": ">=22.13.0"
+    }
+  },
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@10.32.1"
+  "packageManager": "pnpm@11.13.0"
 }

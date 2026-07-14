@@ -113,6 +113,9 @@ describe("release workflow", () => {
         "node-version"
       ],
     ).toBe(22);
+    expect(
+      verifySteps.find((step) => step.uses?.startsWith("pnpm/action-setup@"))?.with?.version,
+    ).toBe("11.13.0");
     expect(commands).toContain("npm install -g npm@12.0.1");
     for (const jobName of ["verify", "publish"]) {
       const jobCommands = jobSteps(workflow, jobName)
@@ -178,6 +181,17 @@ describe("release workflow", () => {
         MOCK_TAG_RACE_AFTER_LOOKUP: "1",
       }),
     ).rejects.toThrow("resolves to bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    await expect(
+      runPublishStep(publishStep ?? "", {
+        MOCK_TAG_RACE_AFTER_EXISTING: "1",
+        MOCK_VIEW_RESULT: "matching",
+      }),
+    ).rejects.toThrow("resolves to bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    await expect(
+      runGithubReleaseStep(releaseStep ?? "", "stable", {
+        MOCK_TAG_RACE_AFTER_LOOKUP: "1",
+      }),
+    ).rejects.toThrow("resolves to bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
   });
 
   it("accepts only published stable GitHub releases as existing", async () => {
@@ -190,8 +204,9 @@ describe("release workflow", () => {
     }
 
     const stableCalls = await runGithubReleaseStep(releaseStep, "stable");
-    expect(stableCalls).toHaveLength(1);
+    expect(stableCalls).toHaveLength(2);
     expect(stableCalls[0]).toContain("release view v1.2.3");
+    expect(stableCalls[1]).toContain("git ls-remote --exit-code");
 
     for (const state of ["draft", "prerelease"]) {
       await expect(runGithubReleaseStep(releaseStep, state)).rejects.toThrow(
@@ -335,6 +350,7 @@ describe("release workflow", () => {
       "view @openclaw/crabline@1.2.3 dist.integrity",
       "view @openclaw/crabline@1.2.3 version",
       "view @openclaw/crabline@1.2.3 dist.attestations.provenance.predicateType",
+      expect.stringContaining("git ls-remote --exit-code"),
     ]);
 
     await expect(
@@ -385,6 +401,7 @@ describe("release workflow", () => {
       "view @openclaw/crabline@1.2.3 dist.integrity",
       "view @openclaw/crabline@1.2.3 version",
       "view @openclaw/crabline@1.2.3 dist.attestations.provenance.predicateType",
+      expect.stringContaining("git ls-remote --exit-code"),
     ];
     expect(publishedCalls).toEqual(expectedPublishCalls);
     await expect(
@@ -721,6 +738,9 @@ if [[ "$3" == "dist.attestations.provenance.predicateType" ]]; then
       ;;
     *) exit 1 ;;
   esac
+  if [[ "\${MOCK_TAG_RACE_AFTER_EXISTING:-0}" -eq 1 ]]; then
+    touch "$MOCK_TAG_RACE"
+  fi
   exit 0
 fi
 case "$view_result" in

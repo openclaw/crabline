@@ -5,6 +5,8 @@
 - Bind agent acknowledgements to the expected nonce instead of accepting an unrelated ACK.
 - Bound manifest file loading, honor probe retries, and reject empty resolved Zalo webhook secrets.
 - Require exact provider readiness recorder routes, explicit v2 artifact pointers, and normalized missing-generation corruption errors.
+- Track actionlint updates, container image pins, and pull-request governance in the repository security checks.
+- Revalidate release tags before idempotent publication success and enforce the development toolchain's Node floor.
 - Verify downloaded npm tarball integrity, retry transient provenance lookups, and revalidate release tags immediately before publication mutations.
 - Validate effective fixture mode overrides and stop retrying permanent provider send failures.
 - Bound watch iterator return and provider cleanup during CLI shutdown, forcing process exit after deadline failures.
