@@ -232,7 +232,7 @@ function isSuccessfulProbe(
       return (
         value.id === manifest.botUserId &&
         typeof value.username === "string" &&
-        value.username.length > 0 &&
+        value.username.trim().length > 0 &&
         typeof value.update_at === "number" &&
         Number.isSafeInteger(value.update_at) &&
         value.update_at >= 0
@@ -554,15 +554,18 @@ async function assertCurrentGenerationExists(
     ? readNestedRecorderPath(providerReadiness)
     : undefined;
   const smokeRecorderPath = readNestedRecorderPath(smoke);
-  const recorderPaths = [manifestRecorderPath, providerReadinessRecorderPath, smokeRecorderPath];
+  const readinessRecorderPaths = [
+    ...(isRecord(providerReadiness) ? [providerReadinessRecorderPath] : []),
+    smokeRecorderPath,
+  ];
+  const recorderPaths = [manifestRecorderPath, ...readinessRecorderPaths];
   if (manifest.recorderPath !== undefined && typeof manifest.recorderPath !== "string") {
     throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
   }
   // The artifact store is owner-only; v1 compatibility covers historical layouts, not hostile same-owner rewrites.
   if (
     pointer.version === 1 &&
-    providerReadinessRecorderPath === undefined &&
-    smokeRecorderPath === undefined &&
+    readinessRecorderPaths.every((recorderPath) => recorderPath === undefined) &&
     (manifestRecorderPath === undefined ||
       path.dirname(path.resolve(outputDir, manifestRecorderPath)) !== generationDirectory)
   ) {

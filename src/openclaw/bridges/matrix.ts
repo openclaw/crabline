@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { isMatrixEventId } from "../../matrix-ids.js";
 import {
   canonicalConversationIdForInbound,
   createAdminInboundRequest,
@@ -88,9 +89,21 @@ function targetKey(roomId: string, threadId?: string): string {
   return threadId ? `${roomId}:thread:${threadId}` : roomId;
 }
 
-function eventThreadId(content: Record<string, unknown>): string | undefined {
+function matrixThreadId(value: string): string {
+  const trimmed = value.trim();
+  if (!isMatrixEventId(trimmed)) {
+    throw new Error("Matrix thread IDs must be native event IDs.");
+  }
+  return trimmed;
+}
+
+function eventThreadId(content: Record<string, unknown>): string | null | undefined {
   const relation = isRecord(content["m.relates_to"]) ? content["m.relates_to"] : undefined;
-  return relation?.rel_type === "m.thread" ? readString(relation.event_id) : undefined;
+  if (relation?.rel_type !== "m.thread") {
+    return undefined;
+  }
+  const eventId = readString(relation.event_id);
+  return eventId && isMatrixEventId(eventId) ? eventId : null;
 }
 
 const MAX_DELIVERED_MATRIX_TRANSACTIONS = 1_000;
@@ -171,7 +184,8 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
       },
       createInbound(input) {
         const roomId = matrixRoomId(canonicalConversationIdForInbound(input));
-        const threadId = input.threadId?.trim() || undefined;
+        const rawThreadId = input.threadId?.trim();
+        const threadId = rawThreadId ? matrixThreadId(rawThreadId) : undefined;
         const direct = input.conversation.kind === "direct";
         return {
           ...createAdminInboundRequest(matrix),
@@ -231,6 +245,9 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           return null;
         }
         const threadId = eventThreadId(event.body);
+        if (threadId === null) {
+          return null;
+        }
         deliveredTransactions.add(transactionKey);
         if (deliveredTransactions.size > MAX_DELIVERED_MATRIX_TRANSACTIONS) {
           deliveredTransactions.delete(deliveredTransactions.values().next().value!);

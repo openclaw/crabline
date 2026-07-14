@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reject blank Mattermost readiness usernames and non-native Matrix thread IDs while preserving valid legacy smoke-only artifact generations.
 - Provision CI Go from the tools module, lint both workflow YAML extensions, and build distributable output before package verification.
 - Give the recorder-scan roundtrip regression enough time to complete on loaded CI workers.
 - Reject invalid shared HTTP body limits, webhook deadlines, and signed-JWT cache timings before starting I/O.

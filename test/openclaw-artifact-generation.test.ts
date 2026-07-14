@@ -33,6 +33,25 @@ const manifest: CrablineServerManifest = {
   version: 1,
 };
 
+const mattermostManifest = {
+  adminToken: "sample",
+  baseUrl: "http://127.0.0.1:9753",
+  botToken: "sample",
+  botUserId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+  endpoints: {
+    adminInboundUrl: "http://127.0.0.1:9753/crabline/mattermost/inbound",
+    apiRoot: "http://127.0.0.1:9753/api/v4",
+    websocketUrl: "ws://127.0.0.1:9753/api/v4/websocket",
+  },
+  env: {
+    MATTERMOST_BOT_TOKEN: "sample",
+    MATTERMOST_URL: "http://127.0.0.1:9753",
+  },
+  provider: "mattermost",
+  recorderPath: "/tmp/crabline/mattermost.jsonl",
+  version: 1,
+} satisfies CrablineServerManifest;
+
 function createLock(): OpenClawCrablineSmokeRunLock & {
   assertOwned: ReturnType<typeof vi.fn<() => Promise<void>>>;
   commitFileAtomically: ReturnType<
@@ -90,6 +109,30 @@ function publishParamsWithRecorderSnapshot(outputDir: string, lock = createLock(
   };
 }
 
+function mattermostPublishParams(outputDir: string) {
+  return {
+    capabilityReport: { result: { selectedChannel: "mattermost" } },
+    lock: createLock(),
+    manifest: mattermostManifest,
+    outputDir,
+    selection: resolveOpenClawCrablineChannelDriverSelection({ channel: "mattermost" }),
+    providerReadiness: {
+      result: {
+        endpoints: mattermostManifest.endpoints,
+        ok: true,
+        probe: {
+          id: mattermostManifest.botUserId,
+          update_at: 0,
+          username: " \n\t",
+        },
+        proof: "provider-api-probe",
+        provider: "mattermost",
+        ready: true,
+      },
+    },
+  };
+}
+
 describe("OpenClaw artifact generation publication", () => {
   it("documents runtime pruning of abandoned artifact generations", async () => {
     const channelSetup = await fs.readFile(
@@ -124,6 +167,66 @@ describe("OpenClaw artifact generation publication", () => {
         smokeArtifactPath: result.smokeArtifactPath,
         version: 1,
       });
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("validates every existing section in legacy smoke-only generations", async () => {
+    const outputDir = await createTempDir();
+    try {
+      const first = await publishOpenClawCrablineArtifactGeneration(
+        publishParamsWithRecorderSnapshot(outputDir),
+        { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
+      );
+      const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
+      const pointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<string, unknown>;
+      delete pointer.providerReadinessArtifactPath;
+      delete pointer.recorderSnapshotPath;
+      pointer.version = 1;
+      await fs.writeFile(pointerPath, `${JSON.stringify(pointer, null, 2)}\n`);
+
+      const readinessPath = path.join(outputDir, first.smokeArtifactPath);
+      const readiness = JSON.parse(await fs.readFile(readinessPath, "utf8")) as {
+        providerReadiness?: unknown;
+        smoke: { result: Record<string, unknown> };
+      };
+      delete readiness.providerReadiness;
+      delete readiness.smoke.result.proof;
+      delete readiness.smoke.result.ready;
+      const validSmokeOnlyReadiness = `${JSON.stringify(readiness, null, 2)}\n`;
+      readiness.smoke.result.endpoints = {};
+      await fs.writeFile(readinessPath, `${JSON.stringify(readiness, null, 2)}\n`);
+
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+          createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+        }),
+      ).rejects.toThrow("OpenClaw Crabline current artifact generation is incomplete.");
+
+      await fs.writeFile(readinessPath, validSmokeOnlyReadiness);
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+          createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+        }),
+      ).resolves.toMatchObject({
+        previousGeneration: first.generation,
+        version: 2,
+      });
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("rejects whitespace-only Mattermost usernames in readiness evidence", async () => {
+    const outputDir = await createTempDir();
+    try {
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(mattermostPublishParams(outputDir), {
+          createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+        }),
+      ).rejects.toThrow("OpenClaw Crabline current artifact generation is incomplete.");
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toBeNull();
     } finally {
       await disposeTempDir(outputDir);
     }
