@@ -478,7 +478,7 @@ describe("Matrix local provider server", () => {
     });
   });
 
-  it("accepts whitespace in domain-scoped identifier localparts", async () => {
+  it("accepts historical user localparts for inbound event senders", async () => {
     const server = await startMatrixServer();
     servers.push(server);
     const roomId = "!room name:matrix.test";
@@ -530,6 +530,23 @@ describe("Matrix local provider server", () => {
       event: { sender: "@:matrix.test" },
       ok: true,
     });
+  });
+
+  it("requires a canonical configured bot user ID", async () => {
+    for (const botUserId of [
+      "@:matrix.test",
+      "@Alice:matrix.test",
+      "@alice smith:matrix.test",
+      "@alice*:matrix.test",
+    ]) {
+      await expect(startMatrixServer({ botUserId })).rejects.toThrow(
+        "botUserId must be a canonical Matrix user ID.",
+      );
+    }
+
+    const server = await startMatrixServer({ botUserId: "@open+claw:matrix.test" });
+    servers.push(server);
+    expect(server.manifest.botUserId).toBe("@open+claw:matrix.test");
   });
 
   it("accepts numeric DNS-form Matrix server names", async () => {
@@ -1275,6 +1292,61 @@ describe("Matrix local provider server", () => {
         type: "m.room.member",
       }),
     );
+  });
+
+  it("omits unchanged rooms from incremental syncs", async () => {
+    const server = await startMatrixServer({
+      accessToken: "test-token-placeholder",
+      adminToken: "test-auth-token",
+      roomId: "!quiet:matrix.test",
+    });
+    servers.push(server);
+    const changedRoomId = "!changed:matrix.test";
+    const sendInbound = (text: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          roomId: changedRoomId,
+          senderId: "@alice:matrix.test",
+          text,
+        }),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: "test-auth-token",
+        },
+        method: "POST",
+      });
+
+    expect((await sendInbound("before initial sync")).status).toBe(200);
+    const initial = (await (
+      await fetch(server.manifest.endpoints.syncUrl, {
+        headers: auth("test-token-placeholder"),
+      })
+    ).json()) as {
+      next_batch: string;
+      rooms: { join: Record<string, unknown> };
+    };
+    expect(Object.keys(initial.rooms.join).sort()).toEqual([
+      "!changed:matrix.test",
+      "!quiet:matrix.test",
+    ]);
+
+    expect((await sendInbound("after initial sync")).status).toBe(200);
+    const incremental = (await (
+      await fetch(`${server.manifest.endpoints.syncUrl}?since=${initial.next_batch}`, {
+        headers: auth("test-token-placeholder"),
+      })
+    ).json()) as {
+      next_batch: string;
+      rooms: { join: Record<string, unknown> };
+    };
+    expect(Object.keys(incremental.rooms.join)).toEqual([changedRoomId]);
+
+    const unchanged = (await (
+      await fetch(`${server.manifest.endpoints.syncUrl}?since=${incremental.next_batch}`, {
+        headers: auth("test-token-placeholder"),
+      })
+    ).json()) as { rooms: { join: Record<string, unknown> } };
+    expect(unchanged.rooms.join).toEqual({});
   });
 
   it("bounds timelines and retains recently replayed transactions", async () => {

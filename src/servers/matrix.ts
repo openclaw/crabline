@@ -1,7 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
-import { isMatrixEventId, isMatrixRoomId, isMatrixUserId } from "../matrix-ids.js";
+import {
+  isHistoricalMatrixUserId,
+  isMatrixEventId,
+  isMatrixRoomId,
+  isMatrixUserId,
+} from "../matrix-ids.js";
 import {
   adminAuthError,
   hasAdminToken,
@@ -468,6 +473,15 @@ function syncRoom(room: MatrixRoom, since: number | undefined, timelineLimit: nu
   };
 }
 
+function roomHasSyncUpdates(room: MatrixRoom, since: number | undefined): boolean {
+  return (
+    since === undefined ||
+    room.createdSequence > since ||
+    room.timeline.some((entry) => entry.sequence > since) ||
+    room.ephemeral.some((entry) => entry.sequence > since)
+  );
+}
+
 function parseSyncToken(value: string | null): number | null | undefined {
   if (value === null) {
     return undefined;
@@ -494,16 +508,14 @@ async function handleSync(url: URL, state: MatrixServerState): Promise<Response>
   const hasNewEvents =
     (state.directRoomsSequence !== undefined &&
       (since === undefined || state.directRoomsSequence > since)) ||
-    [...state.rooms.values()].some((room) =>
-      [...room.timeline, ...room.ephemeral].some(
-        (entry) => since === undefined || entry.sequence > since,
-      ),
-    );
+    [...state.rooms.values()].some((room) => roomHasSyncUpdates(room, since));
   if (since !== undefined && !hasNewEvents && timeout > 0) {
     await waitForSyncEvent(state, timeout);
   }
   const join = Object.fromEntries(
-    [...state.rooms.values()].map((room) => [room.id, syncRoom(room, since, timelineLimit)]),
+    [...state.rooms.values()]
+      .filter((room) => roomHasSyncUpdates(room, since))
+      .map((room) => [room.id, syncRoom(room, since, timelineLimit)]),
   );
   return jsonResponse({
     account_data: syncAccountData(state, since),
@@ -533,7 +545,7 @@ async function handleAdminInbound(params: {
   const threadId = readTrimmedString(params.body.threadId);
   if (
     !isMatrixRoomId(roomId) ||
-    !isMatrixUserId(sender) ||
+    !isHistoricalMatrixUserId(sender) ||
     (threadId !== undefined && !isMatrixEventId(threadId))
   ) {
     return jsonResponse({ error: "Invalid Matrix identifier", ok: false }, 400);
@@ -889,10 +901,14 @@ export async function startMatrixServer(
 ): Promise<StartedMatrixServer> {
   const host = params.host ?? "127.0.0.1";
   const serverName = params.serverName ?? "matrix.test";
+  const botUserId = params.botUserId ?? `@openclaw:${serverName}`;
+  if (!isMatrixUserId(botUserId)) {
+    throw new Error("botUserId must be a canonical Matrix user ID.");
+  }
   const state: MatrixServerState = {
     accessToken: params.accessToken ?? `syt_crabline_${randomBytes(12).toString("hex")}`,
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
-    botUserId: params.botUserId ?? `@openclaw:${serverName}`,
+    botUserId,
     deviceId: params.deviceId ?? "CRABLINE",
     directRooms: new Map(),
     directRoomsSequence: undefined,
@@ -912,9 +928,7 @@ export async function startMatrixServer(
     nextFilter: 1,
     nextSequence: 1,
     onEvent: params.onEvent,
-    profiles: new Map([
-      [params.botUserId ?? `@openclaw:${serverName}`, { display_name: "OpenClaw QA" }],
-    ]),
+    profiles: new Map([[botUserId, { display_name: "OpenClaw QA" }]]),
     recorderPath: params.recorderPath ?? path.resolve("artifacts/crabline/matrix.jsonl"),
     rooms: new Map(),
     serverName,
