@@ -178,14 +178,16 @@ after appending each API/admin event to `recorderPath`, so callers can react in
 process while retaining the JSONL artifact as durable evidence.
 
 Recorder files should normally have one filesystem name. If multiple processes
-write through hardlinks to the same recorder inode, set
+cannot share the same OS account home, the home is read-only, or they write
+through hardlinks to the same recorder inode, set
 `CRABLINE_RECORDER_LOCK_DIR` to the same absolute writable directory for every
 writer. Pre-create that directory with the ownership, group, or ACLs required
 by those writers. Crabline refuses hardlinked server-recorder writes without
 this shared lock namespace. The configured path must be canonical and contain
 no symlink components. Scope each lock directory to one recorder filesystem;
 lock identities omit device numbers so containers that mount the same inode
-under different device IDs still coordinate.
+under different device IDs still coordinate. Otherwise, Unix writers coordinate
+through the OS account's `~/.cache/crabline/locks/server-recorder` namespace.
 
 Mattermost:
 

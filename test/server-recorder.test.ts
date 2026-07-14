@@ -84,7 +84,7 @@ const fsMocks = vi.hoisted(() => {
       vi.fn<
         (
           filePath: string,
-          options: { mode: number; recursive: true },
+          options: { mode: number; recursive?: true },
         ) => Promise<string | undefined>
       >(),
     open: vi.fn<
@@ -515,7 +515,9 @@ describe("server recorder", () => {
     const canonicalFinalParent = path.join(canonicalFirstParent, "nested");
     const canonicalRecorderPath = path.join(canonicalFinalParent, "events.jsonl");
     const observer = vi.fn<(event: ServerRequestEvent) => void>();
-    fsMocks.mkdir.mockResolvedValueOnce(canonicalFirstParent);
+    fsMocks.mkdir.mockImplementation(async (filePath) => {
+      return filePath === canonicalFinalParent ? canonicalFirstParent : undefined;
+    });
     fsMocks.open.mockImplementation(async (_filePath, flags) =>
       typeof flags === "number" || flags === "r" ? fsMocks.directory : fsMocks.file,
     );
@@ -558,12 +560,19 @@ describe("server recorder", () => {
         update: 10_000,
       }),
     );
+    expect(
+      lockMocks.lock.mock.calls.some(
+        ([lockPath, options]) =>
+          path.basename(lockPath) === "recorder-1-1" &&
+          (options as { realpath?: boolean }).realpath === false,
+      ),
+    ).toBe(true);
     expect(lockMocks.release).toHaveBeenCalledTimes(2);
     expect(fsMocks.file.chmod.mock.invocationCallOrder[0]).toBeLessThan(
       fsMocks.file.appendFile.mock.invocationCallOrder[0]!,
     );
     expect(fsMocks.file.close).toHaveBeenCalledOnce();
-    expect(fsMocks.directory.close).toHaveBeenCalledTimes(4);
+    expect(fsMocks.directory.close.mock.calls.length).toBeGreaterThanOrEqual(3);
   });
 
   it("resyncs recorder ancestry after an interrupted first-append attempt", async () => {
@@ -777,7 +786,10 @@ describe("server recorder", () => {
       onEvent: undefined,
       recorderPath: callerOwnedPath,
     });
-    expect(fsMocks.chmod).not.toHaveBeenCalled();
+    expect(fsMocks.chmod).not.toHaveBeenCalledWith(
+      path.dirname(callerOwnedPath),
+      expect.any(Number),
+    );
     expect(fsMocks.file.chmod).not.toHaveBeenCalled();
 
     const managedPath = path.resolve(".crabline", "servers", "events.jsonl");

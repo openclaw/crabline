@@ -329,13 +329,15 @@ requests and lookalike route suffixes can remain diagnostic recorder entries,
 but they are never exposed as successful outbound deliveries.
 
 Use one filesystem name per recorder file. When multiple server processes must
-write through hardlinks to the same recorder inode, set
+run without one shared writable OS account home or write through hardlinks to
+the same recorder inode, set
 `CRABLINE_RECORDER_LOCK_DIR` to one absolute writable directory shared by every
 writer and pre-create its ownership, group, or ACLs. Hardlinked server-recorder
 writes fail closed when this shared lock namespace is absent. The path must be
 canonical and contain no symlink components. Use a separate lock directory per
 recorder filesystem; lock identities omit device numbers so containers that
-mount the same inode under different device IDs still coordinate.
+mount the same inode under different device IDs still coordinate. Otherwise,
+Unix writers use `~/.cache/crabline/locks/server-recorder`.
 
 Slack:
 
