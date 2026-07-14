@@ -447,6 +447,7 @@ describe("OpenClaw local provider bridge", () => {
     { ok: true },
     { ok: true, result: null },
     { ok: true, result: { first_name: "Crabline", id: 424_242, is_bot: false } },
+    { ok: true, result: { first_name: "Crabline", id: 424_243, is_bot: true } },
     {
       ok: true,
       result: { first_name: "Crabline", id: 424_242, is_bot: true, username: "abc" },

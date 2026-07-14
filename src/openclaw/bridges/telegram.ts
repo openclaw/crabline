@@ -136,6 +136,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
   createAdapter(telegram) {
     return {
       async probe(signal) {
+        const configuredBotId = /^([1-9]\d*):/u.exec(telegram.botToken)?.[1];
         const response = await fetch(
           `${telegram.endpoints.apiRoot}/bot${telegram.botToken}/getMe`,
           signal ? { signal } : {},
@@ -161,6 +162,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           typeof result.id !== "number" ||
           !Number.isSafeInteger(result.id) ||
           result.id <= 0 ||
+          configuredBotId !== String(result.id) ||
           result.is_bot !== true ||
           !readNonBlankString(result.first_name) ||
           (result.username !== undefined &&
