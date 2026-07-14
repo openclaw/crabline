@@ -156,6 +156,33 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("classifies non-object lock owners as malformed metadata", async () => {
+    const outputDir = await createTempDir();
+    const lockDirectory = path.join(
+      path.resolve(outputDir),
+      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
+    );
+    try {
+      await fs.mkdir(lockDirectory);
+      await fs.writeFile(path.join(lockDirectory, "owner.json"), "null\n");
+
+      await expect(
+        acquireOpenClawCrablineSmokeRunLock(
+          { channel: "telegram", outputDir },
+          {
+            isProcessAlive: () => true,
+            now: () => 1_000,
+            pid: 5_252,
+            processStartedAtMs: 200,
+            startHeartbeat: disableHeartbeat,
+          },
+        ),
+      ).rejects.toThrow("OpenClaw Crabline smoke lock owner metadata is malformed.");
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("rejects commit paths outside the lock output before staging", async () => {
     const outputDir = await createTempDir();
     const outsideDir = await createTempDir();

@@ -216,7 +216,12 @@ export function normalizeDiscordWebhookPayload(payload: unknown) {
   }
 
   const authorRecord = isRecord(author) ? author : undefined;
-  const threadId = optionalString(payload, "thread_id") ?? channelId;
+  const nativeChannelId = requireNativeInboundId(
+    channelId,
+    DISCORD_SNOWFLAKE_RULE,
+    "Discord channel_id",
+  );
+  const threadId = optionalString(payload, "thread_id") ?? nativeChannelId;
   return {
     author: authorFromBotFlag(authorRecord?.bot === true),
     ...(optionalString(payload, "id") ? { id: optionalString(payload, "id") } : {}),

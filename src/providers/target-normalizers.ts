@@ -15,7 +15,7 @@ export type BuiltinProviderAdapterId = Exclude<BuiltinAdapterId, "script">;
 export const DISCORD_SNOWFLAKE_RULE: NativeIdRule = {
   example: "123456789012345678",
   name: "Discord snowflake id",
-  pattern: /^[1-9]\d{16,19}$/u,
+  pattern: /^[1-9]\d{0,19}$/u,
   validate: (value) => BigInt(value) <= 18_446_744_073_709_551_615n,
 };
 

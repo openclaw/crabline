@@ -767,6 +767,39 @@ describe("slack provider", () => {
     expect(accepted.status).toBe(200);
   });
 
+  it("uses the injected clock for signature freshness", async () => {
+    const signingSecret = "test-token-placeholder";
+    const config = await createSlackConfig(0, signingSecret);
+    const now = 1_700_000_000_000;
+    const provider = new SlackProviderAdapter("slack", config, "crabline", {
+      now: () => now,
+    });
+    providers.push(provider);
+    const endpoint = endpointFromDetails((await provider.probe(createContext(config))).details);
+    const timestamp = Math.floor(now / 1000).toString();
+    const body = JSON.stringify({
+      event: {
+        channel: "C1234567890",
+        text: "fixed clock",
+        ts: "1700000001.000200",
+        type: "message",
+      },
+      type: "event_callback",
+    });
+
+    const response = await fetch(endpoint, {
+      body,
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": slackSignature(signingSecret, timestamp, body),
+      },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+  });
+
   it("deduplicates retries by outer event_id without suppressing distinct events", async () => {
     const signingSecret = "test-token-placeholder";
     const config = await createSlackConfig(0, signingSecret);

@@ -239,10 +239,11 @@ export class LoopbackChatAdapter {
   }
 
   fetchThread(threadId: string) {
+    const address = this.decodeThreadId(threadId);
     return Promise.resolve({
-      channelId: this.channelIdFromThreadId(threadId),
+      channelId: address.channelId ?? address.id,
       id: threadId,
-      isDM: true,
+      isDM: address.channelId === undefined,
       metadata: {},
     });
   }
