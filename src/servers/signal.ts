@@ -806,7 +806,6 @@ async function handleRequest(params: {
       connection: "keep-alive",
       "content-type": "text/event-stream",
     });
-    params.response.flushHeaders();
     params.response.once("close", () => {
       removeSignalClient(params.state, params.response, false);
     });
@@ -817,6 +816,7 @@ async function handleRequest(params: {
       events: [],
       inFlight: [],
     });
+    params.response.flushHeaders();
     replayExclusiveSignalEvents(params.state, params.response);
     if (params.state.clients.has(params.response)) {
       flushPendingSignalEvents(params.state);
