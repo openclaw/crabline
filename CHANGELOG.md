@@ -12,6 +12,7 @@
 - Ignore typeless Slack callbacks and redact URL fragments from Zalo recorder evidence.
 - Redact Feishu verification tokens from recorder payloads and release replay reservations after recorder failures.
 - Bind agent acknowledgements to the expected nonce instead of accepting an unrelated ACK.
+- Skip aborted Windows script helper bootstrap and retry Job Object isolation after transient bootstrap failures.
 - Bound manifest file loading, honor probe retries, and reject empty resolved Zalo webhook secrets.
 - Require exact provider readiness recorder routes, explicit v2 artifact pointers, and normalized missing-generation corruption errors.
 - Track actionlint updates, container image pins, and pull-request governance in the repository security checks.

@@ -258,7 +258,7 @@ const WINDOWS_PROCESS_TERMINATOR_SOURCE = [
   "}",
 ].join("");
 
-let windowsJobHelperPath: string | null | undefined;
+let windowsJobHelperPath: string | undefined;
 let windowsJobHelperPromise: Promise<string | undefined> | undefined;
 
 function removeWindowsJobHelper(directory: string): void {
@@ -291,13 +291,12 @@ function runWindowsJobHelperCommand(
 
 async function createWindowsJobHelper(): Promise<string | undefined> {
   if (windowsJobHelperPath !== undefined) {
-    return windowsJobHelperPath ?? undefined;
+    return windowsJobHelperPath;
   }
   let directory: string;
   try {
     directory = mkdtempSync(path.join(tmpdir(), "crabline-script-job-"));
   } catch {
-    windowsJobHelperPath = null;
     return undefined;
   }
   const helperPath = path.join(directory, "crabline-script-job.exe");
@@ -333,7 +332,6 @@ async function createWindowsJobHelper(): Promise<string | undefined> {
     });
   } catch {
     removeWindowsJobHelper(directory);
-    windowsJobHelperPath = null;
     return undefined;
   }
   windowsJobHelperPath = helperPath;
@@ -343,7 +341,7 @@ async function createWindowsJobHelper(): Promise<string | undefined> {
 
 function ensureWindowsJobHelper(): Promise<string | undefined> {
   if (windowsJobHelperPath !== undefined) {
-    return Promise.resolve(windowsJobHelperPath ?? undefined);
+    return Promise.resolve(windowsJobHelperPath);
   }
   windowsJobHelperPromise ??= createWindowsJobHelper().finally(() => {
     windowsJobHelperPromise = undefined;
@@ -351,12 +349,16 @@ function ensureWindowsJobHelper(): Promise<string | undefined> {
   return windowsJobHelperPromise;
 }
 
-function waitForPromiseOrAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+function waitForPromiseOrAbort<T>(
+  createPromise: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason ?? new Error("Script command aborted."));
+  }
+  const promise = createPromise();
   if (!signal) {
     return promise;
-  }
-  if (signal.aborted) {
-    return Promise.reject(signal.reason ?? new Error("Script command aborted."));
   }
   return new Promise((resolve, reject) => {
     const abort = () => {
@@ -432,7 +434,7 @@ async function spawnScriptChild(
   let startedAtMs: number;
   let child: SpawnedScriptChild;
   if (process.platform === "win32") {
-    const helperPath = await waitForPromiseOrAbort(ensureWindowsJobHelper(), signal);
+    const helperPath = await waitForPromiseOrAbort(ensureWindowsJobHelper, signal);
     if (signal?.aborted) {
       throw signal.reason ?? new Error("Script command aborted.");
     }
