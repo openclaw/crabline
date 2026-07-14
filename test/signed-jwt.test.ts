@@ -183,6 +183,22 @@ describe("signed JWT remote key cache", () => {
     ).toBe(now);
   });
 
+  it("does not treat quoted no-cache or no-store values as directives", () => {
+    const now = 1_700_000_000_000;
+
+    for (const cacheControl of [
+      'private="authorization, no-cache", max-age=3600',
+      'x-metadata="quoted, no-store", max-age=3600',
+    ]) {
+      expect(
+        resolveHttpCacheExpiry(
+          new Response(null, { headers: { "cache-control": cacheControl } }),
+          now,
+        ),
+      ).toBe(now + 3_600_000);
+    }
+  });
+
   it("subtracts response Age from cache freshness", () => {
     const now = 1_700_000_000_000;
 
