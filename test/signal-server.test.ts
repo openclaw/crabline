@@ -378,6 +378,65 @@ describe("signal local provider server", () => {
     expect(recorded).toContain('"path":"/crabline/signal/inbound"');
   });
 
+  it("rejects outbound RPC calls for accounts the daemon does not serve", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const account = "+15550001111";
+    const recorderPath = path.join(directory, "signal-accounts.jsonl");
+    const server = await startSignalServer({ account, recorderPath });
+    servers.push(server);
+
+    async function send(id: string, rpcAccount?: string) {
+      const response = await fetch(server.manifest.endpoints.rpcUrl, {
+        body: JSON.stringify({
+          id,
+          jsonrpc: "2.0",
+          method: "send",
+          params: {
+            ...(rpcAccount === undefined ? {} : { account: rpcAccount }),
+            message: "hello",
+            recipient: "+15551234567",
+          },
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      return await response.json();
+    }
+
+    await expect(send("omitted")).resolves.toMatchObject({
+      id: "omitted",
+      result: { timestamp: expect.any(Number) },
+    });
+    await expect(send("matching", account)).resolves.toMatchObject({
+      id: "matching",
+      result: { timestamp: expect.any(Number) },
+    });
+    for (const [id, rpcAccount] of [
+      ["blank", ""],
+      ["different", "+15550002222"],
+    ] as const) {
+      await expect(send(id, rpcAccount)).resolves.toEqual({
+        error: { code: -32602, message: "Specified account does not exist" },
+        id,
+        jsonrpc: "2.0",
+      });
+    }
+
+    const records = (await fs.readFile(recorderPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { accepted?: boolean; body?: { id?: string } });
+    expect(records).toHaveLength(2);
+    expect(records).toEqual([
+      expect.objectContaining({ accepted: true, body: expect.objectContaining({ id: "omitted" }) }),
+      expect.objectContaining({
+        accepted: true,
+        body: expect.objectContaining({ id: "matching" }),
+      }),
+    ]);
+  });
+
   it("enforces JSON-RPC envelopes and does not respond to notifications", async () => {
     const directory = await createTempDir();
     directories.push(directory);
