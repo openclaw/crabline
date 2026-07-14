@@ -29,6 +29,40 @@ function auth(token: string) {
 const ROOM_V10_EVENT_ID = /^\$[A-Za-z0-9_-]{43}$/u;
 
 describe("Matrix local provider server", () => {
+  it("scopes generated room-v10 event IDs to the server identity", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const roomId = "!qa:matrix.test";
+    const start = async (serverName: string) => {
+      const server = await startMatrixServer({
+        accessToken: "test-token-placeholder",
+        recorderPath: path.join(directory, `${serverName}.jsonl`),
+        roomId,
+        serverName,
+      });
+      servers.push(server);
+      return server;
+    };
+    const [first, second] = await Promise.all([start("one.test"), start("two.test")]);
+    const send = async (server: StartedMatrixServer) => {
+      const response = await fetch(
+        `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent(roomId)}/send/m.room.message/txn-1`,
+        {
+          body: JSON.stringify({ body: "hello Matrix", msgtype: "m.text" }),
+          headers: { ...auth("test-token-placeholder"), "content-type": "application/json" },
+          method: "PUT",
+        },
+      );
+      expect(response.status).toBe(200);
+      return ((await response.json()) as { event_id: string }).event_id;
+    };
+
+    const [firstEventId, secondEventId] = await Promise.all([send(first), send(second)]);
+    expect(firstEventId).toMatch(ROOM_V10_EVENT_ID);
+    expect(secondEventId).toMatch(ROOM_V10_EVENT_ID);
+    expect(secondEventId).not.toBe(firstEventId);
+  });
+
   it("serves the native client-server API and records room sends", async () => {
     const directory = await createTempDir();
     directories.push(directory);
