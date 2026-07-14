@@ -140,7 +140,11 @@ export function createMsTeamsWebhookAuthenticator(
         now: runtime.now,
         async resolveKey(header) {
           const key = await resolveSigningKey(header);
-          if (key.endorsements && !key.endorsements.includes(channelId)) {
+          if (
+            key.endorsements &&
+            key.endorsements.length > 0 &&
+            !key.endorsements.includes(channelId)
+          ) {
             throw new Error("Bot Connector JWT key does not endorse the activity channel.");
           }
           try {
