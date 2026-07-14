@@ -23,6 +23,7 @@ const fsMocks = vi.hoisted(() => ({
   lockRelease: vi.fn<() => Promise<void>>(),
   providerDirectory: "",
   providerDeniedDirectory: "",
+  providerDirectoryOpen: vi.fn<(directoryPath: string) => void>(),
   providerDirectorySync: vi.fn<(directoryPath: string) => Promise<void>>(),
   providerLstatFailure: undefined as Error | undefined,
   providerLstatFailureAfterLocks: 0,
@@ -83,6 +84,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     },
     open: async (...args: Parameters<typeof actual.open>) => {
       const filePath = String(args[0]);
+      if (args[1] === "r") {
+        fsMocks.providerDirectoryOpen(filePath);
+      }
       if (args[1] === "r" && filePath === fsMocks.providerDeniedDirectory) {
         throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
       }
@@ -191,6 +195,7 @@ beforeEach(() => {
   fsMocks.lock.mockResolvedValue(fsMocks.lockRelease);
   fsMocks.providerDirectory = "";
   fsMocks.providerDeniedDirectory = "";
+  fsMocks.providerDirectoryOpen.mockReset();
   fsMocks.providerDirectorySync.mockReset();
   fsMocks.providerDirectorySync.mockResolvedValue(undefined);
   fsMocks.providerLstatFailure = undefined;
@@ -288,7 +293,23 @@ describe("recorder append serialization", () => {
     ]);
     expect(fsMocks.serverSync).toHaveBeenCalledTimes(2);
     expect(fsMocks.serverDirectorySync).toHaveBeenCalledTimes(2);
-    expect(fsMocks.lock).toHaveBeenCalledTimes(2);
+    expect(fsMocks.lock).toHaveBeenCalledTimes(4);
+    const unixIdentityLockRoot = path.join(
+      await realpath(path.join(userInfo().homedir, ".cache", "crabline", "locks")),
+      "server-recorder",
+    );
+    expect(
+      fsMocks.lock.mock.calls
+        .map(([lockPath]) => String(lockPath))
+        .filter((lockPath) => path.dirname(lockPath) === unixIdentityLockRoot),
+    ).toEqual(
+      process.platform === "win32"
+        ? []
+        : [
+            path.join(unixIdentityLockRoot, "recorder-1-1"),
+            path.join(unixIdentityLockRoot, "recorder-1-1"),
+          ],
+    );
     expect(fsMocks.serverOpen.mock.calls.map(([, flags]) => flags)).toEqual(["ax+", "ax+", "a+"]);
   });
 
@@ -515,6 +536,11 @@ describe("recorder append serialization", () => {
       expect(fsMocks.providerSync).toHaveBeenCalledTimes(2);
       expect(fsMocks.providerDirectorySync).toHaveBeenCalledTimes(
         process.platform === "win32" ? 0 : 2,
+      );
+      expect(fsMocks.providerDirectoryOpen.mock.calls).toEqual(
+        process.platform === "win32"
+          ? []
+          : [[fsMocks.providerDirectory], [fsMocks.providerDirectory]],
       );
       expect(fsMocks.providerOpen.mock.calls.map(([, flags, mode]) => [flags, mode])).toEqual([
         ["ax+", 0o600],
