@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderConfig } from "../src/config/schema.js";
 import {
   handleSlackWebhookPayload,
@@ -773,7 +773,8 @@ describe("slack provider", () => {
     const provider = new SlackProviderAdapter("slack", config, "crabline");
     providers.push(provider);
     const endpoint = endpointFromDetails((await provider.probe(createContext(config))).details);
-    const timestamp = Math.floor(Date.now() / 1000).toString();
+    let now = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
     const send = async (eventId: string, text: string, retryNumber?: string): Promise<Response> => {
       const body = JSON.stringify({
         event: {
@@ -786,6 +787,7 @@ describe("slack provider", () => {
         event_id: eventId,
         type: "event_callback",
       });
+      const timestamp = Math.floor(now / 1000).toString();
       return await fetch(endpoint, {
         body,
         headers: {
@@ -803,18 +805,23 @@ describe("slack provider", () => {
       });
     };
 
-    expect((await send("EvRETRY001", "original delivery")).status).toBe(200);
-    expect((await send("EvRETRY001", "original delivery", "1")).status).toBe(200);
-    expect((await send("EvDISTINCT001", "distinct event")).status).toBe(200);
+    try {
+      expect((await send("EvRETRY001", "original delivery")).status).toBe(200);
+      now += 24 * 60 * 60_000;
+      expect((await send("EvRETRY001", "original delivery", "1")).status).toBe(200);
+      expect((await send("EvDISTINCT001", "distinct event")).status).toBe(200);
 
-    const records = (await readFile(config.slack!.recorder.path!, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { id: string; text: string });
-    expect(records).toEqual([
-      expect.objectContaining({ id: "EvRETRY001", text: "original delivery" }),
-      expect.objectContaining({ id: "EvDISTINCT001", text: "distinct event" }),
-    ]);
+      const records = (await readFile(config.slack!.recorder.path!, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { id: string; text: string });
+      expect(records).toEqual([
+        expect.objectContaining({ id: "EvRETRY001", text: "original delivery" }),
+        expect.objectContaining({ id: "EvDISTINCT001", text: "distinct event" }),
+      ]);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it("acknowledges unsupported, typeless, and textless callbacks without recording them", async () => {

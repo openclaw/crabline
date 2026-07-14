@@ -22,7 +22,7 @@ import {
 import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
 const SLACK_SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
-const SLACK_EVENT_RETRY_RETENTION_MS = 10 * 60_000;
+const SLACK_EVENT_RETRY_RETENTION_MS = 25 * 60 * 60_000;
 
 type SlackEnvironment = Partial<Pick<NodeJS.ProcessEnv, "SLACK_SIGNING_SECRET">>;
 
