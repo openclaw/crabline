@@ -755,6 +755,114 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
+  it("preserves a replacement tree substituted after release validation", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    let sentinelPath: string | undefined;
+    try {
+      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        beforeReleaseRemove: async () => {
+          const releaseDirectory = (await fs.readdir(outputDir))
+            .filter((entry) => entry.includes(".lock.release."))
+            .map((entry) => path.join(outputDir, entry))[0];
+          if (!releaseDirectory) {
+            throw new Error("Expected a smoke lock release directory.");
+          }
+          await fs.rename(releaseDirectory, `${releaseDirectory}.original`);
+          const replacementTree = path.join(releaseDirectory, "replacement");
+          await fs.mkdir(replacementTree, { recursive: true });
+          sentinelPath = path.join(replacementTree, "sentinel");
+          await fs.writeFile(sentinelPath, "preserve\n");
+        },
+        startHeartbeat: disableHeartbeat,
+      });
+
+      await expect(lock.release()).rejects.toThrow(
+        "OpenClaw Crabline smoke lock cleanup target changed.",
+      );
+      expect(sentinelPath).toBeDefined();
+      const quarantineDirectory = (await fs.readdir(outputDir))
+        .filter((entry) => entry.includes(".lock.release.") && entry.includes(".cleanup."))
+        .map((entry) => path.join(outputDir, entry))[0];
+      expect(quarantineDirectory).toBeDefined();
+      await expect(
+        fs.readFile(path.join(quarantineDirectory!, "replacement", "sentinel"), "utf8"),
+      ).resolves.toBe("preserve\n");
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("restores an empty replacement directory substituted after release validation", async () => {
+    const outputDir = await createTempDir();
+    const params = { channel: "telegram" as const, outputDir };
+    let releaseDirectory: string | undefined;
+    let replacementIdentity: { dev: bigint; ino: bigint } | undefined;
+    try {
+      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        beforeReleaseRemove: async () => {
+          releaseDirectory = (await fs.readdir(outputDir))
+            .filter((entry) => entry.includes(".lock.release."))
+            .map((entry) => path.join(outputDir, entry))[0];
+          if (!releaseDirectory) {
+            throw new Error("Expected a smoke lock release directory.");
+          }
+          await fs.rename(releaseDirectory, `${releaseDirectory}.original`);
+          await fs.mkdir(releaseDirectory);
+          const stats = await fs.lstat(releaseDirectory, { bigint: true });
+          replacementIdentity = { dev: stats.dev, ino: stats.ino };
+        },
+        startHeartbeat: disableHeartbeat,
+      });
+
+      await expect(lock.release()).rejects.toThrow(
+        "OpenClaw Crabline smoke lock cleanup target changed.",
+      );
+      const quarantineDirectory = (await fs.readdir(outputDir))
+        .filter((entry) => entry.includes(".lock.release.") && entry.includes(".cleanup."))
+        .map((entry) => path.join(outputDir, entry))[0];
+      expect(quarantineDirectory).toBeDefined();
+      const retained = await fs.lstat(quarantineDirectory!, { bigint: true });
+      expect({ device: retained.dev, inode: retained.ino }).toEqual({
+        device: replacementIdentity?.dev,
+        inode: replacementIdentity?.ino,
+      });
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("does not unlink through a release directory symlink substituted after validation", async () => {
+    const outputDir = await createTempDir();
+    const outsideDir = await createTempDir();
+    const outsideOwnerPath = path.join(outsideDir, "owner.json");
+    const params = { channel: "telegram" as const, outputDir };
+    try {
+      await fs.writeFile(outsideOwnerPath, "preserve\n");
+      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+        beforeReleaseRemove: async () => {
+          const releaseDirectory = (await fs.readdir(outputDir))
+            .filter((entry) => entry.includes(".lock.release."))
+            .map((entry) => path.join(outputDir, entry))[0];
+          if (!releaseDirectory) {
+            throw new Error("Expected a smoke lock release directory.");
+          }
+          await fs.rename(releaseDirectory, `${releaseDirectory}.original`);
+          await fs.symlink(outsideDir, releaseDirectory, "dir");
+        },
+        startHeartbeat: disableHeartbeat,
+      });
+
+      await expect(lock.release()).rejects.toThrow(
+        "OpenClaw Crabline smoke lock cleanup target changed.",
+      );
+      await expect(fs.readFile(outsideOwnerPath, "utf8")).resolves.toBe("preserve\n");
+    } finally {
+      await disposeTempDir(outsideDir);
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("does not transiently relocate a successor while its heartbeat runs", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };

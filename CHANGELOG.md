@@ -11,6 +11,7 @@
 - Bound rejected webhook bodies, validate body limits before listening, parse JWT cache directives by name, and fully drain lazy watch returns.
 - Bound deferred WhatsApp startup cleanup, avoid retrying ambiguous timed-out sends, and defer OpenClaw readiness cleanup until aborted probes settle.
 - Validate generated OpenClaw manifest and readiness schemas and cross-references before publication.
+- Fence smoke-lock release cleanup to verified lock artifacts and nonrecursive directory removal.
 - Bound shared HTTP responses, Matrix sync payloads, stalled webhook DNS recovery, unmatched request bodies, and admitted local-mock hook cleanup.
 - Reject Signal JSON-RPC integral IDs that cannot round-trip safely while preserving fractional and string IDs, and register SSE clients before exposing connected response headers.
 - Keep Telegram multipart fields prototype-safe, synthetic chat IDs within 52 significant bits, and topic identities scoped to their chats.
