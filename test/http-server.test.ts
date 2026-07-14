@@ -1,4 +1,4 @@
-import { get, type IncomingMessage } from "node:http";
+import { get, type IncomingMessage, type ServerResponse } from "node:http";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
@@ -19,6 +19,7 @@ import {
   RequestBodyTooLargeError,
   ResponseBodyTooLargeError,
   startHttpJsonServer,
+  writeResponse,
 } from "../src/servers/http.js";
 
 type TestRequest = IncomingMessage & PassThrough;
@@ -454,6 +455,33 @@ describe("server HTTP body reader", () => {
     } finally {
       await server.close();
     }
+  });
+
+  it("rejects response body limits that cannot enforce a finite byte bound", async () => {
+    for (const maxResponseBodyBytes of [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]) {
+      await expect(
+        startHttpJsonServer({
+          async handle() {
+            return Response.json({ ok: true });
+          },
+          host: "127.0.0.1",
+          maxResponseBodyBytes,
+          port: 0,
+          serverName: "test",
+        }),
+      ).rejects.toThrow("maxResponseBodyBytes must be a positive safe integer.");
+    }
+
+    await expect(
+      writeResponse({} as ServerResponse, Response.json({ ok: true }), Number.NaN),
+    ).rejects.toThrow("maxResponseBodyBytes must be a positive safe integer.");
   });
 
   it("drains request bodies that handlers ignore", async () => {
