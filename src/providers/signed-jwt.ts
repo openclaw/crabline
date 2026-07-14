@@ -137,7 +137,12 @@ export function resolveHttpCacheExpiry(response: Response, requestTime: number):
   if (!cacheControlDirectives) {
     return requestTime;
   }
-  if (/(?:^|,)\s*(?:no-cache|no-store)(?:\s*(?:=|,|$))/iu.test(cacheControl ?? "")) {
+  if (
+    cacheControlDirectives.some((directive) => {
+      const name = cacheControlDirectiveName(directive);
+      return name === "no-cache" || name === "no-store";
+    })
+  ) {
     return requestTime;
   }
   const ageHeader = response.headers.get("age");

@@ -8,7 +8,7 @@
 - Harden autoreview Python requirements, Vitest config checks, local workflow pin validation, and release changelog date validation.
 - Ship only the runnable example fixture and include skipped fixtures in inferred suite totals.
 - Clarify that WhatsApp group targets are available through the OpenClaw bridge rather than the built-in Cloud API adapter.
-- Bound rejected webhook bodies and validate body size limits before listening.
+- Bound rejected webhook bodies, validate body size limits before listening, and parse JWT cache directives by name.
 - Bound shared HTTP responses, Matrix sync payloads, stalled webhook DNS recovery, unmatched request bodies, and admitted local-mock hook cleanup.
 - Reject Signal JSON-RPC integral IDs that cannot round-trip safely while preserving fractional and string IDs, and register SSE clients before exposing connected response headers.
 - Keep Telegram multipart fields prototype-safe, synthetic chat IDs within 52 significant bits, and topic identities scoped to their chats.
