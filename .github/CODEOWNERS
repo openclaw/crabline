@@ -7,6 +7,7 @@
 /.github/pull_request_template.md @openclaw/openclaw-secops
 /.github/workflows/ @openclaw/openclaw-secops
 /.agents/skills/ @openclaw/openclaw-secops
+/AGENTS.md @openclaw/openclaw-secops
 /SECURITY.md @openclaw/openclaw-secops
 /package.json @openclaw/openclaw-secops
 /pnpm-lock.yaml @openclaw/openclaw-secops

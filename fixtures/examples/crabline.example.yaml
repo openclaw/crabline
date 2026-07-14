@@ -203,4 +203,4 @@ fixtures:
     provider: imessage
     mode: roundtrip
     target:
-      id: chat-guid
+      id: iMessage;-;chat-guid
