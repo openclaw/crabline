@@ -464,6 +464,39 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("rejects a non-object capability report without pruning retained generations", async () => {
+    const outputDir = await createTempDir();
+    try {
+      const first = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      });
+      const second = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+      });
+      const capabilityMatrixPath = path.join(outputDir, second.capabilityMatrixPath);
+      const capabilityMatrix = JSON.parse(
+        await fs.readFile(capabilityMatrixPath, "utf8"),
+      ) as Record<string, unknown>;
+      capabilityMatrix.report = null;
+      await fs.writeFile(capabilityMatrixPath, JSON.stringify(capabilityMatrix));
+
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+          createGenerationId: () => "33333333-3333-4333-8333-333333333333",
+        }),
+      ).rejects.toThrow("OpenClaw Crabline current artifact generation is incomplete.");
+
+      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toMatchObject({
+        generation: second.generation,
+        previousGeneration: first.generation,
+      });
+      await expect(fs.stat(path.join(outputDir, first.manifestPath))).resolves.toBeDefined();
+      await expect(fs.stat(path.join(outputDir, second.manifestPath))).resolves.toBeDefined();
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it("rejects publication when current recorder references are removed", async () => {
     const outputDir = await createTempDir();
     try {
