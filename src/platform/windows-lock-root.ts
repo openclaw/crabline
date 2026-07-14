@@ -1,9 +1,11 @@
 import type { BigIntStats } from "node:fs";
 import { lstat } from "node:fs/promises";
+import type { WindowsDirectorySecuritySnapshot } from "./windows-acl.js";
 
 export type WindowsLockRootIdentity = {
   birthtimeNs: bigint;
   dev: bigint;
+  handleIdentity: string;
   ino: bigint;
   securityDescriptor: string;
 };
@@ -33,7 +35,7 @@ function isSameWindowsLockRoot(
 
 async function readStableWindowsLockRootIdentity(options: {
   errorPrefix: string;
-  readSecurityDescriptor: () => Promise<string>;
+  readSecuritySnapshot: () => Promise<WindowsDirectorySecuritySnapshot>;
   root: string;
 }): Promise<WindowsLockRootIdentity> {
   for (let attempt = 0; attempt < MAX_WINDOWS_LOCK_ROOT_SNAPSHOT_ATTEMPTS; attempt += 1) {
@@ -49,9 +51,9 @@ async function readStableWindowsLockRootIdentity(options: {
     if (!before.isDirectory() || before.isSymbolicLink()) {
       throw new Error(`${options.errorPrefix} is not a private directory.`);
     }
-    let securityDescriptor: string;
+    let securitySnapshot: WindowsDirectorySecuritySnapshot;
     try {
-      securityDescriptor = await options.readSecurityDescriptor();
+      securitySnapshot = await options.readSecuritySnapshot();
     } catch (error) {
       let afterFailure: WindowsLockRootStats;
       try {
@@ -80,8 +82,9 @@ async function readStableWindowsLockRootIdentity(options: {
       return {
         birthtimeNs: before.birthtimeNs,
         dev: before.dev,
+        handleIdentity: securitySnapshot.identity,
         ino: before.ino,
-        securityDescriptor,
+        securityDescriptor: securitySnapshot.securityDescriptor,
       };
     }
   }
@@ -93,7 +96,7 @@ export async function secureCachedWindowsLockRoot(options: {
   cacheKey: string;
   createDirectory: () => Promise<void>;
   errorPrefix: string;
-  readSecurityDescriptor: () => Promise<string>;
+  readSecuritySnapshot: () => Promise<WindowsDirectorySecuritySnapshot>;
   root: string;
 }): Promise<string> {
   let recoveryAttempts = 0;
@@ -137,6 +140,7 @@ export async function secureCachedWindowsLockRoot(options: {
       current.dev === expected.dev &&
       current.ino === expected.ino &&
       current.birthtimeNs === expected.birthtimeNs &&
+      current.handleIdentity === expected.handleIdentity &&
       current.securityDescriptor === expected.securityDescriptor
     ) {
       return options.root;

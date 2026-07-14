@@ -613,8 +613,96 @@ $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
   [System.Security.AccessControl.AccessControlType]::Allow
 )
 $acl.SetAccessRule($rule)
+$descriptor = $acl.GetSecurityDescriptorBinaryForm()
 
-if ([System.IO.Directory]::Exists($directoryPath)) {
+$trustedSids = [System.Collections.Generic.HashSet[string]]::new(
+  [System.StringComparer]::OrdinalIgnoreCase
+)
+[void]$trustedSids.Add($sid.Value)
+[void]$trustedSids.Add("S-1-5-18")
+[void]$trustedSids.Add("S-1-5-32-544")
+[void]$trustedSids.Add(
+  "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+)
+$replacementRights = (
+  [int64][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+  [int64][System.Security.AccessControl.FileSystemRights]::Delete -bor
+  [int64][System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+  [int64][System.Security.AccessControl.FileSystemRights]::TakeOwnership -bor
+  [int64]0x10000000
+)
+
+function Assert-SafeParentNamespace([string]$candidate) {
+  $parentDirectory = [CrablineWindowsDirectoryHandle]::Open($candidate, $false)
+  try {
+    $parentIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($parentDirectory)
+    $parentAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $parentAcl.SetSecurityDescriptorBinaryForm(
+      [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($parentDirectory)
+    )
+    $parentOwner = $parentAcl.GetOwner(
+      [System.Security.Principal.SecurityIdentifier]
+    )
+    if (-not $trustedSids.Contains($parentOwner.Value)) {
+      throw "Private directory parent namespace has an untrusted owner."
+    }
+    $parentRules = @($parentAcl.GetAccessRules(
+      $true,
+      $true,
+      [System.Security.Principal.SecurityIdentifier]
+    ))
+    foreach ($parentRule in $parentRules) {
+      if (
+        $parentRule.AccessControlType -ne
+          [System.Security.AccessControl.AccessControlType]::Allow -or
+        $trustedSids.Contains($parentRule.IdentityReference.Value) -or
+        (($parentRule.PropagationFlags -band
+          [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)
+      ) {
+        continue
+      }
+      if (([int64]$parentRule.FileSystemRights -band $replacementRights) -ne 0) {
+        throw "Private directory parent namespace permits untrusted replacement."
+      }
+    }
+    [CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(
+      $candidate,
+      $parentIdentity
+    )
+  } finally {
+    $parentDirectory.Dispose()
+  }
+}
+
+$missing = [System.Collections.Generic.List[string]]::new()
+$current = $directoryPath
+while (-not [System.IO.Directory]::Exists($current)) {
+  if ([System.IO.File]::Exists($current)) {
+    throw "Private directory ancestry contains a non-directory entry."
+  }
+  $missing.Add($current)
+  $parent = [System.IO.Directory]::GetParent($current)
+  if ($null -eq $parent) {
+    throw "Private directory ancestry has no existing parent."
+  }
+  $current = $parent.FullName
+}
+
+if ($missing.Count -eq 0) {
+  $parent = [System.IO.Directory]::GetParent($directoryPath)
+  if ($null -eq $parent) {
+    throw "Private directory must have a parent."
+  }
+  $current = $parent.FullName
+}
+while ($null -ne $current) {
+  Assert-SafeParentNamespace($current)
+  $parent = [System.IO.Directory]::GetParent($current)
+  $current = if ($null -eq $parent) { $null } else { $parent.FullName }
+}
+
+$directory = $null
+if ($missing.Count -eq 0) {
   $directory = [CrablineWindowsDirectoryHandle]::Open($directoryPath, $true)
   $acl = [System.Security.AccessControl.DirectorySecurity]::new()
   $acl.SetSecurityDescriptorBinaryForm(
@@ -636,17 +724,22 @@ if ([System.IO.Directory]::Exists($directoryPath)) {
     $acl.GetSecurityDescriptorBinaryForm()
   )
 } else {
-  $parent = [System.IO.Directory]::GetParent(
-    $directoryPath
-  )
-  if ($null -eq $parent) {
-    throw "Private directory must have a parent."
+  $paths = $missing.ToArray()
+  [Array]::Reverse($paths)
+  foreach ($candidate in $paths) {
+    $createdDirectory = [CrablineWindowsDirectoryHandle]::Create(
+      $candidate,
+      $descriptor
+    )
+    if ($candidate -eq $directoryPath) {
+      $directory = $createdDirectory
+    } else {
+      $createdDirectory.Dispose()
+    }
   }
-  [void][System.IO.Directory]::CreateDirectory($parent.FullName)
-  $directory = [CrablineWindowsDirectoryHandle]::Create(
-    $directoryPath,
-    $acl.GetSecurityDescriptorBinaryForm()
-  )
+}
+if ($null -eq $directory) {
+  throw "Windows did not return the private directory handle."
 }
 try {
   $directoryIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($directory)
@@ -694,42 +787,68 @@ $directoryPath = $env:CRABLINE_PRIVATE_DIRECTORY_PATH
 if ([string]::IsNullOrWhiteSpace($directoryPath)) {
   throw "CRABLINE_PRIVATE_DIRECTORY_PATH is required."
 }
+$directoryPath = [System.IO.Path]::GetFullPath($directoryPath)
+$rootPath = [System.IO.Path]::GetPathRoot($directoryPath)
+if ($directoryPath.Length -gt $rootPath.Length) {
+  $directoryPath = $directoryPath.TrimEnd(
+    [char[]]@(
+      [System.IO.Path]::DirectorySeparatorChar,
+      [System.IO.Path]::AltDirectorySeparatorChar
+    )
+  )
+}
 
-$acl = Get-Acl -LiteralPath $directoryPath
+${WINDOWS_DIRECTORY_HANDLE_HELPER}
+
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $sid = $identity.User
 if ($null -eq $sid) {
   throw "Could not resolve the current Windows user SID."
 }
-$ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
-$rules = @($acl.GetAccessRules(
-  $true,
-  $true,
-  [System.Security.Principal.SecurityIdentifier]
-))
-$requiredInheritance = (
-  [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
-  [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-)
-if (
-  -not $acl.AreAccessRulesProtected -or
-  $ownerSid.Value -ne $sid.Value -or
-  $rules.Count -ne 1
-) {
-  throw "Windows directory security descriptor is not owner-only."
+
+$directory = [CrablineWindowsDirectoryHandle]::Open($directoryPath, $false)
+try {
+  $directoryIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($directory)
+  $descriptor = [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($directory)
+  $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+  $acl.SetSecurityDescriptorBinaryForm($descriptor)
+  $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+  $rules = @($acl.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ))
+  $requiredInheritance = (
+    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  )
+  if (
+    -not $acl.AreAccessRulesProtected -or
+    $ownerSid.Value -ne $sid.Value -or
+    $rules.Count -ne 1
+  ) {
+    throw "Windows directory security descriptor is not owner-only."
+  }
+  $rule = $rules[0]
+  if (
+    $rule.IsInherited -or
+    $rule.IdentityReference.Value -ne $sid.Value -or
+    $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+    (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) -or
+    (($rule.InheritanceFlags -band $requiredInheritance) -ne $requiredInheritance)
+  ) {
+    throw "Windows directory security descriptor is not owner-only."
+  }
+  [CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(
+    $directoryPath,
+    $directoryIdentity
+  )
+  [Console]::Out.Write($directoryIdentity)
+  [Console]::Out.Write([Environment]::NewLine)
+  [Console]::Out.Write([Convert]::ToBase64String($descriptor))
+} finally {
+  $directory.Dispose()
 }
-$rule = $rules[0]
-if (
-  $rule.IsInherited -or
-  $rule.IdentityReference.Value -ne $sid.Value -or
-  $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
-  (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) -or
-  (($rule.InheritanceFlags -band $requiredInheritance) -ne $requiredInheritance)
-) {
-  throw "Windows directory security descriptor is not owner-only."
-}
-$descriptor = $acl.GetSecurityDescriptorBinaryForm()
-[Convert]::ToBase64String($descriptor)
 `;
 
 export type WindowsAclRunner = (
@@ -742,6 +861,11 @@ export type WindowsAclRunner = (
     windowsHide: boolean;
   },
 ) => Promise<string>;
+
+export type WindowsDirectorySecuritySnapshot = {
+  identity: string;
+  securityDescriptor: string;
+};
 
 const runWindowsAclCommand: WindowsAclRunner = async (command, args, options) => {
   const result = await execFileAsync(command, args, { ...options, encoding: "utf8" });
@@ -824,14 +948,14 @@ export async function createOwnerOnlyWindowsDirectory(
   }
 }
 
-export async function readWindowsDirectorySecurityDescriptor(
+export async function readWindowsDirectorySecuritySnapshot(
   directoryPath: string,
   run: WindowsAclRunner = runWindowsAclCommand,
   systemRoot: string | null | undefined = process.env.SystemRoot,
-): Promise<string> {
+): Promise<WindowsDirectorySecuritySnapshot> {
   try {
     const powershellPath = resolveWindowsPowerShellPath(systemRoot);
-    const descriptor = await run(
+    const output = await run(
       powershellPath,
       [
         "-NoLogo",
@@ -850,15 +974,29 @@ export async function readWindowsDirectorySecurityDescriptor(
         windowsHide: true,
       },
     );
-    const normalized = descriptor.trim();
-    if (!normalized) {
+    const [identity, securityDescriptor, ...extraLines] = output.trim().split(/\r?\n/u);
+    if (
+      !identity ||
+      !/^\d+:[0-9A-F]{32}$/u.test(identity) ||
+      !securityDescriptor ||
+      extraLines.length > 0
+    ) {
       throw new Error("Windows directory security descriptor was empty.");
     }
-    return normalized;
+    return { identity, securityDescriptor };
   } catch (error) {
     throw new Error(
-      "Could not read the Windows directory security descriptor; powershell.exe with Get-Acl is required.",
+      "Could not read the Windows directory security descriptor through a stable no-follow handle; Windows PowerShell ACL support is required.",
       { cause: error },
     );
   }
+}
+
+export async function readWindowsDirectorySecurityDescriptor(
+  directoryPath: string,
+  run: WindowsAclRunner = runWindowsAclCommand,
+  systemRoot: string | null | undefined = process.env.SystemRoot,
+): Promise<string> {
+  return (await readWindowsDirectorySecuritySnapshot(directoryPath, run, systemRoot))
+    .securityDescriptor;
 }

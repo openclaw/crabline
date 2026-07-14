@@ -20,6 +20,7 @@ import {
   applyOwnerOnlyWindowsDirectoryAcl,
   createOwnerOnlyWindowsDirectory,
   readWindowsDirectorySecurityDescriptor,
+  readWindowsDirectorySecuritySnapshot,
   type WindowsAclRunner,
 } from "../src/platform/windows-acl.js";
 import {
@@ -35,7 +36,11 @@ import {
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const directories: string[] = [];
-const readOwnerOnlyWindowsDirectorySecurityDescriptor = async (): Promise<string> => "owner-only";
+const stableWindowsDirectoryIdentity = "10:00000000000000000000000000000014";
+const readOwnerOnlyWindowsDirectorySecuritySnapshot = async () => ({
+  identity: stableWindowsDirectoryIdentity,
+  securityDescriptor: "owner-only",
+});
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
@@ -258,7 +263,7 @@ describe("recorder", () => {
           await mkdir(directoryPath);
           secured.push(directoryPath);
         },
-        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot: readOwnerOnlyWindowsDirectorySecuritySnapshot,
       }),
     ).resolves.toBe(lockRoot);
     await mkdir(path.join(lockRoot, "active-lock"));
@@ -268,7 +273,7 @@ describe("recorder", () => {
         createWindowsDirectory: async () => {
           throw new Error("cached Windows lock root was re-secured");
         },
-        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot: readOwnerOnlyWindowsDirectorySecuritySnapshot,
       }),
     ).resolves.toBe(lockRoot);
 
@@ -286,14 +291,14 @@ describe("recorder", () => {
     await secureProviderRecorderLockRoot(lockRoot, undefined, {
       createWindowsDirectory,
       platform: "win32",
-      readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
+      readWindowsDirectorySecuritySnapshot: readOwnerOnlyWindowsDirectorySecuritySnapshot,
     });
     await rm(lockRoot, { force: true, recursive: true });
     await expect(
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         createWindowsDirectory,
         platform: "win32",
-        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot: readOwnerOnlyWindowsDirectorySecuritySnapshot,
       }),
     ).resolves.toBe(lockRoot);
     await expect(stat(lockRoot)).resolves.toBeDefined();
@@ -319,7 +324,7 @@ describe("recorder", () => {
     const options = {
       createWindowsDirectory,
       platform: "win32" as const,
-      readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
+      readWindowsDirectorySecuritySnapshot: readOwnerOnlyWindowsDirectorySecuritySnapshot,
     };
 
     await expect(secureProviderRecorderLockRoot(lockRoot, undefined, options)).rejects.toBe(
@@ -345,7 +350,7 @@ describe("recorder", () => {
     await secureProviderRecorderLockRoot(lockRoot, undefined, {
       createWindowsDirectory,
       platform: "win32",
-      readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
+      readWindowsDirectorySecuritySnapshot: readOwnerOnlyWindowsDirectorySecuritySnapshot,
     });
     await rm(lockRoot, { force: true, recursive: true });
     await mkdir(lockRoot);
@@ -353,12 +358,12 @@ describe("recorder", () => {
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         createWindowsDirectory,
         platform: "win32",
-        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot: readOwnerOnlyWindowsDirectorySecuritySnapshot,
       }),
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         createWindowsDirectory,
         platform: "win32",
-        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot: readOwnerOnlyWindowsDirectorySecuritySnapshot,
       }),
     ]);
 
@@ -376,7 +381,7 @@ describe("recorder", () => {
         createWindowsDirectory: async (directoryPath) => {
           await writeFile(directoryPath, "not a directory");
         },
-        readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot: readOwnerOnlyWindowsDirectorySecuritySnapshot,
       }),
     ).rejects.toThrow("Provider recorder lock directory is not a private directory.");
   });
@@ -392,12 +397,15 @@ describe("recorder", () => {
       await mkdir(directoryPath, { recursive: true });
       securityDescriptor = "owner-only";
     };
-    const readSecurityDescriptor = async () => securityDescriptor;
+    const readSecuritySnapshot = async () => ({
+      identity: stableWindowsDirectoryIdentity,
+      securityDescriptor,
+    });
 
     await secureProviderRecorderLockRoot(lockRoot, undefined, {
       createWindowsDirectory,
       platform: "win32",
-      readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+      readWindowsDirectorySecuritySnapshot: readSecuritySnapshot,
     });
     await mkdir(path.join(lockRoot, "acl-change-trigger"));
     securityDescriptor = "unsafe";
@@ -406,7 +414,41 @@ describe("recorder", () => {
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         createWindowsDirectory,
         platform: "win32",
-        readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot: readSecuritySnapshot,
+      }),
+    ).resolves.toBe(lockRoot);
+
+    expect(createCount).toBe(2);
+  });
+
+  it("re-secures a cached Windows recorder lock root when its handle identity changes", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const lockRoot = path.join(directory, "handle-replaced-locks");
+    let createCount = 0;
+    let handleIdentity = stableWindowsDirectoryIdentity;
+    const createWindowsDirectory = async (directoryPath: string) => {
+      createCount += 1;
+      await mkdir(directoryPath, { recursive: true });
+      handleIdentity = stableWindowsDirectoryIdentity;
+    };
+    const readSecuritySnapshot = async () => ({
+      identity: handleIdentity,
+      securityDescriptor: "owner-only",
+    });
+
+    await secureProviderRecorderLockRoot(lockRoot, undefined, {
+      createWindowsDirectory,
+      platform: "win32",
+      readWindowsDirectorySecuritySnapshot: readSecuritySnapshot,
+    });
+    handleIdentity = "10:00000000000000000000000000000015";
+
+    await expect(
+      secureProviderRecorderLockRoot(lockRoot, undefined, {
+        createWindowsDirectory,
+        platform: "win32",
+        readWindowsDirectorySecuritySnapshot: readSecuritySnapshot,
       }),
     ).resolves.toBe(lockRoot);
 
@@ -418,12 +460,15 @@ describe("recorder", () => {
     directories.push(directory);
     const lockRoot = path.join(directory, "active-locks");
     let descriptorReads = 0;
-    const readSecurityDescriptor = async () => {
+    const readSecuritySnapshot = async () => {
       descriptorReads += 1;
       if (descriptorReads === 2) {
         await mkdir(path.join(lockRoot, "concurrent-lock"));
       }
-      return "owner-only";
+      return {
+        identity: stableWindowsDirectoryIdentity,
+        securityDescriptor: "owner-only",
+      };
     };
     const createWindowsDirectory = async (directoryPath: string) => {
       await mkdir(directoryPath, { recursive: true });
@@ -432,7 +477,7 @@ describe("recorder", () => {
     await secureProviderRecorderLockRoot(lockRoot, undefined, {
       createWindowsDirectory,
       platform: "win32",
-      readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+      readWindowsDirectorySecuritySnapshot: readSecuritySnapshot,
     });
     await mkdir(path.join(lockRoot, "acl-check-trigger"));
 
@@ -440,7 +485,7 @@ describe("recorder", () => {
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         createWindowsDirectory,
         platform: "win32",
-        readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot: readSecuritySnapshot,
       }),
     ).resolves.toBe(lockRoot);
 
@@ -457,19 +502,22 @@ describe("recorder", () => {
       createCount += 1;
       await mkdir(directoryPath, { recursive: true });
     };
-    const readSecurityDescriptor = async () => {
+    const readSecuritySnapshot = async () => {
       descriptorReads += 1;
       if (descriptorReads === 3) {
         await rm(lockRoot, { force: true, recursive: true });
         throw Object.assign(new Error("lock root removed during Get-Acl"), { code: "ENOENT" });
       }
-      return "owner-only";
+      return {
+        identity: stableWindowsDirectoryIdentity,
+        securityDescriptor: "owner-only",
+      };
     };
 
     await secureProviderRecorderLockRoot(lockRoot, undefined, {
       createWindowsDirectory,
       platform: "win32",
-      readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+      readWindowsDirectorySecuritySnapshot: readSecuritySnapshot,
     });
     await mkdir(path.join(lockRoot, "acl-check-trigger"));
 
@@ -477,7 +525,7 @@ describe("recorder", () => {
       secureProviderRecorderLockRoot(lockRoot, undefined, {
         createWindowsDirectory,
         platform: "win32",
-        readWindowsDirectorySecurityDescriptor: readSecurityDescriptor,
+        readWindowsDirectorySecuritySnapshot: readSecuritySnapshot,
       }),
     ).resolves.toBe(lockRoot);
 
@@ -499,7 +547,7 @@ describe("recorder", () => {
     const [, args, options] = calls[0]!;
     const script = args.at(-1)!;
     expect(script).toContain("[System.Security.AccessControl.DirectorySecurity]::new()");
-    expect(script).toContain("[System.IO.Directory]::Exists($directoryPath)");
+    expect(script).toContain("[System.IO.Directory]::Exists($current)");
     expect(script).toContain("$directoryPath.TrimEnd(");
     expect(script).toContain("NtCreateFile(");
     expect(script).toContain("FileCreate");
@@ -516,7 +564,12 @@ describe("recorder", () => {
     expect(script).toContain("FileIdInfoClass");
     expect(script).toContain("GetSecurityInfo(");
     expect(script).toContain("SetSecurityInfo(");
+    expect(script).toContain("Assert-SafeParentNamespace");
+    expect(script).toContain("DeleteSubdirectoriesAndFiles");
+    expect(script).toContain("Private directory parent namespace permits untrusted replacement.");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Create(\n      $candidate,");
     expect(script).toContain("AssertSamePathIdentity");
+    expect(script).not.toContain("[System.IO.Directory]::CreateDirectory(");
     expect(script).not.toContain("$directory.SetAccessControl($acl)");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
     expect(options.killSignal).toBe("SIGKILL");
@@ -547,24 +600,33 @@ describe("recorder", () => {
     expect(options.timeout).toBe(15_000);
   });
 
-  it("reads a stable Windows directory security descriptor fingerprint", async () => {
+  it("reads Windows directory identity and ACL from one no-follow handle", async () => {
     const calls: Parameters<WindowsAclRunner>[] = [];
     const run: WindowsAclRunner = async (...args) => {
       calls.push(args);
-      return "descriptor-base64\r\n";
+      return `${stableWindowsDirectoryIdentity}\r\ndescriptor-base64`;
     };
     const directoryPath = String.raw`C:\Temp\crabline-recorder-locks`;
 
     await expect(
-      readWindowsDirectorySecurityDescriptor(directoryPath, run, String.raw`C:\Windows`),
-    ).resolves.toBe("descriptor-base64");
+      readWindowsDirectorySecuritySnapshot(directoryPath, run, String.raw`C:\Windows`),
+    ).resolves.toEqual({
+      identity: stableWindowsDirectoryIdentity,
+      securityDescriptor: "descriptor-base64",
+    });
 
     const [, args, options] = calls[0]!;
     const script = args.at(-1);
     expect(script).toContain("AreAccessRulesProtected");
     expect(script).toContain("$rules.Count -ne 1");
-    expect(script).toContain("GetSecurityDescriptorBinaryForm()");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Open($directoryPath, $false)");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::ReadIdentity($directory)");
+    expect(script).toContain(
+      "[CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($directory)",
+    );
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(");
     expect(script).toContain("[Convert]::ToBase64String($descriptor)");
+    expect(script).not.toContain("Get-Acl");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
     expect(options.killSignal).toBe("SIGKILL");
     expect(options.timeout).toBe(15_000);
