@@ -258,8 +258,14 @@ const WINDOWS_PROCESS_TERMINATOR_SOURCE = [
   "}",
 ].join("");
 
+type WindowsJobHelperBootstrap = {
+  controller: AbortController;
+  promise: Promise<string>;
+  waiters: number;
+};
+
 let windowsJobHelperPath: string | undefined;
-let windowsJobHelperPromise: Promise<string> | undefined;
+let windowsJobHelperBootstrap: WindowsJobHelperBootstrap | undefined;
 
 function removeWindowsJobHelper(directory: string): void {
   try {
@@ -273,23 +279,63 @@ function runWindowsJobHelperCommand(
   executable: string,
   args: string[],
   options: ExecFileOptions,
+  signal: AbortSignal,
 ): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason ?? new Error("Windows script helper bootstrap aborted."));
+  }
   return new Promise((resolve, reject) => {
-    try {
-      execFile(executable, args, options, (error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
+    const startedAtMs = Date.now();
+    let child: ChildProcess;
+    let settled = false;
+    let aborting = false;
+    const finish = (error?: unknown) => {
+      if (settled || aborting) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      if (error) {
+        reject(error);
+      } else {
         resolve();
-      });
+      }
+    };
+    const abort = () => {
+      if (settled || aborting) {
+        return;
+      }
+      aborting = true;
+      signal.removeEventListener("abort", abort);
+      void (async () => {
+        try {
+          await terminateChild(child, startedAtMs, observedAtMs);
+        } catch {
+          // The command still needs to be drained before returning the original abort.
+        }
+        await waitForChildClose(childClosed);
+        settled = true;
+        reject(signal.reason ?? new Error("Windows script helper bootstrap aborted."));
+      })();
+    };
+    try {
+      child = execFile(executable, args, options, (error) => finish(error ?? undefined));
     } catch (error) {
       reject(error);
+      return;
+    }
+    const observedAtMs = Date.now();
+    const childClosed = new Promise<ScriptChildExit>((resolveClose) => {
+      child.once("close", (code, closeSignal) => resolveClose({ code, signal: closeSignal }));
+    });
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) {
+      abort();
     }
   });
 }
 
-async function createWindowsJobHelper(): Promise<string> {
+async function createWindowsJobHelper(signal: AbortSignal): Promise<string> {
   if (windowsJobHelperPath !== undefined) {
     return windowsJobHelperPath;
   }
@@ -321,17 +367,23 @@ async function createWindowsJobHelper(): Promise<string> {
         timeout: 15_000,
         windowsHide: true,
       },
+      signal,
     );
     const probeCommand = windowsShellCommand("exit 0");
-    await runWindowsJobHelperCommand(helperPath, [], {
-      env: {
-        ...process.env,
-        [WINDOWS_JOB_COMMAND_ENV]: Buffer.from(probeCommand.commandLine).toString("base64"),
-        [WINDOWS_JOB_SHELL_ENV]: Buffer.from(probeCommand.shell).toString("base64"),
+    await runWindowsJobHelperCommand(
+      helperPath,
+      [],
+      {
+        env: {
+          ...process.env,
+          [WINDOWS_JOB_COMMAND_ENV]: Buffer.from(probeCommand.commandLine).toString("base64"),
+          [WINDOWS_JOB_SHELL_ENV]: Buffer.from(probeCommand.shell).toString("base64"),
+        },
+        timeout: 5_000,
+        windowsHide: true,
       },
-      timeout: 5_000,
-      windowsHide: true,
-    });
+      signal,
+    );
   } catch (error) {
     removeWindowsJobHelper(directory);
     throw new Error("Could not initialize the Windows script Job Object helper.", {
@@ -343,42 +395,90 @@ async function createWindowsJobHelper(): Promise<string> {
   return helperPath;
 }
 
-function ensureWindowsJobHelper(): Promise<string> {
+function releaseWindowsJobHelperWaiter(
+  bootstrap: WindowsJobHelperBootstrap,
+  reason?: unknown,
+): boolean {
+  bootstrap.waiters -= 1;
+  if (
+    bootstrap.waiters !== 0 ||
+    windowsJobHelperBootstrap !== bootstrap ||
+    windowsJobHelperPath !== undefined
+  ) {
+    return false;
+  }
+  windowsJobHelperBootstrap = undefined;
+  bootstrap.controller.abort(
+    reason ?? new Error("Windows script helper bootstrap has no active waiters."),
+  );
+  return true;
+}
+
+function ensureWindowsJobHelper(signal?: AbortSignal): Promise<string> {
   if (windowsJobHelperPath !== undefined) {
     return Promise.resolve(windowsJobHelperPath);
   }
-  windowsJobHelperPromise ??= createWindowsJobHelper().finally(() => {
-    windowsJobHelperPromise = undefined;
-  });
-  return windowsJobHelperPromise;
-}
-
-function waitForPromiseOrAbort<T>(
-  createPromise: () => Promise<T>,
-  signal?: AbortSignal,
-): Promise<T> {
   if (signal?.aborted) {
     return Promise.reject(signal.reason ?? new Error("Script command aborted."));
   }
-  const promise = createPromise();
-  if (!signal) {
-    return promise;
-  }
-  return new Promise((resolve, reject) => {
-    const abort = () => {
-      reject(signal.reason ?? new Error("Script command aborted."));
+  let bootstrap = windowsJobHelperBootstrap;
+  if (!bootstrap) {
+    const controller = new AbortController();
+    bootstrap = {
+      controller,
+      promise: Promise.resolve(""),
+      waiters: 0,
     };
-    signal.addEventListener("abort", abort, { once: true });
-    void promise.then(
+    bootstrap.promise = createWindowsJobHelper(controller.signal).finally(() => {
+      if (windowsJobHelperBootstrap === bootstrap) {
+        windowsJobHelperBootstrap = undefined;
+      }
+    });
+    windowsJobHelperBootstrap = bootstrap;
+  }
+  bootstrap.waiters += 1;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      callback();
+    };
+    const abort = () => {
+      finish(() => {
+        const reason = signal?.reason ?? new Error("Script command aborted.");
+        const drainsBootstrap = releaseWindowsJobHelperWaiter(bootstrap, reason);
+        if (drainsBootstrap) {
+          void bootstrap.promise.then(
+            () => reject(reason),
+            () => reject(reason),
+          );
+        } else {
+          reject(reason);
+        }
+      });
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    void bootstrap.promise.then(
       (value) => {
-        signal.removeEventListener("abort", abort);
-        resolve(value);
+        finish(() => {
+          releaseWindowsJobHelperWaiter(bootstrap);
+          resolve(value);
+        });
       },
       (error: unknown) => {
-        signal.removeEventListener("abort", abort);
-        reject(error);
+        finish(() => {
+          releaseWindowsJobHelperWaiter(bootstrap);
+          reject(error);
+        });
       },
     );
+    if (signal?.aborted) {
+      abort();
+    }
   });
 }
 
@@ -438,7 +538,7 @@ async function spawnScriptChild(
   let startedAtMs: number;
   let child: SpawnedScriptChild;
   if (process.platform === "win32") {
-    const helperPath = await waitForPromiseOrAbort(ensureWindowsJobHelper, signal);
+    const helperPath = await ensureWindowsJobHelper(signal);
     if (signal?.aborted) {
       throw signal.reason ?? new Error("Script command aborted.");
     }
@@ -1253,6 +1353,7 @@ function runScript<T>(params: {
     let timeout: NodeJS.Timeout;
     let timeoutGrace: NodeJS.Timeout | undefined;
     const spawnAbortController = new AbortController();
+    let spawnCompletion: Promise<void> | undefined;
 
     const finish = (callback: () => Promise<void> | void) => {
       if (settled) {
@@ -1269,6 +1370,8 @@ function runScript<T>(params: {
     const stopChild = async () => {
       if (child) {
         await terminateChild(child, childStartedAtMs, childObservedAtMs);
+      } else {
+        await spawnCompletion;
       }
     };
 
@@ -1400,10 +1503,10 @@ function runScript<T>(params: {
       return;
     }
 
-    void spawnScriptChild(params, spawnAbortController.signal).then(
-      (spawned) => {
+    spawnCompletion = spawnScriptChild(params, spawnAbortController.signal).then(
+      async (spawned) => {
         if (settled) {
-          void terminateChild(spawned.child, spawned.startedAtMs, spawned.observedAtMs);
+          await terminateChild(spawned.child, spawned.startedAtMs, spawned.observedAtMs);
           return;
         }
         child = spawned.child;

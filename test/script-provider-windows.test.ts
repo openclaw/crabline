@@ -225,10 +225,22 @@ describe("script provider Windows cleanup", () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it("counts Job Object helper bootstrap against the command timeout", async () => {
+  it("terminates and drains Job Object helper bootstrap after its last waiter times out", async () => {
     vi.resetModules();
     execFileMock.mockReset();
-    execFileMock.mockReturnValueOnce(createFakeChild(1109));
+    const bootstrapChild = createFakeChild(1109);
+    let bootstrapClosed = false;
+    execFileMock.mockReturnValueOnce(bootstrapChild);
+    spawnMock.mockImplementationOnce(() =>
+      createCleanupChild(0, () => {
+        bootstrapClosed = true;
+        Object.defineProperty(bootstrapChild, "exitCode", {
+          configurable: true,
+          value: 1,
+        });
+        bootstrapChild.emit("close", 1, null);
+      }),
+    );
     const { ScriptProviderAdapter: IsolatedScriptProviderAdapter } =
       await import("../src/providers/builtin/script.js");
     const context = createContext();
@@ -248,7 +260,61 @@ describe("script provider Windows cleanup", () => {
     expect(ensureErrorMessage(failure)).toContain(
       `Script command timed out after ${context.fixture.timeoutMs}ms.`,
     );
-    expect(spawnMock).not.toHaveBeenCalled();
+    expect(spawnMock.mock.calls[0]?.[0]).toBe("powershell.exe");
+    expect(bootstrapClosed).toBe(true);
+  });
+
+  it("keeps shared Job Object helper bootstrap alive for another waiter", async () => {
+    vi.resetModules();
+    execFileMock.mockReset();
+    const bootstrapChild = createFakeChild(1110);
+    let completeBootstrap: ((error: null, stdout: string, stderr: string) => void) | undefined;
+    execFileMock
+      .mockImplementationOnce((...args: unknown[]) => {
+        completeBootstrap = args.at(-1) as typeof completeBootstrap;
+        return bootstrapChild;
+      })
+      .mockImplementation(completeExecFileSuccessfully);
+    const scriptChild = createFakeChild(1111);
+    spawnMock.mockReturnValueOnce(scriptChild);
+    const { ScriptProviderAdapter: IsolatedScriptProviderAdapter } =
+      await import("../src/providers/builtin/script.js");
+    const firstContext = createContext();
+    const secondContext = createContext();
+    secondContext.fixture.timeoutMs = 100;
+    const provider = new IsolatedScriptProviderAdapter(firstContext);
+
+    const firstFailurePromise = provider
+      .send({
+        ...firstContext,
+        mode: "send",
+        nonce: "nonce-1",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    const secondFailurePromise = provider
+      .send({
+        ...secondContext,
+        mode: "send",
+        nonce: "nonce-2",
+        text: "payload",
+      })
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(firstContext.fixture.timeoutMs);
+    const firstFailure = await firstFailurePromise;
+
+    expect(ensureErrorMessage(firstFailure)).toContain(
+      `Script command timed out after ${firstContext.fixture.timeoutMs}ms.`,
+    );
+    expect(bootstrapChild.kill).not.toHaveBeenCalled();
+
+    completeBootstrap?.(null, "", "");
+    await flushScriptSpawn();
+    scriptChild.emit("close", 7, null);
+    await secondFailurePromise;
+
+    expect(execFileMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock.mock.calls[0]?.[0]).toMatch(/crabline-script-job\.exe$/u);
   });
 
   it("starts scripts inside an atomic kill-on-close Job Object", async () => {
