@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CrablineError } from "../src/core/errors.js";
 import {
+  matchesZaloTarget,
   normalizeZaloWebhookPayload,
   resolveZaloAdapterConfig,
   ZaloProviderAdapter,
@@ -104,6 +105,12 @@ describe("Zalo webhook normalizer", () => {
     } finally {
       await provider.cleanup();
     }
+  });
+
+  it("matches native target identities exactly", () => {
+    expect(matchesZaloTarget("user-1", "user-1")).toBe(true);
+    expect(matchesZaloTarget("user-1:thread-2", "user-1")).toBe(false);
+    expect(matchesZaloTarget("user-10", "user-1")).toBe(false);
   });
 
   it("rejects unsupported thread targets during normalization", () => {

@@ -7,6 +7,7 @@ import {
   createDiscordInteractionResponse,
   DiscordProviderAdapter,
   handleDiscordWebhookPayload,
+  matchesDiscordThread,
   normalizeDiscordWebhookPayload,
 } from "../src/providers/builtin/discord.js";
 import type { ProviderConfig } from "../src/config/schema.js";
@@ -387,6 +388,55 @@ describe("discord provider", () => {
       channelId: "123456789012345678",
       threadId: "223456789012345678",
     });
+    for (const type of [10, 11, 12]) {
+      expect(
+        matchesDiscordThread(
+          "223456789012345678",
+          "123456789012345678",
+          { channelId: "123456789012345678" },
+          {
+            channel: {
+              id: "223456789012345678",
+              parent_id: "123456789012345678",
+              type,
+            },
+            channel_id: "223456789012345678",
+          },
+        ),
+      ).toBe(true);
+    }
+    for (const type of [0, 2]) {
+      expect(
+        matchesDiscordThread(
+          "223456789012345678",
+          "123456789012345678",
+          { channelId: "123456789012345678" },
+          {
+            channel: {
+              id: "223456789012345678",
+              parent_id: "123456789012345678",
+              type,
+            },
+            channel_id: "223456789012345678",
+          },
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it("only accepts POST requests at the interactions endpoint", async () => {
+    const config = await createDiscordConfig(0);
+    const provider = new DiscordProviderAdapter("discord", config, "crabline");
+    providers.push(provider);
+    const endpoint = (await provider.probe(createContext(config))).details
+      .find((detail) => detail.startsWith("interactions endpoint "))
+      ?.replace("interactions endpoint ", "");
+    expect(endpoint).toBeDefined();
+
+    for (const method of ["GET", "PUT"]) {
+      const response = await fetch(endpoint!, { method });
+      expect(response.status).toBe(404);
+    }
   });
 
   it("rejects encoded or non-snowflake targets", async () => {
@@ -494,6 +544,57 @@ describe("discord provider", () => {
     await expect(waitPromise).resolves.toMatchObject({
       id: "333456789012345678",
       text: "ACK nonce-2",
+    });
+  });
+
+  it("correlates thread interactions through their native parent channel", async () => {
+    const config = await createDiscordConfig(0);
+    const provider = new DiscordProviderAdapter("discord", config, "crabline");
+    providers.push(provider);
+    const context = createContext(config);
+    context.fixture.inboundMatch = {
+      author: "user",
+      nonce: "contains",
+      strategy: "contains",
+    };
+    const endpoint = (await provider.probe(context)).details
+      .find((detail) => detail.startsWith("interactions endpoint "))
+      ?.replace("interactions endpoint ", "");
+    expect(endpoint).toBeDefined();
+    const waiting = provider.waitForInbound({
+      ...context,
+      nonce: "parent-nonce",
+      since: new Date(Date.now() - 1000).toISOString(),
+      timeoutMs: 500,
+    });
+
+    for (const [id, parentId, type] of [
+      ["223456789012345676", "123456789012345678", 0],
+      ["223456789012345677", "999456789012345678", 11],
+      ["223456789012345678", "123456789012345678", 11],
+    ] as const) {
+      const response = await fetch(endpoint!, {
+        body: JSON.stringify({
+          channel: { id, parent_id: parentId, type },
+          channel_id: id,
+          data: {
+            name: "approve",
+            options: [{ name: "nonce", type: 3, value: "parent-nonce" }],
+          },
+          id: id.replace(/^223/u, "444"),
+          member: { user: { bot: false, id: "555456789012345678" } },
+          type: 2,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+    }
+
+    await expect(waiting).resolves.toMatchObject({
+      author: "user",
+      id: "444456789012345678",
+      threadId: "223456789012345678",
     });
   });
 

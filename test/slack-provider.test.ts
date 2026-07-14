@@ -292,6 +292,52 @@ describe("slack provider", () => {
     });
   });
 
+  it.each(["U1234567890", "W1234567890"])(
+    "correlates native D-channel events to direct target %s",
+    async (userId) => {
+      const config = await createSlackConfig(0);
+      const provider = new SlackProviderAdapter("slack", config, "crabline");
+      providers.push(provider);
+      const context = createContext(config, { id: userId, metadata: {} });
+      context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
+      const endpoint = endpointFromDetails((await provider.probe(context)).details);
+      const nonce = `direct-${userId}`;
+      const waiting = provider.waitForInbound({
+        ...context,
+        nonce,
+        since: new Date(Date.now() - 1000).toISOString(),
+        timeoutMs: 500,
+      });
+
+      for (const [channel, eventUser] of [
+        ["D9999999999", "U9999999999"],
+        ["D1234567890", userId],
+      ]) {
+        const response = await fetch(endpoint, {
+          body: JSON.stringify({
+            event: {
+              channel,
+              text: `ACK ${nonce}`,
+              ts: channel === "D1234567890" ? "1700000002.000300" : "1700000001.000200",
+              type: "message",
+              user: eventUser,
+            },
+            type: "event_callback",
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+        expect(response.status).toBe(200);
+      }
+
+      await expect(waiting).resolves.toMatchObject({
+        author: "user",
+        text: `ACK ${nonce}`,
+        threadId: "D1234567890",
+      });
+    },
+  );
+
   it("normalizes Slack message_changed callbacks from the replacement message", async () => {
     const config = await createSlackConfig(0);
     const provider = new SlackProviderAdapter("slack", config, "crabline");

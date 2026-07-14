@@ -58,6 +58,7 @@ export type LocalMockAdapterOptions = {
   settleWebhookRequest?: (params: { accepted: boolean; payload: unknown; rawBody: string }) => void;
   webhook?: LocalMockWebhookConfig | undefined;
   webhookCleanupGraceMs?: number | undefined;
+  webhookMethods?: readonly string[] | undefined;
 };
 
 const MAX_WAIT_CURSORS = 64;
@@ -702,7 +703,9 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
         return await startWebhookServer({
           handle: (request) => this.#handleWebhook(request),
           host,
-          methods: this.#options.handleWebhookPayload ? ["GET", "POST"] : ["POST"],
+          methods:
+            this.#options.webhookMethods ??
+            (this.#options.handleWebhookPayload ? ["GET", "POST"] : ["POST"]),
           path: webhookPath,
           port,
         });

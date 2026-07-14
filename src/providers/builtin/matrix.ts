@@ -100,12 +100,25 @@ export function normalizeMatrixWebhookPayload(payload: unknown, botUserId?: stri
     throw new CrablineError("Matrix webhook payload must be an object", { kind: "inbound" });
   }
 
-  if (optionalRecord(payload, "message")) {
+  const message = optionalRecord(payload, "message");
+  if (
+    (message && ("text" in message || "threadId" in message)) ||
+    "text" in payload ||
+    "threadId" in payload
+  ) {
     const normalized = genericMockPayloadWithNativeThread({
       channelRule: MATRIX_ROOM_ID_RULE,
       payload,
       threadRule: MATRIX_EVENT_ID_RULE,
     });
+    const threadId =
+      (message ? optionalString(message, "threadId") : undefined) ??
+      optionalString(payload, "threadId");
+    const roomId =
+      (message ? optionalString(message, "channelId") : undefined) ??
+      optionalString(payload, "channelId") ??
+      optionalString(payload, "roomId") ??
+      optionalString(payload, "room_id");
     if (
       "threadId" in normalized &&
       !isMatrixRoomId(normalized.threadId) &&
@@ -115,6 +128,27 @@ export function normalizeMatrixWebhookPayload(payload: unknown, botUserId?: stri
         `mock webhook threadId must be a native ${MATRIX_EVENT_ID_RULE.name} or ${MATRIX_ROOM_ID_RULE.name}.`,
         { kind: "inbound" },
       );
+    }
+    if (threadId && isMatrixEventId(threadId)) {
+      if (!roomId || !isMatrixRoomId(roomId)) {
+        throw new CrablineError(
+          `Matrix generic event threadId requires a native ${MATRIX_ROOM_ID_RULE.name} channelId.`,
+          { kind: "inbound" },
+        );
+      }
+      const scopedThreadId = matrixThreadKey(roomId, threadId);
+      return {
+        ...normalized,
+        ...("message" in normalized && isRecord(normalized.message)
+          ? { message: { ...normalized.message, threadId: scopedThreadId } }
+          : {}),
+        threadId: scopedThreadId,
+      };
+    }
+    if (threadId && isMatrixRoomId(threadId) && roomId && roomId !== threadId) {
+      throw new CrablineError("Matrix generic room threadId must match channelId.", {
+        kind: "inbound",
+      });
     }
     return normalized;
   }

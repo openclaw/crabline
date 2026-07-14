@@ -189,6 +189,46 @@ describe("Matrix webhook normalizer", () => {
     ).toBe(true);
   });
 
+  it("scopes generic event thread ids to their Matrix room", () => {
+    const roomId = "!abc123:matrix.org";
+    const eventId = "$event123:matrix.org";
+    const scopedThreadId = `${roomId}:thread:${eventId}`;
+
+    expect(
+      normalizeMatrixWebhookPayload({
+        channelId: roomId,
+        id: "$reply123:matrix.org",
+        text: "top-level generic",
+        threadId: eventId,
+      }),
+    ).toMatchObject({ threadId: scopedThreadId });
+    expect(
+      normalizeMatrixWebhookPayload({
+        message: {
+          channelId: roomId,
+          id: "$reply124:matrix.org",
+          text: "nested generic",
+          threadId: eventId,
+        },
+      }),
+    ).toMatchObject({
+      message: { threadId: scopedThreadId },
+      threadId: scopedThreadId,
+    });
+    expect(() =>
+      normalizeMatrixWebhookPayload({
+        id: "$reply125:matrix.org",
+        text: "unscoped generic",
+        threadId: eventId,
+      }),
+    ).toThrow(/requires a native Matrix room id channelId/u);
+    expect(
+      matchesMatrixThread("!other:matrix.org:thread:$event123:matrix.org", eventId, {
+        channelId: roomId,
+      }),
+    ).toBe(false);
+  });
+
   it("requires native event identity, type, and thread roots", () => {
     expect(() =>
       normalizeMatrixWebhookPayload({

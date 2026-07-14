@@ -25,6 +25,7 @@ type DiscordRuntime = {
 };
 
 const DISCORD_SIGNATURE_MAX_SKEW_SECONDS = 5 * 60;
+const DISCORD_THREAD_CHANNEL_TYPES = new Set([10, 11, 12]);
 
 function resolveDiscordAdapterConfigValue(
   config: ProviderConfig,
@@ -197,6 +198,13 @@ export function normalizeDiscordWebhookPayload(payload: unknown) {
   const data = optionalRecord(payload, "data");
   const author = optionalRecord(payload, "author") ?? optionalRecord(payload, "member")?.user;
   const channelId = optionalString(payload, "channel_id");
+  const channel = optionalRecord(payload, "channel");
+  const embeddedChannelId = channel ? optionalString(channel, "id") : undefined;
+  if (embeddedChannelId && channelId && embeddedChannelId !== channelId) {
+    throw new CrablineError("Discord interaction channel.id must match channel_id", {
+      kind: "inbound",
+    });
+  }
   const text =
     optionalString(payload, "content") ??
     (data ? (optionalString(data, "content") ?? discordInteractionText(data)) : undefined) ??
@@ -216,6 +224,34 @@ export function normalizeDiscordWebhookPayload(payload: unknown) {
     text,
     threadId: requireNativeInboundId(threadId, DISCORD_SNOWFLAKE_RULE, "Discord thread_id"),
   };
+}
+
+export function matchesDiscordThread(
+  candidateThreadId: string,
+  expectedThreadId: string | undefined,
+  target: { channelId?: string | undefined; threadId?: string | undefined },
+  raw?: unknown,
+): boolean {
+  if (!expectedThreadId || candidateThreadId === expectedThreadId) {
+    return true;
+  }
+  if (
+    target.threadId ||
+    !target.channelId ||
+    expectedThreadId !== target.channelId ||
+    !isRecord(raw)
+  ) {
+    return false;
+  }
+  const channel = optionalRecord(raw, "channel");
+  const channelType = channel?.type;
+  return Boolean(
+    channel &&
+    typeof channelType === "number" &&
+    DISCORD_THREAD_CHANNEL_TYPES.has(channelType) &&
+    optionalString(channel, "id") === candidateThreadId &&
+    optionalString(channel, "parent_id") === target.channelId,
+  );
 }
 
 export function createDiscordInteractionResponse(payload: unknown): Response {
@@ -277,11 +313,13 @@ export class DiscordProviderAdapter extends LocalMockProviderAdapter implements 
         createWebhookSuccessResponse: createDiscordInteractionResponse,
         endpointLabel: "interactions endpoint",
         handleWebhookPayload: handleDiscordWebhookPayload,
+        matchesThread: matchesDiscordThread,
         normalizeWebhookPayload: normalizeDiscordWebhookPayload,
         platform: "discord",
         publicUrl: config.discord?.webhook.publicUrl,
         recorderPath: toRecorderPath(id, config),
         webhook: config.discord?.webhook,
+        webhookMethods: ["POST"],
       },
     });
   }

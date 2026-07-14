@@ -3,12 +3,18 @@ import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
-import { slackTargetKey, SLACK_CHANNEL_ID_RULE, SLACK_TS_RULE } from "../slack-ids.js";
+import {
+  slackTargetKey,
+  SLACK_CHANNEL_ID_RULE,
+  SLACK_TS_RULE,
+  SLACK_USER_ID_RULE,
+} from "../slack-ids.js";
 import { getBuiltinTargetCodec } from "../target-normalizers.js";
 import type { InboundEnvelope, ProviderAdapter } from "../types.js";
 import {
   genericMockPayloadWithNativeThread,
   isRecord,
+  optionalRecord,
   optionalString,
   requireNativeInboundId,
 } from "./native-local-mock.js";
@@ -309,6 +315,7 @@ function matchesSlackThread(
   candidateThreadId: string,
   expectedThreadId: string | undefined,
   target: { channelId?: string | undefined },
+  raw?: unknown,
 ): boolean {
   if (!expectedThreadId) {
     return true;
@@ -317,9 +324,30 @@ function matchesSlackThread(
     target.channelId && SLACK_TS_RULE.pattern.test(expectedThreadId)
       ? slackTargetKey(target.channelId, expectedThreadId)
       : expectedThreadId;
-  return (
+  if (
     candidateThreadId === scopedExpectedThreadId ||
     candidateThreadId.startsWith(`${scopedExpectedThreadId}:`)
+  ) {
+    return true;
+  }
+  if (
+    !target.channelId ||
+    !SLACK_USER_ID_RULE.pattern.test(target.channelId) ||
+    expectedThreadId !== target.channelId ||
+    !isRecord(raw)
+  ) {
+    return false;
+  }
+  const event = optionalRecord(raw, "event");
+  const message = event?.subtype === "message_changed" ? optionalRecord(event, "message") : event;
+  const channel = event ? optionalString(event, "channel") : undefined;
+  const user =
+    (event ? optionalString(event, "user") : undefined) ??
+    (message ? optionalString(message, "user") : undefined);
+  return Boolean(
+    channel?.startsWith("D") &&
+    user === target.channelId &&
+    (candidateThreadId === channel || candidateThreadId.startsWith(`${channel}:thread:`)),
   );
 }
 
