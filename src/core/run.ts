@@ -585,6 +585,9 @@ export async function runFixtureCommand(params: {
             if (abortDrainFailed) {
               break;
             }
+            if (isPermanentFailure(lastFailure)) {
+              break;
+            }
             continue;
           }
           if (!inbound) {
