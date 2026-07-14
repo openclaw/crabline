@@ -11,6 +11,7 @@
 - Preserve probe HTTP failures when response cancellation stalls and close readiness adapters before returning probe failures.
 - Run the TypeScript autoreview contract in the dedicated suite, protect root agent policy, and ship a provider-native iMessage fixture target.
 - Normalize nullish compiled-regex candidates and reject unsafe OpenClaw integers and whitespace-only webhook secrets without rewriting valid secret bytes.
+- Decouple Mattermost REST post acceptance from WebSocket buffers and bound retained state by bytes.
 - Emit Matrix v10 event IDs in domainless hash form and reject invalid timeline filter limits.
 - Return valid Signal JSON-RPC method errors through successful HTTP responses.
 - Verify resolved loopback webhook addresses and complete HEAD responses without consuming representation bodies.

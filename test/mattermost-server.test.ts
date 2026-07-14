@@ -1360,7 +1360,7 @@ describe("Mattermost local provider server", () => {
     expect((await sendInbound("queue is full")).status).toBe(503);
   });
 
-  it("rejects oversized REST events atomically without disconnecting other clients", async () => {
+  it("creates valid REST posts independently of WebSocket buffer limits", async () => {
     const server = await startMattermostServer({
       adminToken: "admin",
       botToken: "fake",
@@ -1411,10 +1411,11 @@ describe("Mattermost local provider server", () => {
       },
       method: "POST",
     });
-    expect(oversized.status).toBe(413);
-    await expect(oversized.json()).resolves.toMatchObject({
-      message: "WebSocket event is too large",
-      status_code: 413,
+    expect(oversized.status).toBe(201);
+    const oversizedPost = (await oversized.json()) as { id: string; message: string };
+    expect(oversizedPost).toMatchObject({
+      id: mattermostId("post-2"),
+      message: "x".repeat(2_000),
     });
     await Promise.all([firstQuiet, secondQuiet]);
     expect(first.readyState).toBe(WebSocket.OPEN);
@@ -1432,7 +1433,7 @@ describe("Mattermost local provider server", () => {
     });
     expect(accepted.status).toBe(201);
     await expect(accepted.json()).resolves.toMatchObject({
-      id: mattermostId("post-2"),
+      id: mattermostId("post-3"),
       message: "accepted after rejection",
     });
     await expect(firstDelivered).resolves.toMatchObject({ event: "posted" });
@@ -1550,11 +1551,17 @@ describe("Mattermost local provider server", () => {
     await expect(startMattermostServer({ maxCommittedPosts: 0 })).rejects.toThrow(
       "maxCommittedPosts must be a positive safe integer.",
     );
+    await expect(startMattermostServer({ maxCommittedStateBytes: 0 })).rejects.toThrow(
+      "maxCommittedStateBytes must be a positive safe integer.",
+    );
     await expect(startMattermostServer({ maxCommittedUsers: 0 })).rejects.toThrow(
       "maxCommittedUsers must be a positive safe integer.",
     );
     await expect(startMattermostServer({ maxWebSocketBufferedBytes: 0 })).rejects.toThrow(
       "maxWebSocketBufferedBytes must be a positive safe integer.",
+    );
+    await expect(startMattermostServer({ maxPendingInboundBytes: 0 })).rejects.toThrow(
+      "maxPendingInboundBytes must be a positive safe integer.",
     );
     await expect(startMattermostServer({ maxWebSocketMessageBytes: 0 })).rejects.toThrow(
       "maxWebSocketMessageBytes must be a positive safe integer.",
@@ -1615,6 +1622,86 @@ describe("Mattermost local provider server", () => {
       { headers: { authorization: "Bearer fake" } },
     );
     expect(missingChannel.status).toBe(404);
+  });
+
+  it("bounds committed state by aggregate bytes before mutation", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "fake",
+      maxCommittedStateBytes: 1_500,
+      maxPendingInboundBytes: 5_000,
+    });
+    servers.push(server);
+    const sendInbound = () =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          channelId: CHANNEL_ID,
+          senderId: USER_ID,
+          text: "x".repeat(400),
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+
+    expect((await sendInbound()).status).toBe(200);
+    const rejected = await sendInbound();
+    expect(rejected.status).toBe(503);
+    await expect(rejected.json()).resolves.toEqual({
+      error: "Committed Mattermost state limit reached",
+      ok: false,
+    });
+  });
+
+  it("bounds disconnected pending events by aggregate bytes and releases the budget", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "fake",
+      maxCommittedStateBytes: 5_000,
+      maxPendingInboundBytes: 1_500,
+    });
+    servers.push(server);
+    const sendInbound = async () =>
+      await fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          channelId: CHANNEL_ID,
+          senderId: USER_ID,
+          text: "x".repeat(400),
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": "admin",
+        },
+        method: "POST",
+      });
+
+    const first = await sendInbound();
+    expect(first.status).toBe(200);
+    const firstPost = ((await first.json()) as { post: { id: string } }).post;
+    expect((await sendInbound()).status).toBe(503);
+
+    const socket = new WebSocket(server.manifest.endpoints.websocketUrl);
+    await waitForSocketOpen(socket);
+    const initialMessages = nextMessages(socket, 3);
+    socket.send(
+      JSON.stringify({
+        action: "authentication_challenge",
+        data: { token: "fake" },
+        seq: 1,
+      }),
+    );
+    await expect(initialMessages).resolves.toHaveLength(3);
+
+    const delivered = nextMessage(socket);
+    const third = await sendInbound();
+    expect(third.status).toBe(200);
+    const thirdPost = ((await third.json()) as { post: { id: string } }).post;
+    expect(firstPost.id).toBe(mattermostId("post-1"));
+    expect(thirdPost.id).toBe(mattermostId("post-2"));
+    await expect(delivered).resolves.toMatchObject({ event: "posted" });
+    socket.close();
   });
 
   it("drains authorized GET and DELETE request bodies", async () => {

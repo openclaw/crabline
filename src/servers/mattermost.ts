@@ -32,7 +32,9 @@ const DEFAULT_MAX_WEBSOCKET_MESSAGE_BYTES = 64 * 1024;
 const DEFAULT_MAX_UNAUTHENTICATED_WEBSOCKET_CLIENTS = 32;
 const DEFAULT_MAX_COMMITTED_CHANNELS = 1_000;
 const DEFAULT_MAX_COMMITTED_POSTS = 1_000;
+const DEFAULT_MAX_COMMITTED_STATE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_COMMITTED_USERS = 1_000;
+const DEFAULT_MAX_PENDING_INBOUND_BYTES = 64 * 1024 * 1024;
 const MATTERMOST_ID_PATTERN = /^[a-z0-9]{26}(?![\s\S])/u;
 const MATTERMOST_USERNAME_PATTERN = /^[a-z0-9._-]{1,64}$/u;
 const MATTERMOST_CHANNEL_TYPES = new Set(["D", "G", "O", "P"]);
@@ -68,6 +70,12 @@ type MattermostChannel = {
   type: string;
 };
 
+type MattermostUser = {
+  id: string;
+  update_at: number;
+  username: string;
+};
+
 type MattermostWebSocketEvent = {
   broadcast: {
     channel_id: string;
@@ -88,18 +96,22 @@ type MattermostServerState = {
   botUserId: string;
   botUsername: string;
   channels: Map<string, MattermostChannel>;
+  committedStateBytes: number;
   maxCommittedChannels: number;
   maxCommittedPosts: number;
+  maxCommittedStateBytes: number;
   maxCommittedUsers: number;
+  maxPendingInboundBytes: number;
   maxPendingInboundEvents: number;
   maxWebSocketBufferedBytes: number;
   nextPost: number;
   onEvent: ServerEventObserver | undefined;
+  pendingEventBytes: number;
   pendingEvents: MattermostWebSocketEvent[];
   posts: Map<string, MattermostPost>;
   recorderPath: string;
   userIdsByUsername: Map<string, string>;
-  users: Map<string, { id: string; username: string; update_at: number }>;
+  users: Map<string, MattermostUser>;
   websocketClients: Map<WebSocket, number>;
 };
 
@@ -138,7 +150,9 @@ export type StartMattermostServerParams = {
   recorderPath?: string | undefined;
   maxCommittedChannels?: number | undefined;
   maxCommittedPosts?: number | undefined;
+  maxCommittedStateBytes?: number | undefined;
   maxCommittedUsers?: number | undefined;
+  maxPendingInboundBytes?: number | undefined;
   maxPendingInboundEvents?: number | undefined;
   maxWebSocketBufferedBytes?: number | undefined;
   maxWebSocketMessageBytes?: number | undefined;
@@ -270,6 +284,49 @@ function webSocketEventBytes(event: MattermostWebSocketEvent): number {
   return Buffer.byteLength(JSON.stringify({ ...event, seq: Number.MAX_SAFE_INTEGER }), "utf8");
 }
 
+function retainedValueBytes(value: unknown): number {
+  const serialized = JSON.stringify(value);
+  return serialized === undefined ? 0 : Buffer.byteLength(serialized, "utf8");
+}
+
+function retainedValueDelta(previous: unknown, next: unknown): number {
+  return retainedValueBytes(next) - retainedValueBytes(previous);
+}
+
+function canRetainCommittedValues(
+  state: MattermostServerState,
+  replacements: ReadonlyArray<readonly [previous: unknown, next: unknown]>,
+): boolean {
+  const delta = replacements.reduce(
+    (total, [previous, next]) => total + retainedValueDelta(previous, next),
+    0,
+  );
+  return state.committedStateBytes + delta <= state.maxCommittedStateBytes;
+}
+
+function setCommittedValue<Key, Value>(
+  state: MattermostServerState,
+  values: Map<Key, Value>,
+  key: Key,
+  value: Value,
+): void {
+  state.committedStateBytes += retainedValueDelta(values.get(key), value);
+  values.set(key, value);
+}
+
+function deleteCommittedValue<Key, Value>(
+  state: MattermostServerState,
+  values: Map<Key, Value>,
+  key: Key,
+): void {
+  const previous = values.get(key);
+  if (previous === undefined) {
+    return;
+  }
+  state.committedStateBytes -= retainedValueBytes(previous);
+  values.delete(key);
+}
+
 function sendEvent(
   state: MattermostServerState,
   client: WebSocket,
@@ -353,7 +410,12 @@ function broadcast(
   if (state.pendingEvents.length >= state.maxPendingInboundEvents) {
     return false;
   }
+  const eventBytes = retainedValueBytes(event);
+  if (state.pendingEventBytes + eventBytes > state.maxPendingInboundBytes) {
+    return false;
+  }
   state.pendingEvents.push(event);
+  state.pendingEventBytes += eventBytes;
   return true;
 }
 
@@ -367,7 +429,7 @@ function pendingQueueFullResponse(state: MattermostServerState): Response {
   );
 }
 
-function committedStateFullResponse(resource: "channels" | "posts" | "users"): Response {
+function committedStateFullResponse(resource: "channels" | "posts" | "state" | "users"): Response {
   return jsonResponse(
     {
       error: `Committed Mattermost ${resource} limit reached`,
@@ -417,7 +479,7 @@ function commitNextPost(
   pending: ReturnType<typeof buildNextPost>,
 ): void {
   state.nextPost = pending.nextPost;
-  state.posts.set(pending.post.id, pending.post);
+  setCommittedValue(state, state.posts, pending.post.id, pending.post);
 }
 
 function nextDirectChannelId(state: MattermostServerState, seed: string): string {
@@ -559,6 +621,17 @@ function handleAdminInbound(params: {
     rootPost?.id,
   );
   const { post } = pendingPost;
+  const user = { id: senderId, update_at: Date.now(), username: senderName };
+  if (
+    !canRetainCommittedValues(params.state, [
+      [previousUser, user],
+      [previousChannel, channel],
+      [undefined, rootPost],
+      [undefined, post],
+    ])
+  ) {
+    return committedStateFullResponse("state");
+  }
   const event = postEvent("posted", post, senderName, channel);
   if (webSocketEventBytes(event) > params.state.maxWebSocketBufferedBytes) {
     return jsonResponse({ error: "Inbound event is too large", ok: false }, 413);
@@ -568,31 +641,31 @@ function handleAdminInbound(params: {
     params.state.userIdsByUsername.delete(previousUser?.username ?? "");
   }
   params.state.userIdsByUsername.set(senderName, senderId);
-  params.state.users.set(senderId, { id: senderId, update_at: Date.now(), username: senderName });
-  params.state.channels.set(channelId, channel);
+  setCommittedValue(params.state, params.state.users, senderId, user);
+  setCommittedValue(params.state, params.state.channels, channelId, channel);
   if (rootPost) {
-    params.state.posts.set(rootPost.id, rootPost);
+    setCommittedValue(params.state, params.state.posts, rootPost.id, rootPost);
   }
   commitNextPost(params.state, pendingPost);
   const rollback = () => {
-    params.state.posts.delete(post.id);
+    deleteCommittedValue(params.state, params.state.posts, post.id);
     if (rootPost) {
-      params.state.posts.delete(rootPost.id);
+      deleteCommittedValue(params.state, params.state.posts, rootPost.id);
     }
     params.state.nextPost = previousNextPost;
     if (previousUser) {
-      params.state.users.set(senderId, previousUser);
+      setCommittedValue(params.state, params.state.users, senderId, previousUser);
       params.state.userIdsByUsername.set(previousUser.username, senderId);
     } else {
-      params.state.users.delete(senderId);
+      deleteCommittedValue(params.state, params.state.users, senderId);
     }
     if (previousUser?.username !== senderName) {
       params.state.userIdsByUsername.delete(senderName);
     }
     if (previousChannel) {
-      params.state.channels.set(channelId, previousChannel);
+      setCommittedValue(params.state, params.state.channels, channelId, previousChannel);
     } else {
-      params.state.channels.delete(channelId);
+      deleteCommittedValue(params.state, params.state.channels, channelId);
     }
   };
   if (!broadcast(params.state, event)) {
@@ -660,7 +733,10 @@ async function handleApi(params: {
     }
     const channelId = nextDirectChannelId(state, `dm:${participantIds.join(":")}`);
     const channel = { display_name: "", id: channelId, name: channelName, type: "D" };
-    state.channels.set(channelId, channel);
+    if (!canRetainCommittedValues(state, [[undefined, channel]])) {
+      return mattermostError("Too much retained state", 503);
+    }
+    setCommittedValue(state, state.channels, channelId, channel);
     return jsonResponse(channel, 201);
   }
   if (!isJsonObject(body)) {
@@ -732,10 +808,10 @@ async function handleApi(params: {
       userId: state.botUserId,
     });
     const { post } = pendingPost;
-    const event = postEvent("posted", post, state.botUsername, channel);
-    if (webSocketEventBytes(event) > state.maxWebSocketBufferedBytes) {
-      return webSocketEventTooLargeResponse();
+    if (!canRetainCommittedValues(state, [[undefined, post]])) {
+      return mattermostError("Too much retained state", 503);
     }
+    const event = postEvent("posted", post, state.botUsername, channel);
     commitNextPost(state, pendingPost);
     broadcast(state, event, false);
     return jsonResponse(post, 201);
@@ -755,6 +831,9 @@ async function handleApi(params: {
     }
     const editedAt = Math.max(Date.now(), post.update_at + 1);
     const updated = { ...post, edit_at: editedAt, message, update_at: editedAt };
+    if (!canRetainCommittedValues(state, [[post, updated]])) {
+      return mattermostError("Too much retained state", 503);
+    }
     const event = postEvent(
       "post_edited",
       updated,
@@ -764,7 +843,7 @@ async function handleApi(params: {
     if (webSocketEventBytes(event) > state.maxWebSocketBufferedBytes) {
       return webSocketEventTooLargeResponse();
     }
-    state.posts.set(updated.id, updated);
+    setCommittedValue(state, state.posts, updated.id, updated);
     broadcast(state, event, false);
     return jsonResponse(updated);
   }
@@ -787,7 +866,7 @@ async function handleApi(params: {
     if (webSocketEventBytes(event) > state.maxWebSocketBufferedBytes) {
       return webSocketEventTooLargeResponse();
     }
-    state.posts.delete(post.id);
+    deleteCommittedValue(state, state.posts, post.id);
     broadcast(state, event, false);
     return jsonResponse({ status: "OK" });
   }
@@ -959,9 +1038,15 @@ function attachWebSocketServer(params: {
           event: "hello",
         });
         const pending = params.state.pendingEvents.splice(0);
+        params.state.pendingEventBytes = 0;
         for (const [index, event] of pending.entries()) {
           if (!sendEvent(params.state, client, event)) {
-            params.state.pendingEvents.unshift(...pending.slice(index));
+            const remaining = pending.slice(index);
+            params.state.pendingEvents.unshift(...remaining);
+            params.state.pendingEventBytes = remaining.reduce(
+              (total, queuedEvent) => total + retainedValueBytes(queuedEvent),
+              0,
+            );
             break;
           }
         }
@@ -1045,6 +1130,16 @@ export async function startMattermostServer(
     "maxUnauthenticatedWebSocketClients",
     DEFAULT_MAX_UNAUTHENTICATED_WEBSOCKET_CLIENTS,
   );
+  const maxCommittedStateBytes = resolvePositiveLimit(
+    params.maxCommittedStateBytes,
+    "maxCommittedStateBytes",
+    DEFAULT_MAX_COMMITTED_STATE_BYTES,
+  );
+  const botUser = { id: botUserId, update_at: Date.now(), username: botUsername };
+  const initialCommittedStateBytes = retainedValueBytes(botUser);
+  if (initialCommittedStateBytes > maxCommittedStateBytes) {
+    throw new Error("maxCommittedStateBytes cannot retain the configured bot user.");
+  }
   const state: MattermostServerState = {
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     botToken:
@@ -1053,6 +1148,7 @@ export async function startMattermostServer(
     botUserId,
     botUsername,
     channels: new Map(),
+    committedStateBytes: initialCommittedStateBytes,
     maxCommittedChannels: resolvePositiveLimit(
       params.maxCommittedChannels,
       "maxCommittedChannels",
@@ -1063,10 +1159,16 @@ export async function startMattermostServer(
       "maxCommittedPosts",
       DEFAULT_MAX_COMMITTED_POSTS,
     ),
+    maxCommittedStateBytes,
     maxCommittedUsers: resolvePositiveLimit(
       params.maxCommittedUsers,
       "maxCommittedUsers",
       DEFAULT_MAX_COMMITTED_USERS,
+    ),
+    maxPendingInboundBytes: resolvePositiveLimit(
+      params.maxPendingInboundBytes,
+      "maxPendingInboundBytes",
+      DEFAULT_MAX_PENDING_INBOUND_BYTES,
     ),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     maxWebSocketBufferedBytes: resolvePositiveLimit(
@@ -1076,11 +1178,12 @@ export async function startMattermostServer(
     ),
     nextPost: 1,
     onEvent: params.onEvent,
+    pendingEventBytes: 0,
     pendingEvents: [],
     posts: new Map(),
     recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "mattermost.jsonl"),
     userIdsByUsername: new Map([[botUsername, botUserId]]),
-    users: new Map([[botUserId, { id: botUserId, update_at: Date.now(), username: botUsername }]]),
+    users: new Map([[botUserId, botUser]]),
     websocketClients: new Map(),
   };
   const httpServer = await startHttpJsonServer({
