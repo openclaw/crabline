@@ -13,7 +13,6 @@ import {
   jsonResponse,
   parseUnknownRequestBody,
   queryRecord,
-  readTrimmedString,
   RequestBodyTooLargeError,
   startHttpJsonServer,
   type ServerRequestEvent,
