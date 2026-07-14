@@ -225,6 +225,7 @@ export function normalizeMattermostWebhookPayload(
     const rootId =
       optionalString(genericMessage, "threadId") ?? optionalString(safePayload, "threadId");
     if (!channelId || !rootId || channelId === rootId) {
+      // Without channelId, the generic threadId is the channel-level conversation.
       return normalized as NormalizedMattermostWebhookPayload;
     }
     const scopedThreadId = mattermostThreadKey(

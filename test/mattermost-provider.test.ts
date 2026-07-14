@@ -268,6 +268,25 @@ describe("Mattermost webhook normalizer", () => {
     ).toBe(true);
   });
 
+  it("treats generic threadId without channelId as a channel-level conversation", () => {
+    const normalized = normalizeMattermostWebhookPayload({
+      message: {
+        text: "generic channel message",
+        threadId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+    });
+
+    expect(normalized).toMatchObject({
+      message: { threadId: "aaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      threadId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+    expect(
+      matchesMattermostThread(normalized.threadId, "bbbbbbbbbbbbbbbbbbbbbbbbbb", {
+        channelId: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ).toBe(false);
+  });
+
   it("normalizes root posts to the channel target instead of their post id", () => {
     expect(
       normalizeMattermostWebhookPayload({
