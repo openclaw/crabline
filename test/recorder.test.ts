@@ -510,7 +510,10 @@ describe("recorder", () => {
       script.indexOf('StartsWith(@"\\\\",'),
     );
     expect(script).toContain("FileFlagOpenReparsePoint");
+    expect(script).toContain("DirectoryAttribute");
     expect(script).toContain("ReparsePointAttribute");
+    expect(script).toContain("GetFileInformationByHandleEx(");
+    expect(script).toContain("FileIdInfoClass");
     expect(script).toContain("GetSecurityInfo(");
     expect(script).toContain("SetSecurityInfo(");
     expect(script).toContain("AssertSamePathIdentity");
@@ -533,6 +536,9 @@ describe("recorder", () => {
     const [, args, options] = calls[0]!;
     const script = args.at(-1);
     expect(script).toContain("FileFlagOpenReparsePoint");
+    expect(script).toContain("DirectoryAttribute");
+    expect(script).toContain("GetFileInformationByHandleEx(");
+    expect(script).toContain("FileIdInfoClass");
     expect(script).toContain("[CrablineWindowsDirectoryHandle]::Open($directoryPath, $true)");
     expect(script).toContain("[CrablineWindowsDirectoryHandle]::WriteSecurityDescriptor(");
     expect(script).toContain("[CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(");
@@ -622,6 +628,21 @@ describe("recorder", () => {
       await expect(stat(lockRoot)).resolves.toMatchObject({
         isDirectory: expect.any(Function),
       });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "rejects regular files before applying a Windows directory ACL",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const filePath = path.join(directory, "not-a-directory");
+      await writeFile(filePath, "contents", "utf8");
+
+      await expect(applyOwnerOnlyWindowsDirectoryAcl(filePath)).rejects.toThrow(
+        "Could not apply and verify an owner-only Windows directory ACL",
+      );
+      await expect(readFile(filePath, "utf8")).resolves.toBe("contents");
     },
   );
 
