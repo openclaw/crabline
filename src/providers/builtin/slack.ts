@@ -22,9 +22,18 @@ import {
 import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
 const SLACK_SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
-const SLACK_EVENT_RETRY_RETENTION_MS = 25 * 60 * 60_000;
+const SLACK_EVENT_RETRY_RETENTION_HOURS = 25;
+const SLACK_EVENT_RATE_LIMIT_PER_HOUR = 30_000;
+const SLACK_EVENT_RETRY_RETENTION_MS = SLACK_EVENT_RETRY_RETENTION_HOURS * 60 * 60_000;
+const SLACK_EVENT_REPLAY_CACHE_LIMIT =
+  SLACK_EVENT_RATE_LIMIT_PER_HOUR * SLACK_EVENT_RETRY_RETENTION_HOURS;
 
 type SlackEnvironment = Partial<Pick<NodeJS.ProcessEnv, "SLACK_SIGNING_SECRET">>;
+
+type SlackRuntime = {
+  now?: (() => number) | undefined;
+  replayCacheLimit?: number | undefined;
+};
 
 type SlackEventReservation = {
   promise: Promise<boolean>;
@@ -33,7 +42,11 @@ type SlackEventReservation = {
 
 type SlackEventReplayState = {
   accepted: Map<string, number>;
+  cacheLimit: number;
+  expiryHead: number;
+  expiryQueue: Array<{ eventId: string; expiresAt: number }>;
   inFlight: Map<string, SlackEventReservation>;
+  now: () => number;
 };
 
 export function resolveSlackAdapterConfig(
@@ -423,7 +436,7 @@ async function handleSlackEventReplay(
   if (!eventId || !SLACK_EVENT_ID_RULE.pattern.test(eventId)) {
     return undefined;
   }
-  const now = Date.now();
+  const now = state.now();
   pruneSlackEventReplayState(state, now);
   for (;;) {
     if (state.accepted.has(eventId)) {
@@ -431,6 +444,9 @@ async function handleSlackEventReplay(
     }
     const pending = state.inFlight.get(eventId);
     if (!pending) {
+      if (state.accepted.size + state.inFlight.size >= state.cacheLimit) {
+        return slackEventReplayCapacityResponse();
+      }
       reserveSlackEvent(state, eventId);
       return undefined;
     }
@@ -469,21 +485,40 @@ function settleSlackEventReplay(
   }
   state.inFlight.delete(eventId);
   if (accepted) {
-    state.accepted.set(eventId, Date.now() + SLACK_EVENT_RETRY_RETENTION_MS);
+    const expiresAt = state.now() + SLACK_EVENT_RETRY_RETENTION_MS;
+    state.accepted.set(eventId, expiresAt);
+    state.expiryQueue.push({ eventId, expiresAt });
   }
   reservation.resolve(accepted);
 }
 
 function pruneSlackEventReplayState(state: SlackEventReplayState, now: number): void {
-  for (const [eventId, expiresAt] of state.accepted) {
-    if (now > expiresAt) {
+  while (state.expiryHead < state.expiryQueue.length) {
+    const { eventId, expiresAt } = state.expiryQueue[state.expiryHead]!;
+    if (now <= expiresAt) {
+      break;
+    }
+    state.expiryHead += 1;
+    if (state.accepted.get(eventId) === expiresAt) {
       state.accepted.delete(eventId);
     }
   }
+  if (state.expiryHead >= 1_024 && state.expiryHead * 2 >= state.expiryQueue.length) {
+    state.expiryQueue = state.expiryQueue.slice(state.expiryHead);
+    state.expiryHead = 0;
+  }
+}
+
+function slackEventReplayCapacityResponse(): Response {
+  return new Response("service unavailable", {
+    headers: { "cache-control": "no-store" },
+    status: 503,
+  });
 }
 
 export class SlackProviderAdapter extends LocalMockProviderAdapter implements ProviderAdapter {
-  constructor(id: string, config: ProviderConfig, _userName: string, _runtime?: unknown) {
+  constructor(id: string, config: ProviderConfig, _userName: string, runtime?: unknown) {
+    const slackRuntime = (runtime as SlackRuntime | undefined) ?? {};
     const resolvedConfig = resolveSlackAdapterConfig(config);
     requireExternalWebhookAuthentication({
       authenticated: Boolean(resolvedConfig.signingSecret),
@@ -493,7 +528,11 @@ export class SlackProviderAdapter extends LocalMockProviderAdapter implements Pr
     });
     const replayState: SlackEventReplayState = {
       accepted: new Map(),
+      cacheLimit: slackRuntime.replayCacheLimit ?? SLACK_EVENT_REPLAY_CACHE_LIMIT,
+      expiryHead: 0,
+      expiryQueue: [],
       inFlight: new Map(),
+      now: slackRuntime.now ?? Date.now,
     };
     super({
       codec: getBuiltinTargetCodec("slack"),

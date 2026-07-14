@@ -824,6 +824,52 @@ describe("slack provider", () => {
     }
   });
 
+  it("rejects new events instead of evicting retained replay identities", async () => {
+    const signingSecret = "test-token-placeholder";
+    const config = await createSlackConfig(0, signingSecret);
+    const provider = new SlackProviderAdapter("slack", config, "crabline", {
+      replayCacheLimit: 2,
+    });
+    providers.push(provider);
+    const endpoint = endpointFromDetails((await provider.probe(createContext(config))).details);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const send = async (eventId: string): Promise<Response> => {
+      const body = JSON.stringify({
+        event: {
+          channel: "C1234567890",
+          text: eventId,
+          ts: "1700000001.000200",
+          type: "message",
+          user: "U1234567890",
+        },
+        event_id: eventId,
+        type: "event_callback",
+      });
+      return await fetch(endpoint, {
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature(signingSecret, timestamp, body),
+        },
+        method: "POST",
+      });
+    };
+
+    expect((await send("EvCAPACITY01")).status).toBe(200);
+    expect((await send("EvCAPACITY02")).status).toBe(200);
+    const rejected = await send("EvCAPACITY03");
+    expect(rejected.status).toBe(503);
+    expect(rejected.headers.get("cache-control")).toBe("no-store");
+    expect((await send("EvCAPACITY01")).status).toBe(200);
+
+    const records = (await readFile(config.slack!.recorder.path!, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { id: string });
+    expect(records.map((record) => record.id)).toEqual(["EvCAPACITY01", "EvCAPACITY02"]);
+  });
+
   it("acknowledges unsupported, typeless, and textless callbacks without recording them", async () => {
     const signingSecret = "test-token-placeholder";
     const config = await createSlackConfig(0, signingSecret);
