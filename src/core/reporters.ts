@@ -41,13 +41,13 @@ export function sanitizeTerminalText(value: string, singleLine = false): string 
 
 export function formatRunResultText(result: CommandRunResult | SuiteRunResult): string {
   if ("results" in result) {
-    const requestedFixtureIds =
-      result.requestedFixtureIds ?? result.results.map((entry) => entry.fixtureId);
     const skippedFixtureIds = result.skippedFixtureIds ?? [];
+    const requestedFixtureCount =
+      result.requestedFixtureIds?.length ?? result.results.length + skippedFixtureIds.length;
     const skippedSummary =
       skippedFixtureIds.length > 0 ? `, ${skippedFixtureIds.length} skipped` : "";
     const lines = [
-      `${pc.bold("suite")} ${result.totalPassed}/${requestedFixtureIds.length} passed${skippedSummary}`,
+      `${pc.bold("suite")} ${result.totalPassed}/${requestedFixtureCount} passed${skippedSummary}`,
       ...result.results.flatMap((entry) => [
         formatCaseLine(entry),
         ...entry.diagnostics.flatMap(formatDiagnostic),

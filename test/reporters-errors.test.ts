@@ -73,9 +73,23 @@ describe("errors and reporters", () => {
       skippedFixtureIds: ["second"],
       totalPassed: 1,
     });
+    const inferredSuite = formatRunResultText({
+      results: [
+        {
+          diagnostics: [],
+          fixtureId: "fixture",
+          mode: "send",
+          ok: true,
+          providerId: "local",
+        },
+      ],
+      skippedFixtureIds: ["second"],
+      totalPassed: 1,
+    });
 
     expect(stripAnsi(single)).toContain("PASS");
     expect(stripAnsi(suite)).toContain("suite 1/2 passed, 1 skipped");
+    expect(stripAnsi(inferredSuite)).toContain("suite 1/2 passed, 1 skipped");
     expect(stripAnsi(suite)).toContain("  - accepted");
     expect(stripAnsi(suite)).toContain("SKIP second not run");
     expect(formatJson({ ok: true })).toContain('"ok": true');
