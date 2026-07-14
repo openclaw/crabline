@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
 import { mkdir, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
@@ -103,12 +103,13 @@ async function startIdleProcess(): Promise<{
 async function writeOwner(
   lockDirectory: string,
   owner: {
+    executionIdentity?: string | null;
     pid: number;
     processIdentity?: string | null;
     machineIdentity?: string | null;
     processNamespace?: string | null;
     processStartedAtMs: number;
-    version?: 1 | 2 | 3;
+    version?: 1 | 2 | 3 | 4;
   },
 ): Promise<string> {
   const ownerPath = path.join(lockDirectory, "crabline-owner.json");
@@ -116,6 +117,7 @@ async function writeOwner(
     ownerPath,
     `${JSON.stringify({
       ...owner,
+      executionIdentity: owner.executionIdentity ?? null,
       machineIdentity: owner.machineIdentity ?? null,
       processIdentity: owner.processIdentity ?? null,
       processNamespace:
@@ -132,7 +134,7 @@ async function writeOwner(
   return ownerPath;
 }
 
-function recoveryClaimPath(lockDirectory: string): string {
+function recoveryClaimPath(lockDirectory: string, fingerprint = "coordination"): string {
   const canonicalDirectory = path.join(
     fs.realpathSync.native(path.dirname(lockDirectory)),
     path.basename(lockDirectory),
@@ -140,7 +142,7 @@ function recoveryClaimPath(lockDirectory: string): string {
   const digest = createHash("sha256")
     .update(canonicalDirectory)
     .update("\0")
-    .update("coordination")
+    .update(fingerprint)
     .digest("hex");
   return path.join(path.dirname(canonicalDirectory), `.crabline-reclaim-${digest}`);
 }
@@ -213,6 +215,47 @@ describe("process-owned lock filesystem", () => {
     },
     10_000,
   );
+
+  it("discards a detached recovery claim after partial chain cleanup", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const child = await startLockOwner(target);
+    const baseClaim = recoveryClaimPath(lockDirectory);
+    await mkdir(baseClaim);
+    await writeOwner(baseClaim, { pid: 2_147_483_647, processStartedAtMs: 1 });
+    const takeoverClaim = recoveryClaimPath(baseClaim, "owner:test-token-placeholder");
+    await mkdir(takeoverClaim);
+    await writeOwner(takeoverClaim, { pid: 2_147_483_647, processStartedAtMs: 1 });
+    const activeClaim = recoveryClaimPath(takeoverClaim, "owner:test-token-placeholder");
+    const remove = fs.rm.bind(fs);
+    let failedBaseCleanup = false;
+    const removeSpy = vi.spyOn(fs, "rm").mockImplementation(((
+      targetPath: fs.PathLike,
+      options: fs.RmDirOptions,
+      callback: (error: NodeJS.ErrnoException | null) => void,
+    ) => {
+      if (String(targetPath) === baseClaim && !failedBaseCleanup) {
+        failedBaseCleanup = true;
+        callback(Object.assign(new Error("base claim cleanup failed"), { code: "EACCES" }));
+        return;
+      }
+      remove(targetPath, options, callback);
+    }) as typeof fs.rm);
+
+    try {
+      await expect(acquire(target)).rejects.toMatchObject({ code: "ELOCKED" });
+      expect(fs.existsSync(baseClaim)).toBe(true);
+      expect(fs.existsSync(takeoverClaim)).toBe(false);
+      expect(fs.existsSync(activeClaim)).toBe(false);
+    } finally {
+      removeSpy.mockRestore();
+    }
+
+    await expect(acquire(target)).rejects.toMatchObject({ code: "ELOCKED" });
+    expect(fs.existsSync(baseClaim)).toBe(false);
+    child.stdin.end("release\n");
+    await once(child, "exit");
+  });
 
   it.skipIf(process.platform === "win32")("reclaims a dead identified owner", async () => {
     const target = await createLockTarget();
@@ -619,12 +662,43 @@ describe("process-owned lock filesystem", () => {
     const release = await acquire(target);
     const owner = JSON.parse(
       await readFile(path.join(`${target}.lock`, "crabline-owner.json"), "utf8"),
-    ) as { machineIdentity: string | null; processNamespace: string | null; version: number };
+    ) as {
+      executionIdentity: string | null;
+      machineIdentity: string | null;
+      processNamespace: string | null;
+      version: number;
+    };
 
+    expect(owner.executionIdentity).toMatch(/^[0-9a-f-]{36}$/iu);
     expect(owner.machineIdentity).toMatch(/^linux:[0-9a-f-]{16,64}$/u);
     expect(owner.processNamespace).toMatch(/^pid:\[\d+\]$/u);
-    expect(owner.version).toBe(3);
+    expect(owner.version).toBe(4);
     await release();
+  });
+
+  it("recovers a stale lock from a departed execution context in the current process", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const release = await acquire(target);
+    const ownerPath = path.join(lockDirectory, "crabline-owner.json");
+    const owner = JSON.parse(await readFile(ownerPath, "utf8")) as Record<string, unknown>;
+    await release();
+
+    await mkdir(lockDirectory);
+    await writeFile(
+      ownerPath,
+      `${JSON.stringify({
+        ...owner,
+        executionIdentity: randomUUID(),
+        token: randomUUID(),
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await utimes(lockDirectory, new Date(0), new Date(0));
+
+    const nextRelease = await acquire(target);
+    expect(nextRelease).toBeTypeOf("function");
+    await nextRelease();
   });
 
   it.runIf(process.platform === "linux")(

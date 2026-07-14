@@ -6,13 +6,14 @@ import { performance } from "node:perf_hooks";
 import { resolveWindowsPowerShellPath } from "./windows-acl.js";
 
 type LockOwner = {
+  executionIdentity: string | null;
   machineIdentity: string | null;
   pid: number;
   processIdentity: string | null;
   processNamespace: string | null;
   processStartedAtMs: number;
   token: string;
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
 };
 
 type OwnerStatus = "active" | "dead" | "foreign" | "superseded" | "unknown";
@@ -48,6 +49,7 @@ const CURRENT_IDENTITY_ATTEMPTS = 3;
 const LEGACY_PROCESS_START_TOLERANCE_MS = 2000;
 const OWNERLESS_LOCK_RECOVERY_MS = 10 * 60 * 1000;
 const CURRENT_PROCESS_STARTED_AT_MS = Math.trunc(performance.timeOrigin);
+const CURRENT_EXECUTION_IDENTITY = randomUUID();
 const DARWIN_PRECISE_IDENTITY_PATTERN = /^darwin:\d+\.\d+:us:\d+$/u;
 const LINUX_PID_NAMESPACE_PATTERN = /^pid:\[\d+\]$/u;
 
@@ -432,12 +434,17 @@ function parseOpenedOwner(ownerHandle: number): ParsedLockOwner | undefined {
   }
   const value = JSON.parse(raw.toString("utf8")) as Partial<LockOwner>;
   if (
-    (value.version !== 1 && value.version !== 2 && value.version !== 3) ||
+    (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4) ||
     !isValidProcessId(value.pid ?? 0) ||
     typeof value.token !== "string" ||
     value.token.length === 0 ||
     value.token.length > 128 ||
     !Number.isSafeInteger(value.processStartedAtMs) ||
+    (value.executionIdentity !== undefined &&
+      value.executionIdentity !== null &&
+      (typeof value.executionIdentity !== "string" ||
+        value.executionIdentity.length === 0 ||
+        value.executionIdentity.length > 128)) ||
     (value.machineIdentity !== undefined &&
       value.machineIdentity !== null &&
       (typeof value.machineIdentity !== "string" ||
@@ -455,7 +462,7 @@ function parseOpenedOwner(ownerHandle: number): ParsedLockOwner | undefined {
     return undefined;
   }
   if (
-    (value.version === 2 || value.version === 3) &&
+    (value.version === 2 || value.version === 3 || value.version === 4) &&
     (value.processIdentity === null ||
       !isExactProcessIdentityForCurrentPlatform(value.processIdentity) ||
       (process.platform === "linux" &&
@@ -466,16 +473,25 @@ function parseOpenedOwner(ownerHandle: number): ParsedLockOwner | undefined {
     return undefined;
   }
   if (
-    value.version === 3 &&
+    (value.version === 3 || value.version === 4) &&
     (value.machineIdentity === null ||
       value.machineIdentity === undefined ||
       !/^(darwin|linux|windows):.+$/u.test(value.machineIdentity))
   ) {
     return undefined;
   }
+  if (
+    value.version === 4 &&
+    (value.executionIdentity === null ||
+      value.executionIdentity === undefined ||
+      !/^[0-9a-f-]{36}$/iu.test(value.executionIdentity))
+  ) {
+    return undefined;
+  }
   return {
     owner: {
       ...(value as LockOwner),
+      executionIdentity: value.executionIdentity ?? null,
       machineIdentity: value.machineIdentity ?? null,
       processNamespace: value.processNamespace ?? null,
     },
@@ -613,13 +629,14 @@ export function createProcessOwnedLockFileSystem(
       }
     | undefined;
   const owner: LockOwner = {
+    executionIdentity: CURRENT_EXECUTION_IDENTITY,
     machineIdentity: currentMachineIdentity,
     pid: process.pid,
     processIdentity: currentProcessIdentity,
     processNamespace: currentProcessNamespace,
     processStartedAtMs: CURRENT_PROCESS_STARTED_AT_MS,
     token,
-    version: 3,
+    version: 4,
   };
 
   const publishOwner = (directory: string): void => {
@@ -731,7 +748,14 @@ export function createProcessOwnedLockFileSystem(
     }
     if (claim.pid === process.pid) {
       if (claim.processIdentity !== null && isExactProcessIdentity(claim.processIdentity)) {
-        return claim.processIdentity === currentProcessIdentity ? "active" : "dead";
+        if (claim.processIdentity !== currentProcessIdentity) {
+          return "dead";
+        }
+        return claim.version === 4 &&
+          claim.executionIdentity !== null &&
+          claim.executionIdentity !== CURRENT_EXECUTION_IDENTITY
+          ? "foreign"
+          : "active";
       }
       return claim.processStartedAtMs === CURRENT_PROCESS_STARTED_AT_MS ? "active" : "superseded";
     }
@@ -852,11 +876,12 @@ export function createProcessOwnedLockFileSystem(
     // Retire nested takeover paths before the base claim so any failure leaves
     // the active claim discoverable through the original coordination path.
     const supersededPaths = [...claim.supersededPaths].reverse();
+    let removedSupersededPath = false;
     const removeSuperseded = (index: number): void => {
       const supersededPath = supersededPaths[index];
       if (!supersededPath) {
         fs.rm(claim.activePath, { force: true, recursive: true }, (activeError) => {
-          if (activeError && supersededPaths.length === 0) {
+          if (activeError && !removedSupersededPath) {
             retainedCoordinationClaims.set(coordinationKey, claim);
           }
           callback();
@@ -865,10 +890,15 @@ export function createProcessOwnedLockFileSystem(
       }
       fs.rm(supersededPath, { force: true, recursive: true }, (error) => {
         if (error) {
-          retainedCoordinationClaims.set(coordinationKey, claim);
-          callback();
+          if (!removedSupersededPath) {
+            retainedCoordinationClaims.set(coordinationKey, claim);
+            callback();
+            return;
+          }
+          fs.rm(claim.activePath, { force: true, recursive: true }, () => callback());
           return;
         }
+        removedSupersededPath = true;
         removeSuperseded(index + 1);
       });
     };
