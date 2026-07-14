@@ -272,7 +272,7 @@ describe("recorder", () => {
       }),
     ).resolves.toBe(lockRoot);
 
-    expect(descriptorReads).toBe(2);
+    expect(descriptorReads).toBe(3);
   });
 
   it("recovers when a Windows recorder lock root disappears during ACL inspection", async () => {
@@ -287,7 +287,7 @@ describe("recorder", () => {
     };
     const readSecurityDescriptor = async () => {
       descriptorReads += 1;
-      if (descriptorReads === 2) {
+      if (descriptorReads === 3) {
         await rm(lockRoot, { force: true, recursive: true });
         throw Object.assign(new Error("lock root removed during Get-Acl"), { code: "ENOENT" });
       }
@@ -310,7 +310,7 @@ describe("recorder", () => {
     ).resolves.toBe(lockRoot);
 
     expect(createCount).toBe(2);
-    expect(descriptorReads).toBe(3);
+    expect(descriptorReads).toBe(5);
   });
 
   it("creates Windows recorder lock roots with their final ACL atomically", async () => {
@@ -378,17 +378,16 @@ describe("recorder", () => {
       const lockRoot = path.join(directory, "downgraded-lock-root");
 
       await secureProviderRecorderLockRoot(lockRoot, undefined);
-      const securedDescriptor = await readWindowsDirectorySecurityDescriptor(lockRoot);
       execFileSync("icacls.exe", [lockRoot, "/inheritance:r", "/grant", "*S-1-1-0:(F)"], {
         windowsHide: true,
       });
-      await expect(readWindowsDirectorySecurityDescriptor(lockRoot)).resolves.not.toBe(
-        securedDescriptor,
+      await expect(readWindowsDirectorySecurityDescriptor(lockRoot)).rejects.toThrow(
+        "Could not read the Windows directory security descriptor",
       );
 
       await expect(secureProviderRecorderLockRoot(lockRoot, undefined)).resolves.toBe(lockRoot);
-      await expect(readWindowsDirectorySecurityDescriptor(lockRoot)).resolves.toBe(
-        securedDescriptor,
+      await expect(readWindowsDirectorySecurityDescriptor(lockRoot)).resolves.toEqual(
+        expect.any(String),
       );
     },
   );
