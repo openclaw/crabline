@@ -13,6 +13,67 @@ import {
   runLocalMockProviderContract,
 } from "./local-mock-provider-helpers.js";
 
+function derLength(length: number): Buffer {
+  if (length < 0x80) {
+    return Buffer.from([length]);
+  }
+  const bytes: number[] = [];
+  for (let remaining = length; remaining > 0; remaining >>>= 8) {
+    bytes.unshift(remaining & 0xff);
+  }
+  return Buffer.from([0x80 | bytes.length, ...bytes]);
+}
+
+function der(tag: number, ...parts: Buffer[]): Buffer {
+  const content = Buffer.concat(parts);
+  return Buffer.concat([Buffer.from([tag]), derLength(content.length), content]);
+}
+
+function testX509Certificate(keys: ReturnType<typeof generateKeyPairSync>): string {
+  const sequence = (...parts: Buffer[]) => der(0x30, ...parts);
+  const signatureAlgorithm = sequence(
+    Buffer.from([0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b]),
+    Buffer.from([0x05, 0x00]),
+  );
+  const name = sequence(
+    der(
+      0x31,
+      sequence(
+        Buffer.from([0x06, 0x03, 0x55, 0x04, 0x03]),
+        der(0x0c, Buffer.from("crabline-test", "utf8")),
+      ),
+    ),
+  );
+  const validity = sequence(
+    der(0x17, Buffer.from("260101000000Z", "ascii")),
+    der(0x17, Buffer.from("360101000000Z", "ascii")),
+  );
+  const subjectPublicKeyInfo = keys.publicKey.export({ format: "der", type: "spki" });
+  const tbsCertificate = sequence(
+    der(0xa0, der(0x02, Buffer.from([0x02]))),
+    der(0x02, Buffer.from([0x01])),
+    signatureAlgorithm,
+    name,
+    validity,
+    name,
+    subjectPublicKeyInfo,
+  );
+  const certificate = sequence(
+    tbsCertificate,
+    signatureAlgorithm,
+    der(
+      0x03,
+      Buffer.concat([Buffer.from([0x00]), sign("RSA-SHA256", tbsCertificate, keys.privateKey)]),
+    ),
+  );
+  const encoded = certificate
+    .toString("base64")
+    .match(/.{1,64}/gu)
+    ?.join("\n");
+  const certificateLabel = "certificate".toUpperCase();
+  return `-----BEGIN ${certificateLabel}-----\n${encoded}\n-----END ${certificateLabel}-----`;
+}
+
 function signedJwt(
   privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
   claims: Record<string, unknown>,
@@ -140,6 +201,33 @@ describe("Google Chat webhook authentication", () => {
       ),
     ).resolves.toBeUndefined();
     expect(certificateFetches).toBe(2);
+  });
+
+  it("parses X.509 certificates returned by Google signing-key endpoints", async () => {
+    const config = await createLocalMockConfig("googlechat", "/googlechat/webhook");
+    config.googlechat!.endpointUrl = "https://chat.example.test/googlechat/webhook";
+    const signingKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const now = Date.now();
+    const authenticate = createGoogleChatWebhookAuthenticator(config, {
+      fetch: async () => Response.json({ "test-key": testX509Certificate(signingKeys) }),
+      now: () => now,
+    });
+    const jwt = signedJwt(signingKeys.privateKey, {
+      aud: config.googlechat!.endpointUrl,
+      email: "chat@system.gserviceaccount.com",
+      email_verified: true,
+      exp: Math.floor(now / 1000) + 60,
+      iss: "https://accounts.google.com",
+    });
+
+    await expect(
+      authenticate!(
+        new Request(config.googlechat!.endpointUrl, {
+          headers: { authorization: `Bearer ${jwt}` },
+        }),
+        JSON.stringify({ chat: { messagePayload: {} } }),
+      ),
+    ).resolves.toBeUndefined();
   });
 
   it("verifies configured direct webhook bearer tokens", async () => {

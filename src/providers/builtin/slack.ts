@@ -212,10 +212,11 @@ function hasMalformedSlackMessageContent(message: Record<string, unknown>): bool
   );
 }
 
-function normalizeSlackEventsPayload(payload: unknown) {
+export function normalizeSlackEventsPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("Slack webhook payload must be an object", { kind: "inbound" });
   }
+  const { token: _token, ...safePayload } = payload;
 
   if (isRecord(payload.event)) {
     const event = payload.event;
@@ -248,7 +249,7 @@ function normalizeSlackEventsPayload(payload: unknown) {
       ...(eventId
         ? { id: requireNativeInboundId(eventId, SLACK_TS_RULE, "Slack event timestamp") }
         : {}),
-      raw: payload,
+      raw: safePayload,
       text,
       threadId:
         typeof threadTs === "string"
@@ -262,7 +263,7 @@ function normalizeSlackEventsPayload(payload: unknown) {
 
   const normalized = genericMockPayloadWithNativeThread({
     channelRule: SLACK_CHANNEL_ID_RULE,
-    payload,
+    payload: safePayload,
     threadRule: SLACK_TS_RULE,
   });
   const message = isRecord(payload.message) ? payload.message : undefined;

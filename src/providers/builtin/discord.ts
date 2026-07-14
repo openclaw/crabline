@@ -179,6 +179,7 @@ export function normalizeDiscordWebhookPayload(payload: unknown) {
   if (!isRecord(payload)) {
     throw new CrablineError("Discord webhook payload must be an object", { kind: "inbound" });
   }
+  const { token: _token, ...safePayload } = payload;
 
   const message = optionalRecord(payload, "message");
   if (
@@ -188,7 +189,7 @@ export function normalizeDiscordWebhookPayload(payload: unknown) {
   ) {
     return genericMockPayloadWithNativeThread({
       channelRule: DISCORD_SNOWFLAKE_RULE,
-      payload,
+      payload: safePayload,
       threadRule: DISCORD_SNOWFLAKE_RULE,
     });
   }
@@ -211,7 +212,7 @@ export function normalizeDiscordWebhookPayload(payload: unknown) {
   return {
     author: authorFromBotFlag(authorRecord?.bot === true),
     ...(optionalString(payload, "id") ? { id: optionalString(payload, "id") } : {}),
-    raw: payload,
+    raw: safePayload,
     text,
     threadId: requireNativeInboundId(threadId, DISCORD_SNOWFLAKE_RULE, "Discord thread_id"),
   };
