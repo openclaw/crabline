@@ -260,8 +260,13 @@ describe("server recorder", () => {
     await expect(
       secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
     ).resolves.toBe(lockRoot);
+    await expect(
+      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+    ).resolves.toBe(lockRoot);
 
+    expect(createWindowsDirectory).toHaveBeenCalledTimes(1);
     expect(createWindowsDirectory).toHaveBeenCalledWith(lockRoot);
+    expect(fsMocks.lstat).toHaveBeenCalledTimes(3);
     expect(fsMocks.lstat).toHaveBeenCalledWith(lockRoot);
   });
 

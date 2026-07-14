@@ -25,12 +25,17 @@ type ParsedLockOwner = {
 
 type RecoveryClaim = {
   activePath: string;
-  supersededPaths: string[];
+  supersededPaths: SupersededRecoveryClaim[];
 };
 
 type DirectoryIdentity = {
   dev: number;
   ino: number;
+};
+
+type SupersededRecoveryClaim = {
+  identity: DirectoryIdentity & { mtimeMs: number };
+  path: string;
 };
 
 type AbandonedDirectoryIdentity = DirectoryIdentity & {
@@ -868,34 +873,33 @@ export function createProcessOwnedLockFileSystem(
       }
       const existingClaim = parseOwner(claimPath);
       let existingFingerprint: string | undefined;
-      if (existingClaim) {
-        const status = ownerStatus(existingClaim);
-        let recoverableForeign = false;
-        if (status === "foreign") {
-          try {
-            recoverableForeign = isRecoverableForeignOwner(
-              existingClaim,
-              status,
-              fs.statSync(claimPath),
-            );
-          } catch {
-            recoverableForeign = false;
+      let existingIdentity: SupersededRecoveryClaim["identity"] | undefined;
+      try {
+        const stats = fs.lstatSync(claimPath);
+        if (stats.isDirectory() && !stats.isSymbolicLink()) {
+          if (existingClaim) {
+            const status = ownerStatus(existingClaim);
+            const recoverableForeign =
+              status === "foreign" && isRecoverableForeignOwner(existingClaim, status, stats);
+            if (status === "dead" || recoverableForeign) {
+              existingFingerprint = `owner:${existingClaim.owner.token}`;
+            }
+          } else if (isRecoverableOwnerlessClaim(stats)) {
+            existingFingerprint = `${
+              existingClaim === undefined ? "ownerless" : "malformed"
+            }:${stats.dev}:${stats.ino}:${stats.mtimeMs}`;
+          }
+          if (existingFingerprint) {
+            existingIdentity = {
+              ...directoryIdentity(stats),
+              mtimeMs: stats.mtimeMs,
+            };
           }
         }
-        if (status === "dead" || recoverableForeign) {
-          existingFingerprint = `owner:${existingClaim.owner.token}`;
-        }
-      } else if (existingClaim === undefined) {
-        try {
-          const stats = fs.statSync(claimPath);
-          if (isRecoverableOwnerlessClaim(stats)) {
-            existingFingerprint = `ownerless:${stats.dev}:${stats.ino}:${stats.mtimeMs}`;
-          }
-        } catch {
-          // Treat a concurrently changing claim as active.
-        }
+      } catch {
+        // Treat a concurrently changing claim as active.
       }
-      if (!existingFingerprint) {
+      if (!existingFingerprint || !existingIdentity) {
         callback(
           Object.assign(new Error("Recorder lock recovery is already in progress."), {
             code: "ELOCKED",
@@ -915,7 +919,10 @@ export function createProcessOwnedLockFileSystem(
         } else {
           callback(null, {
             activePath: takeoverClaim.activePath,
-            supersededPaths: [claimPath, ...takeoverClaim.supersededPaths],
+            supersededPaths: [
+              { identity: existingIdentity, path: claimPath },
+              ...takeoverClaim.supersededPaths,
+            ],
           });
         }
       });
@@ -933,8 +940,8 @@ export function createProcessOwnedLockFileSystem(
     const supersededPaths = [...claim.supersededPaths].reverse();
     let removedSupersededPath = false;
     const removeSuperseded = (index: number): void => {
-      const supersededPath = supersededPaths[index];
-      if (!supersededPath) {
+      const superseded = supersededPaths[index];
+      if (!superseded) {
         fs.rm(claim.activePath, { force: true, recursive: true }, (activeError) => {
           if (activeError && !removedSupersededPath) {
             retainedCoordinationClaims.set(coordinationKey, claim);
@@ -943,7 +950,33 @@ export function createProcessOwnedLockFileSystem(
         });
         return;
       }
-      fs.rm(supersededPath, { force: true, recursive: true }, (error) => {
+      let current: fs.Stats;
+      try {
+        current = fs.lstatSync(superseded.path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          removedSupersededPath = true;
+          removeSuperseded(index + 1);
+          return;
+        }
+        if (!removedSupersededPath) {
+          retainedCoordinationClaims.set(coordinationKey, claim);
+          callback();
+          return;
+        }
+        fs.rm(claim.activePath, { force: true, recursive: true }, () => callback());
+        return;
+      }
+      if (
+        !current.isDirectory() ||
+        current.isSymbolicLink() ||
+        !directoryIdentityMatches(superseded.identity, current) ||
+        current.mtimeMs !== superseded.identity.mtimeMs
+      ) {
+        fs.rm(claim.activePath, { force: true, recursive: true }, () => callback());
+        return;
+      }
+      fs.rm(superseded.path, { force: true, recursive: true }, (error) => {
         if (error) {
           if (!removedSupersededPath) {
             retainedCoordinationClaims.set(coordinationKey, claim);
@@ -1347,7 +1380,7 @@ export function createProcessOwnedLockFileSystem(
       fs.rmSync(tombstonePath, { force: true, recursive: true });
     } finally {
       for (const currentPath of [
-        ...coordinationClaim.supersededPaths,
+        ...coordinationClaim.supersededPaths.map((claim) => claim.path),
         coordinationClaim.activePath,
       ]) {
         try {

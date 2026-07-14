@@ -54,6 +54,7 @@ const pendingAppends = new Map<string, Promise<void>>();
 const pendingAdmissions = new Map<string, Promise<void>>();
 const pendingLogicalObservers = new Map<string, ObserverTask>();
 const pendingPublicationObservers = new Map<string, ObserverTask>();
+const securedWindowsLockRoots = new Map<string, Promise<{ dev: number; ino: number }>>();
 const MAX_RECOVERY_VALIDATION_BYTES = 64 * 1024 * 1024;
 const MAX_RECOVERY_SCAN_BYTES = MAX_RECOVERY_VALIDATION_BYTES + 1;
 const RECORDER_LOCK_RETRY_MS = 100;
@@ -369,12 +370,33 @@ export async function secureServerRecorderWindowsLockRoot(
     createWindowsDirectory?: (directoryPath: string) => Promise<void>;
   } = {},
 ): Promise<string> {
-  await (options.createWindowsDirectory ?? createOwnerOnlyWindowsDirectory)(root);
-  const identity = await lstat(root);
-  if (!identity.isDirectory() || identity.isSymbolicLink()) {
-    throw new Error("Server recorder Windows lock root is not a private directory.");
+  const cacheKey = path.win32.normalize(path.resolve(root)).toLowerCase();
+  for (;;) {
+    let secured = securedWindowsLockRoots.get(cacheKey);
+    if (!secured) {
+      secured = (async () => {
+        await (options.createWindowsDirectory ?? createOwnerOnlyWindowsDirectory)(root);
+        const identity = await lstat(root);
+        if (!identity.isDirectory() || identity.isSymbolicLink()) {
+          throw new Error("Server recorder Windows lock root is not a private directory.");
+        }
+        return { dev: identity.dev, ino: identity.ino };
+      })();
+      securedWindowsLockRoots.set(cacheKey, secured);
+      void secured.catch(() => securedWindowsLockRoots.delete(cacheKey));
+    }
+    const expected = await secured;
+    const current = await lstat(root);
+    if (
+      current.isDirectory() &&
+      !current.isSymbolicLink() &&
+      current.dev === expected.dev &&
+      current.ino === expected.ino
+    ) {
+      return root;
+    }
+    securedWindowsLockRoots.delete(cacheKey);
   }
-  return root;
 }
 
 function serverRecorderWindowsLockRoot(): string {
