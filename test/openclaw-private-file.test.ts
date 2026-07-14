@@ -2331,6 +2331,10 @@ describe("OpenClaw private file publication", () => {
     expect(script).toContain("ObjectInherit");
     expect(script).toContain("SetAccessRuleProtection($true, $false)");
     expect(script).toContain("owner-only inheritable full control");
+    expect(script).toContain("SetSecurityInfo");
+    expect(script).toContain("FileFlagOpenReparsePoint");
+    expect(script).toContain("AssertSamePathIdentity");
+    expect(script).not.toContain("Set-Acl");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
     expect(options.killSignal).toBe("SIGKILL");
     expect(options.timeout).toBe(15_000);
@@ -2356,6 +2360,10 @@ describe("OpenClaw private file publication", () => {
     expect(script).toContain("SecurityAttributes");
     expect(script).toContain("SetAccessRuleProtection($true, $false)");
     expect(script).toContain("New private directory was populated during creation.");
+    expect(script).toContain("Private directory ancestry creation and rollback cleanup failed.");
+    expect(script).toContain("[System.AggregateException]::new(");
+    expect(script).toContain("$aggregateErrors");
+    expect(script).not.toMatch(/\$errors\b/iu);
     expect(script).not.toContain("Set-Acl");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
     expect(options.killSignal).toBe("SIGKILL");

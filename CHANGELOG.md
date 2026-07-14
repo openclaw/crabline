@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bind private-directory ACL and recorder-lock mutations to verified identities, quarantine process locks before artifact cleanup, and preserve Windows ancestry rollback failures.
 - Require explicit remote iMessage API keys and decode legacy loopback channel metadata consistently.
 - Preserve configured Mattermost bot identity during admin ingress and avoid overwriting retained channels on direct-channel ID collisions.
 - Validate serve options before credential reads, reject retry-unsafe nonce-free roundtrips, and restore authenticated external Mattermost webhook guidance.

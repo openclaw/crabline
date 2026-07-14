@@ -2,7 +2,16 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
-import { mkdir, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename as renamePath,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { lock } from "proper-lockfile";
@@ -576,12 +585,10 @@ describe("process-owned lock filesystem", () => {
     const readDirectory = fs.readdirSync.bind(fs);
     let sentinelPath: string | undefined;
     const readdirSpy = vi.spyOn(fs, "readdirSync").mockImplementation(((directoryPath, options) => {
-      const claimPath = String(directoryPath);
-      if (
-        sentinelPath === undefined &&
-        /^\.crabline-reclaim-[0-9a-f]{64}$/u.test(path.basename(claimPath))
-      ) {
-        fs.renameSync(claimPath, `${claimPath}.original`);
+      const cleanupPath = String(directoryPath);
+      const match = /^(.*\.crabline-reclaim-[0-9a-f]{64})\.cleanup\.[0-9a-f-]+$/u.exec(cleanupPath);
+      if (sentinelPath === undefined && match !== null) {
+        const claimPath = match[1]!;
         fs.mkdirSync(claimPath);
         fs.writeFileSync(
           path.join(claimPath, "crabline-owner.json"),
@@ -709,7 +716,7 @@ describe("process-owned lock filesystem", () => {
     let cleanupFailed = false;
     let abandonmentFailed = false;
     const readdirSpy = vi.spyOn(fs, "readdirSync").mockImplementation(((directoryPath, options) => {
-      if (String(directoryPath) === claimPath && !cleanupFailed) {
+      if (String(directoryPath).startsWith(`${claimPath}.cleanup.`) && !cleanupFailed) {
         cleanupFailed = true;
         throw Object.assign(new Error("claim cleanup failed"), { code: "EACCES" });
       }
@@ -813,7 +820,24 @@ describe("process-owned lock filesystem", () => {
     }
   });
 
-  it("quarantines an empty replacement substituted immediately before removal", async () => {
+  it("fails release when its owned lock path disappears", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const displacedDirectory = `${lockDirectory}.displaced`;
+    const release = await acquire(target);
+    await renamePath(lockDirectory, displacedDirectory);
+
+    try {
+      await expect(release()).rejects.toMatchObject({ code: "ELOCKED" });
+      await expect(
+        readFile(path.join(displacedDirectory, "crabline-owner.json"), "utf8"),
+      ).resolves.toContain(`"pid":${process.pid}`);
+    } finally {
+      await rm(displacedDirectory, { force: true, recursive: true });
+    }
+  });
+
+  it("does not quarantine a replacement substituted immediately before removal", async () => {
     const target = await createLockTarget();
     let removalPath: string | undefined;
     let replacementIdentity: fs.BigIntStats | undefined;
@@ -838,16 +862,44 @@ describe("process-owned lock filesystem", () => {
 
     await expect(release()).rejects.toMatchObject({ code: "ELOCKED" });
     expect(removalPath).toBeDefined();
-    const quarantinePath = fs
-      .readdirSync(path.dirname(removalPath!))
-      .filter((entry) => entry.startsWith(`${path.basename(removalPath!)}.cleanup.`))
-      .map((entry) => path.join(path.dirname(removalPath!), entry))[0];
-    expect(quarantinePath).toBeDefined();
-    const retained = fs.lstatSync(quarantinePath!, { bigint: true });
+    const retained = fs.lstatSync(removalPath!, { bigint: true });
     expect({ dev: retained.dev, ino: retained.ino }).toEqual({
       dev: replacementIdentity?.dev,
       ino: replacementIdentity?.ino,
     });
+    expect(
+      fs
+        .readdirSync(path.dirname(removalPath!))
+        .some((entry) => entry.startsWith(`${path.basename(removalPath!)}.cleanup.`)),
+    ).toBe(false);
+  });
+
+  it("claims the verified lock directory before removing owner metadata", async () => {
+    const target = await createLockTarget();
+    let ownerPresentAtClaim = false;
+    const readDirectory = fs.readdirSync.bind(fs);
+    const readdirSpy = vi.spyOn(fs, "readdirSync").mockImplementation(((directoryPath, options) => {
+      const cleanupPath = String(directoryPath);
+      if (cleanupPath.includes(".release.cleanup.")) {
+        ownerPresentAtClaim = fs.existsSync(path.join(cleanupPath, "crabline-owner.json"));
+      }
+      return readDirectory(directoryPath, options as never);
+    }) as typeof fs.readdirSync);
+    const lockFileSystem = createProcessOwnedLockFileSystem();
+    const release = await lock(target, {
+      fs: lockFileSystem,
+      realpath: false,
+      retries: 0,
+      stale: 2000,
+      update: 1000,
+    });
+
+    try {
+      await expect(release()).resolves.toBeUndefined();
+      expect(ownerPresentAtClaim).toBe(true);
+    } finally {
+      readdirSpy.mockRestore();
+    }
   });
 
   it("removes an empty lock directory after owner publication fails", async () => {
