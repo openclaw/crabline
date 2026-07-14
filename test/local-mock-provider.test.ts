@@ -11,7 +11,7 @@ import {
   createGenericLocalMockTargetCodec,
   LocalMockProviderAdapter,
 } from "../src/providers/local-mock.js";
-import { appendRecordedInbound } from "../src/providers/recorder.js";
+import { appendRecordedInbound, readRecordedInbound } from "../src/providers/recorder.js";
 import type { Registry } from "../src/providers/registry.js";
 import type { ProviderAdapter, ProviderContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir, settleCleanup } from "./test-helpers.js";
@@ -927,7 +927,40 @@ describe("local mock provider", () => {
     ).rejects.toThrow(/cleaned up/u);
     await expect(sending).resolves.toMatchObject({ accepted: true });
     await expect(cleanup).resolves.toBeUndefined();
-    expect((await readFile(recorderPath, "utf8")).trim().split("\n")).toHaveLength(2);
+    await expect(readRecordedInbound(recorderPath)).resolves.toHaveLength(2);
+  });
+
+  it("does not commit a roundtrip send that aborts before its reply is ready", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "aborted-send.jsonl");
+    const config = createConfig();
+    config.loopback = { delayMs: 100 };
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+        recorderPath,
+      },
+    });
+    providers.push(provider);
+    const controller = new AbortController();
+    const sending = provider.send({
+      ...createContext(config),
+      mode: "roundtrip",
+      nonce: "abort-before-commit",
+      signal: controller.signal,
+      text: "do not commit",
+    });
+
+    controller.abort(new DOMException("cancelled", "AbortError"));
+
+    await expect(sending).rejects.toThrow("cancelled");
+    await expect(readRecordedInbound(recorderPath)).resolves.toEqual([]);
   });
 
   it("closes ingress at the cleanup fence and drains admitted webhook handlers", async () => {

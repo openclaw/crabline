@@ -6,6 +6,7 @@
 - Reject prototype-inherited provider registry keys during resolution.
 - Require the literal Crabline artifact channel driver and retry current-generation validation across concurrent artifact rotation.
 - Authenticate Telegram webhooks before reading request bodies and abort webhook handlers when clients disconnect.
+- Commit mock provider roundtrip sends atomically so aborted replies leave no partial outbound record.
 - Bind private-directory ACL and recorder-lock mutations to verified identities, quarantine process locks before artifact cleanup, and preserve Windows ancestry rollback failures.
 - Require explicit remote iMessage API keys and decode legacy loopback channel metadata consistently.
 - Preserve configured Mattermost bot identity during admin ingress and avoid overwriting retained channels on direct-channel ID collisions.
