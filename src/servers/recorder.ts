@@ -358,6 +358,17 @@ function recorderLockAcquisitionReleaseError(
   );
 }
 
+function recorderIdentityLockAcquisitionReleaseError(
+  acquisitionError: unknown,
+  releaseErrors: unknown[],
+): AggregateError {
+  return new AggregateError(
+    [acquisitionError, ...releaseErrors],
+    "Server recorder identity lock acquisition and cleanup both failed.",
+    { cause: acquisitionError },
+  );
+}
+
 function isRecorderLockContention(error: unknown): boolean {
   return (
     typeof error === "object" &&
@@ -691,11 +702,7 @@ async function acquireRecorderIdentityLock(
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
       .map((result) => result.reason);
     if (releaseErrors.length > 0) {
-      throw new AggregateError(
-        [error, ...releaseErrors],
-        "Server recorder identity lock acquisition and cleanup both failed.",
-        { cause: error },
-      );
+      throw recorderIdentityLockAcquisitionReleaseError(error, releaseErrors);
     }
     throw error;
   }
