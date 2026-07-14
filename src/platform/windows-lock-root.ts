@@ -3,7 +3,6 @@ import { lstat } from "node:fs/promises";
 
 export type WindowsLockRootIdentity = {
   birthtimeNs: bigint;
-  ctimeNs: bigint;
   dev: bigint;
   ino: bigint;
   securityDescriptor: string;
@@ -13,6 +12,11 @@ const MAX_WINDOWS_LOCK_ROOT_RECOVERIES = 1;
 const MAX_WINDOWS_LOCK_ROOT_SNAPSHOT_ATTEMPTS = 2;
 
 type WindowsLockRootStats = BigIntStats;
+
+function isTransientPathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
 
 function isSameWindowsLockRoot(
   left: WindowsLockRootStats,
@@ -33,7 +37,15 @@ async function readStableWindowsLockRootIdentity(options: {
   root: string;
 }): Promise<WindowsLockRootIdentity> {
   for (let attempt = 0; attempt < MAX_WINDOWS_LOCK_ROOT_SNAPSHOT_ATTEMPTS; attempt += 1) {
-    const before = await lstat(options.root, { bigint: true });
+    let before: WindowsLockRootStats;
+    try {
+      before = await lstat(options.root, { bigint: true });
+    } catch (error) {
+      if (isTransientPathError(error)) {
+        continue;
+      }
+      throw error;
+    }
     if (!before.isDirectory() || before.isSymbolicLink()) {
       throw new Error(`${options.errorPrefix} is not a private directory.`);
     }
@@ -45,8 +57,7 @@ async function readStableWindowsLockRootIdentity(options: {
       try {
         afterFailure = await lstat(options.root, { bigint: true });
       } catch (pathError) {
-        const code = (pathError as NodeJS.ErrnoException).code;
-        if (code === "ENOENT" || code === "ENOTDIR") {
+        if (isTransientPathError(pathError)) {
           continue;
         }
         throw pathError;
@@ -56,11 +67,18 @@ async function readStableWindowsLockRootIdentity(options: {
       }
       throw error;
     }
-    const after = await lstat(options.root, { bigint: true });
+    let after: WindowsLockRootStats;
+    try {
+      after = await lstat(options.root, { bigint: true });
+    } catch (error) {
+      if (isTransientPathError(error)) {
+        continue;
+      }
+      throw error;
+    }
     if (isSameWindowsLockRoot(after, before)) {
       return {
         birthtimeNs: before.birthtimeNs,
-        ctimeNs: before.ctimeNs,
         dev: before.dev,
         ino: before.ino,
         securityDescriptor,
@@ -94,52 +112,26 @@ export async function secureCachedWindowsLockRoot(options: {
       });
     }
     const expected = await secured;
-    let current: Awaited<ReturnType<typeof lstat>>;
+    let current: WindowsLockRootIdentity;
     try {
-      current = await lstat(options.root, { bigint: true });
+      current = await readStableWindowsLockRootIdentity(options);
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") {
-        throw error;
-      }
       if (options.cache.get(options.cacheKey) === secured) {
         options.cache.delete(options.cacheKey);
       }
       if (recoveryAttempts >= MAX_WINDOWS_LOCK_ROOT_RECOVERIES) {
-        throw new Error(`${options.errorPrefix} could not be stabilized.`, { cause: error });
+        throw error;
       }
       recoveryAttempts += 1;
       continue;
     }
-    if (isSameWindowsLockRoot(current, expected)) {
-      if (current.ctimeNs === expected.ctimeNs) {
-        return options.root;
-      }
-      let refreshed: WindowsLockRootIdentity;
-      try {
-        refreshed = await readStableWindowsLockRootIdentity(options);
-      } catch (error) {
-        if (options.cache.get(options.cacheKey) === secured) {
-          options.cache.delete(options.cacheKey);
-        }
-        if (recoveryAttempts >= MAX_WINDOWS_LOCK_ROOT_RECOVERIES) {
-          throw error;
-        }
-        recoveryAttempts += 1;
-        continue;
-      }
-      if (
-        isSameWindowsLockRoot(current, refreshed) &&
-        refreshed.dev === expected.dev &&
-        refreshed.ino === expected.ino &&
-        refreshed.birthtimeNs === expected.birthtimeNs &&
-        refreshed.securityDescriptor === expected.securityDescriptor
-      ) {
-        if (options.cache.get(options.cacheKey) === secured) {
-          options.cache.set(options.cacheKey, Promise.resolve(refreshed));
-        }
-        return options.root;
-      }
+    if (
+      current.dev === expected.dev &&
+      current.ino === expected.ino &&
+      current.birthtimeNs === expected.birthtimeNs &&
+      current.securityDescriptor === expected.securityDescriptor
+    ) {
+      return options.root;
     }
     if (options.cache.get(options.cacheKey) === secured) {
       options.cache.delete(options.cacheKey);

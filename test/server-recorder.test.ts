@@ -293,7 +293,7 @@ describe("server recorder", () => {
 
     expect(createWindowsDirectory).toHaveBeenCalledTimes(1);
     expect(createWindowsDirectory).toHaveBeenCalledWith(lockRoot);
-    expect(fsMocks.lstat).toHaveBeenCalledTimes(4);
+    expect(fsMocks.lstat).toHaveBeenCalledTimes(6);
     expect(fsMocks.lstat).toHaveBeenCalledWith(lockRoot, { bigint: true });
   });
 
@@ -306,7 +306,7 @@ describe("server recorder", () => {
       createWindowsDirectory,
       readWindowsDirectorySecurityDescriptor,
     });
-    fsMocks.lstat.mockRejectedValueOnce(missing);
+    fsMocks.lstat.mockRejectedValueOnce(missing).mockRejectedValueOnce(missing);
     await expect(
       secureServerRecorderWindowsLockRoot(lockRoot, {
         createWindowsDirectory,
@@ -377,6 +377,14 @@ describe("server recorder", () => {
       })
       .mockResolvedValueOnce({
         dev: 10n,
+        ino: 21n,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
         ino: 22n,
         isDirectory: () => true,
         isSymbolicLink: () => false,
@@ -386,6 +394,14 @@ describe("server recorder", () => {
       .mockResolvedValueOnce({
         dev: 10n,
         ino: 22n,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: 23n,
         isDirectory: () => true,
         isSymbolicLink: () => false,
         mode: 0o700n,
@@ -426,6 +442,22 @@ describe("server recorder", () => {
       .mockResolvedValueOnce({
         dev: 10n,
         ino: originalInode,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: replacementInode,
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        mode: 0o700n,
+        uid: BigInt(process.geteuid?.() ?? 0),
+      })
+      .mockResolvedValueOnce({
+        dev: 10n,
+        ino: replacementInode,
         isDirectory: () => true,
         isSymbolicLink: () => false,
         mode: 0o700n,
