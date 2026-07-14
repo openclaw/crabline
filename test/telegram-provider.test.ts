@@ -248,6 +248,40 @@ describe("telegram provider", () => {
       message: { threadId: "-100123:44" },
     });
 
+    const bareTopLevel = {
+      channelId: "-100123",
+      text: "bare top-level topic",
+      threadId: "46",
+    };
+    expect(normalizeTelegramWebhookPayload(bareTopLevel)).toMatchObject({
+      raw: bareTopLevel,
+      text: "bare top-level topic",
+      threadId: "-100123:46",
+    });
+
+    const bareNested = {
+      message: {
+        channelId: "-100124",
+        text: "bare nested topic",
+        threadId: "46",
+      },
+    };
+    expect(normalizeTelegramWebhookPayload(bareNested)).toMatchObject({
+      raw: bareNested,
+      threadId: "-100124:46",
+      message: {
+        text: "bare nested topic",
+        threadId: "-100124:46",
+      },
+    });
+
+    expect(() =>
+      normalizeTelegramWebhookPayload({
+        text: "ambiguous bare topic",
+        threadId: "46",
+      }),
+    ).toThrow(/bare topic IDs require an inbound channelId/u);
+
     expect(() =>
       normalizeTelegramWebhookPayload({
         channelId: "-100999",
@@ -266,6 +300,16 @@ describe("telegram provider", () => {
         },
       }),
     ).toThrow(/must match the inbound channelId/u);
+    expect(() =>
+      normalizeTelegramWebhookPayload({
+        channelId: "-100998",
+        message: {
+          channelId: "-100999",
+          text: "conflicting channels",
+          threadId: "42",
+        },
+      }),
+    ).toThrow(/channelId values must match/u);
   });
 
   it("normalizes edited channel posts", () => {

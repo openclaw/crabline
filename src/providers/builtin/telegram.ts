@@ -2,6 +2,7 @@ import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
+import { matchesNativeId } from "../native-ids.js";
 import {
   getBuiltinTargetCodec,
   parseCanonicalTelegramInboundTopic,
@@ -60,17 +61,24 @@ function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {
   const threadId =
     (message ? optionalString(message, "threadId") : undefined) ??
     optionalString(payload, "threadId");
-  const canonicalTopic = threadId ? parseCanonicalTelegramInboundTopic(threadId) : undefined;
+  let canonicalTopic = threadId ? parseCanonicalTelegramInboundTopic(threadId) : undefined;
   const channelIds = [
     optionalString(payload, "channelId"),
     ...(message ? [optionalString(message, "channelId")] : []),
-  ].filter((value): value is string => value !== undefined);
+  ]
+    .filter((value): value is string => value !== undefined)
+    .map((channelId) =>
+      requireNativeInboundId(channelId, TELEGRAM_INBOUND_CHAT_ID_RULE, "Telegram channelId"),
+    );
+  const channelId = channelIds[0];
+  if (channelIds.some((candidate) => candidate !== channelId)) {
+    throw new CrablineError("Telegram inbound channelId values must match.", {
+      kind: "inbound",
+    });
+  }
   if (canonicalTopic) {
-    for (const channelId of channelIds) {
-      if (
-        requireNativeInboundId(channelId, TELEGRAM_INBOUND_CHAT_ID_RULE, "Telegram channelId") !==
-        canonicalTopic.chatId
-      ) {
+    for (const candidate of channelIds) {
+      if (candidate !== canonicalTopic.chatId) {
         throw new CrablineError(
           "Telegram canonical topic chat_id must match the inbound channelId.",
           {
@@ -78,6 +86,15 @@ function normalizeGenericTelegramPayload(payload: Record<string, unknown>) {
           },
         );
       }
+    }
+  } else if (threadId && matchesNativeId(threadId, TELEGRAM_MESSAGE_THREAD_ID_RULE)) {
+    if (!channelId) {
+      throw new CrablineError("Telegram bare topic IDs require an inbound channelId.", {
+        kind: "inbound",
+      });
+    }
+    if (threadId !== channelId) {
+      canonicalTopic = { chatId: channelId, topicId: threadId };
     }
   }
   const genericPayload = canonicalTopic
