@@ -323,7 +323,7 @@ describe("process-owned lock filesystem", () => {
     const removeDirectory = fs.rmdirSync.bind(fs);
     let failedBaseCleanup = false;
     const removeSpy = vi.spyOn(fs, "rmdirSync").mockImplementation(((targetPath: fs.PathLike) => {
-      if (String(targetPath) === baseClaim && !failedBaseCleanup) {
+      if (String(targetPath).startsWith(`${baseClaim}.cleanup.`) && !failedBaseCleanup) {
         failedBaseCleanup = true;
         throw Object.assign(new Error("base claim cleanup failed"), { code: "EACCES" });
       }
@@ -332,7 +332,11 @@ describe("process-owned lock filesystem", () => {
 
     try {
       await expect(acquire(target)).rejects.toMatchObject({ code: "ELOCKED" });
-      expect(fs.existsSync(baseClaim)).toBe(true);
+      expect(
+        fs
+          .readdirSync(path.dirname(baseClaim))
+          .some((entry) => entry.startsWith(`${path.basename(baseClaim)}.cleanup.`)),
+      ).toBe(true);
       expect(fs.existsSync(takeoverClaim)).toBe(false);
       expect(fs.existsSync(activeClaim)).toBe(false);
     } finally {
@@ -487,9 +491,9 @@ describe("process-owned lock filesystem", () => {
       const removeDirectory = fs.rmdirSync.bind(fs);
       let claimCleanupCount = 0;
       const removeSpy = vi.spyOn(fs, "rmdirSync").mockImplementation(((targetPath: fs.PathLike) => {
-        const claimCleanup = /^\.crabline-reclaim-[0-9a-f]{64}$/u.test(
-          path.basename(String(targetPath)),
-        );
+        const claimCleanup =
+          path.basename(String(targetPath)).startsWith(".crabline-reclaim-") &&
+          String(targetPath).includes(".cleanup.");
         if (claimCleanup && ++claimCleanupCount === 3) {
           throw Object.assign(new Error("claim cleanup failed"), { code: "EACCES" });
         }
@@ -807,6 +811,43 @@ describe("process-owned lock filesystem", () => {
     } finally {
       renameSpy.mockRestore();
     }
+  });
+
+  it("quarantines an empty replacement substituted immediately before removal", async () => {
+    const target = await createLockTarget();
+    let removalPath: string | undefined;
+    let replacementIdentity: fs.BigIntStats | undefined;
+    const lockFileSystem = createProcessOwnedLockFileSystem({
+      beforeDirectoryRemoval: (directoryPath) => {
+        if (removalPath || !directoryPath.endsWith(".release")) {
+          return;
+        }
+        removalPath = directoryPath;
+        fs.renameSync(directoryPath, `${directoryPath}.original`);
+        fs.mkdirSync(directoryPath);
+        replacementIdentity = fs.lstatSync(directoryPath, { bigint: true });
+      },
+    });
+    const release = await lock(target, {
+      fs: lockFileSystem,
+      realpath: false,
+      retries: 0,
+      stale: 2000,
+      update: 1000,
+    });
+
+    await expect(release()).rejects.toMatchObject({ code: "ELOCKED" });
+    expect(removalPath).toBeDefined();
+    const quarantinePath = fs
+      .readdirSync(path.dirname(removalPath!))
+      .filter((entry) => entry.startsWith(`${path.basename(removalPath!)}.cleanup.`))
+      .map((entry) => path.join(path.dirname(removalPath!), entry))[0];
+    expect(quarantinePath).toBeDefined();
+    const retained = fs.lstatSync(quarantinePath!, { bigint: true });
+    expect({ dev: retained.dev, ino: retained.ino }).toEqual({
+      dev: replacementIdentity?.dev,
+      ino: replacementIdentity?.ino,
+    });
   });
 
   it("removes an empty lock directory after owner publication fails", async () => {
