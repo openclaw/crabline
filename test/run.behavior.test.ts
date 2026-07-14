@@ -233,7 +233,12 @@ describe("run behavior", () => {
           id: `inbound-${waitCalls}`,
           provider: "mock",
           sentAt: new Date().toISOString(),
-          text: waitCalls === 3 ? "expected reply" : "unrelated reply",
+          text:
+            waitCalls === 1
+              ? (undefined as unknown as string)
+              : waitCalls === 3
+                ? "expected reply"
+                : "unrelated reply",
           threadId: "thread",
         };
       },

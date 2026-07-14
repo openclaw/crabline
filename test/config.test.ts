@@ -216,6 +216,33 @@ describe("manifest schema", () => {
   });
 
   it.each([
+    ["slack", "signingSecret"],
+    ["feishu", "encryptKey"],
+    ["feishu", "verificationToken"],
+  ] as const)(
+    "rejects whitespace-only %s.%s secrets without trimming valid bytes",
+    (adapter, field) => {
+      const parseSecret = (secret: string) => {
+        const provider = ManifestSchema.parse({
+          configVersion: 1,
+          fixtures: [],
+          providers: {
+            provider: {
+              adapter,
+              [adapter]: { [field]: secret },
+            },
+          },
+        }).providers.provider;
+        const adapterConfig = provider?.[adapter] as Record<string, unknown> | undefined;
+        return adapterConfig?.[field];
+      };
+
+      expect(() => parseSecret(" \t\n ")).toThrow(/secret must not be blank/u);
+      expect(parseSecret(" secret bytes ")).toBe(" secret bytes ");
+    },
+  );
+
+  it.each([
     "/slack/../events",
     "/slack\\events",
     "//example.test/events",
