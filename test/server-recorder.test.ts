@@ -24,10 +24,17 @@ const lockMocks = vi.hoisted(() => {
   };
 });
 
-const readWindowsDirectorySecuritySnapshot = vi.fn(async () => ({
-  identity: "10:00000000000000000000000000000014",
-  securityDescriptor: "owner-only",
-}));
+const stableWindowsDirectoryIdentity = "10:00000000000000000000000000000014";
+const replacementWindowsDirectoryIdentity = "10:00000000000000000000000000000015";
+const windowsDirectorySecuritySnapshot = (
+  identity = stableWindowsDirectoryIdentity,
+  securityDescriptor = "owner-only",
+) => ({
+  identity,
+  pathIdentity: identity,
+  securityDescriptor,
+});
+const readWindowsDirectorySecuritySnapshot = vi.fn(async () => windowsDirectorySecuritySnapshot());
 
 const serverRecorderExistingOpenFlags =
   fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
@@ -227,7 +234,8 @@ function serverEvent(pathname: string): ServerRequestEvent {
 }
 
 beforeEach(() => {
-  readWindowsDirectorySecuritySnapshot.mockClear();
+  readWindowsDirectorySecuritySnapshot.mockReset();
+  readWindowsDirectorySecuritySnapshot.mockResolvedValue(windowsDirectorySecuritySnapshot());
   lockMocks.release.mockReset();
   lockMocks.release.mockResolvedValue();
   lockMocks.lock.mockReset();
@@ -328,7 +336,7 @@ describe("server recorder", () => {
 
     expect(createWindowsDirectory).toHaveBeenCalledTimes(1);
     expect(createWindowsDirectory).toHaveBeenCalledWith(lockRoot);
-    expect(fsMocks.lstat).toHaveBeenCalledTimes(6);
+    expect(fsMocks.lstat).toHaveBeenCalledTimes(3);
     expect(fsMocks.lstat).toHaveBeenCalledWith(lockRoot, { bigint: true });
   });
 
@@ -360,14 +368,9 @@ describe("server recorder", () => {
       createWindowsDirectory,
       readWindowsDirectorySecuritySnapshot,
     });
-    fsMocks.lstat.mockResolvedValue({
-      dev: 10n,
-      ino: 21n,
-      isDirectory: () => true,
-      isSymbolicLink: () => false,
-      mode: 0o700n,
-      uid: BigInt(process.geteuid?.() ?? 0),
-    });
+    readWindowsDirectorySecuritySnapshot.mockResolvedValue(
+      windowsDirectorySecuritySnapshot(replacementWindowsDirectoryIdentity),
+    );
     await Promise.all([
       secureServerRecorderWindowsLockRoot(lockRoot, {
         createWindowsDirectory,
@@ -385,71 +388,13 @@ describe("server recorder", () => {
   it("bounds repeated Windows process-lock root replacement recovery", async () => {
     const lockRoot = path.join("/tmp", "crabline-server-recorder-unstable-locks");
     const createWindowsDirectory = vi.fn(async () => undefined);
-    fsMocks.lstat
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: 20n,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: 20n,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: 21n,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: 21n,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: 22n,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: 22n,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: 23n,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: 23n,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      });
+    const thirdWindowsDirectoryIdentity = "10:00000000000000000000000000000016";
+    const fourthWindowsDirectoryIdentity = "10:00000000000000000000000000000017";
+    readWindowsDirectorySecuritySnapshot
+      .mockResolvedValueOnce(windowsDirectorySecuritySnapshot(stableWindowsDirectoryIdentity))
+      .mockResolvedValueOnce(windowsDirectorySecuritySnapshot(replacementWindowsDirectoryIdentity))
+      .mockResolvedValueOnce(windowsDirectorySecuritySnapshot(thirdWindowsDirectoryIdentity))
+      .mockResolvedValueOnce(windowsDirectorySecuritySnapshot(fourthWindowsDirectoryIdentity));
 
     await expect(
       secureServerRecorderWindowsLockRoot(lockRoot, {
@@ -460,76 +405,16 @@ describe("server recorder", () => {
     expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
   });
 
-  it("re-secures a Windows process-lock root when wide file IDs differ", async () => {
-    const lockRoot = path.join("/tmp", "crabline-server-recorder-wide-id-locks");
+  it("re-secures after an ABA lock-root snapshot comes from another directory handle", async () => {
+    const lockRoot = path.join("/tmp", "crabline-server-recorder-aba-locks");
     const createWindowsDirectory = vi.fn(async () => undefined);
-    const originalInode = 2n ** 53n;
-    const replacementInode = originalInode + 1n;
-    fsMocks.lstat
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: originalInode,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: originalInode,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: replacementInode,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: replacementInode,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: replacementInode,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: replacementInode,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: replacementInode,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      })
-      .mockResolvedValueOnce({
-        dev: 10n,
-        ino: replacementInode,
-        isDirectory: () => true,
-        isSymbolicLink: () => false,
-        mode: 0o700n,
-        uid: BigInt(process.geteuid?.() ?? 0),
-      });
+    readWindowsDirectorySecuritySnapshot
+      .mockResolvedValueOnce(
+        windowsDirectorySecuritySnapshot(replacementWindowsDirectoryIdentity, "replacement-acl"),
+      )
+      .mockResolvedValueOnce(windowsDirectorySecuritySnapshot())
+      .mockResolvedValueOnce(windowsDirectorySecuritySnapshot())
+      .mockResolvedValueOnce(windowsDirectorySecuritySnapshot());
 
     await expect(
       secureServerRecorderWindowsLockRoot(lockRoot, {
@@ -539,7 +424,29 @@ describe("server recorder", () => {
     ).resolves.toBe(lockRoot);
 
     expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
-    expect(fsMocks.lstat.mock.calls.every(([, options]) => options?.bigint === true)).toBe(true);
+    expect(fsMocks.lstat).toHaveBeenCalledTimes(4);
+    expect(fsMocks.lstat.mock.calls).toEqual(
+      Array.from({ length: 4 }, () => [lockRoot, { bigint: true }]),
+    );
+  });
+
+  it("rejects a Windows process-lock snapshot when the outer path identity mismatches", async () => {
+    const lockRoot = path.join("/tmp", "crabline-server-recorder-path-mismatch-locks");
+    const createWindowsDirectory = vi.fn(async () => undefined);
+    readWindowsDirectorySecuritySnapshot.mockResolvedValue({
+      identity: stableWindowsDirectoryIdentity,
+      pathIdentity: replacementWindowsDirectoryIdentity,
+      securityDescriptor: "owner-only",
+    });
+
+    await expect(
+      secureServerRecorderWindowsLockRoot(lockRoot, {
+        createWindowsDirectory,
+        readWindowsDirectorySecuritySnapshot,
+      }),
+    ).rejects.toThrow(
+      "Server recorder Windows lock root path identity does not match its secure handle.",
+    );
   });
 
   it("maps Windows path case aliases to the same process lock", () => {

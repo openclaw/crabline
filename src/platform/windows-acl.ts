@@ -456,16 +456,21 @@ public static class CrablineWindowsDirectoryHandle
 
     public static void AssertSamePathIdentity(string path, string expected)
     {
+        if (!String.Equals(
+            ReadPathIdentity(path),
+            expected,
+            StringComparison.Ordinal
+        )) {
+            throw new InvalidOperationException(
+                "Private directory identity changed during ACL mutation."
+            );
+        }
+    }
+
+    public static string ReadPathIdentity(string path)
+    {
         using (SafeFileHandle current = Open(path, false)) {
-            if (!String.Equals(
-                ReadIdentity(current),
-                expected,
-                StringComparison.Ordinal
-            )) {
-                throw new InvalidOperationException(
-                    "Private directory identity changed during ACL mutation."
-                );
-            }
+            return ReadIdentity(current);
         }
     }
 }
@@ -629,6 +634,7 @@ function Assert-SafeParentNamespace(
       $true,
       [System.Security.Principal.SecurityIdentifier]
     ))
+    $inheritOnly = [System.Security.AccessControl.PropagationFlags]::InheritOnly
     $unsafeRights = $replacementRights
     if ($rejectChildCreation) {
       $unsafeRights = (
@@ -641,11 +647,7 @@ function Assert-SafeParentNamespace(
         $parentRule.AccessControlType -ne
           [System.Security.AccessControl.AccessControlType]::Allow -or
         $trustedSids.Contains($parentRule.IdentityReference.Value) -or
-        (
-          -not $rejectChildCreation -and
-          (($parentRule.PropagationFlags -band
-            [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)
-        )
+        (($parentRule.PropagationFlags -band $inheritOnly) -ne 0)
       ) {
         continue
       }
@@ -905,11 +907,13 @@ try {
   ) {
     throw "Windows directory security descriptor is not owner-only."
   }
-  [CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(
-    $directoryPath,
-    $directoryIdentity
-  )
+  $pathIdentity = [CrablineWindowsDirectoryHandle]::ReadPathIdentity($directoryPath)
+  if ($pathIdentity -ne $directoryIdentity) {
+    throw "Private directory identity changed during security inspection."
+  }
   [Console]::Out.Write($directoryIdentity)
+  [Console]::Out.Write([Environment]::NewLine)
+  [Console]::Out.Write($pathIdentity)
   [Console]::Out.Write([Environment]::NewLine)
   [Console]::Out.Write([Convert]::ToBase64String($descriptor))
 } finally {
@@ -950,11 +954,13 @@ $directory = [CrablineWindowsDirectoryHandle]::Open($directoryPath, $false)
 try {
   $directoryIdentity = [CrablineWindowsDirectoryHandle]::ReadIdentity($directory)
   $descriptor = [CrablineWindowsDirectoryHandle]::ReadSecurityDescriptor($directory)
-  [CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(
-    $directoryPath,
-    $directoryIdentity
-  )
+  $pathIdentity = [CrablineWindowsDirectoryHandle]::ReadPathIdentity($directoryPath)
+  if ($pathIdentity -ne $directoryIdentity) {
+    throw "Private directory identity changed during security inspection."
+  }
   [Console]::Out.Write($directoryIdentity)
+  [Console]::Out.Write([Environment]::NewLine)
+  [Console]::Out.Write($pathIdentity)
   [Console]::Out.Write([Environment]::NewLine)
   [Console]::Out.Write([Convert]::ToBase64String($descriptor))
 } finally {
@@ -975,6 +981,7 @@ export type WindowsAclRunner = (
 
 export type WindowsDirectorySecuritySnapshot = {
   identity: string;
+  pathIdentity: string;
   securityDescriptor: string;
 };
 
@@ -1085,16 +1092,21 @@ export async function readWindowsDirectorySecuritySnapshot(
         windowsHide: true,
       },
     );
-    const [identity, securityDescriptor, ...extraLines] = output.trim().split(/\r?\n/u);
+    const [identity, pathIdentity, securityDescriptor, ...extraLines] = output
+      .trim()
+      .split(/\r?\n/u);
     if (
       !identity ||
       !/^\d+:[0-9A-F]{32}$/u.test(identity) ||
+      !pathIdentity ||
+      !/^\d+:[0-9A-F]{32}$/u.test(pathIdentity) ||
+      pathIdentity !== identity ||
       !securityDescriptor ||
       extraLines.length > 0
     ) {
-      throw new Error("Windows directory security descriptor was empty.");
+      throw new Error("Windows directory security snapshot was invalid.");
     }
-    return { identity, securityDescriptor };
+    return { identity, pathIdentity, securityDescriptor };
   } catch (error) {
     throw new Error(
       "Could not read the Windows directory security descriptor through a stable no-follow handle; Windows PowerShell ACL support is required.",
@@ -1129,16 +1141,21 @@ export async function readWindowsDirectoryNamespaceSecuritySnapshot(
         windowsHide: true,
       },
     );
-    const [identity, securityDescriptor, ...extraLines] = output.trim().split(/\r?\n/u);
+    const [identity, pathIdentity, securityDescriptor, ...extraLines] = output
+      .trim()
+      .split(/\r?\n/u);
     if (
       !identity ||
       !/^\d+:[0-9A-F]{32}$/u.test(identity) ||
+      !pathIdentity ||
+      !/^\d+:[0-9A-F]{32}$/u.test(pathIdentity) ||
+      pathIdentity !== identity ||
       !securityDescriptor ||
       extraLines.length > 0
     ) {
-      throw new Error("Windows directory namespace security descriptor was empty.");
+      throw new Error("Windows directory namespace security snapshot was invalid.");
     }
-    return { identity, securityDescriptor };
+    return { identity, pathIdentity, securityDescriptor };
   } catch (error) {
     throw new Error(
       "Could not validate the Windows directory namespace through stable no-follow handles; Windows PowerShell ACL support is required.",
