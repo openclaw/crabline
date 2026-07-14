@@ -11,6 +11,7 @@ import { createRegistry } from "../src/providers/registry.js";
 import {
   normalizeBuiltinTarget,
   type BuiltinProviderAdapterId,
+  WHATSAPP_UNSUPPORTED_THREAD_TARGET_ERROR,
   ZALO_UNSUPPORTED_THREAD_TARGET_ERROR,
 } from "../src/providers/target-normalizers.js";
 import type { ProviderContext, SendContext, WaitContext } from "../src/providers/types.js";
@@ -119,15 +120,15 @@ describe("registry", () => {
   });
 
   it("enforces Telegram's native username length in shared target normalization", () => {
-    expect(normalizeBuiltinTarget("telegram", { id: "@Abcd", metadata: {} })).toMatchObject({
-      channelId: "@abcd",
+    expect(normalizeBuiltinTarget("telegram", { id: "@Abcde", metadata: {} })).toMatchObject({
+      channelId: "@abcde",
     });
     expect(
       normalizeBuiltinTarget("telegram", { id: `@${"a".repeat(32)}`, metadata: {} }),
     ).toMatchObject({
       channelId: `@${"a".repeat(32)}`,
     });
-    for (const id of ["abcd", "@abc", `@${"a".repeat(33)}`]) {
+    for (const id of ["abcd", "@abc", "@abcd", `@${"a".repeat(33)}`]) {
       expect(() => normalizeBuiltinTarget("telegram", { id, metadata: {} })).toThrow(
         /native Telegram chat id/u,
       );
@@ -283,7 +284,6 @@ describe("registry", () => {
         channelId: "15551234567",
         id: "15551234567",
         metadata: {},
-        threadId: "15551234567",
       },
     ],
     [
@@ -358,6 +358,18 @@ describe("registry", () => {
     expect(() => registry.resolve("zalo", fixture.id).normalizeTarget(target)).toThrow(
       ZALO_UNSUPPORTED_THREAD_TARGET_ERROR,
     );
+  });
+
+  it("rejects unsupported WhatsApp thread targets", () => {
+    for (const threadId of ["15557654321", "wamid.HBgLMTU1NTEyMzQ1NjcVAgARGBI5QTNDQTVC"]) {
+      expect(() =>
+        normalizeBuiltinTarget("whatsapp", {
+          id: "15551234567",
+          metadata: {},
+          threadId,
+        }),
+      ).toThrow(WHATSAPP_UNSUPPORTED_THREAD_TARGET_ERROR);
+    }
   });
 
   it("accepts Matrix v12 domainless room ids in lazy target normalization", () => {

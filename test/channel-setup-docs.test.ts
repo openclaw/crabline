@@ -96,6 +96,8 @@ describe("channel setup contracts", () => {
       expect(document).toContain("`U1234567890`");
       expect(document).toContain("`iMessage;-;chat-guid`");
       expect(document).toContain("`$eventid:matrix.org`");
+      expect(document).toContain("contain 5-32 letters");
+      expect(document).toContain("do not support `threadId` targets");
       expect(document).toContain("exactly 26 lowercase alphanumeric");
       expect(document).toContain("`a:opaque-conversation-id`");
     }

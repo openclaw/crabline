@@ -87,6 +87,29 @@ describe("matrix provider default runtime", () => {
     });
   });
 
+  it("rejects non-native configured bot identities", () => {
+    for (const userID of ["bot", "@:example.com", "@Alice:example.com"]) {
+      expect(() =>
+        resolveMatrixAdapterConfig(createConfig(), "crabline", {
+          MATRIX_USER_ID: userID,
+        }),
+      ).toThrow("Matrix auth.userID must be a canonical Matrix user ID.");
+      expect(() =>
+        resolveMatrixAdapterConfig(
+          createConfig({
+            auth: {
+              accessToken: "test-token-placeholder",
+              type: "accessToken",
+              userID,
+            },
+          }),
+          "crabline",
+          {},
+        ),
+      ).toThrow("Matrix auth.userID must be a canonical Matrix user ID.");
+    }
+  });
+
   it("preserves configured Matrix metadata when provided", () => {
     expect(
       resolveMatrixAdapterConfig(

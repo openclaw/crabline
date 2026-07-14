@@ -1,7 +1,7 @@
 import path from "node:path";
 import { CrablineError } from "../../core/errors.js";
 import type { ProviderConfig } from "../../config/schema.js";
-import { isMatrixEventId, isMatrixRoomId } from "../../matrix-ids.js";
+import { isMatrixEventId, isMatrixRoomId, isMatrixUserId } from "../../matrix-ids.js";
 import { LocalMockProviderAdapter } from "../local-mock.js";
 import type { ProviderAdapter } from "../types.js";
 import {
@@ -30,6 +30,11 @@ export function resolveMatrixAdapterConfig(
         userID: config.matrix.auth.userID?.trim() || fallbackUserId,
       }
     : undefined;
+  if (!isMatrixUserId(configuredAuth?.userID ?? fallbackUserId)) {
+    throw new CrablineError("Matrix auth.userID must be a canonical Matrix user ID.", {
+      kind: "config",
+    });
+  }
   return {
     auth: configuredAuth ?? {
       accessToken: env.MATRIX_ACCESS_TOKEN ?? "local-mock-matrix-token",
@@ -157,7 +162,8 @@ export function normalizeMatrixWebhookPayload(payload: unknown, botUserId?: stri
   const roomId = optionalString(payload, "room_id");
   const eventId = optionalString(payload, "event_id");
   const eventType = optionalString(payload, "type");
-  const senderId = optionalString(payload, "sender");
+  const sender = payload.sender;
+  const senderId = typeof sender === "string" ? sender : undefined;
   const msgtype = content?.msgtype;
   const text = content?.body;
   if (eventType !== "m.room.message") {
@@ -197,6 +203,11 @@ export function normalizeMatrixWebhookPayload(payload: unknown, botUserId?: stri
       `Matrix thread root event_id must be a native ${MATRIX_EVENT_ID_RULE.name} such as ${MATRIX_EVENT_ID_RULE.example}.`,
       { kind: "inbound" },
     );
+  }
+  if (!senderId || !isMatrixUserId(senderId)) {
+    throw new CrablineError("Matrix sender must be a canonical Matrix user ID.", {
+      kind: "inbound",
+    });
   }
 
   return {

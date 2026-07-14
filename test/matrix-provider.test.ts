@@ -99,6 +99,7 @@ describe("Matrix webhook normalizer", () => {
       content: { body: "hello", msgtype: "m.text" },
       event_id: "$event123:matrix.org",
       room_id: "!abc123:matrix.org",
+      sender: "@user:matrix.org",
       type: "m.room.message",
     };
 
@@ -121,6 +122,7 @@ describe("Matrix webhook normalizer", () => {
       },
       event_id: "$reply123:matrix.org",
       room_id: "!abc123:matrix.org",
+      sender: "@user:matrix.org",
       type: "m.room.message",
     };
 
@@ -145,12 +147,30 @@ describe("Matrix webhook normalizer", () => {
     ).toMatchObject({ author: "assistant" });
   });
 
+  it("rejects missing, malformed, and historical sender identities", () => {
+    for (const sender of [undefined, "bot", "@:matrix.org", "@Alice:matrix.org", 42]) {
+      expect(() =>
+        normalizeMatrixWebhookPayload(
+          {
+            content: { body: "invalid sender", msgtype: "m.text" },
+            event_id: "$bot123:matrix.org",
+            room_id: "!abc123:matrix.org",
+            sender,
+            type: "m.room.message",
+          },
+          "@bot:matrix.org",
+        ),
+      ).toThrow("Matrix sender must be a canonical Matrix user ID.");
+    }
+  });
+
   it("requires string message fields while allowing an empty body", () => {
     expect(
       normalizeMatrixWebhookPayload({
         content: { body: "", msgtype: "m.text" },
         event_id: "$empty123:matrix.org",
         room_id: "!abc123:matrix.org",
+        sender: "@user:matrix.org",
         type: "m.room.message",
       }),
     ).toMatchObject({ text: "" });
