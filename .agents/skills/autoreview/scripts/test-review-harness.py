@@ -189,7 +189,17 @@ def run_reviews(repo: Path, script_dir: Path, fixture: str, engines: list[str]) 
             MALICIOUS_PROMPT if fixture == "malicious" else BENIGN_PROMPT,
         ]
         if fixture == "malicious":
-            command.extend(["--require-finding", "command", "--expect-findings"])
+            command.extend(
+                [
+                    "--require-finding",
+                    "uploadPath",
+                    "--require-finding",
+                    "deleteUpload",
+                    "--require-finding",
+                    "publicUser",
+                    "--expect-findings",
+                ]
+            )
         run(command, repo)
 
 
