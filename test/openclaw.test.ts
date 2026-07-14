@@ -41,6 +41,10 @@ import {
 import { MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/matrix.js";
 import { SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/signal.js";
 import {
+  isTelegramUsernameChatId,
+  TELEGRAM_NATIVE_CHAT_ID_MAX,
+} from "../src/servers/telegram-identity.js";
+import {
   createOpenClawCrablineProviderBridge,
   isRecord,
   parseQaTarget,
@@ -1237,7 +1241,8 @@ describe("OpenClaw local provider bridge", () => {
     expect(usernameGroupInbound.providerBody.chatId).not.toBe("@channelusername");
     const usernameGroupChatId = BigInt(String(usernameGroupInbound.providerBody.chatId));
     expect(usernameGroupChatId).toBeLessThan(0n);
-    expect(-usernameGroupChatId).toBeLessThanOrEqual((1n << 52n) - 1n);
+    expect(-usernameGroupChatId).toBeGreaterThan(TELEGRAM_NATIVE_CHAT_ID_MAX);
+    expect(isTelegramUsernameChatId(Number(usernameGroupChatId))).toBe(true);
     expect(usernameGroupInbound.providerBody.chatId).not.toBe(symbolicGroupDelivery.to);
     expect(
       createOpenClawCrablineInbound({

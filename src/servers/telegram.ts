@@ -859,6 +859,15 @@ function telegramNumericChatId(value: unknown): number | undefined {
   return Number(integerValue);
 }
 
+function telegramStoredChatId(value: unknown): number | undefined {
+  const nativeChatId = telegramNumericChatId(value);
+  if (nativeChatId !== undefined) {
+    return nativeChatId;
+  }
+  const chatId = toIntegerValue(value);
+  return chatId !== undefined && isTelegramUsernameChatId(chatId) ? chatId : undefined;
+}
+
 async function appendEvent(state: TelegramServerState, event: TelegramServerEvent) {
   await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
 }
@@ -991,7 +1000,7 @@ function telegramChatFromRecord(value: unknown): TelegramChat | undefined {
   if (!isJsonObject(value)) {
     return undefined;
   }
-  const id = telegramNumericChatId(value.id);
+  const id = telegramStoredChatId(value.id);
   const type = telegramChatType(value.type);
   if (id === undefined || !type) {
     return undefined;
@@ -1487,7 +1496,7 @@ function explicitTelegramMessageChatId(body: Record<string, unknown>): number | 
       continue;
     }
     const chat = isJsonObject(message.chat) ? message.chat : undefined;
-    const chatId = telegramNumericChatId(chat?.id);
+    const chatId = telegramStoredChatId(chat?.id);
     if (chatId === undefined) {
       return false;
     }
@@ -1498,7 +1507,7 @@ function explicitTelegramMessageChatId(body: Record<string, unknown>): number | 
     callbackQuery && isJsonObject(callbackQuery.message) ? callbackQuery.message : undefined;
   if (callbackMessage?.message_id !== undefined) {
     const chat = isJsonObject(callbackMessage.chat) ? callbackMessage.chat : undefined;
-    const chatId = telegramNumericChatId(chat?.id);
+    const chatId = telegramStoredChatId(chat?.id);
     if (chatId === undefined) {
       return false;
     }
@@ -1664,7 +1673,7 @@ function isValidIgnoredTelegramUpdate(body: Record<string, unknown>): boolean {
       updateId === undefined ||
       updateId < 1 ||
       !chat ||
-      telegramNumericChatId(chat.id) === undefined ||
+      telegramStoredChatId(chat.id) === undefined ||
       messageId === undefined ||
       messageId < 0 ||
       (message.from !== undefined &&

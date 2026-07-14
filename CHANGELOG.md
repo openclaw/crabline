@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Recognize server-generated Telegram username IDs in injected update state.
 - Require Telegram readiness responses to identify the bot encoded in the configured token.
 - Terminate and drain unused Windows script helper bootstrap processes after command timeouts.
 - Keep synthetic Telegram username chat IDs outside the native chat-ID range.
