@@ -111,6 +111,35 @@ describe("WhatsApp webhook normalizer", () => {
   });
 
   it.each([
+    ["configured app secret", "appSecret"],
+    ["configured verify token", "verifyToken"],
+  ] as const)("rejects a whitespace-only %s", async (_label, field) => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    config.whatsapp![field] = " \t ";
+
+    expect(() => resolveWhatsAppAdapterConfig(config, {})).toThrow(
+      "requires appSecret and verifyToken",
+    );
+  });
+
+  it.each([
+    ["environment app secret", "WHATSAPP_APP_SECRET"],
+    ["environment verify token", "WHATSAPP_VERIFY_TOKEN"],
+  ] as const)("rejects a whitespace-only %s", async (_label, field) => {
+    const config = await createLocalMockConfig("whatsapp", "/whatsapp/webhook");
+    delete config.whatsapp!.appSecret;
+    delete config.whatsapp!.verifyToken;
+
+    expect(() =>
+      resolveWhatsAppAdapterConfig(config, {
+        WHATSAPP_APP_SECRET: "app-secret",
+        WHATSAPP_VERIFY_TOKEN: "verify-token",
+        [field]: " \t ",
+      }),
+    ).toThrow("requires appSecret and verifyToken");
+  });
+
+  it.each([
     ["not-an-object", "WhatsApp webhook payload must be an object"],
     [
       {

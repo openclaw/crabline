@@ -72,6 +72,7 @@ const DEFAULT_WHATSAPP_WEBHOOK = {
 const MAX_WAIT_CURSORS = 64;
 const MAX_WHATSAPP_WEBHOOK_BODY_BYTES = 1024 * 1024;
 const WHATSAPP_WEBHOOK_BODY_TIMEOUT_MS = 5_000;
+const WHATSAPP_WEBHOOK_CLEANUP_GRACE_MS = 250;
 
 function abortableOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) {
@@ -174,7 +175,7 @@ export function resolveWhatsAppAdapterConfig(
 ) {
   const appSecret = config.whatsapp?.appSecret ?? env.WHATSAPP_APP_SECRET;
   const verifyToken = config.whatsapp?.verifyToken ?? env.WHATSAPP_VERIFY_TOKEN;
-  if (!appSecret || !verifyToken) {
+  if (!appSecret?.trim() || !verifyToken?.trim()) {
     throw new CrablineError(
       "WhatsApp webhook operation requires appSecret and verifyToken configuration.",
       { kind: "config" },
@@ -335,6 +336,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     }
     const target = this.normalizeTarget(context.fixture.target);
     const channelId = context.threadId ?? target.threadId ?? target.channelId ?? target.id;
+    const excludedIds = new Set(context.excludeIds ?? []);
     const cursorKey = JSON.stringify([
       context.nonce,
       context.since,
@@ -355,6 +357,7 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
         filePath: this.#recorderPath,
         matches: (candidate) =>
           candidate.provider === this.id &&
+          !excludedIds.has(candidate.id) &&
           !isOutboundRecord(candidate) &&
           isAddressInChannel(candidate.threadId, channelId) &&
           matchesInbound(candidate, context.fixture.inboundMatch, context.nonce),
@@ -427,8 +430,31 @@ export class WhatsAppProviderAdapter extends LocalMockProviderAdapter implements
     this.#cleanedUp = true;
     this.#waitCursors.clear();
     this.#cleanupPromise ??= (async () => {
-      await Promise.allSettled([...this.#inFlightSends, ...this.#inFlightWebhookRequests]);
+      const webhookRequests = [...this.#inFlightWebhookRequests];
+      const settled = Promise.allSettled(webhookRequests).then(() => undefined);
+      let webhookTimer: NodeJS.Timeout | undefined;
+      const webhookDeadline =
+        webhookRequests.length === 0
+          ? settled
+          : new Promise<never>((_, reject) => {
+              webhookTimer = setTimeout(() => {
+                reject(
+                  new CrablineError(
+                    `Provider "${this.id}" webhook handlers did not settle within ${WHATSAPP_WEBHOOK_CLEANUP_GRACE_MS}ms after cleanup.`,
+                    { kind: "timeout" },
+                  ),
+                );
+              }, WHATSAPP_WEBHOOK_CLEANUP_GRACE_MS);
+            });
       const errors: unknown[] = [];
+      const drainResults = await Promise.allSettled([
+        ...this.#inFlightSends,
+        Promise.race([settled, webhookDeadline]).finally(() => clearTimeout(webhookTimer)),
+      ]);
+      const webhookResult = drainResults.at(-1);
+      if (webhookResult?.status === "rejected") {
+        errors.push(webhookResult.reason);
+      }
       try {
         await this.#serverClosing;
       } catch (error) {
