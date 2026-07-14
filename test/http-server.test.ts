@@ -89,6 +89,18 @@ describe("server admin authentication", () => {
 });
 
 describe("server HTTP body reader", () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1, 1.5])(
+    "rejects invalid body limits before consuming the request: %s",
+    async (maxBytes) => {
+      const request = createRequest();
+
+      await expect(readBody(request, maxBytes)).rejects.toThrow(
+        "maxBytes must be a positive safe integer.",
+      );
+      expect(request.listenerCount("data")).toBe(0);
+    },
+  );
+
   it("rejects requests that were already aborted before reading began", async () => {
     const request = Object.assign(createRequest(), { aborted: true });
 

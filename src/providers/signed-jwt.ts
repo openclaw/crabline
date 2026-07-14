@@ -32,6 +32,15 @@ function jwtKeyInfrastructureError(error: unknown): JwtKeyInfrastructureError {
     : new JwtKeyInfrastructureError("JWT signing key fetch failed.", { cause: error });
 }
 
+function requireSafeDuration(value: number, name: string, allowZero = false): number {
+  if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1)) {
+    throw new RangeError(
+      `${name} must be a ${allowZero ? "non-negative" : "positive"} safe integer.`,
+    );
+  }
+  return value;
+}
+
 function decodeBase64UrlPart(value: string, label: string): Buffer {
   if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
     throw new Error(`${label} must use unpadded base64url encoding.`);
@@ -238,8 +247,15 @@ export function createCachedJwtKeyResolver<T>(params: {
   unknownKeyMessage: string;
 }) {
   const now = params.now ?? Date.now;
-  const refreshCooldownMs = params.refreshCooldownMs ?? DEFAULT_UNKNOWN_KEY_COOLDOWN_MS;
-  const timeoutMs = params.timeoutMs ?? DEFAULT_KEY_FETCH_TIMEOUT_MS;
+  const refreshCooldownMs = requireSafeDuration(
+    params.refreshCooldownMs ?? DEFAULT_UNKNOWN_KEY_COOLDOWN_MS,
+    "refreshCooldownMs",
+    true,
+  );
+  const timeoutMs = requireSafeDuration(
+    params.timeoutMs ?? DEFAULT_KEY_FETCH_TIMEOUT_MS,
+    "timeoutMs",
+  );
   let cached: RemoteJwtKeySet<T> | undefined;
   let fetchInFlight:
     | {

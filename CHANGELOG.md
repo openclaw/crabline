@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reject invalid shared HTTP body limits, webhook deadlines, and signed-JWT cache timings before starting I/O.
 - Parse Google signing certificates as X.509 and redact Discord and Slack webhook tokens before recorder persistence.
 - Contain WhatsApp acceptance timeout cleanup failures, enforce compressed binary-node payload limits, and require explicit interop JID server tokens.
 - Preserve class-based OpenClaw bridge adapters, reject non-native Mattermost target identifiers, and close successful Signal probe bodies.

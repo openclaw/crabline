@@ -21,6 +21,13 @@ class RequestBodyTooLargeError extends Error {}
 class RequestBodyTimeoutError extends Error {}
 class ResponseDeliveryClosedError extends Error {}
 
+function requirePositiveSafeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive safe integer.`);
+  }
+  return value;
+}
+
 async function readRequestBody(
   request: IncomingMessage,
   maxBodyBytes: number,
@@ -244,11 +251,18 @@ export async function startWebhookServer(params: {
     throw new Error("Webhook path must be a canonical URL pathname.");
   }
   const methods = new Set(params.methods ?? ["POST"]);
-  const maxBodyBytes = params.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
-  if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes <= 0) {
-    throw new Error("Webhook maxBodyBytes must be a positive safe integer.");
-  }
-  const bodyTimeoutMs = params.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
+  const maxBodyBytes = requirePositiveSafeInteger(
+    params.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
+    "Webhook maxBodyBytes",
+  );
+  const bodyTimeoutMs = requirePositiveSafeInteger(
+    params.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS,
+    "Webhook bodyTimeoutMs",
+  );
+  const shutdownGraceMs =
+    params.shutdownGraceMs === undefined
+      ? undefined
+      : requirePositiveSafeInteger(params.shutdownGraceMs, "Webhook shutdownGraceMs");
   let closing = false;
   const server = createServer(async (request, response) => {
     try {
@@ -333,7 +347,7 @@ export async function startWebhookServer(params: {
   try {
     assertLoopbackBindAddress(params.host, address.address, "Webhook server");
   } catch (error) {
-    await closeServer(server, params.shutdownGraceMs);
+    await closeServer(server, shutdownGraceMs);
     throw error;
   }
   const advertisedHost = advertisedHostForBindAddress(params.host, address.address);
@@ -342,7 +356,7 @@ export async function startWebhookServer(params: {
   return {
     async close() {
       closing = true;
-      closingPromise ??= closeServer(server, params.shutdownGraceMs);
+      closingPromise ??= closeServer(server, shutdownGraceMs);
       await closingPromise;
     },
     endpointUrl: `http://${formatUrlHost(advertisedHost)}:${address.port}${params.path}`,
