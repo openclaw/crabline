@@ -23,10 +23,11 @@ export function resolveZaloAdapterConfig(
   const configuredWebhookSecret = config.zalo?.webhookSecret;
   const webhookSecret = configuredWebhookSecret ?? env.ZALO_WEBHOOK_SECRET;
   if (webhookSecret !== undefined && !webhookSecret.trim()) {
-    throw new Error(
+    throw new CrablineError(
       configuredWebhookSecret === undefined
         ? "ZALO_WEBHOOK_SECRET must not be empty or whitespace-only."
         : "Zalo webhookSecret must not be empty or whitespace-only.",
+      { kind: "config" },
     );
   }
   return {

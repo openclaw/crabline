@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CrablineError } from "../src/core/errors.js";
 import {
   normalizeZaloWebhookPayload,
   resolveZaloAdapterConfig,
@@ -245,7 +246,12 @@ describe("Zalo webhook normalizer", () => {
           new ZaloProviderAdapter("zalo", config, "crabline", {
             env: { ZALO_WEBHOOK_SECRET: secret },
           }),
-      ).toThrow(/ZALO_WEBHOOK_SECRET must not be empty/u);
+      ).toThrow(
+        expect.objectContaining({
+          kind: "config",
+          message: expect.stringMatching(/ZALO_WEBHOOK_SECRET must not be empty/u),
+        }),
+      );
     },
   );
 
@@ -260,9 +266,22 @@ describe("Zalo webhook normalizer", () => {
           new ZaloProviderAdapter("zalo", config, "crabline", {
             env: { ZALO_WEBHOOK_SECRET: "test-token-placeholder" },
           }),
-      ).toThrow(/Zalo webhookSecret must not be empty/u);
+      ).toThrow(
+        expect.objectContaining({
+          kind: "config",
+          message: expect.stringMatching(/Zalo webhookSecret must not be empty/u),
+        }),
+      );
     },
   );
+
+  it("uses the shared configuration error type for invalid webhook secrets", async () => {
+    const config = await createLocalMockConfig("zalo", "/zalo/webhook");
+
+    expect(() => resolveZaloAdapterConfig(config, { ZALO_WEBHOOK_SECRET: " " })).toThrow(
+      CrablineError,
+    );
+  });
 
   it("preserves configured webhook secret precedence and environment fallback", async () => {
     const config = await createLocalMockConfig("zalo", "/zalo/webhook");
