@@ -406,6 +406,38 @@ describe("webhook server", () => {
     expect(handlerInvoked).toBe(true);
   });
 
+  it("applies body timeouts to GET routes before invoking the handler", async () => {
+    let handlerInvoked = false;
+    const server = await startWebhookServer({
+      bodyTimeoutMs: 20,
+      async handle() {
+        handlerInvoked = true;
+        return new Response("ok");
+      },
+      host: "127.0.0.1",
+      methods: ["GET"],
+      path: "/slack/events",
+      port: 0,
+    });
+    cleanups.push(() => server.close());
+    const endpoint = new URL(server.endpointUrl);
+    const socket = connect(Number(endpoint.port), endpoint.hostname);
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      response += chunk;
+    });
+    await once(socket, "connect");
+    socket.write(
+      "GET /slack/events HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 5\r\nConnection: close\r\n\r\n1",
+    );
+    await once(socket, "close");
+
+    expect(response).toContain("HTTP/1.1 408");
+    expect(response).toContain("request body timeout");
+    expect(handlerInvoked).toBe(false);
+  });
+
   it("does not let a slow request body block shutdown", async () => {
     const server = await startWebhookServer({
       bodyTimeoutMs: 10_000,

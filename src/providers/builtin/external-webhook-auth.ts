@@ -33,6 +33,14 @@ export function requireExternalWebhookAuthentication(params: {
       });
     }
   });
+  for (const callbackUrl of callbackUrls) {
+    if (callbackUrl.url.protocol !== "http:" && callbackUrl.url.protocol !== "https:") {
+      throw new CrablineError(
+        `${params.provider} authenticated external webhooks require HTTPS; plain HTTP is allowed only for loopback-local ingress.`,
+        { kind: "config" },
+      );
+    }
+  }
   const externallyReachable =
     !hostIsLoopback || callbackUrls.some((callbackUrl) => !callbackUrl.isLoopback);
   if (externallyReachable && !params.authenticated) {

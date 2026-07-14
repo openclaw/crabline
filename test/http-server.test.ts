@@ -2,6 +2,7 @@ import { get, type IncomingMessage } from "node:http";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
+  assertLoopbackBindAddress,
   DEFAULT_MAX_REQUEST_BODY_BYTES,
   drainRequestBody,
   InvalidJsonBodyError,
@@ -137,6 +138,14 @@ describe("server HTTP body reader", () => {
     expect(isLoopbackAddress("127.0.0.1")).toBe(true);
     expect(isLoopbackAddress("[::1]")).toBe(true);
     expect(isLoopbackAddress("192.0.2.1")).toBe(false);
+  });
+
+  it("rejects loopback-looking hostnames that bind to external addresses", () => {
+    expect(() => assertLoopbackBindAddress("localhost", "192.0.2.10", "test server")).toThrow(
+      /resolved a loopback hostname to non-loopback address 192\.0\.2\.10/u,
+    );
+    expect(() => assertLoopbackBindAddress("localhost", "127.0.0.1", "test server")).not.toThrow();
+    expect(() => assertLoopbackBindAddress("0.0.0.0", "0.0.0.0", "test server")).not.toThrow();
   });
 
   it.each([
@@ -438,6 +447,61 @@ describe("server HTTP body reader", () => {
       request.destroy();
       await requestAborted;
       releaseHandler?.();
+      await expect.poll(() => failed).toBe(1);
+      expect(succeeded).toBe(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("cancels a pending response body when the client disconnects", async () => {
+    let reportBodyStarted!: () => void;
+    const bodyStarted = new Promise<void>((resolve) => {
+      reportBodyStarted = resolve;
+    });
+    let reportCancelled!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      reportCancelled = resolve;
+    });
+    let failed = 0;
+    let succeeded = 0;
+    const server = await startHttpJsonServer({
+      async handle() {
+        return {
+          onWriteFailure() {
+            failed++;
+          },
+          onWriteSuccess() {
+            succeeded++;
+          },
+          response: new Response(
+            new ReadableStream({
+              cancel() {
+                reportCancelled();
+              },
+              start() {
+                reportBodyStarted();
+              },
+            }),
+          ),
+        };
+      },
+      host: "127.0.0.1",
+      port: 0,
+      serverName: "test",
+    });
+
+    try {
+      const request = get(server.baseUrl);
+      request.on("error", () => {});
+      await bodyStarted;
+      request.destroy();
+      await expect(
+        Promise.race([
+          cancelled.then(() => "cancelled"),
+          new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 500)),
+        ]),
+      ).resolves.toBe("cancelled");
       await expect.poll(() => failed).toBe(1);
       expect(succeeded).toBe(0);
     } finally {
