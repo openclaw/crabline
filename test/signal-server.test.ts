@@ -437,6 +437,59 @@ describe("signal local provider server", () => {
     ]);
   });
 
+  it("validates direct recipients against the configured Signal account", async () => {
+    const account = "+15550001111";
+    const server = await startSignalServer({ account });
+    servers.push(server);
+
+    async function send(id: string, recipient: string | string[]) {
+      const response = await fetch(server.manifest.endpoints.rpcUrl, {
+        body: JSON.stringify({
+          id,
+          jsonrpc: "2.0",
+          method: "send",
+          params: { message: "hello", recipient },
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      return await response.json();
+    }
+
+    for (const [id, recipient] of [
+      ["e164", "+15551234567"],
+      ["aci", "123e4567-e89b-12d3-a456-426614174000"],
+      ["pni", "PNI:123e4567-e89b-12d3-a456-426614174000"],
+      ["username", "u:alice"],
+    ] as const) {
+      await expect(send(id, recipient)).resolves.toMatchObject({
+        id,
+        result: { timestamp: expect.any(Number) },
+      });
+    }
+
+    for (const [id, recipient] of [
+      ["plain-username", "alice"],
+      ["email", "alice@example.test"],
+      ["invalid-pni", "PNI:not-a-uuid"],
+      ["numeric-pni", "PNI:1"],
+      ["local-number", "5551234567"],
+      ["short-number", "1"],
+      ["invalid-number", "+0123"],
+      ["mixed-array", ["+15551234567", "alice"] as string[]],
+    ] as const) {
+      await expect(send(id, recipient)).resolves.toEqual({
+        error: { code: -32602, message: "Invalid params" },
+        id,
+        jsonrpc: "2.0",
+      });
+    }
+
+    await expect(startSignalServer({ account: "alice" })).rejects.toThrow(
+      /account must be an E\.164 telephone number/u,
+    );
+  });
+
   it("enforces JSON-RPC envelopes and does not respond to notifications", async () => {
     const directory = await createTempDir();
     directories.push(directory);

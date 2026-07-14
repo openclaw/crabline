@@ -96,7 +96,7 @@ type SlackRetryReason =
   | "too_many_redirects"
   | "unknown_error";
 
-type SlackCursorKind = "history" | "replies";
+type SlackCursorKind = "history" | "list" | "replies";
 
 class SlackEventHttpError extends Error {
   constructor(readonly status: number) {
@@ -355,8 +355,16 @@ function randomDecimalDigits(length: number): string {
 }
 
 function nextDmChannelId(state: SlackServerState): string {
-  const index = state.nextDmIndex++;
-  return `D${String(index).padStart(9, "0")}`;
+  for (;;) {
+    const index = state.nextDmIndex++;
+    const channelId = `D${String(index).padStart(9, "0")}`;
+    if (
+      !state.messagesByChannel.has(channelId) &&
+      ![...state.userDmChannels.values()].includes(channelId)
+    ) {
+      return channelId;
+    }
+  }
 }
 
 function nextMpimChannelId(state: SlackServerState): string {
@@ -372,6 +380,17 @@ function dmChannelForUser(state: SlackServerState, userId: string): string {
   const channelId = nextDmChannelId(state);
   state.userDmChannels.set(userId, channelId);
   return channelId;
+}
+
+function rememberDmChannel(state: SlackServerState, userId: string, channelId: string): void {
+  if (!channelId.startsWith("D")) {
+    return;
+  }
+  const mappedUser = [...state.userDmChannels].find(([, value]) => value === channelId)?.[0];
+  if (mappedUser && mappedUser !== userId) {
+    return;
+  }
+  state.userDmChannels.set(userId, channelId);
 }
 
 function mpimChannelForUsers(
@@ -432,7 +451,11 @@ function decodeSlackCursor(value: unknown, kind: SlackCursorKind): string | Resp
       return slackError("invalid_cursor");
     }
     const boundary = decoded.slice(prefix.length);
-    return SLACK_TS_RULE.pattern.test(boundary) && encodeSlackCursor(kind, boundary) === cursor
+    const validBoundary =
+      kind === "list"
+        ? SLACK_CHANNEL_ID_RULE.pattern.test(boundary)
+        : SLACK_TS_RULE.pattern.test(boundary);
+    return validBoundary && encodeSlackCursor(kind, boundary) === cursor
       ? boundary
       : slackError("invalid_cursor");
   } catch {
@@ -449,6 +472,81 @@ function appendMessage(state: SlackServerState, message: SlackMessage): SlackMes
   messages.push(message);
   state.messagesByChannel.set(message.channel, messages);
   return message;
+}
+
+function slackConversation(
+  state: SlackServerState,
+  channelId: string,
+): Record<string, unknown> | undefined {
+  const dmUser = [...state.userDmChannels].find(([, value]) => value === channelId)?.[0];
+  const mpim = [...state.userMpimChannels.values()].find((candidate) => candidate.id === channelId);
+  const hasMessages = state.messagesByChannel.has(channelId);
+  if (!dmUser && !mpim && !hasMessages) {
+    return undefined;
+  }
+  if (dmUser) {
+    return {
+      id: channelId,
+      is_channel: false,
+      is_group: false,
+      is_im: true,
+      is_mpim: false,
+      user: dmUser,
+    };
+  }
+  if (mpim) {
+    return {
+      id: channelId,
+      is_channel: false,
+      is_group: false,
+      is_im: false,
+      is_mpim: true,
+      is_private: true,
+      members: [state.botUserId, ...mpim.users],
+      name: "crabline",
+    };
+  }
+  return {
+    id: channelId,
+    is_channel: channelId.startsWith("C"),
+    is_group: channelId.startsWith("G"),
+    is_im: channelId.startsWith("D"),
+    is_mpim: false,
+    name: "crabline",
+  };
+}
+
+function slackConversations(state: SlackServerState): Record<string, unknown>[] {
+  const ids = new Set([
+    ...state.messagesByChannel.keys(),
+    ...state.userDmChannels.values(),
+    ...[...state.userMpimChannels.values()].map((channel) => channel.id),
+  ]);
+  return [...ids]
+    .sort()
+    .map((channelId) => slackConversation(state, channelId))
+    .filter((channel): channel is Record<string, unknown> => channel !== undefined);
+}
+
+function requireSlackConversationTypes(value: unknown): Set<string> | Response {
+  const types = new Set(
+    (readTrimmedString(value) ?? "public_channel")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+  const supported = new Set(["im", "mpim", "private_channel", "public_channel"]);
+  return [...types].every((type) => supported.has(type)) ? types : slackError("invalid_types");
+}
+
+function slackConversationType(conversation: Record<string, unknown>): string {
+  if (conversation.is_im === true) {
+    return "im";
+  }
+  if (conversation.is_mpim === true) {
+    return "mpim";
+  }
+  return conversation.is_group === true ? "private_channel" : "public_channel";
 }
 
 async function appendEvent(state: SlackServerState, event: ServerRequestEvent, committed = false) {
@@ -852,10 +950,13 @@ async function handleSlackApi(params: {
       if (rateLimit) {
         rateLimit.remaining -= 1;
       }
-      const channel = requireSlackSendTargetId(params.body.channel);
-      if (channel instanceof Response) {
-        return channel;
+      const requestedChannel = requireSlackSendTargetId(params.body.channel);
+      if (requestedChannel instanceof Response) {
+        return requestedChannel;
       }
+      const channel = SLACK_USER_ID_RULE.pattern.test(requestedChannel)
+        ? dmChannelForUser(params.state, requestedChannel)
+        : requestedChannel;
       const text = readSlackText(params.body.text) ?? "";
       const attachments = readStructuredArray(params.body.attachments, "invalid_attachments");
       if (attachments instanceof Response) {
@@ -934,23 +1035,36 @@ async function handleSlackApi(params: {
       if (channel instanceof Response) {
         return channel;
       }
-      const mpim = [...params.state.userMpimChannels.values()].find(
-        (candidate) => candidate.id === channel,
+      const conversation = slackConversation(params.state, channel);
+      return conversation ? slackOk({ channel: conversation }) : slackError("channel_not_found");
+    }
+    case "conversations.list": {
+      const types = requireSlackConversationTypes(params.body.types);
+      if (types instanceof Response) {
+        return types;
+      }
+      const limit = requireSlackLimit(params.body.limit);
+      if (limit instanceof Response) {
+        return limit;
+      }
+      const boundary = decodeSlackCursor(params.body.cursor, "list");
+      if (boundary instanceof Response) {
+        return boundary;
+      }
+      const remaining = slackConversations(params.state).filter((conversation) => {
+        const channelId = readTrimmedString(conversation.id);
+        return channelId && (boundary === undefined || channelId > boundary);
+      });
+      const virtualPage = remaining.slice(0, limit);
+      const channels = virtualPage.filter((conversation) =>
+        types.has(slackConversationType(conversation)),
       );
+      const hasMore = virtualPage.length < remaining.length;
+      const nextBoundary = readTrimmedString(virtualPage.at(-1)?.id);
       return slackOk({
-        channel: {
-          id: channel,
-          is_channel: channel.startsWith("C"),
-          is_group: mpim ? false : channel.startsWith("G"),
-          is_im: channel.startsWith("D"),
-          ...(mpim
-            ? {
-                is_mpim: true,
-                is_private: true,
-                members: [params.state.botUserId, ...mpim.users],
-              }
-            : {}),
-          name: "crabline",
+        channels,
+        response_metadata: {
+          next_cursor: hasMore && nextBoundary ? encodeSlackCursor("list", nextBoundary) : "",
         },
       });
     }
@@ -958,6 +1072,9 @@ async function handleSlackApi(params: {
       const channel = requireSlackChannelId(params.body.channel);
       if (channel instanceof Response) {
         return channel;
+      }
+      if (!slackConversation(params.state, channel)) {
+        return slackError("channel_not_found");
       }
       const oldest = requireSlackThreadTs(params.body.oldest);
       if (oldest instanceof Response) {
@@ -1005,6 +1122,9 @@ async function handleSlackApi(params: {
       const channel = requireSlackChannelId(params.body.channel);
       if (channel instanceof Response) {
         return channel;
+      }
+      if (!slackConversation(params.state, channel)) {
+        return slackError("channel_not_found");
       }
       const ts = requireSlackThreadTs(params.body.ts);
       if (ts instanceof Response) {
@@ -1070,6 +1190,7 @@ async function handleAdminInbound(params: {
   if (user instanceof Response) {
     return user;
   }
+  rememberDmChannel(params.state, user, channel);
   const threadTs = requireSlackThreadTs(params.body.threadTs ?? params.body.thread_ts);
   if (threadTs instanceof Response) {
     return threadTs;

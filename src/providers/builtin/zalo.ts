@@ -59,6 +59,7 @@ export class ZaloProviderAdapter extends LocalMockProviderAdapter implements Pro
           : {}),
         defaultWebhook: { host: "127.0.0.1", path: "/zalo/webhook", port: 8794 },
         endpointLabel: "webhook endpoint",
+        matchesThread: matchesZaloTarget,
         normalizeWebhookPayload: normalizeZaloWebhookPayload,
         platform: "zalo",
         publicUrl: config.zalo?.webhook.publicUrl,
@@ -69,6 +70,13 @@ export class ZaloProviderAdapter extends LocalMockProviderAdapter implements Pro
       },
     });
   }
+}
+
+export function matchesZaloTarget(
+  candidateThreadId: string,
+  expectedThreadId: string | undefined,
+): boolean {
+  return expectedThreadId === undefined || candidateThreadId === expectedThreadId;
 }
 
 export function normalizeZaloWebhookPayload(payload: unknown) {

@@ -7,6 +7,7 @@
 - Reject blank Slack and Feishu ingress secrets, confine generated Telegram recorder paths, and compare WhatsApp and Mattermost bearer tokens in constant time.
 - Reject blank Mattermost readiness usernames and non-native Matrix thread IDs while preserving valid legacy smoke-only artifact generations.
 - Provision CI Go from the tools module, lint both workflow YAML extensions, and build distributable output before package verification.
+- Tighten native target correlation and conversation state across Slack, Signal, Zalo, Discord, and Matrix.
 - Give the recorder-scan roundtrip regression enough time to complete on loaded CI workers.
 - Reject invalid shared HTTP body limits, webhook deadlines, and signed-JWT cache timings before starting I/O.
 - Cancel provider-created webhook responses when recorder persistence fails before delivery.

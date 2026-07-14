@@ -398,6 +398,24 @@ function normalizeSignalPhoneNumber(value: unknown): string | undefined {
   return number && SIGNAL_PHONE_NUMBER_RE.test(number) ? number : undefined;
 }
 
+function isSignalDirectRecipient(value: unknown): boolean {
+  const recipient = readSignalRpcString(value);
+  if (!recipient) {
+    return false;
+  }
+  if (SIGNAL_UUID_RE.test(recipient)) {
+    return true;
+  }
+  // signal-cli treats recognized prefixes as terminal instead of retrying them as phone numbers.
+  if (recipient.startsWith("PNI:")) {
+    return SIGNAL_UUID_RE.test(recipient.slice(4));
+  }
+  if (recipient.startsWith("u:")) {
+    return recipient.length > 2;
+  }
+  return SIGNAL_PHONE_NUMBER_RE.test(recipient);
+}
+
 function nextSignalTimestamp(state: SignalServerState): number {
   return Math.max(state.nextTimestamp, (state.lastCommittedTimestamp ?? -1) + 1);
 }
@@ -665,10 +683,23 @@ function hasValidOptionalSignalString(params: Record<string, unknown>, field: st
   return params[field] === undefined || typeof params[field] === "string";
 }
 
+function hasValidSignalDirectRecipients(params: Record<string, unknown>): boolean {
+  return ["recipient", "recipients"].every((field) => {
+    const value = params[field];
+    return (
+      value === undefined ||
+      (Array.isArray(value)
+        ? value.length > 0 && value.every(isSignalDirectRecipient)
+        : isSignalDirectRecipient(value))
+    );
+  });
+}
+
 function validSignalRpcParams(method: string, value: unknown): value is Record<string, unknown> {
   if (
     !isJsonObject(value) ||
     !hasValidSignalRecipientFieldTypes(value) ||
+    !hasValidSignalDirectRecipients(value) ||
     !hasValidOptionalSignalString(value, "account") ||
     (value.noteToSelf !== undefined && typeof value.noteToSelf !== "boolean")
   ) {
@@ -691,7 +722,7 @@ function validSignalRpcParams(method: string, value: unknown): value is Record<s
       hasValidOptionalSignalString(value, "targetAuthor") &&
       hasRecipients(value) &&
       readSignalRpcString(value.emoji) !== undefined &&
-      readSignalRpcString(value.targetAuthor) !== undefined &&
+      isSignalDirectRecipient(value.targetAuthor) &&
       validTimestamp(value.targetTimestamp)
     );
   }
@@ -945,8 +976,12 @@ function signalRequestHostAllowed(
 export async function startSignalServer(
   params: StartSignalServerParams = {},
 ): Promise<StartedSignalServer> {
+  const account = normalizeSignalPhoneNumber(params.account ?? "+15550000000");
+  if (!account) {
+    throw new Error("account must be an E.164 telephone number.");
+  }
   const state: SignalServerState = {
-    account: params.account ?? "+15550000000",
+    account,
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     clients: new Set(),
     clientBuffers: new Map(),

@@ -156,6 +156,31 @@ describe("slack local provider server", () => {
           channel: "C1234567890",
         })
       ).json(),
+    ).resolves.toEqual({
+      error: "channel_not_found",
+      ok: false,
+    });
+
+    const direct = await slackApi(server, "chat.postMessage", {
+      channel: "U1234567890",
+      text: "direct hello",
+    });
+    await expect(direct.json()).resolves.toMatchObject({
+      channel: "D000000001",
+      message: { channel: "D000000001" },
+      ok: true,
+    });
+
+    await postMessage(server, {
+      channel: "C1234567890",
+      text: "channel hello",
+    });
+    await expect(
+      (
+        await slackApi(server, "conversations.info", {
+          channel: "C1234567890",
+        })
+      ).json(),
     ).resolves.toMatchObject({
       channel: {
         id: "C1234567890",
@@ -163,6 +188,14 @@ describe("slack local provider server", () => {
       },
       ok: true,
     });
+
+    const listed = (await (
+      await slackApi(server, "conversations.list", {
+        types: "public_channel,im",
+      })
+    ).json()) as { channels: { id: string }[]; ok: boolean };
+    expect(listed.ok).toBe(true);
+    expect(listed.channels.map((channel) => channel.id)).toEqual(["C1234567890", "D000000001"]);
   });
 
   it("opens stable MPIMs and rejects conversations with more than eight users", async () => {
@@ -229,6 +262,51 @@ describe("slack local provider server", () => {
       error: "invalid_user_combination",
       ok: false,
     });
+  });
+
+  it("paginates conversations.list with stable cursors", async () => {
+    const server = await startTestSlackServer();
+    for (const channel of ["C1111111111", "C2222222222"]) {
+      await postMessage(server, { channel, text: channel });
+    }
+    for (const user of ["U1111111111", "U2222222222"]) {
+      await slackApi(server, "conversations.open", { users: user });
+    }
+    await slackApi(server, "conversations.open", {
+      users: "U3333333333,U4444444444",
+    });
+
+    const ids: string[] = [];
+    let cursor = "";
+    do {
+      const response = await slackApi(server, "conversations.list", {
+        cursor,
+        limit: 2,
+        types: "public_channel,private_channel,mpim,im",
+      });
+      const payload = (await response.json()) as {
+        channels: Array<{ id: string }>;
+        response_metadata: { next_cursor: string };
+      };
+      ids.push(...payload.channels.map((channel) => channel.id));
+      cursor = payload.response_metadata.next_cursor;
+    } while (cursor);
+
+    expect(ids).toEqual(["C1111111111", "C2222222222", "D000000001", "D000000002", "G000000001"]);
+
+    for (const invalidCursor of [
+      "not-a-cursor",
+      Buffer.from("history:1700000000.000100", "utf8").toString("base64url"),
+    ]) {
+      const invalid = await slackApi(server, "conversations.list", {
+        cursor: invalidCursor,
+        limit: 2,
+      });
+      await expect(invalid.json()).resolves.toEqual({
+        error: "invalid_cursor",
+        ok: false,
+      });
+    }
   });
 
   it("bounds request bodies and does not record rejected API authentication", async () => {
@@ -637,7 +715,10 @@ describe("slack local provider server", () => {
     const history = await slackApi(server, "conversations.history", {
       channel: "C1234567890",
     });
-    await expect(history.json()).resolves.toMatchObject({ messages: [], ok: true });
+    await expect(history.json()).resolves.toEqual({
+      error: "channel_not_found",
+      ok: false,
+    });
   });
 
   it("validates chat.postMessage metadata format and schema", async () => {
