@@ -12,6 +12,7 @@
 - Escape visually unsafe Unicode controls in JSON reports, return a stable error document for unserializable values, and preserve Node write encoding semantics in test captures.
 - Ignore typeless Slack callbacks and redact URL fragments from Zalo recorder evidence.
 - Redact Feishu verification tokens from recorder payloads and release replay reservations after recorder failures.
+- Reject Windows ACL reparse and identity substitution, bound PowerShell ACL execution, and allow harmless inherit-only mutation ACEs.
 - Bind agent acknowledgements to the expected nonce instead of accepting an unrelated ACK.
 - Skip aborted Windows script helper bootstrap and retry Job Object isolation after transient bootstrap failures.
 - Bound manifest file loading, honor probe retries, and reject empty resolved Zalo webhook secrets.

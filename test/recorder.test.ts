@@ -17,6 +17,7 @@ import {
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  applyOwnerOnlyWindowsDirectoryAcl,
   createOwnerOnlyWindowsDirectory,
   readWindowsDirectorySecurityDescriptor,
   type WindowsAclRunner,
@@ -246,6 +247,39 @@ describe("recorder", () => {
     await expect(stat(lockRoot)).resolves.toBeDefined();
   });
 
+  it("retries Windows recorder lock-root creation after a cached promise rejects", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const lockRoot = path.join(directory, "retried-locks");
+    const timeout = Object.assign(new Error("PowerShell ACL command timed out"), {
+      code: "ETIMEDOUT",
+      killed: true,
+      signal: "SIGKILL",
+    });
+    let createCount = 0;
+    const createWindowsDirectory = async (directoryPath: string) => {
+      createCount += 1;
+      if (createCount === 1) {
+        throw timeout;
+      }
+      await mkdir(directoryPath);
+    };
+    const options = {
+      createWindowsDirectory,
+      platform: "win32" as const,
+      readWindowsDirectorySecurityDescriptor: readOwnerOnlyWindowsDirectorySecurityDescriptor,
+    };
+
+    await expect(secureProviderRecorderLockRoot(lockRoot, undefined, options)).rejects.toBe(
+      timeout,
+    );
+    await expect(secureProviderRecorderLockRoot(lockRoot, undefined, options)).resolves.toBe(
+      lockRoot,
+    );
+
+    expect(createCount).toBe(2);
+  });
+
   it("deduplicates concurrent Windows recorder lock-root replacement recovery", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -411,13 +445,48 @@ describe("recorder", () => {
 
     expect(calls).toHaveLength(1);
     const [, args, options] = calls[0]!;
-    const script = args.at(-1);
+    const script = args.at(-1)!;
     expect(script).toContain("[System.Security.AccessControl.DirectorySecurity]::new()");
-    expect(script).toContain("[System.IO.Directory]::CreateDirectory($directoryPath, $acl)");
     expect(script).toContain("[System.IO.Directory]::Exists($directoryPath)");
-    expect(script).toContain("$directory.SetAccessControl($acl)");
-    expect(script).toContain("[System.IO.FileAttributes]::ReparsePoint");
+    expect(script).toContain("$directoryPath.TrimEnd(");
+    expect(script).toContain("NtCreateFile(");
+    expect(script).toContain("FileCreate");
+    expect(script).toContain("FileDirectoryFile");
+    expect(script).toContain("FileOpenReparsePoint");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Create(");
+    expect(script.indexOf('StartsWith(@"\\\\?\\",')).toBeLessThan(
+      script.indexOf('StartsWith(@"\\\\",'),
+    );
+    expect(script).toContain("FileFlagOpenReparsePoint");
+    expect(script).toContain("ReparsePointAttribute");
+    expect(script).toContain("GetSecurityInfo(");
+    expect(script).toContain("SetSecurityInfo(");
+    expect(script).toContain("AssertSamePathIdentity");
+    expect(script).not.toContain("$directory.SetAccessControl($acl)");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
+    expect(options.killSignal).toBe("SIGKILL");
+    expect(options.timeout).toBe(15_000);
+  });
+
+  it("applies Windows recorder ACLs through a no-follow identity-bound handle", async () => {
+    const calls: Parameters<WindowsAclRunner>[] = [];
+    const run: WindowsAclRunner = async (...args) => {
+      calls.push(args);
+      return "";
+    };
+    const directoryPath = String.raw`C:\Temp\crabline-recorder-locks`;
+
+    await applyOwnerOnlyWindowsDirectoryAcl(directoryPath, run, String.raw`C:\Windows`);
+
+    const [, args, options] = calls[0]!;
+    const script = args.at(-1);
+    expect(script).toContain("FileFlagOpenReparsePoint");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::Open($directoryPath, $true)");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::WriteSecurityDescriptor(");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(");
+    expect(script).not.toContain("Set-Acl");
+    expect(options.killSignal).toBe("SIGKILL");
+    expect(options.timeout).toBe(15_000);
   });
 
   it("reads a stable Windows directory security descriptor fingerprint", async () => {
@@ -439,7 +508,55 @@ describe("recorder", () => {
     expect(script).toContain("GetSecurityDescriptorBinaryForm()");
     expect(script).toContain("[Convert]::ToBase64String($descriptor)");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
+    expect(options.killSignal).toBe("SIGKILL");
+    expect(options.timeout).toBe(15_000);
   });
+
+  it.runIf(process.platform === "win32")(
+    "creates missing Windows recorder lock roots with an identity-bound handle",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const lockRoot = path.join(directory, "new-lock-root");
+
+      await expect(createOwnerOnlyWindowsDirectory(lockRoot)).resolves.toBeUndefined();
+      await expect(stat(lockRoot)).resolves.toMatchObject({
+        isDirectory: expect.any(Function),
+      });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "creates missing Windows recorder lock roots through extended-length paths",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const lockRoot = path.join(directory, "extended-lock-root");
+
+      await expect(
+        createOwnerOnlyWindowsDirectory(path.toNamespacedPath(lockRoot)),
+      ).resolves.toBeUndefined();
+      await expect(stat(lockRoot)).resolves.toMatchObject({
+        isDirectory: expect.any(Function),
+      });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "creates missing Windows recorder lock roots with trailing separators",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const lockRoot = path.join(directory, "trailing-separator-lock-root");
+
+      await expect(
+        createOwnerOnlyWindowsDirectory(`${lockRoot}${path.sep}`),
+      ).resolves.toBeUndefined();
+      await expect(stat(lockRoot)).resolves.toMatchObject({
+        isDirectory: expect.any(Function),
+      });
+    },
+  );
 
   it.runIf(process.platform === "win32")(
     "migrates existing Windows recorder lock roots to owner-only ACLs",
@@ -453,6 +570,38 @@ describe("recorder", () => {
       await expect(stat(lockRoot)).resolves.toMatchObject({
         isDirectory: expect.any(Function),
       });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "rejects Windows recorder lock-root junctions without following their targets",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const target = path.join(directory, "target");
+      const junction = path.join(directory, "junction");
+      await mkdir(target);
+      await symlink(target, junction, "junction");
+
+      await expect(createOwnerOnlyWindowsDirectory(junction)).rejects.toThrow(
+        "Could not atomically create or verify an owner-only Windows directory",
+      );
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "does not create through dangling Windows recorder lock-root junctions",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const missingTarget = path.join(directory, "missing-target");
+      const junction = path.join(directory, "dangling-junction");
+      await symlink(missingTarget, junction, "junction");
+
+      await expect(createOwnerOnlyWindowsDirectory(junction)).rejects.toThrow(
+        "Could not atomically create or verify an owner-only Windows directory",
+      );
+      await expect(stat(missingTarget)).rejects.toMatchObject({ code: "ENOENT" });
     },
   );
 

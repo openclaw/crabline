@@ -2292,6 +2292,8 @@ describe("OpenClaw private file publication", () => {
     expect(script).toContain("AreAccessRulesProtected");
     expect(script).toContain("$rules.Count -ne 1");
     expect(options.env.CRABLINE_PRIVATE_FILE_PATH).toBe(path.resolve(filePath));
+    expect(options.killSignal).toBe("SIGKILL");
+    expect(options.timeout).toBe(15_000);
     expect(options.windowsHide).toBe(true);
   });
 
@@ -2330,6 +2332,8 @@ describe("OpenClaw private file publication", () => {
     expect(script).toContain("SetAccessRuleProtection($true, $false)");
     expect(script).toContain("owner-only inheritable full control");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
+    expect(options.killSignal).toBe("SIGKILL");
+    expect(options.timeout).toBe(15_000);
   });
 
   it("uses CreateDirectoryW with a protected ACL for every missing Windows ancestor", async () => {
@@ -2354,6 +2358,8 @@ describe("OpenClaw private file publication", () => {
     expect(script).toContain("New private directory was populated during creation.");
     expect(script).not.toContain("Set-Acl");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
+    expect(options.killSignal).toBe("SIGKILL");
+    expect(options.timeout).toBe(15_000);
   });
 
   it("fails closed when a Windows ancestry component wins the CreateNew race", async () => {
@@ -2462,6 +2468,9 @@ describe("OpenClaw private file publication", () => {
     expect(script).toContain(
       "$ruleAccessMask -band ($mutationAccessMask -bor $genericMutationRights)",
     );
+    expect(script).toContain("$inheritOnly");
+    expect(script).toContain("$appliesToDirectory");
+    expect(script).toContain("$appliesToDirectory -and");
   });
 
   it("checks Windows delete-child rights when verifying mutation boundary ancestry", async () => {
@@ -2523,8 +2532,32 @@ describe("OpenClaw private file publication", () => {
     },
   );
 
+  it.skipIf(process.platform !== "win32")(
+    "allows inherit-only mutation rights that do not apply to the Windows boundary",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        execFileSync(
+          "icacls.exe",
+          [directory, "/inheritance:r", "/grant", "*S-1-1-0:(OI)(CI)(IO)(GW)"],
+          { stdio: "ignore" },
+        );
+
+        await expect(
+          verifySafeWindowsDirectoryMutationBoundary(directory),
+        ).resolves.toBeUndefined();
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
+
   it("reports Windows ACL tooling failures with their cause", async () => {
-    const cause = new Error("powershell.exe missing");
+    const cause = Object.assign(new Error("PowerShell ACL command timed out"), {
+      code: "ETIMEDOUT",
+      killed: true,
+      signal: "SIGKILL",
+    });
     await expect(
       createOwnerOnlyWindowsFile(
         "manifest.json",

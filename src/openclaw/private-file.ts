@@ -7,6 +7,7 @@ import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const WINDOWS_ACL_COMMAND_TIMEOUT_MS = 15_000;
 
 const WINDOWS_CREATE_OWNER_ONLY_FILE_SCRIPT = String.raw`
 $ErrorActionPreference = "Stop"
@@ -564,6 +565,7 @@ $mutationRights = (
   [System.Security.AccessControl.FileSystemRights]::TakeOwnership
 )
 $genericMutationRights = [uint32]0x50000000
+$inheritOnly = [System.Security.AccessControl.PropagationFlags]::InheritOnly
 $mutationAccessMask = [BitConverter]::ToUInt32(
   [BitConverter]::GetBytes([int32]$mutationRights),
   0
@@ -584,7 +586,9 @@ foreach ($rule in $rules) {
     [BitConverter]::GetBytes([int32]$rule.FileSystemRights),
     0
   )
+  $appliesToDirectory = ($rule.PropagationFlags -band $inheritOnly) -eq 0
   if (
+    $appliesToDirectory -and
     $rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
     $trustedSids -notcontains $rule.IdentityReference.Value -and
     ($ruleAccessMask -band ($mutationAccessMask -bor $genericMutationRights)) -ne 0
@@ -599,6 +603,8 @@ export type WindowsAclRunner = (
   args: string[],
   options: {
     env: NodeJS.ProcessEnv;
+    killSignal: NodeJS.Signals;
+    timeout: number;
     windowsHide: boolean;
   },
 ) => Promise<string>;
@@ -637,6 +643,8 @@ export async function createOwnerOnlyWindowsFile(
           ...process.env,
           CRABLINE_PRIVATE_FILE_PATH: path.resolve(filePath),
         },
+        killSignal: "SIGKILL",
+        timeout: WINDOWS_ACL_COMMAND_TIMEOUT_MS,
         windowsHide: true,
       },
     );
@@ -681,6 +689,8 @@ export async function applyOwnerOnlyWindowsDirectoryAcl(
           ...process.env,
           CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
         },
+        killSignal: "SIGKILL",
+        timeout: WINDOWS_ACL_COMMAND_TIMEOUT_MS,
         windowsHide: true,
       },
     );
@@ -713,6 +723,8 @@ export async function createOwnerOnlyWindowsDirectoryAncestry(
           ...process.env,
           CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
         },
+        killSignal: "SIGKILL",
+        timeout: WINDOWS_ACL_COMMAND_TIMEOUT_MS,
         windowsHide: true,
       },
     );
@@ -747,6 +759,8 @@ export async function verifyOwnerOnlyWindowsDirectoryAcl(
           ...process.env,
           CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
         },
+        killSignal: "SIGKILL",
+        timeout: WINDOWS_ACL_COMMAND_TIMEOUT_MS,
         windowsHide: true,
       },
     );
@@ -778,6 +792,8 @@ export async function verifyOwnerOnlyWindowsFileAcl(
           ...process.env,
           CRABLINE_PRIVATE_FILE_PATH: path.resolve(filePath),
         },
+        killSignal: "SIGKILL",
+        timeout: WINDOWS_ACL_COMMAND_TIMEOUT_MS,
         windowsHide: true,
       },
     );
@@ -809,6 +825,8 @@ export async function verifySafeWindowsDirectoryEntryParent(
           ...process.env,
           CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
         },
+        killSignal: "SIGKILL",
+        timeout: WINDOWS_ACL_COMMAND_TIMEOUT_MS,
         windowsHide: true,
       },
     );
@@ -840,6 +858,8 @@ export async function verifySafeWindowsDirectoryMutationBoundary(
           ...process.env,
           CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
         },
+        killSignal: "SIGKILL",
+        timeout: WINDOWS_ACL_COMMAND_TIMEOUT_MS,
         windowsHide: true,
       },
     );
