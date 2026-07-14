@@ -1797,7 +1797,7 @@ export async function persistAcceptedBaileysMessage(params: {
   const operationSettlement = new Promise<void>((resolve) => {
     operationSettled = resolve;
   });
-  let requiresSignalCommit = false;
+  let requiresSignalCommit = wasPreviouslyPersisted;
   let signalCommitSucceeded = false;
   const pendingAcceptanceOperations = new Set<Promise<unknown>>();
   const trackAcceptanceOperation = <T>(operation: Promise<T>): Promise<T> => {
