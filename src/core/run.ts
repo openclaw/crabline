@@ -567,7 +567,7 @@ export async function runFixtureCommand(params: {
                 matchesInbound(candidate, preparedInboundMatch, nonce, {
                   requireAcknowledgement: mode === "agent",
                 }) &&
-                (!compiledInboundRegex || compiledInboundRegex.test(candidate.text))
+                (!compiledInboundRegex || compiledInboundRegex.test(candidate.text ?? ""))
               ) {
                 inbound = candidate;
                 break;

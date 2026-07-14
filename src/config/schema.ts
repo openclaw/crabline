@@ -124,6 +124,11 @@ const HttpsUrlSchema = HttpUrlSchema.refine((value) => {
   }
 }, "URL must use https");
 
+const NonBlankSecretSchema = z
+  .string()
+  .min(1)
+  .refine((value) => value.trim().length > 0, "secret must not be blank");
+
 const HeaderValueSchema = z
   .string()
   .min(1)
@@ -250,7 +255,7 @@ const SlackWebhookSchema = z.strictObject({
 
 const SlackConfigSchema = z.strictObject({
   recorder: SlackRecorderSchema.default({}),
-  signingSecret: z.string().min(1).optional(),
+  signingSecret: NonBlankSecretSchema.optional(),
   webhook: SlackWebhookSchema.default({
     host: "127.0.0.1",
     path: "/slack/events",
@@ -441,10 +446,10 @@ const TelegramConfigSchema = z.strictObject({
 const FeishuConfigSchema = z.strictObject({
   appId: z.string().min(1).optional(),
   appSecret: z.string().min(1).optional(),
-  encryptKey: z.string().min(1).optional(),
+  encryptKey: NonBlankSecretSchema.optional(),
   recorder: z.strictObject({ path: z.string().min(1).optional() }).default({}),
   userName: z.string().min(1).optional(),
-  verificationToken: z.string().min(1).optional(),
+  verificationToken: NonBlankSecretSchema.optional(),
   webhook: z
     .strictObject({
       host: z.string().min(1).default("127.0.0.1"),

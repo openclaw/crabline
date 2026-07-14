@@ -135,6 +135,10 @@ describe("server HTTP body reader", () => {
     expect(readInteger(String(Number.MIN_SAFE_INTEGER))).toBe(Number.MIN_SAFE_INTEGER);
     expect(readInteger(String(Number.MAX_SAFE_INTEGER + 1))).toBeUndefined();
     expect(readInteger("-9007199254740992")).toBeUndefined();
+    expect(readInteger(9_007_199_254_740_992n)).toBeUndefined();
+    expect(readInteger(Number.NaN)).toBeUndefined();
+    expect(readInteger(Number.POSITIVE_INFINITY)).toBeUndefined();
+    expect(readInteger(Number.NEGATIVE_INFINITY)).toBeUndefined();
   });
 
   it("recognizes JSON media types case-insensitively", async () => {

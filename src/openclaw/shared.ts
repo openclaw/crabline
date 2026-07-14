@@ -294,7 +294,8 @@ export function readInteger(value: unknown): number | undefined {
   if (!stringValue || !/^-?\d+$/u.test(stringValue)) {
     return undefined;
   }
-  return Number(stringValue);
+  const parsed = Number(stringValue);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 export function parseQaTarget(target: string): ParsedQaTarget {
