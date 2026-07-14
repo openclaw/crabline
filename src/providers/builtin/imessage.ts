@@ -16,12 +16,11 @@ import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js
 
 export function resolveIMessageAdapterConfig(config: ProviderConfig, env?: NodeJS.ProcessEnv) {
   const local = config.imessage?.local ?? true;
-  const resolvedEnv = env ?? (local ? {} : process.env);
+  env ??= local ? {} : process.env;
   return {
-    apiKey:
-      config.imessage?.apiKey ?? resolvedEnv.IMESSAGE_API_KEY ?? "local-mock-imessage-api-key",
+    apiKey: config.imessage?.apiKey ?? env.IMESSAGE_API_KEY ?? "local-mock-imessage-api-key",
     local,
-    serverUrl: config.imessage?.serverUrl ?? resolvedEnv.IMESSAGE_SERVER_URL,
+    serverUrl: config.imessage?.serverUrl ?? env.IMESSAGE_SERVER_URL,
   };
 }
 
