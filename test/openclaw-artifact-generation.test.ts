@@ -616,6 +616,35 @@ describe("OpenClaw artifact generation publication", () => {
     }
   });
 
+  it("requires the literal Crabline channel driver in current artifact generations", async () => {
+    const outputDir = await createTempDir();
+    try {
+      const current = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      });
+      for (const artifactPath of [
+        current.capabilityMatrixPath,
+        current.providerReadinessArtifactPath,
+      ]) {
+        const resolvedPath = path.join(outputDir, artifactPath);
+        const artifact = JSON.parse(await fs.readFile(resolvedPath, "utf8")) as Record<
+          string,
+          unknown
+        >;
+        artifact.channelDriver = "other-driver";
+        await fs.writeFile(resolvedPath, `${JSON.stringify(artifact, null, 2)}\n`);
+      }
+
+      await expect(
+        publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+          createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+        }),
+      ).rejects.toThrow("OpenClaw Crabline current artifact generation is incomplete.");
+    } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
   it.each([
     {
       label: "empty manifest",
@@ -1213,6 +1242,73 @@ describe("OpenClaw artifact generation publication", () => {
         second.generation,
       );
     } finally {
+      await disposeTempDir(outputDir);
+    }
+  });
+
+  it("retries a coherent current-generation read after A is pruned by B and C", async () => {
+    const outputDir = await createTempDir();
+    let resumeReader: (() => void) | undefined;
+    let readerStarted: (() => void) | undefined;
+    const readerBlocked = new Promise<void>((resolve) => {
+      resumeReader = resolve;
+    });
+    const atArtifactRead = new Promise<void>((resolve) => {
+      readerStarted = resolve;
+    });
+    const originalReadFile = fs.readFile.bind(fs);
+    let blockFirstGenerationRead = true;
+    let readFileSpy: ReturnType<typeof vi.spyOn> | undefined;
+    let reader: ReturnType<typeof publishOpenClawCrablineArtifactGeneration> | undefined;
+    try {
+      await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
+      });
+      readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+        if (
+          blockFirstGenerationRead &&
+          String(args[0]).endsWith(
+            path.join(
+              "generation-11111111-1111-4111-8111-111111111111",
+              "crabline-fake-provider-server.json",
+            ),
+          )
+        ) {
+          blockFirstGenerationRead = false;
+          readerStarted?.();
+          await readerBlocked;
+        }
+        return originalReadFile(...args);
+      });
+      reader = publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "44444444-4444-4444-8444-444444444444",
+      });
+      await atArtifactRead;
+
+      await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "22222222-2222-4222-8222-222222222222",
+      });
+      const third = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
+        createGenerationId: () => "33333333-3333-4333-8333-333333333333",
+      });
+      await expect(
+        fs.stat(
+          path.join(
+            outputDir,
+            OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
+            "generation-11111111-1111-4111-8111-111111111111",
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+
+      resumeReader?.();
+      await expect(reader).resolves.toMatchObject({
+        previousGeneration: third.generation,
+      });
+    } finally {
+      resumeReader?.();
+      await reader?.catch(() => undefined);
+      readFileSpy?.mockRestore();
       await disposeTempDir(outputDir);
     }
   });
