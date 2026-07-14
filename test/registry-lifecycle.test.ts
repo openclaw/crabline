@@ -2,11 +2,14 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManifestDefinition, ProviderConfig } from "../src/config/schema.js";
+import { readRecordedInbound } from "../src/providers/recorder.js";
 import { createRegistry, LazyProviderAdapter } from "../src/providers/registry.js";
 import type { ProviderAdapter, ProviderContext, SendContext } from "../src/providers/types.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 type AppendRecordedInbound = typeof import("../src/providers/recorder.js").appendRecordedInbound;
+type AppendRecordedInboundBatch =
+  typeof import("../src/providers/recorder.js").appendRecordedInboundBatch;
 type StartWebhookServer = typeof import("../src/providers/webhook-server.js").startWebhookServer;
 type WaitForRecordedInbound = typeof import("../src/providers/recorder.js").waitForRecordedInbound;
 type WatchRecordedInbound = typeof import("../src/providers/recorder.js").watchRecordedInbound;
@@ -14,9 +17,11 @@ type WebhookHandler = Parameters<StartWebhookServer>[0]["handle"];
 
 const recorderMocks = vi.hoisted(() => ({
   actualAppendRecordedInbound: undefined as AppendRecordedInbound | undefined,
+  actualAppendRecordedInboundBatch: undefined as AppendRecordedInboundBatch | undefined,
   actualWaitForRecordedInbound: undefined as WaitForRecordedInbound | undefined,
   actualWatchRecordedInbound: undefined as WatchRecordedInbound | undefined,
   appendRecordedInbound: vi.fn<AppendRecordedInbound>(),
+  appendRecordedInboundBatch: vi.fn<AppendRecordedInboundBatch>(),
   waitForRecordedInbound: vi.fn<WaitForRecordedInbound>(),
   watchRecordedInbound: vi.fn<WatchRecordedInbound>(),
 }));
@@ -33,14 +38,17 @@ const telegramLifecycle = vi.hoisted(() => ({
 vi.mock("../src/providers/recorder.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/providers/recorder.js")>();
   recorderMocks.actualAppendRecordedInbound = actual.appendRecordedInbound;
+  recorderMocks.actualAppendRecordedInboundBatch = actual.appendRecordedInboundBatch;
   recorderMocks.actualWaitForRecordedInbound = actual.waitForRecordedInbound;
   recorderMocks.actualWatchRecordedInbound = actual.watchRecordedInbound;
   recorderMocks.appendRecordedInbound.mockImplementation(actual.appendRecordedInbound);
+  recorderMocks.appendRecordedInboundBatch.mockImplementation(actual.appendRecordedInboundBatch);
   recorderMocks.waitForRecordedInbound.mockImplementation(actual.waitForRecordedInbound);
   recorderMocks.watchRecordedInbound.mockImplementation(actual.watchRecordedInbound);
   return {
     ...actual,
     appendRecordedInbound: recorderMocks.appendRecordedInbound,
+    appendRecordedInboundBatch: recorderMocks.appendRecordedInboundBatch,
     waitForRecordedInbound: recorderMocks.waitForRecordedInbound,
     watchRecordedInbound: recorderMocks.watchRecordedInbound,
   };
@@ -79,6 +87,10 @@ beforeEach(() => {
   recorderMocks.appendRecordedInbound.mockReset();
   recorderMocks.appendRecordedInbound.mockImplementation(
     recorderMocks.actualAppendRecordedInbound!,
+  );
+  recorderMocks.appendRecordedInboundBatch.mockReset();
+  recorderMocks.appendRecordedInboundBatch.mockImplementation(
+    recorderMocks.actualAppendRecordedInboundBatch!,
   );
   recorderMocks.waitForRecordedInbound.mockReset();
   recorderMocks.waitForRecordedInbound.mockImplementation(
@@ -506,7 +518,7 @@ describe("lazy provider lifecycle", () => {
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
-  it("drains an operation admitted before provider materialization", async () => {
+  it("cancels an uncommitted operation admitted before provider materialization", async () => {
     const directory = await createTempDir();
     const recorderPath = path.join(directory, "telegram.jsonl");
     let cleanup: Promise<void> | undefined;
@@ -526,9 +538,9 @@ describe("lazy provider lifecycle", () => {
 
       cleanup = provider.cleanup?.();
 
-      await expect(sending).resolves.toMatchObject({ accepted: true });
+      await expect(sending).rejects.toThrow(/cleaned up/u);
       await cleanup;
-      expect((await readFile(recorderPath, "utf8")).trim().split("\n")).toHaveLength(2);
+      await expect(readRecordedInbound(recorderPath)).resolves.toEqual([]);
     } finally {
       await sending?.catch(() => undefined);
       await cleanup?.catch(() => undefined);
@@ -536,7 +548,7 @@ describe("lazy provider lifecycle", () => {
     }
   });
 
-  it("waits for an admitted non-WhatsApp send before cleanup resolves", async () => {
+  it("waits for admitted non-WhatsApp persistence before cleanup resolves", async () => {
     const directory = await createTempDir();
     const recorderPath = path.join(directory, "telegram.jsonl");
     let cleanup: Promise<void> | undefined;
@@ -545,13 +557,9 @@ describe("lazy provider lifecycle", () => {
     const replyBlocked = new Promise<void>((resolve) => {
       releaseReply = resolve;
     });
-    let appendCount = 0;
-    recorderMocks.appendRecordedInbound.mockImplementation(async (...args) => {
-      appendCount += 1;
-      if (appendCount === 2) {
-        await replyBlocked;
-      }
-      return await recorderMocks.actualAppendRecordedInbound!(...args);
+    recorderMocks.appendRecordedInboundBatch.mockImplementation(async (...args) => {
+      await replyBlocked;
+      return await recorderMocks.actualAppendRecordedInboundBatch!(...args);
     });
 
     try {
@@ -568,7 +576,9 @@ describe("lazy provider lifecycle", () => {
       };
 
       sending = provider.send(sendContext);
-      await vi.waitFor(() => expect(recorderMocks.appendRecordedInbound).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() =>
+        expect(recorderMocks.appendRecordedInboundBatch).toHaveBeenCalledTimes(1),
+      );
 
       let cleanupResolved = false;
       cleanup = provider.cleanup?.().then(() => {
@@ -581,7 +591,7 @@ describe("lazy provider lifecycle", () => {
       await cleanup;
       await sending;
       const contentsAfterCleanup = await readFile(recorderPath, "utf8");
-      expect(contentsAfterCleanup.trim().split("\n")).toHaveLength(2);
+      await expect(readRecordedInbound(recorderPath)).resolves.toHaveLength(2);
       await Promise.resolve();
       expect(await readFile(recorderPath, "utf8")).toBe(contentsAfterCleanup);
     } finally {
