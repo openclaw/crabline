@@ -428,11 +428,15 @@ describe("recorder append serialization", () => {
       fsMocks.serverFileStat.mockResolvedValue({ dev: 1, ino: 1, nlink: 2, size: 0 });
       vi.stubEnv("CRABLINE_RECORDER_LOCK_DIR", await realpath(tmpdir()));
       const pathRelease = vi.fn(async () => {});
+      const localIdentityRelease = vi.fn(async () => {});
       const releaseFailure = new Error("identity lock cleanup failed");
-      const identityRelease = vi.fn(async () => {
+      const sharedIdentityRelease = vi.fn(async () => {
         throw releaseFailure;
       });
-      fsMocks.lock.mockResolvedValueOnce(pathRelease).mockResolvedValueOnce(identityRelease);
+      fsMocks.lock
+        .mockResolvedValueOnce(pathRelease)
+        .mockResolvedValueOnce(localIdentityRelease)
+        .mockResolvedValueOnce(sharedIdentityRelease);
       const observer = vi.fn();
 
       await expect(
@@ -455,7 +459,8 @@ describe("recorder append serialization", () => {
       });
       expect(observer).not.toHaveBeenCalled();
       expect(pathRelease).toHaveBeenCalledOnce();
-      expect(identityRelease).toHaveBeenCalledOnce();
+      expect(localIdentityRelease).toHaveBeenCalledOnce();
+      expect(sharedIdentityRelease).toHaveBeenCalledOnce();
       expect(
         fsMocks.lock.mock.calls.some(([lockPath]) =>
           path.basename(String(lockPath)).startsWith("recorder-"),
@@ -479,7 +484,11 @@ describe("recorder append serialization", () => {
         code: "ENOSPC",
       });
       const pathRelease = vi.fn(async () => {});
-      fsMocks.lock.mockResolvedValueOnce(pathRelease).mockRejectedValueOnce(sharedFailure);
+      const localIdentityRelease = vi.fn(async () => {});
+      fsMocks.lock
+        .mockResolvedValueOnce(pathRelease)
+        .mockResolvedValueOnce(localIdentityRelease)
+        .mockRejectedValueOnce(sharedFailure);
 
       await expect(
         recordServerEvent({
@@ -496,6 +505,7 @@ describe("recorder append serialization", () => {
       ).rejects.toBe(sharedFailure);
       expect(fsMocks.serverWrite).not.toHaveBeenCalled();
       expect(pathRelease).toHaveBeenCalledOnce();
+      expect(localIdentityRelease).toHaveBeenCalledOnce();
     },
   );
 
