@@ -105,9 +105,10 @@ async function writeOwner(
   owner: {
     pid: number;
     processIdentity?: string | null;
+    machineIdentity?: string | null;
     processNamespace?: string | null;
     processStartedAtMs: number;
-    version?: 1 | 2;
+    version?: 1 | 2 | 3;
   },
 ): Promise<string> {
   const ownerPath = path.join(lockDirectory, "crabline-owner.json");
@@ -115,6 +116,7 @@ async function writeOwner(
     ownerPath,
     `${JSON.stringify({
       ...owner,
+      machineIdentity: owner.machineIdentity ?? null,
       processIdentity: owner.processIdentity ?? null,
       processNamespace:
         owner.processNamespace !== undefined
@@ -617,9 +619,11 @@ describe("process-owned lock filesystem", () => {
     const release = await acquire(target);
     const owner = JSON.parse(
       await readFile(path.join(`${target}.lock`, "crabline-owner.json"), "utf8"),
-    ) as { processNamespace: string | null };
+    ) as { machineIdentity: string | null; processNamespace: string | null; version: number };
 
+    expect(owner.machineIdentity).toMatch(/^linux:[0-9a-f-]{16,64}$/u);
     expect(owner.processNamespace).toMatch(/^pid:\[\d+\]$/u);
+    expect(owner.version).toBe(3);
     await release();
   });
 
@@ -633,13 +637,35 @@ describe("process-owned lock filesystem", () => {
       const ownerPath = path.join(lockDirectory, "crabline-owner.json");
       const owner = JSON.parse(await readFile(ownerPath, "utf8")) as Record<string, unknown>;
       await writeFile(ownerPath, `${JSON.stringify({ ...owner, processNamespace: "pid:[1]" })}\n`);
-      await utimes(lockDirectory, new Date(0), new Date(0));
 
       await expect(acquire(target)).rejects.toMatchObject({ code: "ELOCKED" });
 
       child.kill("SIGCONT");
       const exited = once(child, "exit");
       child.stdin.end("release\n");
+      await exited;
+    },
+    10_000,
+  );
+
+  it.runIf(process.platform === "linux")(
+    "recovers a stale lock after its PID namespace stops heartbeating",
+    async () => {
+      const target = await createLockTarget();
+      const lockDirectory = `${target}.lock`;
+      const child = await startLockOwner(target);
+      child.kill("SIGSTOP");
+      const ownerPath = path.join(lockDirectory, "crabline-owner.json");
+      const owner = JSON.parse(await readFile(ownerPath, "utf8")) as Record<string, unknown>;
+      await writeFile(ownerPath, `${JSON.stringify({ ...owner, processNamespace: "pid:[1]" })}\n`);
+      await utimes(lockDirectory, new Date(0), new Date(0));
+
+      const release = await acquire(target);
+      expect(release).toBeTypeOf("function");
+      await release();
+
+      const exited = once(child, "exit");
+      child.kill("SIGKILL");
       await exited;
     },
     10_000,
@@ -764,14 +790,13 @@ describe("process-owned lock filesystem", () => {
     await rm(ownerTarget, { force: true });
   });
 
-  it("reclaims ownerless legacy locks after the migration grace period", async () => {
+  it("fails closed for ownerless legacy locks that cannot be fenced from old clients", async () => {
     const target = await createLockTarget();
     const lockDirectory = `${target}.lock`;
     await mkdir(lockDirectory);
     await utimes(lockDirectory, new Date(0), new Date(0));
 
-    const release = await acquire(target);
-    expect(release).toBeTypeOf("function");
-    await release();
+    await expect(acquire(target)).rejects.toMatchObject({ code: "ELOCKED" });
+    await rm(lockDirectory, { recursive: true });
   });
 });

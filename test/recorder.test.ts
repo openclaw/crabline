@@ -152,9 +152,26 @@ describe("recorder", () => {
     const script = args.at(-1);
     expect(script).toContain("[System.Security.AccessControl.DirectorySecurity]::new()");
     expect(script).toContain("[System.IO.Directory]::CreateDirectory($directoryPath, $acl)");
-    expect(script).not.toContain("Set-Acl");
+    expect(script).toContain("[System.IO.Directory]::Exists($directoryPath)");
+    expect(script).toContain("$directory.SetAccessControl($acl)");
+    expect(script).toContain("[System.IO.FileAttributes]::ReparsePoint");
     expect(options.env.CRABLINE_PRIVATE_DIRECTORY_PATH).toBe(path.resolve(directoryPath));
   });
+
+  it.runIf(process.platform === "win32")(
+    "migrates existing Windows recorder lock roots to owner-only ACLs",
+    async () => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const lockRoot = path.join(directory, "existing-lock-root");
+      await mkdir(lockRoot);
+
+      await expect(createOwnerOnlyWindowsDirectory(lockRoot)).resolves.toBeUndefined();
+      await expect(stat(lockRoot)).resolves.toMatchObject({
+        isDirectory: expect.any(Function),
+      });
+    },
+  );
 
   it("round-trips empty message text", async () => {
     const filePath = await createRecorderPath();

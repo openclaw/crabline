@@ -254,6 +254,18 @@ function recorderLockReleaseError(
   );
 }
 
+function recorderLockAcquisitionReleaseError(
+  filePath: string,
+  acquisitionError: unknown,
+  releaseError: unknown,
+): AggregateError {
+  return new AggregateError(
+    [acquisitionError, releaseError],
+    `Server recorder shared lock acquisition and local lock release both failed for "${filePath}".`,
+    { cause: acquisitionError },
+  );
+}
+
 function isRecorderLockContention(error: unknown): boolean {
   return (
     typeof error === "object" &&
@@ -359,13 +371,12 @@ async function recorderIdentityLockTarget(
   return recorderIdentityLockPath(sharedRoot, identity);
 }
 
-async function acquireRecorderLock(filePath: string): Promise<() => Promise<void>> {
+async function acquireSingleRecorderLock(filePath: string): Promise<() => Promise<void>> {
   const deadline = performance.now() + RECORDER_LOCK_STALE_MS + RECORDER_LOCK_WAIT_MARGIN_MS;
-  const lockTarget = await recorderProcessLockTarget(filePath);
   const lockFileSystem = createProcessOwnedLockFileSystem();
   for (;;) {
     try {
-      return await lock(lockTarget, {
+      return await lock(filePath, {
         fs: lockFileSystem,
         realpath: false,
         retries: 0,
@@ -387,11 +398,48 @@ async function acquireRecorderLock(filePath: string): Promise<() => Promise<void
   }
 }
 
+async function releaseRecorderLockSet(releases: Array<() => Promise<void>>): Promise<void> {
+  const errors: unknown[] = [];
+  for (const release of releases.reverse()) {
+    try {
+      await release();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Multiple server recorder locks failed to release.");
+  }
+}
+
+async function acquireRecorderLock(
+  filePath: string,
+  useProcessLocalWindowsTarget = true,
+): Promise<() => Promise<void>> {
+  if (process.platform !== "win32" || !useProcessLocalWindowsTarget) {
+    return await acquireSingleRecorderLock(filePath);
+  }
+  const localRelease = await acquireSingleRecorderLock(await recorderProcessLockTarget(filePath));
+  try {
+    const sharedRelease = await acquireSingleRecorderLock(filePath);
+    return async () => await releaseRecorderLockSet([localRelease, sharedRelease]);
+  } catch (error) {
+    const [releaseResult] = await Promise.allSettled([localRelease()]);
+    if (releaseResult?.status === "rejected") {
+      throw recorderLockAcquisitionReleaseError(filePath, error, releaseResult.reason);
+    }
+    throw error;
+  }
+}
+
 async function acquireRecorderIdentityLock(
   identity: RecorderFileIdentity,
 ): Promise<(() => Promise<void>) | undefined> {
   const target = await recorderIdentityLockTarget(identity);
-  return target === undefined ? undefined : await acquireRecorderLock(target);
+  return target === undefined ? undefined : await acquireRecorderLock(target, false);
 }
 
 async function withRecorderLock(

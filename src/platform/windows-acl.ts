@@ -103,10 +103,29 @@ $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
 )
 $acl.SetAccessRule($rule)
 
-# This overload applies the final security descriptor as part of directory
-# creation. If the directory already exists it is left untouched and only
-# validated below.
-$directory = [System.IO.Directory]::CreateDirectory($directoryPath, $acl)
+# Apply the final security descriptor atomically for new directories, while
+# migrating roots created by older Crabline versions before validation.
+if ([System.IO.Directory]::Exists($directoryPath)) {
+  $directory = [System.IO.DirectoryInfo]::new($directoryPath)
+  if (($directory.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Private directory must not be a reparse point."
+  }
+  $acl = $directory.GetAccessControl()
+  $acl.SetOwner($sid)
+  $acl.SetAccessRuleProtection($true, $false)
+  $existingRules = @($acl.GetAccessRules(
+    $true,
+    $false,
+    [System.Security.Principal.SecurityIdentifier]
+  ))
+  foreach ($existingRule in $existingRules) {
+    [void]$acl.RemoveAccessRuleSpecific($existingRule)
+  }
+  $acl.SetAccessRule($rule)
+  $directory.SetAccessControl($acl)
+} else {
+  $directory = [System.IO.Directory]::CreateDirectory($directoryPath, $acl)
+}
 $actual = $directory.GetAccessControl()
 $ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
 $rules = @($actual.GetAccessRules(

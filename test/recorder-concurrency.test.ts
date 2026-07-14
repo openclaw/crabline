@@ -282,7 +282,7 @@ describe("recorder append serialization", () => {
       `${JSON.stringify(secondEvent)}\n`,
     ]);
     expect(fsMocks.serverSync).toHaveBeenCalledTimes(2);
-    expect(fsMocks.serverDirectorySync).toHaveBeenCalledOnce();
+    expect(fsMocks.serverDirectorySync).toHaveBeenCalledTimes(2);
     expect(fsMocks.lock).toHaveBeenCalledTimes(2);
     expect(fsMocks.serverOpen.mock.calls.map(([, flags]) => flags)).toEqual(["ax+", "ax+", "a+"]);
   });
@@ -509,7 +509,7 @@ describe("recorder append serialization", () => {
       ]);
       expect(fsMocks.providerSync).toHaveBeenCalledTimes(2);
       expect(fsMocks.providerDirectorySync).toHaveBeenCalledTimes(
-        process.platform === "win32" ? 0 : 1,
+        process.platform === "win32" ? 0 : 2,
       );
       expect(fsMocks.providerOpen.mock.calls.map(([, flags, mode]) => [flags, mode])).toEqual([
         ["ax+", 0o600],
