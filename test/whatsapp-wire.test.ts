@@ -641,9 +641,7 @@ describe("WhatsApp binary nodes", () => {
 
     expect(compressed).toHaveLength(WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES);
     await expect(decodeBinaryNode(frame)).resolves.toEqual(node);
-    await expect(
-      decodeBinaryNode(Buffer.concat([frame, Buffer.from([0])])),
-    ).rejects.toThrow(
+    await expect(decodeBinaryNode(Buffer.concat([frame, Buffer.from([0])]))).rejects.toThrow(
       `Compressed WhatsApp binary node frame is too large: ${
         WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES + 1
       }.`,
@@ -761,10 +759,7 @@ describe("WhatsApp binary nodes", () => {
 
   it.each([
     ["omitted", Buffer.alloc(0)],
-    [
-      "invalid",
-      Buffer.concat([Buffer.from([252, 11]), Buffer.from("not-interop")]),
-    ],
+    ["invalid", Buffer.concat([Buffer.from([252, 11]), Buffer.from("not-interop")])],
   ])("rejects an %s interop JID server", async (_label, serverToken) => {
     const frame = Buffer.concat([
       Buffer.from([0, 248, 3, 19, 6, 245, 252, 4]),
