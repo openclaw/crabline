@@ -323,7 +323,7 @@ export function handleSlackWebhookPayload(payload: unknown): Response | undefine
     }
     const eventType = optionalString(payload.event, "type");
     if (!eventType) {
-      return undefined;
+      return new Response(null, { status: 200 });
     }
     if (eventType !== "message" && eventType !== "app_mention") {
       return new Response(null, { status: 200 });

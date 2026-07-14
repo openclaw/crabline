@@ -249,6 +249,11 @@ function redactSensitiveSearchParams(searchParams: URLSearchParams): boolean {
   return redacted;
 }
 
+function redactUrlFragment(value: string): string {
+  const fragmentStart = value.indexOf("#");
+  return fragmentStart < 0 ? value : `${value.slice(0, fragmentStart)}#<redacted>`;
+}
+
 function redactMalformedUrlCredentials(value: string): string {
   const credentialRedacted = value.replace(
     /^(\s*)((?:[a-z][a-z0-9+.-]*:)?\/\/)[^/?#]*@/iu,
@@ -257,18 +262,19 @@ function redactMalformedUrlCredentials(value: string): string {
   if (credentialRedacted === value) {
     return "<redacted>";
   }
-  const queryStart = credentialRedacted.indexOf("?");
-  const fragmentStart = credentialRedacted.indexOf("#", queryStart + 1);
+  const fragmentRedacted = redactUrlFragment(credentialRedacted);
+  const queryStart = fragmentRedacted.indexOf("?");
+  const fragmentStart = fragmentRedacted.indexOf("#", queryStart + 1);
   if (queryStart < 0 || (fragmentStart >= 0 && fragmentStart < queryStart)) {
-    return credentialRedacted;
+    return fragmentRedacted;
   }
-  const queryEnd = fragmentStart >= 0 ? fragmentStart : credentialRedacted.length;
-  const searchParams = new URLSearchParams(credentialRedacted.slice(queryStart + 1, queryEnd));
+  const queryEnd = fragmentStart >= 0 ? fragmentStart : fragmentRedacted.length;
+  const searchParams = new URLSearchParams(fragmentRedacted.slice(queryStart + 1, queryEnd));
   if (!redactSensitiveSearchParams(searchParams)) {
-    return credentialRedacted;
+    return fragmentRedacted;
   }
   const search = searchParams.toString().replaceAll("%3Credacted%3E", "<redacted>");
-  return `${credentialRedacted.slice(0, queryStart)}?${search}${credentialRedacted.slice(queryEnd)}`;
+  return `${fragmentRedacted.slice(0, queryStart)}?${search}${fragmentRedacted.slice(queryEnd)}`;
 }
 
 function redactUrlCredentials(value: string): string {
@@ -280,11 +286,12 @@ function redactUrlCredentials(value: string): string {
   }
   const hasCredentials = Boolean(url.username || url.password);
   const redactedQuery = redactSensitiveSearchParams(url.searchParams);
+  const hasFragment = url.hash.length > 0;
   if (!hasCredentials && !redactedQuery) {
-    return value;
+    return hasFragment ? redactUrlFragment(value) : value;
   }
   const search = url.search.replaceAll("%3Credacted%3E", "<redacted>");
-  return `${url.protocol}//${hasCredentials ? "<redacted>@" : ""}${url.host}${url.pathname}${search}${url.hash}`;
+  return `${url.protocol}//${hasCredentials ? "<redacted>@" : ""}${url.host}${url.pathname}${search}${hasFragment ? "#<redacted>" : ""}`;
 }
 
 function requireParam(body: Record<string, unknown>, name: string): string | Response {
