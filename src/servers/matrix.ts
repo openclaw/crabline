@@ -501,7 +501,11 @@ function createSyncRoom(
 function jsonItemsByteLength(items: readonly unknown[], maxBytes: number): number | undefined {
   let bytes = 0;
   for (const item of items) {
-    bytes += Buffer.byteLength(JSON.stringify(item), "utf8");
+    const serialized = JSON.stringify(item);
+    if (serialized === undefined) {
+      return undefined;
+    }
+    bytes += Buffer.byteLength(serialized, "utf8");
     if (bytes > maxBytes) {
       return undefined;
     }
@@ -536,7 +540,11 @@ function boundedSyncRoom(
       break;
     }
     const entry = requestedTimeline[index]!;
-    const eventBytes = Buffer.byteLength(JSON.stringify(entry.event), "utf8");
+    const serializedEvent = JSON.stringify(entry.event);
+    if (serializedEvent === undefined) {
+      return undefined;
+    }
+    const eventBytes = Buffer.byteLength(serializedEvent, "utf8");
     if (timelineBytes + ephemeralBytes + eventBytes > maxBytes) {
       break;
     }
@@ -560,7 +568,11 @@ function boundedSyncRoom(
     if (!dropped) {
       return undefined;
     }
-    timelineBytes -= Buffer.byteLength(JSON.stringify(dropped.event), "utf8");
+    const serializedDropped = JSON.stringify(dropped.event);
+    if (serializedDropped === undefined) {
+      return undefined;
+    }
+    timelineBytes -= Buffer.byteLength(serializedDropped, "utf8");
   }
 }
 
