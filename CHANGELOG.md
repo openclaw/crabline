@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Stream Telegram multipart uploads with bounded parser metadata instead of copying complete files through `FormData`.
 - Keep Unix recorder identity locks in one validated private per-user namespace across processes and recorder path changes.
 - Reject non-positive Telegram admin message IDs and enforce native Mattermost channel types and unique normalized usernames.
 - Preserve local-mock webhook acceptance when clients disconnect or post-commit settlement hooks fail.

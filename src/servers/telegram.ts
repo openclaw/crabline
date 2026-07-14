@@ -34,6 +34,9 @@ import {
 } from "./telegram-identity.js";
 
 const TELEGRAM_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
+const TELEGRAM_MAX_MULTIPART_HEADER_BYTES = 16 * 1024;
+const TELEGRAM_MAX_MULTIPART_PARTS = 128;
+const TELEGRAM_MAX_MULTIPART_TEXT_BYTES = 1024 * 1024;
 const TELEGRAM_WEBHOOK_MAX_BACKOFF_EXPONENT = 5;
 const TELEGRAM_WEBHOOK_RETRY_BASE_MS = 100;
 const TELEGRAM_WEBHOOK_DELIVERY_TIMEOUT_MS = 3_000;
@@ -175,6 +178,16 @@ type TelegramMultipartFile = {
   fileName: string;
 };
 
+type TelegramMultipartDisposition = {
+  fileName?: string | undefined;
+  name: string;
+};
+
+type TelegramMimeParameter = {
+  quoted: boolean;
+  value: string;
+};
+
 type TelegramChat = {
   id: number;
   title?: string;
@@ -290,12 +303,19 @@ function telegramError(description: string, status = 400): Response {
 }
 
 async function parseRequestBody(request: IncomingMessage): Promise<unknown> {
+  const contentType = request.headers["content-type"] ?? "";
+  const contentTypes = Array.isArray(contentType) ? contentType : [contentType];
+  const multipartType = contentTypes.find((entry) =>
+    entry.toLowerCase().includes("multipart/form-data"),
+  );
+  if (multipartType) {
+    return await parseMultipartFormDataRequest(request, multipartType);
+  }
+
   const body = await readBody(request, TELEGRAM_MAX_REQUEST_BODY_BYTES);
   if (body.length === 0) {
     return {};
   }
-  const contentType = request.headers["content-type"] ?? "";
-  const contentTypes = Array.isArray(contentType) ? contentType : [contentType];
   if (contentTypes.some(isJsonMediaType)) {
     try {
       return JSON.parse(body.toString("utf8")) as unknown;
@@ -303,44 +323,476 @@ async function parseRequestBody(request: IncomingMessage): Promise<unknown> {
       throw new InvalidJsonBodyError(error);
     }
   }
-  const multipartType = contentTypes.find((entry) =>
-    entry.toLowerCase().includes("multipart/form-data"),
-  );
-  if (multipartType) {
-    return await parseMultipartFormDataBody(body, multipartType);
-  }
   const params = new URLSearchParams(body.toString("utf8"));
   return Object.fromEntries(params.entries());
 }
 
-async function parseMultipartFormDataBody(
-  body: Buffer,
+function invalidTelegramMultipartBody(message: string): InvalidJsonBodyError {
+  return new InvalidJsonBodyError(new Error(message));
+}
+
+function parseTelegramMimeParameters(
+  value: string,
+  options: { decodeQuotedPairs?: boolean } = {},
+): {
+  parameters: Map<string, TelegramMimeParameter>;
+  type: string;
+} {
+  const separator = value.indexOf(";");
+  const type = value
+    .slice(0, separator < 0 ? value.length : separator)
+    .trim()
+    .toLowerCase();
+  const parameters = new Map<string, TelegramMimeParameter>();
+  let index = separator < 0 ? value.length : separator + 1;
+  while (index < value.length) {
+    while (index < value.length && /[\t ;]/u.test(value[index] ?? "")) {
+      index += 1;
+    }
+    if (index >= value.length) {
+      break;
+    }
+
+    const nameStart = index;
+    while (index < value.length && /[!#$%&'*+\-.^_`|~0-9A-Za-z]/u.test(value[index] ?? "")) {
+      index += 1;
+    }
+    const name = value.slice(nameStart, index).toLowerCase();
+    while (index < value.length && /[\t ]/u.test(value[index] ?? "")) {
+      index += 1;
+    }
+    if (!name || value[index] !== "=") {
+      throw invalidTelegramMultipartBody("Multipart header contains a malformed parameter.");
+    }
+    index += 1;
+    while (index < value.length && /[\t ]/u.test(value[index] ?? "")) {
+      index += 1;
+    }
+
+    let parameterValue = "";
+    let quoted = false;
+    if (value[index] === '"') {
+      quoted = true;
+      index += 1;
+      let closed = false;
+      while (index < value.length) {
+        const character = value[index];
+        index += 1;
+        if (character === "\\" && options.decodeQuotedPairs) {
+          if (index >= value.length) {
+            break;
+          }
+          parameterValue += value[index];
+          index += 1;
+        } else if (character === '"') {
+          closed = true;
+          break;
+        } else if (character === "\r" || character === "\n") {
+          break;
+        } else {
+          parameterValue += character;
+        }
+      }
+      if (!closed) {
+        throw invalidTelegramMultipartBody("Multipart header contains an unterminated quote.");
+      }
+      while (index < value.length && /[\t ]/u.test(value[index] ?? "")) {
+        index += 1;
+      }
+      if (index < value.length && value[index] !== ";") {
+        throw invalidTelegramMultipartBody("Multipart header contains trailing parameter data.");
+      }
+    } else {
+      const parameterStart = index;
+      while (index < value.length && value[index] !== ";") {
+        if (value[index] === "\r" || value[index] === "\n") {
+          throw invalidTelegramMultipartBody("Multipart header contains a line break.");
+        }
+        index += 1;
+      }
+      parameterValue = value.slice(parameterStart, index).trim();
+    }
+    parameters.set(name, { quoted, value: parameterValue });
+    if (value[index] === ";") {
+      index += 1;
+    }
+  }
+  return { parameters, type };
+}
+
+function parseTelegramMultipartBoundary(contentType: string): Buffer {
+  const parsed = parseTelegramMimeParameters(contentType, { decodeQuotedPairs: true });
+  const boundary = parsed.parameters.get("boundary")?.value;
+  if (
+    parsed.type !== "multipart/form-data" ||
+    !boundary ||
+    boundary.length > 70 ||
+    boundary.endsWith(" ") ||
+    !/^[0-9A-Za-z'()+_,./:=? -]+$/u.test(boundary)
+  ) {
+    throw invalidTelegramMultipartBody("Multipart boundary is missing or invalid.");
+  }
+  return Buffer.from(`--${boundary}`, "ascii");
+}
+
+function decodeTelegramMultipartParameter(parameter: TelegramMimeParameter): string {
+  return parameter.quoted
+    ? parameter.value.replace(/%0A/giu, "\n").replace(/%0D/giu, "\r").replace(/%22/giu, '"')
+    : parameter.value;
+}
+
+function decodeTelegramMultipartExtendedParameter(parameter: TelegramMimeParameter): string {
+  const extended = /^([^']*)'[^']*'(.*)$/u.exec(parameter.value);
+  if (!extended) {
+    return decodeTelegramMultipartParameter(parameter);
+  }
+  const charset = extended[1]?.toLowerCase();
+  if (charset !== "utf-8" && charset !== "us-ascii") {
+    return decodeTelegramMultipartParameter(parameter);
+  }
+  try {
+    return decodeURIComponent(extended[2] ?? "");
+  } catch {
+    return extended[2] ?? "";
+  }
+}
+
+function parseTelegramMultipartDisposition(headerBlock: Buffer): TelegramMultipartDisposition {
+  let contentDisposition: string | undefined;
+  for (const line of headerBlock.toString("utf8").split("\r\n")) {
+    const separator = line.indexOf(":");
+    if (separator <= 0) {
+      throw invalidTelegramMultipartBody("Multipart part contains a malformed header.");
+    }
+    if (line.slice(0, separator).trim().toLowerCase() === "content-disposition") {
+      contentDisposition = line.slice(separator + 1).trim();
+    }
+  }
+  if (!contentDisposition) {
+    throw invalidTelegramMultipartBody("Multipart part is missing a form-data disposition.");
+  }
+
+  const parsed = parseTelegramMimeParameters(contentDisposition);
+  if (parsed.type !== "form-data") {
+    throw invalidTelegramMultipartBody("Multipart part is missing a form-data disposition.");
+  }
+  const rawName = parsed.parameters.get("name");
+  if (rawName === undefined) {
+    throw invalidTelegramMultipartBody("Multipart part is missing a field name.");
+  }
+  const rawFileName = parsed.parameters.get("filename");
+  const rawExtendedFileName = parsed.parameters.get("filename*");
+  return {
+    ...(rawExtendedFileName !== undefined
+      ? { fileName: decodeTelegramMultipartExtendedParameter(rawExtendedFileName) }
+      : rawFileName !== undefined
+        ? { fileName: decodeTelegramMultipartParameter(rawFileName) }
+        : {}),
+    name: decodeTelegramMultipartParameter(rawName),
+  };
+}
+
+class TelegramMultipartReader {
+  readonly #iterator: AsyncIterator<Buffer | string>;
+  #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  #ended = false;
+  #totalBytes = 0;
+
+  constructor(
+    private readonly request: IncomingMessage,
+    private readonly maxBytes: number,
+  ) {
+    this.#iterator = request[Symbol.asyncIterator]() as AsyncIterator<Buffer | string>;
+  }
+
+  async readUntil(delimiter: Buffer, maxBytes: number): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    let length = 0;
+    while (true) {
+      const delimiterIndex = this.#buffer.indexOf(delimiter);
+      if (delimiterIndex >= 0) {
+        length += delimiterIndex;
+        if (length > maxBytes) {
+          throw new RequestBodyTooLargeError(maxBytes);
+        }
+        chunks.push(this.#buffer.subarray(0, delimiterIndex));
+        this.#consume(delimiterIndex + delimiter.length);
+        return Buffer.concat(chunks, length);
+      }
+
+      const emitLength = Math.max(0, this.#buffer.length - delimiter.length + 1);
+      if (emitLength > 0) {
+        length += emitLength;
+        if (length > maxBytes) {
+          throw new RequestBodyTooLargeError(maxBytes);
+        }
+        chunks.push(this.#buffer.subarray(0, emitLength));
+        this.#consume(emitLength);
+      }
+      if (!(await this.#readMore())) {
+        throw invalidTelegramMultipartBody("Multipart delimiter is incomplete.");
+      }
+    }
+  }
+
+  async readInitialBoundary(boundary: Buffer, maxPreambleBytes: number): Promise<"final" | "next"> {
+    const lineBoundary = Buffer.concat([Buffer.from("\r\n"), boundary]);
+    let preambleBytes = 0;
+    let checkBodyStart = true;
+    while (true) {
+      if (checkBodyStart) {
+        await this.#ensure(boundary.length + 2);
+        checkBodyStart = false;
+        if (this.#buffer.subarray(0, boundary.length).equals(boundary)) {
+          const suffix = await this.#readBoundarySuffix(boundary.length);
+          if (suffix) {
+            this.#consume(suffix.consumedBytes);
+            return suffix.kind;
+          }
+        }
+      }
+
+      const boundaryIndex = this.#buffer.indexOf(lineBoundary);
+      if (boundaryIndex >= 0) {
+        const suffixOffset = boundaryIndex + lineBoundary.length;
+        if (this.#buffer.length < suffixOffset + 2) {
+          if (boundaryIndex > 0) {
+            preambleBytes += boundaryIndex;
+            if (preambleBytes > maxPreambleBytes) {
+              throw new RequestBodyTooLargeError(maxPreambleBytes);
+            }
+            this.#consume(boundaryIndex);
+          }
+          if (!(await this.#readMore())) {
+            throw invalidTelegramMultipartBody("Multipart boundary is incomplete.");
+          }
+          continue;
+        }
+
+        const suffix = await this.#readBoundarySuffix(suffixOffset);
+        if (suffix) {
+          preambleBytes += boundaryIndex;
+          if (preambleBytes > maxPreambleBytes) {
+            throw new RequestBodyTooLargeError(maxPreambleBytes);
+          }
+          this.#consume(suffix.consumedBytes);
+          return suffix.kind;
+        }
+
+        const emitLength = suffixOffset;
+        preambleBytes += emitLength;
+        if (preambleBytes > maxPreambleBytes) {
+          throw new RequestBodyTooLargeError(maxPreambleBytes);
+        }
+        this.#consume(emitLength);
+        continue;
+      }
+
+      const emitLength = Math.max(0, this.#buffer.length - lineBoundary.length + 1);
+      if (emitLength > 0) {
+        preambleBytes += emitLength;
+        if (preambleBytes > maxPreambleBytes) {
+          throw new RequestBodyTooLargeError(maxPreambleBytes);
+        }
+        this.#consume(emitLength);
+      }
+      if (!(await this.#readMore())) {
+        throw invalidTelegramMultipartBody("Multipart body is missing its initial boundary.");
+      }
+    }
+  }
+
+  async readPartBody(
+    boundaryMarker: Buffer,
+    onChunk: (chunk: Buffer) => void,
+  ): Promise<"final" | "next"> {
+    while (true) {
+      const boundaryIndex = this.#buffer.indexOf(boundaryMarker);
+      if (boundaryIndex >= 0) {
+        const suffixOffset = boundaryIndex + boundaryMarker.length;
+        if (this.#buffer.length < suffixOffset + 2) {
+          if (boundaryIndex > 0) {
+            onChunk(this.#buffer.subarray(0, boundaryIndex));
+            this.#consume(boundaryIndex);
+          }
+          if (!(await this.#readMore())) {
+            throw invalidTelegramMultipartBody("Multipart boundary is incomplete.");
+          }
+          continue;
+        }
+
+        const suffix = await this.#readBoundarySuffix(suffixOffset);
+        if (suffix) {
+          if (boundaryIndex > 0) {
+            onChunk(this.#buffer.subarray(0, boundaryIndex));
+          }
+          this.#consume(suffix.consumedBytes);
+          return suffix.kind;
+        }
+
+        const emitLength = suffixOffset;
+        onChunk(this.#buffer.subarray(0, emitLength));
+        this.#consume(emitLength);
+        continue;
+      }
+
+      const emitLength = Math.max(0, this.#buffer.length - boundaryMarker.length + 1);
+      if (emitLength > 0) {
+        onChunk(this.#buffer.subarray(0, emitLength));
+        this.#consume(emitLength);
+      }
+      if (!(await this.#readMore())) {
+        throw invalidTelegramMultipartBody("Multipart body is missing its closing boundary.");
+      }
+    }
+  }
+
+  async consumeRemainder(): Promise<void> {
+    while (await this.#readMore()) {
+      this.#buffer = Buffer.alloc(0);
+    }
+  }
+
+  #consume(length: number): void {
+    this.#buffer = this.#buffer.subarray(length);
+  }
+
+  async #ensure(length: number): Promise<void> {
+    while (this.#buffer.length < length) {
+      if (!(await this.#readMore())) {
+        throw invalidTelegramMultipartBody("Multipart body ended unexpectedly.");
+      }
+    }
+  }
+
+  async #readBoundarySuffix(
+    suffixOffset: number,
+  ): Promise<{ consumedBytes: number; kind: "final" | "next" } | undefined> {
+    await this.#ensure(suffixOffset + 2);
+    const suffix = this.#buffer.subarray(suffixOffset, suffixOffset + 2);
+    const final = suffix.equals(Buffer.from("--"));
+    let lineEnd = suffixOffset + (final ? 2 : 0);
+    while (true) {
+      while (
+        lineEnd < this.#buffer.length &&
+        (this.#buffer[lineEnd] === 0x20 || this.#buffer[lineEnd] === 0x09)
+      ) {
+        lineEnd += 1;
+        if (lineEnd - suffixOffset > TELEGRAM_MAX_MULTIPART_HEADER_BYTES) {
+          return undefined;
+        }
+      }
+      if (lineEnd >= this.#buffer.length) {
+        if (await this.#readMore()) {
+          continue;
+        }
+        return final ? { consumedBytes: lineEnd, kind: "final" } : undefined;
+      }
+      if (this.#buffer[lineEnd] !== 0x0d) {
+        return undefined;
+      }
+      if (lineEnd + 1 >= this.#buffer.length) {
+        if (await this.#readMore()) {
+          continue;
+        }
+        return undefined;
+      }
+      return this.#buffer[lineEnd + 1] === 0x0a
+        ? { consumedBytes: lineEnd + 2, kind: final ? "final" : "next" }
+        : undefined;
+    }
+  }
+
+  async #readMore(): Promise<boolean> {
+    if (this.#ended) {
+      return false;
+    }
+    const next = await this.#iterator.next();
+    if (next.done) {
+      this.#ended = true;
+      return false;
+    }
+    const chunk = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value);
+    this.#totalBytes += chunk.length;
+    if (this.#totalBytes > this.maxBytes) {
+      throw new RequestBodyTooLargeError(this.maxBytes);
+    }
+    this.#buffer =
+      this.#buffer.length === 0
+        ? chunk
+        : Buffer.concat([this.#buffer, chunk], this.#buffer.length + chunk.length);
+    return true;
+  }
+}
+
+function enforceTelegramMultipartContentLength(request: IncomingMessage): void {
+  const contentLengthHeader = request.headers["content-length"];
+  const contentLength = Array.isArray(contentLengthHeader)
+    ? contentLengthHeader[0]
+    : contentLengthHeader;
+  if (contentLength && /^\d+$/u.test(contentLength)) {
+    const bytes = Number(contentLength);
+    if (!Number.isSafeInteger(bytes) || bytes > TELEGRAM_MAX_REQUEST_BODY_BYTES) {
+      drainRequestBody(request);
+      throw new RequestBodyTooLargeError(TELEGRAM_MAX_REQUEST_BODY_BYTES);
+    }
+  }
+}
+
+async function parseMultipartFormDataRequest(
+  request: IncomingMessage,
   contentType: string,
 ): Promise<Record<string, unknown>> {
-  let form: FormData;
+  enforceTelegramMultipartContentLength(request);
   try {
-    form = await new Request("http://localhost", {
-      body,
-      headers: { "content-type": contentType },
-      method: "POST",
-    }).formData();
+    const boundary = parseTelegramMultipartBoundary(contentType);
+    const bodyBoundary = Buffer.concat([Buffer.from("\r\n"), boundary]);
+    const reader = new TelegramMultipartReader(request, TELEGRAM_MAX_REQUEST_BODY_BYTES);
+    const fields: Record<string, unknown> = {};
+    let retainedTextBytes = 0;
+    let partCount = 0;
+    let boundaryKind = await reader.readInitialBoundary(
+      boundary,
+      TELEGRAM_MAX_MULTIPART_HEADER_BYTES,
+    );
+    while (boundaryKind !== "final") {
+      partCount += 1;
+      if (partCount > TELEGRAM_MAX_MULTIPART_PARTS) {
+        throw new RequestBodyTooLargeError(TELEGRAM_MAX_MULTIPART_PARTS);
+      }
+      const disposition = parseTelegramMultipartDisposition(
+        await reader.readUntil(Buffer.from("\r\n\r\n"), TELEGRAM_MAX_MULTIPART_HEADER_BYTES),
+      );
+      const digest = disposition.fileName === undefined ? undefined : createHash("sha256");
+      const textChunks: Buffer[] = [];
+      let textLength = 0;
+      boundaryKind = await reader.readPartBody(bodyBoundary, (chunk) => {
+        if (digest) {
+          digest.update(chunk);
+          return;
+        }
+        retainedTextBytes += chunk.length;
+        textLength += chunk.length;
+        if (retainedTextBytes > TELEGRAM_MAX_MULTIPART_TEXT_BYTES) {
+          throw new RequestBodyTooLargeError(TELEGRAM_MAX_MULTIPART_TEXT_BYTES);
+        }
+        textChunks.push(Buffer.from(chunk));
+      });
+      fields[disposition.name] =
+        digest && disposition.fileName !== undefined
+          ? ({
+              [TELEGRAM_MULTIPART_FILE]: true,
+              contentDigest: digest.digest("base64url"),
+              fileName: disposition.fileName,
+            } satisfies TelegramMultipartFile)
+          : Buffer.concat(textChunks, textLength).toString("utf8");
+    }
+    await reader.consumeRemainder();
+    return fields;
   } catch (error) {
-    throw new InvalidJsonBodyError(error);
+    drainRequestBody(request);
+    throw error;
   }
-  const fields: Record<string, unknown> = {};
-  for (const [name, value] of form) {
-    fields[name] =
-      typeof value === "string"
-        ? value
-        : ({
-            [TELEGRAM_MULTIPART_FILE]: true,
-            contentDigest: createHash("sha256")
-              .update(Buffer.from(await value.arrayBuffer()))
-              .digest("base64url"),
-            fileName: value.name,
-          } satisfies TelegramMultipartFile);
-  }
-  return fields;
 }
 
 function requireTelegramBotPath(pathname: string): { method: string; token: string } | undefined {
