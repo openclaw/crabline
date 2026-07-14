@@ -389,10 +389,10 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
   }
 
   async #send(context: SendContext): Promise<SendResult> {
-    const { signal } = context;
+    const signal = this.#signalFor(context.signal);
     const threadId = this.#codec.resolveThreadId(context.fixture.target);
     const messageId = createMessageId(this.platform);
-    signal?.throwIfAborted();
+    signal.throwIfAborted();
     const events: Parameters<typeof appendRecordedInboundBatch>[1] = [
       {
         author: "user",
@@ -412,7 +412,7 @@ export class LocalMockProviderAdapter implements ProviderAdapter {
 
     if (context.mode !== "send" && context.fixture.target.behavior !== "sink") {
       await sleep(this.#config.loopback?.delayMs ?? 25, signal);
-      signal?.throwIfAborted();
+      signal.throwIfAborted();
       events.push({
         author: "assistant",
         id: `${messageId}-reply`,

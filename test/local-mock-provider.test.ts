@@ -963,6 +963,36 @@ describe("local mock provider", () => {
     await expect(readRecordedInbound(recorderPath)).resolves.toEqual([]);
   });
 
+  it("cancels an uncommitted roundtrip send during cleanup", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "cleanup-send.jsonl");
+    const config = createConfig();
+    config.loopback = { delayMs: 60_000 };
+    const provider = new LocalMockProviderAdapter({
+      codec: createGenericLocalMockTargetCodec("slack"),
+      config,
+      id: "provider-a",
+      options: {
+        defaultWebhook: { host: "127.0.0.1", path: "/slack/events", port: 0 },
+        endpointLabel: "events endpoint",
+        platform: "slack",
+        recorderPath,
+      },
+    });
+    providers.push(provider);
+    const sending = provider.send({
+      ...createContext(config),
+      mode: "roundtrip",
+      nonce: "cleanup-before-commit",
+      text: "do not commit",
+    });
+
+    await expect(provider.cleanup()).resolves.toBeUndefined();
+    await expect(sending).rejects.toThrow(/cleaned up/u);
+    await expect(readRecordedInbound(recorderPath)).resolves.toEqual([]);
+  });
+
   it("closes ingress at the cleanup fence and drains admitted webhook handlers", async () => {
     let handleRequest: ((request: Request) => Promise<Response>) | undefined;
     let releaseHandler!: () => void;

@@ -402,7 +402,7 @@ describe("WhatsApp provider lifecycle", () => {
     expect(recorderMocks.appendRecordedInbound).not.toHaveBeenCalled();
   });
 
-  it("waits for an admitted send before cleanup resolves", async () => {
+  it("waits for admitted send persistence before cleanup resolves", async () => {
     const directory = await createTempDir();
     const recorderPath = path.join(directory, "whatsapp.jsonl");
     let cleanup: Promise<void> | undefined;
@@ -411,13 +411,9 @@ describe("WhatsApp provider lifecycle", () => {
     const replyBlocked = new Promise<void>((resolve) => {
       releaseReply = resolve;
     });
-    let appendCount = 0;
-    recorderMocks.appendRecordedInbound.mockImplementation(async (...args) => {
-      appendCount += 1;
-      if (appendCount === 2) {
-        await replyBlocked;
-      }
-      return await recorderMocks.actualAppendRecordedInbound!(...args);
+    recorderMocks.appendRecordedInboundBatch.mockImplementation(async (...args) => {
+      await replyBlocked;
+      return await recorderMocks.actualAppendRecordedInboundBatch!(...args);
     });
 
     try {
@@ -430,9 +426,10 @@ describe("WhatsApp provider lifecycle", () => {
         nonce: "whatsapp-cleanup-race",
         text: "finish before cleanup",
       });
-      await vi.waitFor(() => expect(recorderMocks.appendRecordedInbound).toHaveBeenCalledTimes(2), {
-        timeout: 5_000,
-      });
+      await vi.waitFor(
+        () => expect(recorderMocks.appendRecordedInboundBatch).toHaveBeenCalledTimes(1),
+        { timeout: 5_000 },
+      );
 
       let cleanupResolved = false;
       cleanup = provider.cleanup().then(() => {
@@ -440,13 +437,13 @@ describe("WhatsApp provider lifecycle", () => {
       });
       await Promise.resolve();
       expect(cleanupResolved).toBe(false);
-      expect((await readFile(recorderPath, "utf8")).trim().split("\n")).toHaveLength(1);
+      await expect(readRecordedInbound(recorderPath)).resolves.toEqual([]);
 
       releaseReply?.();
       await cleanup;
       await sending;
       const contentsAfterCleanup = await readFile(recorderPath, "utf8");
-      expect(contentsAfterCleanup.trim().split("\n")).toHaveLength(2);
+      await expect(readRecordedInbound(recorderPath)).resolves.toHaveLength(2);
       await Promise.resolve();
       expect(await readFile(recorderPath, "utf8")).toBe(contentsAfterCleanup);
     } finally {

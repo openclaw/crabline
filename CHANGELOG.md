@@ -7,6 +7,7 @@
 - Require the literal Crabline artifact channel driver and retry current-generation validation across concurrent artifact rotation.
 - Authenticate Telegram webhooks before reading request bodies and abort webhook handlers when clients disconnect.
 - Commit mock provider roundtrip sends atomically so aborted replies leave no partial outbound record.
+- Cancel uncommitted mock provider sends when adapter cleanup begins.
 - Preserve probe HTTP failures when response cancellation stalls and close readiness adapters before returning probe failures.
 - Bind private-directory ACL and recorder-lock mutations to verified identities, quarantine process locks before artifact cleanup, and preserve Windows ancestry rollback failures.
 - Require explicit remote iMessage API keys and decode legacy loopback channel metadata consistently.
