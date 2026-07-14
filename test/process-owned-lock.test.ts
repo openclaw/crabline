@@ -565,8 +565,9 @@ describe("process-owned lock filesystem", () => {
     }
   });
 
-  it("preserves a replacement tree at a coordination claim path", async () => {
+  it("does not reuse a replacement coordination claim", async () => {
     const target = await createLockTarget();
+    const replacementOwner = await currentOwnerRecord();
     const lockFileSystem = createProcessOwnedLockFileSystem();
     const readDirectory = fs.readdirSync.bind(fs);
     let sentinelPath: string | undefined;
@@ -578,6 +579,11 @@ describe("process-owned lock filesystem", () => {
       ) {
         fs.renameSync(claimPath, `${claimPath}.original`);
         fs.mkdirSync(claimPath);
+        fs.writeFileSync(
+          path.join(claimPath, "crabline-owner.json"),
+          `${JSON.stringify({ ...replacementOwner, token: randomUUID() })}\n`,
+          { mode: 0o600 },
+        );
         const replacementTree = path.join(claimPath, "replacement");
         fs.mkdirSync(replacementTree);
         sentinelPath = path.join(replacementTree, "sentinel");
@@ -596,12 +602,12 @@ describe("process-owned lock filesystem", () => {
       });
       expect(sentinelPath).toBeDefined();
       expect(fs.readFileSync(sentinelPath!, "utf8")).toBe("preserve");
-      await release();
+      await expect(release()).rejects.toMatchObject({ code: "ELOCKED" });
       expect(fs.readFileSync(sentinelPath!, "utf8")).toBe("preserve");
     } finally {
       readdirSpy.mockRestore();
     }
-  });
+  }, 10_000);
 
   it("preserves a replacement tree at a release tombstone path", async () => {
     const target = await createLockTarget();

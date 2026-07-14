@@ -54,7 +54,7 @@ const pendingAppends = new Map<string, Promise<void>>();
 const pendingAdmissions = new Map<string, Promise<void>>();
 const pendingLogicalObservers = new Map<string, ObserverTask>();
 const pendingPublicationObservers = new Map<string, ObserverTask>();
-const securedWindowsLockRoots = new Map<string, Promise<{ dev: number; ino: number }>>();
+const securedWindowsLockRoots = new Map<string, Promise<{ dev: bigint; ino: bigint }>>();
 const MAX_RECOVERY_VALIDATION_BYTES = 64 * 1024 * 1024;
 const MAX_RECOVERY_SCAN_BYTES = MAX_RECOVERY_VALIDATION_BYTES + 1;
 const RECORDER_LOCK_RETRY_MS = 100;
@@ -121,6 +121,14 @@ function recoveryValidationLimitError(): Error {
   );
 }
 
+function recorderFileSize(size: bigint | number): number {
+  const normalized = typeof size === "bigint" ? Number(size) : size;
+  if (!Number.isSafeInteger(normalized) || normalized < 0) {
+    throw new Error("Server recorder file size exceeds the supported range.");
+  }
+  return normalized;
+}
+
 async function openRecorderFile(
   filePath: string,
 ): Promise<{ created: boolean; file: Awaited<ReturnType<typeof open>> }> {
@@ -164,7 +172,7 @@ async function truncateRecorderFile(
   let operationFailed = false;
   let operationError: unknown;
   try {
-    if (requireRecorderIdentity(await repairFile.stat()) === expectedIdentity) {
+    if (requireRecorderIdentity(await repairFile.stat({ bigint: true })) === expectedIdentity) {
       await repairFile.truncate(length);
       await repairFile.sync();
       result = true;
@@ -242,10 +250,7 @@ async function syncRecorderPathAncestry(
   }
 }
 
-function recorderIdentity(stats: {
-  dev?: bigint | number;
-  ino?: bigint | number;
-}): string | undefined {
+function recorderIdentity(stats: { dev?: bigint; ino?: bigint }): string | undefined {
   if (stats.dev === undefined || stats.ino === undefined) {
     return undefined;
   }
@@ -253,9 +258,9 @@ function recorderIdentity(stats: {
 }
 
 function requireRecorderFileIdentity(stats: {
-  dev?: bigint | number;
-  ino?: bigint | number;
-  nlink?: bigint | number;
+  dev?: bigint;
+  ino?: bigint;
+  nlink?: bigint;
 }): RecorderFileIdentity {
   if (stats.dev === undefined || stats.ino === undefined) {
     throw new Error("Server recorder file identity is unavailable.");
@@ -264,9 +269,9 @@ function requireRecorderFileIdentity(stats: {
     throw new Error("Server recorder file link count is unavailable.");
   }
   return {
-    dev: BigInt(stats.dev),
-    ino: BigInt(stats.ino),
-    nlink: BigInt(stats.nlink),
+    dev: stats.dev,
+    ino: stats.ino,
+    nlink: stats.nlink,
   };
 }
 
@@ -275,7 +280,7 @@ async function recorderPathHasIdentity(
   expectedIdentity: string,
 ): Promise<boolean> {
   try {
-    return recorderIdentity(await statPath(filePath)) === expectedIdentity;
+    return recorderIdentity(await statPath(filePath, { bigint: true })) === expectedIdentity;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return false;
@@ -284,7 +289,7 @@ async function recorderPathHasIdentity(
   }
 }
 
-function requireRecorderIdentity(stats: { dev?: bigint | number; ino?: bigint | number }): string {
+function requireRecorderIdentity(stats: { dev?: bigint; ino?: bigint }): string {
   const identity = recorderIdentity(stats);
   if (identity === undefined) {
     throw new Error("Server recorder file identity is unavailable.");
@@ -385,7 +390,7 @@ export async function secureServerRecorderWindowsLockRoot(
     if (!secured) {
       secured = (async () => {
         await (options.createWindowsDirectory ?? createOwnerOnlyWindowsDirectory)(root);
-        const identity = await lstat(root);
+        const identity = await lstat(root, { bigint: true });
         if (!identity.isDirectory() || identity.isSymbolicLink()) {
           throw new Error("Server recorder Windows lock root is not a private directory.");
         }
@@ -397,7 +402,7 @@ export async function secureServerRecorderWindowsLockRoot(
     const expected = await secured;
     let current: Awaited<ReturnType<typeof lstat>>;
     try {
-      current = await lstat(root);
+      current = await lstat(root, { bigint: true });
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT" && code !== "ENOTDIR") {
@@ -623,7 +628,7 @@ async function appendRecorderAttempt(params: {
     if (opened.created) {
       await file.chmod(0o600);
     }
-    const openedStats = await file.stat();
+    const openedStats = await file.stat({ bigint: true });
     let identity = requireRecorderIdentity(openedStats);
     if (!(await recorderPathHasIdentity(params.publicationPath, identity))) {
       result = "retry";
@@ -631,7 +636,7 @@ async function appendRecorderAttempt(params: {
       const lockedIdentity = requireRecorderFileIdentity(openedStats);
       releaseIdentityLock = await acquireRecorderIdentityLock(lockedIdentity);
       // Lock acquisition may have blocked while another writer repaired or appended.
-      let stats = await file.stat();
+      let stats = await file.stat({ bigint: true });
       identity = requireRecorderIdentity(stats);
       if (
         identity !== `${lockedIdentity.dev}:${lockedIdentity.ino}` ||
@@ -642,11 +647,12 @@ async function appendRecorderAttempt(params: {
         result = "retargeted";
       }
       if (result === undefined) {
-        if (stats.size > 0) {
-          const finalByte = await readBufferAt(file, 1, stats.size - 1);
+        const fileSize = recorderFileSize(stats.size);
+        if (fileSize > 0) {
+          const finalByte = await readBufferAt(file, 1, fileSize - 1);
           if (finalByte[0] !== 0x0a) {
-            const tailStart = await findIncompleteTailStart(file, stats.size);
-            const tailLength = stats.size - tailStart;
+            const tailStart = await findIncompleteTailStart(file, fileSize);
+            const tailLength = fileSize - tailStart;
             if (tailLength > MAX_RECOVERY_VALIDATION_BYTES) {
               throw recoveryValidationLimitError();
             }
@@ -670,7 +676,7 @@ async function appendRecorderAttempt(params: {
           }
         }
         if (result === undefined) {
-          stats = await file.stat();
+          stats = await file.stat({ bigint: true });
           identity = requireRecorderIdentity(stats);
         }
         if (

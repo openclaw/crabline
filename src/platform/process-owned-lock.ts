@@ -31,12 +31,12 @@ type RecoveryClaim = {
 };
 
 type DirectoryIdentity = {
-  dev: number;
-  ino: number;
+  dev: bigint;
+  ino: bigint;
 };
 
 type SupersededRecoveryClaim = {
-  identity: DirectoryIdentity & { mtimeMs: number };
+  identity: DirectoryIdentity & { mtimeMs: bigint };
   path: string;
 };
 
@@ -398,13 +398,13 @@ function isExactProcessIdentity(identity: string): boolean {
   );
 }
 
-function directoryIdentity(stats: Pick<fs.Stats, "dev" | "ino">): DirectoryIdentity {
+function directoryIdentity(stats: Pick<fs.BigIntStats, "dev" | "ino">): DirectoryIdentity {
   return { dev: stats.dev, ino: stats.ino };
 }
 
 function directoryIdentityMatches(
   expected: DirectoryIdentity | undefined,
-  actual: Pick<fs.Stats, "dev" | "ino">,
+  actual: Pick<fs.BigIntStats, "dev" | "ino">,
 ): boolean {
   return expected !== undefined && expected.dev === actual.dev && expected.ino === actual.ino;
 }
@@ -420,11 +420,11 @@ function isLockArtifactName(name: string): boolean {
 function verifiedLockDirectoryStats(
   directoryPath: fs.PathLike,
   expectedIdentity: DirectoryIdentity,
-  expectedMtimeMs?: number,
-): fs.Stats | undefined {
-  let stats: fs.Stats;
+  expectedMtimeMs?: bigint,
+): fs.BigIntStats | undefined {
+  let stats: fs.BigIntStats;
   try {
-    stats = fs.lstatSync(directoryPath);
+    stats = fs.lstatSync(directoryPath, { bigint: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return undefined;
@@ -445,7 +445,7 @@ function verifiedLockDirectoryStats(
 function removeVerifiedLockDirectorySync(
   directoryPath: fs.PathLike,
   expectedIdentity: DirectoryIdentity,
-  expectedMtimeMs?: number,
+  expectedMtimeMs?: bigint,
 ): void {
   if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity, expectedMtimeMs)) {
     return;
@@ -463,7 +463,7 @@ function removeVerifiedLockDirectorySync(
       return;
     }
     const artifactPath = path.join(String(directoryPath), entry);
-    const artifact = fs.lstatSync(artifactPath);
+    const artifact = fs.lstatSync(artifactPath, { bigint: true });
     if (!artifact.isFile() || artifact.isSymbolicLink()) {
       throw lockCleanupError("Recorder lock cleanup found an unsafe artifact.");
     }
@@ -477,7 +477,7 @@ function removeVerifiedLockDirectorySync(
     if (!verifiedLockDirectoryStats(directoryPath, expectedIdentity)) {
       return;
     }
-    const artifact = fs.lstatSync(artifactPath);
+    const artifact = fs.lstatSync(artifactPath, { bigint: true });
     if (!artifact.isFile() || artifact.isSymbolicLink()) {
       throw lockCleanupError("Recorder lock cleanup artifact changed.");
     }
@@ -718,14 +718,14 @@ function publishAbandonedOwnerMarker(lockDirectory: fs.PathLike, ownerToken: str
   }
   const markerPath = abandonedOwnerMarkerPath(lockDirectory, ownerToken);
   let markerHandle: number | undefined;
-  let markerIdentity: fs.Stats | undefined;
+  let markerIdentity: fs.BigIntStats | undefined;
   try {
     markerHandle = fs.openSync(
       markerPath,
       fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
       0o600,
     );
-    markerIdentity = fs.fstatSync(markerHandle);
+    markerIdentity = fs.fstatSync(markerHandle, { bigint: true });
     const contents = Buffer.from(`${ownerToken}\n`);
     let offset = 0;
     while (offset < contents.byteLength) {
@@ -750,7 +750,7 @@ function publishAbandonedOwnerMarker(lockDirectory: fs.PathLike, ownerToken: str
     }
     if (markerIdentity !== undefined) {
       try {
-        const current = fs.lstatSync(markerPath);
+        const current = fs.lstatSync(markerPath, { bigint: true });
         if (markerIdentity.dev === current.dev && markerIdentity.ino === current.ino) {
           fs.unlinkSync(markerPath);
         }
@@ -843,8 +843,12 @@ function syntheticStaleStat(stats: fs.Stats): fs.Stats {
   return stale;
 }
 
-function isRecoverableOwnerlessClaim(stats: Pick<fs.Stats, "mtimeMs">): boolean {
-  return Date.now() - stats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
+function statMtimeMs(stats: { mtimeMs: bigint | number }): number {
+  return typeof stats.mtimeMs === "bigint" ? Number(stats.mtimeMs) : stats.mtimeMs;
+}
+
+function isRecoverableOwnerlessClaim(stats: { mtimeMs: bigint | number }): boolean {
+  return Date.now() - statMtimeMs(stats) >= OWNERLESS_LOCK_RECOVERY_MS;
 }
 
 function isRecoverableUnverifiableOwner(candidate: ParsedLockOwner, status: OwnerStatus): boolean {
@@ -860,19 +864,19 @@ function isRecoverableUnverifiableOwner(candidate: ParsedLockOwner, status: Owne
 function isRecoverableForeignOwner(
   candidate: ParsedLockOwner,
   status: OwnerStatus,
-  stats: Pick<fs.Stats, "mtimeMs">,
+  stats: { mtimeMs: bigint | number },
 ): boolean {
   return (
     status === "foreign" &&
     candidate.owner.version >= 2 &&
-    Date.now() - stats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS
+    Date.now() - statMtimeMs(stats) >= OWNERLESS_LOCK_RECOVERY_MS
   );
 }
 
 function isRecoverableUnknownOwner(
   candidate: ParsedLockOwner,
   status: OwnerStatus,
-  stats: Pick<fs.Stats, "mtimeMs">,
+  stats: { mtimeMs: bigint | number },
 ): boolean {
   return (
     status === "unknown" &&
@@ -880,7 +884,7 @@ function isRecoverableUnknownOwner(
     candidate.owner.processIdentity !== null &&
     isExactProcessIdentity(candidate.owner.processIdentity) &&
     Date.now() - candidate.publishedAtMs >= OWNERLESS_LOCK_RECOVERY_MS &&
-    Date.now() - stats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS
+    Date.now() - statMtimeMs(stats) >= OWNERLESS_LOCK_RECOVERY_MS
   );
 }
 
@@ -962,14 +966,14 @@ export function createProcessOwnedLockFileSystem(
   const publishOwner = (directory: string): void => {
     const ownerPath = path.join(directory, OWNER_FILE);
     let ownerHandle: number | undefined;
-    let openedIdentity: fs.Stats | undefined;
+    let openedIdentity: fs.BigIntStats | undefined;
     try {
       ownerHandle = fs.openSync(
         ownerPath,
         fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
         0o600,
       );
-      openedIdentity = fs.fstatSync(ownerHandle);
+      openedIdentity = fs.fstatSync(ownerHandle, { bigint: true });
       const contents = Buffer.from(`${JSON.stringify(owner)}\n`);
       let offset = 0;
       while (offset < contents.byteLength) {
@@ -990,7 +994,7 @@ export function createProcessOwnedLockFileSystem(
     } catch (error) {
       if (openedIdentity !== undefined) {
         try {
-          const current = fs.lstatSync(ownerPath);
+          const current = fs.lstatSync(ownerPath, { bigint: true });
           if (openedIdentity.dev === current.dev && openedIdentity.ino === current.ino) {
             fs.unlinkSync(ownerPath);
           }
@@ -1019,7 +1023,7 @@ export function createProcessOwnedLockFileSystem(
       return published;
     }
     try {
-      const current = fs.lstatSync(directory);
+      const current = fs.lstatSync(directory, { bigint: true });
       if (current.isDirectory() && directoryIdentityMatches(ownedIdentity, current)) {
         abandonedDirectoryIdentities.set(coordinationKey, {
           ...ownedIdentity,
@@ -1145,7 +1149,7 @@ export function createProcessOwnedLockFileSystem(
       if (!claimError) {
         let createdIdentity: DirectoryIdentity | undefined;
         try {
-          const created = fs.lstatSync(claimPath);
+          const created = fs.lstatSync(claimPath, { bigint: true });
           if (!created.isDirectory() || created.isSymbolicLink()) {
             throw lockCleanupError("Recorder lock recovery claim changed during creation.");
           }
@@ -1180,7 +1184,7 @@ export function createProcessOwnedLockFileSystem(
       let existingFingerprint: string | undefined;
       let existingIdentity: SupersededRecoveryClaim["identity"] | undefined;
       try {
-        const stats = fs.lstatSync(claimPath);
+        const stats = fs.lstatSync(claimPath, { bigint: true });
         if (stats.isDirectory() && !stats.isSymbolicLink()) {
           if (existingClaim) {
             const status = ownerStatus(existingClaim);
@@ -1278,7 +1282,7 @@ export function createProcessOwnedLockFileSystem(
         removeActiveClaim();
         return;
       }
-      let current: fs.Stats | undefined;
+      let current: fs.BigIntStats | undefined;
       try {
         current = verifiedLockDirectoryStats(
           superseded.path,
@@ -1326,7 +1330,26 @@ export function createProcessOwnedLockFileSystem(
     const retainedClaim = retainedCoordinationClaims.get(coordinationKey);
     if (retainedClaim) {
       retainedCoordinationClaims.delete(coordinationKey);
-      callback(null, retainedClaim);
+      let retainedClaimIsOwned = false;
+      try {
+        const current = verifiedLockDirectoryStats(
+          retainedClaim.activePath,
+          retainedClaim.activeIdentity,
+        );
+        const retainedOwner = current ? parseOwner(retainedClaim.activePath) : undefined;
+        retainedClaimIsOwned =
+          retainedOwner !== undefined &&
+          retainedOwner !== null &&
+          retainedOwner.owner.token === token &&
+          ownerStatus(retainedOwner) === "active";
+      } catch {
+        retainedClaimIsOwned = false;
+      }
+      if (retainedClaimIsOwned) {
+        callback(null, retainedClaim);
+        return;
+      }
+      callback(lockCleanupError("Recorder lock retained coordination claim changed."));
       return;
     }
     createRecoveryClaim(recoveryClaimPath(directory), callback);
@@ -1352,7 +1375,7 @@ export function createProcessOwnedLockFileSystem(
         if (error) {
           if (error.code === "EEXIST" && coordinationClaim.supersededPaths.length > 0) {
             try {
-              const existing = fs.lstatSync(directoryPath);
+              const existing = fs.lstatSync(directoryPath, { bigint: true });
               const candidate = parseOwner(directoryPath);
               if (
                 existing.isDirectory() &&
@@ -1377,7 +1400,7 @@ export function createProcessOwnedLockFileSystem(
         try {
           publishOwner(directory);
           ownerPublished = true;
-          const publishedDirectory = fs.lstatSync(directory);
+          const publishedDirectory = fs.lstatSync(directory, { bigint: true });
           if (!publishedDirectory.isDirectory() || publishedDirectory.isSymbolicLink()) {
             throw new Error("Recorder lock directory changed during owner publication.");
           }
@@ -1412,7 +1435,19 @@ export function createProcessOwnedLockFileSystem(
         return;
       }
       const coordinationKey = canonicalLockDirectoryPath(filePath);
-      if (directoryIdentityMatches(abandonedDirectoryIdentities.get(coordinationKey), stats)) {
+      let identityStats: fs.BigIntStats | undefined;
+      try {
+        const current = fs.lstatSync(filePath, { bigint: true });
+        if (current.isDirectory() && !current.isSymbolicLink()) {
+          identityStats = current;
+        }
+      } catch {
+        // A changing path cannot match an identity-based recovery fence.
+      }
+      if (
+        identityStats &&
+        directoryIdentityMatches(abandonedDirectoryIdentities.get(coordinationKey), identityStats)
+      ) {
         callback(null, syntheticStaleStat(stats));
         return;
       }
@@ -1423,7 +1458,11 @@ export function createProcessOwnedLockFileSystem(
       }
       const recoverableInterruptedPublication =
         (candidate === undefined || candidate === null) &&
-        directoryIdentityMatches(interruptedPublicationIdentities.get(coordinationKey), stats) &&
+        identityStats !== undefined &&
+        directoryIdentityMatches(
+          interruptedPublicationIdentities.get(coordinationKey),
+          identityStats,
+        ) &&
         Date.now() - stats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
       const recoverableAgedUnverifiableOwner =
         isRecoverableOwnerlessClaim(stats) &&
@@ -1496,9 +1535,9 @@ export function createProcessOwnedLockFileSystem(
           releaseRecoveryClaim(directory, coordinationClaim, () => callback(error));
         };
         const candidate = parseOwner(directoryPath);
-        let initialStats: fs.Stats;
+        let initialStats: fs.BigIntStats;
         try {
-          initialStats = fs.lstatSync(directoryPath);
+          initialStats = fs.lstatSync(directoryPath, { bigint: true });
           if (!initialStats.isDirectory() || initialStats.isSymbolicLink()) {
             throw lockCleanupError("Recorder lock recovery target is not a directory.");
           }
@@ -1546,8 +1585,8 @@ export function createProcessOwnedLockFileSystem(
           );
           return;
         }
-        let ownerlessStats: fs.Stats | undefined;
-        let foreignStats: fs.Stats | undefined;
+        let ownerlessStats: fs.BigIntStats | undefined;
+        let foreignStats: fs.BigIntStats | undefined;
         let recoverableAbandoned = false;
         let recoverableInterruptedPublication = false;
         let recoverableAgedUnverifiableOwner = false;
@@ -1577,7 +1616,7 @@ export function createProcessOwnedLockFileSystem(
             directoryIdentityMatches(
               interruptedPublicationIdentities.get(coordinationKey),
               ownerlessStats,
-            ) && Date.now() - ownerlessStats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
+            ) && Date.now() - statMtimeMs(ownerlessStats) >= OWNERLESS_LOCK_RECOVERY_MS;
           recoverableAgedUnverifiableOwner =
             isRecoverableOwnerlessClaim(ownerlessStats) &&
             (candidate === undefined ||
@@ -1601,9 +1640,9 @@ export function createProcessOwnedLockFileSystem(
         }
         const refreshed = parseOwner(directoryPath);
         const refreshedStatus = ownerStatus(refreshed, recoverableUnknown);
-        let refreshedStats: fs.Stats | undefined;
+        let refreshedStats: fs.BigIntStats | undefined;
         try {
-          const current = fs.lstatSync(directoryPath);
+          const current = fs.lstatSync(directoryPath, { bigint: true });
           if (
             current.isDirectory() &&
             !current.isSymbolicLink() &&
@@ -1661,7 +1700,7 @@ export function createProcessOwnedLockFileSystem(
                 interruptedPublicationIdentities.get(coordinationKey),
                 refreshedStats,
               ) &&
-              Date.now() - refreshedStats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
+              Date.now() - statMtimeMs(refreshedStats) >= OWNERLESS_LOCK_RECOVERY_MS;
           } catch {
             recoveryStillAuthorized = false;
           }
@@ -1726,7 +1765,7 @@ export function createProcessOwnedLockFileSystem(
     const directory = String(directoryPath);
     const claimPath = recoveryClaimPath(directory);
     fs.mkdirSync(claimPath, { mode: 0o700 });
-    const createdClaim = fs.lstatSync(claimPath);
+    const createdClaim = fs.lstatSync(claimPath, { bigint: true });
     if (!createdClaim.isDirectory() || createdClaim.isSymbolicLink()) {
       throw lockCleanupError("Recorder lock recovery claim changed during creation.");
     }
@@ -1747,7 +1786,7 @@ export function createProcessOwnedLockFileSystem(
         });
       }
       const ownedIdentity = ownedDirectories.get(canonicalLockDirectoryPath(directory));
-      const ownedDirectory = fs.lstatSync(directoryPath);
+      const ownedDirectory = fs.lstatSync(directoryPath, { bigint: true });
       if (
         !ownedDirectory.isDirectory() ||
         ownedDirectory.isSymbolicLink() ||
