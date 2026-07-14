@@ -125,7 +125,10 @@ function normalizeIMessageWebhookPayload(payload: unknown) {
   }
 
   const message = optionalRecord(payload, "message");
-  if (message && !isNativeIMessageData(message)) {
+  if (
+    (message && !isNativeIMessageData(message)) ||
+    (!message && !isNativeIMessageData(payload) && optionalString(payload, "threadId"))
+  ) {
     return genericMockPayloadWithNativeThread({
       channelRule: IMESSAGE_THREAD_RULE,
       payload,

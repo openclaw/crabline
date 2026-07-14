@@ -17,6 +17,7 @@
 - Return valid Signal JSON-RPC method errors through successful HTTP responses.
 - Verify resolved loopback webhook addresses and complete HEAD responses without consuming representation bodies.
 - Bind Windows private ancestry creation and failed-file cleanup to stable handles, reject null legacy DACLs, and avoid unnecessary owner-write access during ACL repair.
+- Make Google Chat and Mattermost ingress POST-only, return protocol-safe Google acknowledgements, reject incomplete Pub/Sub identity config, scope generic Mattermost threads, and accept flat generic iMessage payloads.
 - Bind private-directory ACL and recorder-lock mutations to verified identities, quarantine process locks before artifact cleanup, and preserve Windows ancestry rollback failures.
 - Require explicit remote iMessage API keys and decode legacy loopback channel metadata consistently.
 - Preserve configured Mattermost bot identity during admin ingress and avoid overwriting retained channels on direct-channel ID collisions.

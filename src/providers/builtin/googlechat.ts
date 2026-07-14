@@ -229,6 +229,12 @@ export class GoogleChatProviderAdapter extends LocalMockProviderAdapter implemen
     const endpointAudience = config.googlechat?.endpointUrl ?? config.googlechat?.webhook.publicUrl;
     const pubsubServiceAccount =
       config.googlechat?.pubsubServiceAccountEmail ?? config.googlechat?.credentials?.client_email;
+    if (config.googlechat?.pubsubAudience && !pubsubServiceAccount) {
+      throw new CrablineError(
+        "Google Chat pubsubAudience requires a Pub/Sub service-account identity via pubsubServiceAccountEmail or credentials.client_email.",
+        { kind: "config" },
+      );
+    }
     const authenticationConfigured =
       !config.googlechat?.disableSignatureVerification &&
       Boolean(
@@ -256,6 +262,7 @@ export class GoogleChatProviderAdapter extends LocalMockProviderAdapter implemen
       id,
       options: {
         ...(authenticateWebhookRequest ? { authenticateWebhookRequest } : {}),
+        createWebhookSuccessResponse: () => new Response(null, { status: 200 }),
         defaultWebhook: { host: "127.0.0.1", path: "/googlechat/webhook", port: 8792 },
         endpointLabel: "webhook endpoint",
         handleWebhookPayload: handleGoogleChatWebhookPayload,
@@ -267,6 +274,7 @@ export class GoogleChatProviderAdapter extends LocalMockProviderAdapter implemen
           ? path.resolve(config.googlechat.recorder.path)
           : undefined,
         webhook: config.googlechat?.webhook,
+        webhookMethods: ["POST"],
       },
     });
   }

@@ -144,6 +144,7 @@ export class MattermostProviderAdapter extends LocalMockProviderAdapter implemen
         publicUrl: config.mattermost?.webhook.publicUrl,
         recorderPath,
         webhook: config.mattermost?.webhook,
+        webhookMethods: ["POST"],
       },
     });
   }
@@ -212,12 +213,31 @@ export function normalizeMattermostWebhookPayload(
   }
 
   const safePayload = withoutMattermostWebhookToken(payload);
-  if (optionalRecord(safePayload, "message")) {
-    return genericMockPayloadWithNativeThread({
+  const genericMessage = optionalRecord(safePayload, "message");
+  if (genericMessage) {
+    const normalized = genericMockPayloadWithNativeThread({
       channelRule: MATTERMOST_ID_RULE,
       payload: safePayload,
       threadRule: MATTERMOST_ID_RULE,
-    }) as NormalizedMattermostWebhookPayload;
+    });
+    const channelId =
+      optionalString(genericMessage, "channelId") ?? optionalString(safePayload, "channelId");
+    const rootId =
+      optionalString(genericMessage, "threadId") ?? optionalString(safePayload, "threadId");
+    if (!channelId || !rootId || channelId === rootId) {
+      return normalized as NormalizedMattermostWebhookPayload;
+    }
+    const scopedThreadId = mattermostThreadKey(
+      requireNativeInboundId(channelId, MATTERMOST_ID_RULE, "Mattermost channelId"),
+      requireNativeInboundId(rootId, MATTERMOST_ID_RULE, "Mattermost threadId"),
+    );
+    return {
+      ...normalized,
+      ...("message" in normalized && isRecord(normalized.message)
+        ? { message: { ...normalized.message, threadId: scopedThreadId } }
+        : {}),
+      threadId: scopedThreadId,
+    } as NormalizedMattermostWebhookPayload;
   }
 
   const channelId = optionalString(safePayload, "channel_id");
