@@ -710,6 +710,10 @@ function needsLiveOwnerConfirmation(record: SmokeLockRecord, runtime: SmokeLockR
 
 type OwnerConfirmation = "changed" | "renewed" | "unchanged";
 
+function heartbeatIntervalMs(leaseMs: number): number {
+  return Math.max(1, Math.floor(leaseMs / 3));
+}
+
 async function confirmObservedOwner(
   lockDirectory: string,
   observed: SmokeLockRecord,
@@ -718,7 +722,7 @@ async function confirmObservedOwner(
   if (!needsLiveOwnerConfirmation(observed, runtime)) {
     return "unchanged";
   }
-  await runtime.sleep(runtime.leaseMs);
+  await runtime.sleep(heartbeatIntervalMs(runtime.leaseMs));
   const revalidated = await readLockRecord(lockDirectory);
   if (revalidated.kind !== "record") {
     return "unchanged";
@@ -1580,7 +1584,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     try {
       heartbeat = (dependencies.startHeartbeat ?? startHeartbeat)(
         renew,
-        Math.max(1, Math.floor(runtime.leaseMs / 3)),
+        heartbeatIntervalMs(runtime.leaseMs),
       );
     } catch (error) {
       try {

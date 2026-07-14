@@ -1,10 +1,11 @@
 import path from "node:path";
-import { constants as fsConstants } from "node:fs";
+import fs, { constants as fsConstants } from "node:fs";
 import {
   chmod,
   link,
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   rename,
   rm,
@@ -34,7 +35,7 @@ const fsMocks = vi.hoisted(() => ({
   providerRealpathFailure: undefined as Error | undefined,
   providerRealpathFailureAfterWrites: 0,
   providerRecorderPath: "",
-  providerOpen: vi.fn<(filePath: string, flags: string, mode?: number | string) => void>(),
+  providerOpen: vi.fn<(filePath: string, flags: number | string, mode?: number | string) => void>(),
   providerSync: vi.fn<(filePath: string) => Promise<void>>(),
   providerWrite: vi.fn<(filePath: string, data: string) => Promise<void>>(),
   serverDirectory: "",
@@ -52,6 +53,15 @@ const fsMocks = vi.hoisted(() => ({
 }));
 
 const serverRecorderExistingOpenFlags =
+  fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
+const providerRecorderCreateOpenFlags =
+  fsConstants.O_RDWR |
+  fsConstants.O_APPEND |
+  fsConstants.O_CREAT |
+  fsConstants.O_EXCL |
+  fsConstants.O_NONBLOCK |
+  fsConstants.O_NOFOLLOW;
+const providerRecorderExistingOpenFlags =
   fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 
 const osMocks = vi.hoisted(() => ({
@@ -190,17 +200,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
           },
         } as unknown as Awaited<ReturnType<typeof actual.open>>;
       }
-      if (
-        (args[1] === "a+" || args[1] === "ax+") &&
-        filePath.includes("crabline-provider-recorder")
-      ) {
-        fsMocks.providerOpen(filePath, args[1], args[2]);
+      const providerRecorderOpen =
+        filePath.includes("crabline-provider-recorder") &&
+        (args[1] === "r+" ||
+          args[1] === "wx+" ||
+          args[1] === providerRecorderCreateOpenFlags ||
+          args[1] === providerRecorderExistingOpenFlags);
+      if (providerRecorderOpen) {
+        fsMocks.providerOpen(filePath, args[1]!, args[2]);
       }
       const handle = await actual.open(...args);
-      if (
-        (args[1] === "a+" || args[1] === "ax+") &&
-        filePath.includes("crabline-provider-recorder")
-      ) {
+      if (providerRecorderOpen) {
         handle.sync = async () => {
           await fsMocks.providerSync(filePath);
         };
@@ -1108,10 +1118,10 @@ describe("recorder append serialization", () => {
           : [[fsMocks.providerDirectory], [fsMocks.providerDirectory]],
       );
       expect(fsMocks.providerOpen.mock.calls.map(([, flags, mode]) => [flags, mode])).toEqual([
-        ["ax+", 0o600],
-        ["a+", 0o600],
-        ["ax+", 0o600],
-        ["a+", 0o600],
+        [process.platform === "win32" ? "wx+" : providerRecorderCreateOpenFlags, 0o600],
+        [process.platform === "win32" ? "r+" : providerRecorderExistingOpenFlags, 0o600],
+        [process.platform === "win32" ? "wx+" : providerRecorderCreateOpenFlags, 0o600],
+        [process.platform === "win32" ? "r+" : providerRecorderExistingOpenFlags, 0o600],
       ]);
       const identityLockPath = fsMocks.lock.mock.calls
         .map(([lockPath]) => String(lockPath))
@@ -1121,6 +1131,52 @@ describe("recorder append serialization", () => {
       await rm(recorderPath, { force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "does not follow a recorder path replaced by a symlink before append open",
+    async () => {
+      const tempRoot = await mkdtemp(
+        path.join(tmpdir(), "crabline-provider-recorder-symlink-race-"),
+      );
+      const recorderPath = path.join(tempRoot, "events.jsonl");
+      const displacedPath = path.join(tempRoot, "events.original.jsonl");
+      const outsidePath = path.join(tempRoot, "outside.txt");
+      fsMocks.providerDirectory = await realpath(tempRoot);
+      await writeFile(recorderPath, "", { mode: 0o600 });
+      await writeFile(outsidePath, "preserve", { mode: 0o600 });
+      const publicationPath = await realpath(recorderPath);
+      let replaced = false;
+      fsMocks.providerOpen.mockImplementation((filePath, flags) => {
+        if (
+          !replaced &&
+          filePath === publicationPath &&
+          flags === providerRecorderExistingOpenFlags
+        ) {
+          replaced = true;
+          fs.renameSync(publicationPath, displacedPath);
+          fs.symlinkSync(outsidePath, publicationPath);
+        }
+      });
+
+      try {
+        await expect(
+          appendRecordedInbound(recorderPath, {
+            author: "assistant",
+            id: "symlink-race",
+            provider: "slack",
+            sentAt: "2026-07-12T10:00:00.000Z",
+            text: "must not escape",
+            threadId: "slack:C123",
+          }),
+        ).rejects.toMatchObject({ code: "ELOOP" });
+        expect(replaced).toBe(true);
+        await expect(readFile(outsidePath, "utf8")).resolves.toBe("preserve");
+        expect(fsMocks.providerWrite).not.toHaveBeenCalled();
+      } finally {
+        await rm(tempRoot, { force: true, recursive: true });
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "repairs a UID-scoped adjacent lock namespace without an OS account entry",

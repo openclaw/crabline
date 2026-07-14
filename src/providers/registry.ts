@@ -308,9 +308,7 @@ export class LazyProviderAdapter implements ProviderAdapter {
     for (const watch of this.#activeWatches) {
       watch.abort();
     }
-    if (this.#providerInstance) {
-      this.#beginProviderCleanup(this.#providerInstance);
-    }
+    this.#beginProviderCleanupIfReady();
   }
 
   async cleanup(): Promise<void> {
@@ -353,6 +351,7 @@ export class LazyProviderAdapter implements ProviderAdapter {
     this.#providerPromise ??= this.#factory()
       .then((provider) => {
         this.#providerInstance = provider;
+        this.#beginProviderCleanupIfReady();
         return provider;
       })
       .catch((error: unknown) => {
@@ -438,6 +437,18 @@ export class LazyProviderAdapter implements ProviderAdapter {
     }
   }
 
+  #beginProviderCleanupIfReady(): void {
+    const provider = this.#providerInstance;
+    if (
+      !this.#cleanedUp ||
+      !provider ||
+      [...this.#inFlightOperations].some((operation) => !operation.dispatch.reached)
+    ) {
+      return;
+    }
+    this.#beginProviderCleanup(provider);
+  }
+
   #runOperation<T>(
     run: (provider: ProviderAdapter) => Promise<T>,
     signal?: AbortSignal,
@@ -449,6 +460,14 @@ export class LazyProviderAdapter implements ProviderAdapter {
       return Promise.reject(signal.reason ?? new Error("Provider operation aborted."));
     }
     const dispatch = createDispatchBarrier();
+    let rejectCompletion!: (reason?: unknown) => void;
+    let resolveCompletion!: (value: T | PromiseLike<T>) => void;
+    const completion = new Promise<T>((resolve, reject) => {
+      rejectCompletion = reject;
+      resolveCompletion = resolve;
+    });
+    const operation = { completion, dispatch };
+    this.#inFlightOperations.add(operation);
     const underlying = (async () => {
       try {
         const provider = await this.#provider();
@@ -457,19 +476,20 @@ export class LazyProviderAdapter implements ProviderAdapter {
         }
         const result = run(provider);
         dispatch.reach();
+        this.#beginProviderCleanupIfReady();
         return await result;
       } catch (error) {
         dispatch.reach();
+        this.#beginProviderCleanupIfReady();
         throw error;
       }
     })();
-    const operation = { completion: underlying, dispatch };
-    this.#inFlightOperations.add(operation);
-    void underlying.then(
+    void underlying.then(resolveCompletion, rejectCompletion);
+    void completion.then(
       () => this.#inFlightOperations.delete(operation),
       () => this.#inFlightOperations.delete(operation),
     );
-    return underlying;
+    return completion;
   }
 
   #cleanedUpError(): CrablineError {
