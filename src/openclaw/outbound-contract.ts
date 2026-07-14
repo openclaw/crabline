@@ -1,5 +1,5 @@
 import type { CrablineServerManifest } from "../servers/index.js";
-import { canonicalizeWhatsAppChatCorrelationJid } from "../servers/whatsapp-jid.js";
+import { canonicalizeWhatsAppUserCorrelationJid } from "../servers/whatsapp-jid.js";
 import { isRecord, readNonBlankString } from "./shared.js";
 
 const MATRIX_SEND_PATH_RE =
@@ -36,12 +36,14 @@ export function isAcceptedOpenClawCrablineOutbound(params: {
       const messagesPath = new URL(params.manifest.endpoints.messagesUrl).pathname;
       const body = isRecord(params.event.body) ? params.event.body : undefined;
       const key = isRecord(body?.key) ? body.key : undefined;
-      const webSocketTarget = canonicalizeWhatsAppChatCorrelationJid(
+      const directWebSocketTarget = canonicalizeWhatsAppUserCorrelationJid(
         readNonBlankString(key?.remoteJid) ?? "",
       );
       return (
         (method === "POST" && requestPath === messagesPath) ||
-        (method === "WEBSOCKET" && requestPath === "/ws/chat" && webSocketTarget !== undefined)
+        (method === "WEBSOCKET" &&
+          requestPath === "/ws/chat" &&
+          directWebSocketTarget !== undefined)
       );
     }
     case "zalo":

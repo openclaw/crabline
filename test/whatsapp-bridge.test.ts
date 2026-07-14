@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { startOpenClawCrablineAdapter } from "../src/index.js";
+import { WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/whatsapp.js";
 
 describe("WhatsApp OpenClaw bridge", () => {
   it("canonicalizes direct device JIDs across inbound and outbound mapping", async () => {
@@ -95,6 +96,9 @@ describe("WhatsApp OpenClaw bridge", () => {
       if (adapter.manifest.provider !== "whatsapp") {
         throw new Error("Expected WhatsApp manifest.");
       }
+      const bridgeAdapter = WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE.createAdapterFromManifest(
+        adapter.manifest,
+      );
       const inbound = adapter.createInbound({
         input: {
           conversation: { id: "120363001234567890@g.us", kind: "group" },
@@ -105,7 +109,7 @@ describe("WhatsApp OpenClaw bridge", () => {
       expect(inbound.providerTargetKey).toBe("120363001234567890@g.us");
 
       expect(
-        adapter.createOutboundFromRecorderEvent({
+        bridgeAdapter.createOutboundFromRecorderEvent({
           event: {
             accepted: true,
             body: {
