@@ -2288,6 +2288,12 @@ describe("OpenClaw private file publication", () => {
     expect(script).toContain("FileInternalInformationClass = 6");
     expect(script).toContain("NtQueryVolumeInformationFile");
     expect(script).toContain("FileFsVolumeInformationClass = 1");
+    expect(script).toContain("[System.Security.AccessControl.FileSystemRights]::Delete");
+    expect(script).not.toContain("[System.IO.FileShare]::Delete");
+    expect(script).toContain("SetFileInformationByHandle");
+    expect(script).toContain("FileDispositionInfoClass = 4");
+    expect(script).toContain("[CrablinePrivateFileIdentity]::MarkDelete($stream.SafeFileHandle)");
+    expect(script).toContain("Private file creation and handle-bound cleanup failed.");
     expect(script).not.toContain("Set-Acl");
     expect(script).toContain("AreAccessRulesProtected");
     expect(script).toContain("$rules.Count -ne 1");
@@ -2296,6 +2302,42 @@ describe("OpenClaw private file publication", () => {
     expect(options.timeout).toBe(15_000);
     expect(options.windowsHide).toBe(true);
   });
+
+  it.skipIf(process.platform !== "win32")(
+    "removes a failed owner-only file creation by handle so an immediate retry succeeds",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const filePath = path.join(directory, "retry.claim");
+        let injectFailure = true;
+        const run: WindowsAclRunner = async (command, args, options) => {
+          const script = args.at(-1)!;
+          const executedScript = injectFailure
+            ? script.replace(
+                "$actual = $stream.GetAccessControl()",
+                'throw "injected post-creation failure"',
+              )
+            : script;
+          injectFailure = false;
+          return execFileSync(command, [...args.slice(0, -1), executedScript], {
+            encoding: "utf8",
+            env: options.env,
+            killSignal: options.killSignal,
+            timeout: options.timeout,
+            windowsHide: options.windowsHide,
+          });
+        };
+
+        await expect(createOwnerOnlyWindowsFile(filePath, run)).rejects.toThrow(
+          "Could not atomically create and verify an owner-only Windows private file",
+        );
+        const identity = await createOwnerOnlyWindowsFile(filePath, run);
+        expect(identity.inode > 0n).toBe(true);
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it.skipIf(process.platform !== "win32")(
     "stops Windows claim ancestry before system-owned directories",
@@ -2340,7 +2382,7 @@ describe("OpenClaw private file publication", () => {
     expect(options.timeout).toBe(15_000);
   });
 
-  it("uses CreateDirectoryW with a protected ACL for every missing Windows ancestor", async () => {
+  it("creates every missing Windows ancestor relative to a held parent handle", async () => {
     const calls: Parameters<WindowsAclRunner>[] = [];
     const run: WindowsAclRunner = async (...args) => {
       calls.push(args);
@@ -2356,10 +2398,18 @@ describe("OpenClaw private file publication", () => {
     const [command, args, options] = calls[0]!;
     expect(command).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
     const script = args.at(-1);
-    expect(script).toContain("CreateDirectory(");
-    expect(script).toContain("SecurityAttributes");
+    expect(script).toContain("NtCreateFile(");
+    expect(script).toContain("FileTraverse = 0x00000020");
+    expect(script).toContain("if (traverse) {\n            access |= FileTraverse;");
+    expect(script).toContain("RootDirectory = parent.DangerousGetHandle()");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::CreateRelative(");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::OpenRelative(");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::ReadIdentity($parentDirectory)");
+    expect(script).toContain("$current,\n      $false,\n      $false,\n      $true");
+    expect(script).toContain("Assert-SafeNamespaceChain $current $true");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::AssertSamePathIdentity(");
     expect(script).toContain("SetAccessRuleProtection($true, $false)");
-    expect(script).toContain("New private directory was populated during creation.");
+    expect(script).toContain("[CrablineWindowsDirectoryHandle]::MarkDelete(");
     expect(script).toContain("Private directory ancestry creation and rollback cleanup failed.");
     expect(script).toContain("[System.AggregateException]::new(");
     expect(script).toContain("$aggregateErrors");
@@ -2471,6 +2521,9 @@ describe("OpenClaw private file publication", () => {
 
     const script = calls[0]![1].at(-1);
     expect(script).toContain("$genericMutationRights = [uint32]0x50000000");
+    expect(script).toContain("RawSecurityDescriptor");
+    expect(script).toContain("DiscretionaryAclPresent");
+    expect(script).toContain("Directory has an absent or null DACL");
     expect(script).toContain('"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"');
     expect(script).toContain("[BitConverter]::GetBytes([int32]$rule.FileSystemRights)");
     expect(script).toContain(
@@ -2496,11 +2549,60 @@ describe("OpenClaw private file publication", () => {
     expect(script).toContain("TakeOwnership");
     expect(script).toContain("$ancestorReplacementMask");
     expect(script).toContain("$genericAll = [uint32]0x10000000");
+    expect(script).toContain("RawSecurityDescriptor");
+    expect(script).toContain("DiscretionaryAclPresent");
+    expect(script).toContain("Directory has an absent or null DACL");
     expect(script).toContain('"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"');
     expect(script).toContain("[BitConverter]::GetBytes([int32]$rule.FileSystemRights)");
     expect(script).toContain("$appliesToDirectory");
     expect(script).not.toContain("Set-Acl");
   });
+
+  it.skipIf(process.platform !== "win32")(
+    "rejects absent or null DACLs in both legacy Windows ancestry checks",
+    async () => {
+      const directory = await createTempDir();
+      try {
+        const powershellPath = path.join(
+          process.env.SystemRoot ?? String.raw`C:\Windows`,
+          "System32",
+          "WindowsPowerShell",
+          "v1.0",
+          "powershell.exe",
+        );
+        execFileSync(
+          powershellPath,
+          [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            [
+              "$acl = Get-Acl -LiteralPath $env:CRABLINE_TEST_NULL_DACL",
+              [
+                '$acl.SetSecurityDescriptorSddlForm("D:NO_ACCESS_CONTROL",',
+                "[System.Security.AccessControl.AccessControlSections]::Access)",
+              ].join(" "),
+              "Set-Acl -LiteralPath $env:CRABLINE_TEST_NULL_DACL -AclObject $acl",
+            ].join("; "),
+          ],
+          {
+            env: { ...process.env, CRABLINE_TEST_NULL_DACL: directory },
+            windowsHide: true,
+          },
+        );
+
+        await expect(verifySafeWindowsDirectoryEntryParent(directory)).rejects.toThrow(
+          "Private mutation boundary has a replaceable Windows ancestor.",
+        );
+        await expect(verifySafeWindowsDirectoryMutationBoundary(directory)).rejects.toThrow(
+          "Private mutation ancestry has an unsafe Windows ACL.",
+        );
+      } finally {
+        await disposeTempDir(directory);
+      }
+    },
+  );
 
   it.skipIf(process.platform !== "win32")(
     "rejects Windows mutation boundary ancestry with untrusted delete-child rights",

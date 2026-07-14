@@ -5,7 +5,10 @@ import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
-import { applyOwnerOnlyWindowsDirectoryAcl as applyOwnerOnlyWindowsDirectoryAclByHandle } from "../platform/windows-acl.js";
+import {
+  applyOwnerOnlyWindowsDirectoryAcl as applyOwnerOnlyWindowsDirectoryAclByHandle,
+  createOwnerOnlyWindowsDirectoryAncestry as createOwnerOnlyWindowsDirectoryAncestryByHandle,
+} from "../platform/windows-acl.js";
 
 const execFileAsync = promisify(execFile);
 const WINDOWS_ACL_COMMAND_TIMEOUT_MS = 15_000;
@@ -27,6 +30,7 @@ public static class CrablinePrivateFileIdentity
 {
     private const int FileInternalInformationClass = 6;
     private const int FileFsVolumeInformationClass = 1;
+    private const int FileDispositionInfoClass = 4;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct IoStatusBlock
@@ -39,6 +43,13 @@ public static class CrablinePrivateFileIdentity
     private struct FileInternalInformation
     {
         public long IndexNumber;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileDispositionInfo
+    {
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool DeleteFile;
     }
 
     [DllImport("ntdll.dll")]
@@ -57,6 +68,15 @@ public static class CrablinePrivateFileIdentity
         [Out] byte[] volumeInformation,
         uint length,
         int volumeInformationClass
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetFileInformationByHandle(
+        SafeFileHandle file,
+        int informationClass,
+        ref FileDispositionInfo information,
+        uint bufferSize
     );
 
     [DllImport("ntdll.dll")]
@@ -102,6 +122,21 @@ public static class CrablinePrivateFileIdentity
             System.Globalization.CultureInfo.InvariantCulture
         );
     }
+
+    public static void MarkDelete(SafeFileHandle file)
+    {
+        FileDispositionInfo disposition = new FileDispositionInfo {
+            DeleteFile = true
+        };
+        if (!SetFileInformationByHandle(
+            file,
+            FileDispositionInfoClass,
+            ref disposition,
+            (uint)Marshal.SizeOf(typeof(FileDispositionInfo))
+        )) {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+    }
 }
 "@
 
@@ -124,7 +159,8 @@ $acl.SetAccessRule($rule)
 $rights = (
   [System.Security.AccessControl.FileSystemRights]::Read -bor
   [System.Security.AccessControl.FileSystemRights]::Write -bor
-  [System.Security.AccessControl.FileSystemRights]::ReadPermissions
+  [System.Security.AccessControl.FileSystemRights]::ReadPermissions -bor
+  [System.Security.AccessControl.FileSystemRights]::Delete
 )
 $stream = [System.IO.FileStream]::new(
   $filePath,
@@ -164,173 +200,22 @@ try {
   [Console]::Out.Write(
     [CrablinePrivateFileIdentity]::Read($stream.SafeFileHandle)
   )
-} finally {
-  $stream.Dispose()
-}
-`;
-
-const WINDOWS_CREATE_OWNER_ONLY_DIRECTORY_ANCESTRY_SCRIPT = String.raw`
-$ErrorActionPreference = "Stop"
-$directoryPath = $env:CRABLINE_PRIVATE_DIRECTORY_PATH
-if ([string]::IsNullOrWhiteSpace($directoryPath)) {
-  throw "CRABLINE_PRIVATE_DIRECTORY_PATH is required."
-}
-
-Add-Type -TypeDefinition @"
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-
-public static class CrablinePrivateDirectory
-{
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SecurityAttributes
-    {
-        public int Length;
-        public IntPtr SecurityDescriptor;
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool InheritHandle;
-    }
-
-    [DllImport(
-        "kernel32.dll",
-        CharSet = CharSet.Unicode,
-        SetLastError = true
-    )]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CreateDirectory(
-        string path,
-        ref SecurityAttributes securityAttributes
-    );
-
-    public static void CreateNew(string path, byte[] securityDescriptor)
-    {
-        GCHandle descriptorHandle = GCHandle.Alloc(
-            securityDescriptor,
-            GCHandleType.Pinned
-        );
-        try {
-            SecurityAttributes attributes = new SecurityAttributes {
-                Length = Marshal.SizeOf(typeof(SecurityAttributes)),
-                SecurityDescriptor = descriptorHandle.AddrOfPinnedObject(),
-                InheritHandle = false
-            };
-            if (!CreateDirectory(path, ref attributes)) {
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            }
-        } finally {
-            descriptorHandle.Free();
-        }
-    }
-}
-"@
-
-$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-$sid = $identity.User
-if ($null -eq $sid) {
-  throw "Could not resolve the current Windows user SID."
-}
-
-$acl = [System.Security.AccessControl.DirectorySecurity]::new()
-$acl.SetOwner($sid)
-$acl.SetAccessRuleProtection($true, $false)
-$inheritance = (
-  [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
-  [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-)
-$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-  $sid,
-  [System.Security.AccessControl.FileSystemRights]::FullControl,
-  $inheritance,
-  [System.Security.AccessControl.PropagationFlags]::None,
-  [System.Security.AccessControl.AccessControlType]::Allow
-)
-$acl.SetAccessRule($rule)
-$descriptor = $acl.GetSecurityDescriptorBinaryForm()
-
-$target = [System.IO.Path]::GetFullPath($directoryPath)
-$missing = [System.Collections.Generic.List[string]]::new()
-$current = $target
-while (-not [System.IO.Directory]::Exists($current)) {
-  if ([System.IO.File]::Exists($current)) {
-    throw "Private directory ancestry contains a non-directory entry."
-  }
-  $missing.Add($current)
-  $parent = [System.IO.Directory]::GetParent($current)
-  if ($null -eq $parent) {
-    throw "Private directory ancestry has no existing parent."
-  }
-  $current = $parent.FullName
-}
-
-$paths = $missing.ToArray()
-[Array]::Reverse($paths)
-$created = [System.Collections.Generic.List[string]]::new()
-try {
-  foreach ($candidate in $paths) {
-    [CrablinePrivateDirectory]::CreateNew($candidate, $descriptor)
-    $created.Add($candidate)
-
-    $actual = [System.IO.DirectoryInfo]::new($candidate).GetAccessControl()
-    $ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
-    $rules = @($actual.GetAccessRules(
-      $true,
-      $true,
-      [System.Security.Principal.SecurityIdentifier]
-    ))
-    if (-not $actual.AreAccessRulesProtected) {
-      throw "Private directory DACL still inherits permissions."
-    }
-    if ($ownerSid.Value -ne $sid.Value) {
-      throw "Private directory owner SID does not match the current user."
-    }
-    if ($rules.Count -ne 1) {
-      throw "Private directory DACL must contain exactly one access rule."
-    }
-    $actualRule = $rules[0]
-    if (
-      $actualRule.IsInherited -or
-      $actualRule.IdentityReference.Value -ne $sid.Value -or
-      $actualRule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
-      (($actualRule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne [System.Security.AccessControl.FileSystemRights]::FullControl) -or
-      (($actualRule.InheritanceFlags -band $inheritance) -ne $inheritance)
-    ) {
-      throw "Private directory DACL is not owner-only inheritable full control."
-    }
-
-    $entries = [System.IO.Directory]::EnumerateFileSystemEntries($candidate).GetEnumerator()
-    try {
-      if ($entries.MoveNext()) {
-        throw "New private directory was populated during creation."
-      }
-    } finally {
-      $entries.Dispose()
-    }
-  }
 } catch {
   $primaryError = $_.Exception
-  $cleanupErrors = [System.Collections.Generic.List[System.Exception]]::new()
-  for ($index = $created.Count - 1; $index -ge 0; $index--) {
-    try {
-      [System.IO.Directory]::Delete($created[$index], $false)
-    } catch {
-      $cleanupErrors.Add($_.Exception)
-    }
-  }
-  if ($cleanupErrors.Count -gt 0) {
+  try {
+    [CrablinePrivateFileIdentity]::MarkDelete($stream.SafeFileHandle)
+  } catch {
     $aggregateErrors = [System.Collections.Generic.List[System.Exception]]::new()
     $aggregateErrors.Add($primaryError)
-    $aggregateErrors.AddRange($cleanupErrors)
+    $aggregateErrors.Add($_.Exception)
     throw [System.AggregateException]::new(
-      "Private directory ancestry creation and rollback cleanup failed.",
+      "Private file creation and handle-bound cleanup failed.",
       $aggregateErrors
     )
   }
   throw $primaryError
-}
-
-if ($created.Count -gt 0) {
-  [Console]::Out.Write($created[0])
+} finally {
+  $stream.Dispose()
 }
 `;
 
@@ -452,6 +337,17 @@ $genericAll = [uint32]0x10000000
 $inheritOnly = [System.Security.AccessControl.PropagationFlags]::InheritOnly
 
 $actual = Get-Acl -LiteralPath $directoryPath
+$rawDescriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new(
+  $actual.GetSecurityDescriptorBinaryForm(),
+  0
+)
+if (
+  (($rawDescriptor.ControlFlags -band
+    [System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -eq 0) -or
+  $null -eq $rawDescriptor.DiscretionaryAcl
+) {
+  throw "Directory has an absent or null DACL in private mutation ancestry."
+}
 $ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
 if ($trustedSids -notcontains $ownerSid.Value) {
   throw "Directory owner is not trusted for private mutation ancestry."
@@ -515,6 +411,17 @@ $mutationAccessMask = [BitConverter]::ToUInt32(
 )
 
 $actual = Get-Acl -LiteralPath $directoryPath
+$rawDescriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new(
+  $actual.GetSecurityDescriptorBinaryForm(),
+  0
+)
+if (
+  (($rawDescriptor.ControlFlags -band
+    [System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -eq 0) -or
+  $null -eq $rawDescriptor.DiscretionaryAcl
+) {
+  throw "Directory has an absent or null DACL in private mutation ancestry."
+}
 $ownerSid = $actual.GetOwner([System.Security.Principal.SecurityIdentifier])
 if ($trustedSids -notcontains $ownerSid.Value) {
   throw "Directory owner is not trusted for private mutation ancestry."
@@ -625,28 +532,7 @@ export async function createOwnerOnlyWindowsDirectoryAncestry(
   systemRoot: string | null | undefined = process.env.SystemRoot,
 ): Promise<string | undefined> {
   try {
-    const powershellPath = resolveWindowsPowerShellPath(systemRoot);
-    const output = await run(
-      powershellPath,
-      [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        WINDOWS_CREATE_OWNER_ONLY_DIRECTORY_ANCESTRY_SCRIPT,
-      ],
-      {
-        env: {
-          ...process.env,
-          CRABLINE_PRIVATE_DIRECTORY_PATH: path.resolve(directoryPath),
-        },
-        killSignal: "SIGKILL",
-        timeout: WINDOWS_ACL_COMMAND_TIMEOUT_MS,
-        windowsHide: true,
-      },
-    );
-    const firstCreatedDirectory = output.trim();
-    return firstCreatedDirectory.length > 0 ? firstCreatedDirectory : undefined;
+    return await createOwnerOnlyWindowsDirectoryAncestryByHandle(directoryPath, run, systemRoot);
   } catch (error) {
     throw new Error(
       "Could not atomically create and verify owner-only Windows private directory ancestry; Windows PowerShell security descriptor support is required.",
