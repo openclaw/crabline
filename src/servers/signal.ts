@@ -545,6 +545,16 @@ async function handleRpc(params: {
           : rpcError(-32602, "Invalid params", id),
       };
     }
+    const account = params.body.params.account;
+    if (typeof account === "string" && account !== params.state.account) {
+      return {
+        accepted: false,
+        record: false,
+        response: notification
+          ? new Response(null, { status: 204 })
+          : rpcError(-32602, "Specified account does not exist", id),
+      };
+    }
     const timestamp = nextSignalTimestamp(params.state);
     if (timestamp >= Number.MAX_SAFE_INTEGER) {
       return {
@@ -653,7 +663,7 @@ function hasValidOptionalSignalString(params: Record<string, unknown>, field: st
   return params[field] === undefined || typeof params[field] === "string";
 }
 
-function validSignalRpcParams(method: string, value: unknown): boolean {
+function validSignalRpcParams(method: string, value: unknown): value is Record<string, unknown> {
   if (
     !isJsonObject(value) ||
     !hasValidSignalRecipientFieldTypes(value) ||
