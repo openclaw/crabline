@@ -1,4 +1,5 @@
 import path from "node:path";
+import { constants as fsConstants } from "node:fs";
 import {
   chmod,
   link,
@@ -40,11 +41,14 @@ const fsMocks = vi.hoisted(() => ({
   serverFileExists: false,
   serverFileStat:
     vi.fn<() => Promise<{ dev: number; ino: number; nlink?: number; size: number }>>(),
-  serverOpen: vi.fn<(filePath: string, flags: string) => void>(),
+  serverOpen: vi.fn<(filePath: string, flags: number | string) => void>(),
   serverStat: vi.fn<(filePath: string) => Promise<{ dev: number; ino: number; size: number }>>(),
   serverSync: vi.fn<(filePath: string) => Promise<void>>(),
   serverWrite: vi.fn<(filePath: string, data: string) => Promise<void>>(),
 }));
+
+const serverRecorderExistingOpenFlags =
+  fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 
 const osMocks = vi.hoisted(() => ({
   userInfo: vi.fn<typeof import("node:os").userInfo>(),
@@ -72,6 +76,12 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...actual,
     lstat: async (...args: Parameters<typeof actual.lstat>) => {
+      if (process.platform === "win32" && String(args[0]).includes("crabline-server-recorder")) {
+        return {
+          isFile: () => true,
+          isSymbolicLink: () => false,
+        } as Awaited<ReturnType<typeof actual.lstat>>;
+      }
       if (
         String(args[0]) === fsMocks.providerRecorderPath &&
         fsMocks.providerLstatFailure &&
@@ -103,7 +113,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         } as unknown as Awaited<ReturnType<typeof actual.open>>;
       }
       if (
-        (args[1] === "a+" || args[1] === "ax+") &&
+        (args[1] === "a+" || args[1] === "ax+" || args[1] === serverRecorderExistingOpenFlags) &&
         filePath.includes("crabline-server-recorder")
       ) {
         fsMocks.serverOpen(filePath, args[1]);
@@ -119,6 +129,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
           stat: async () => await fsMocks.serverFileStat(),
           sync: async () => await fsMocks.serverSync(filePath),
           truncate: async () => {},
+          write: async (buffer: Buffer, offset: number, length: number) => {
+            await fsMocks.serverWrite(
+              filePath,
+              buffer.subarray(offset, offset + length).toString("utf8"),
+            );
+            return { buffer, bytesWritten: length };
+          },
         } as unknown as Awaited<ReturnType<typeof actual.open>>;
       }
       if (
@@ -301,7 +318,11 @@ describe("recorder append serialization", () => {
     expect(unixIdentityLockPaths).toEqual(
       process.platform === "win32" ? [] : [unixIdentityLockPaths[0]!, unixIdentityLockPaths[0]!],
     );
-    expect(fsMocks.serverOpen.mock.calls.map(([, flags]) => flags)).toEqual(["ax+", "ax+", "a+"]);
+    expect(fsMocks.serverOpen.mock.calls.map(([, flags]) => flags)).toEqual([
+      "ax+",
+      "ax+",
+      process.platform === "win32" ? "r+" : serverRecorderExistingOpenFlags,
+    ]);
   });
 
   it.skipIf(process.platform === "win32")(
