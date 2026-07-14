@@ -6,7 +6,10 @@ import path from "node:path";
 import { lock } from "proper-lockfile";
 import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
 import { createOwnerOnlyWindowsDirectory } from "../platform/windows-acl.js";
-import { secureCachedWindowsLockRoot } from "../platform/windows-lock-root.js";
+import {
+  secureCachedWindowsLockRoot,
+  type WindowsLockRootIdentity,
+} from "../platform/windows-lock-root.js";
 import type { ServerRequestEvent } from "./http.js";
 
 export type ServerEventObserver = (event: ServerRequestEvent) => void | Promise<void>;
@@ -55,7 +58,7 @@ const pendingAppends = new Map<string, Promise<void>>();
 const pendingAdmissions = new Map<string, Promise<void>>();
 const pendingLogicalObservers = new Map<string, ObserverTask>();
 const pendingPublicationObservers = new Map<string, ObserverTask>();
-const securedWindowsLockRoots = new Map<string, Promise<{ dev: bigint; ino: bigint }>>();
+const securedWindowsLockRoots = new Map<string, Promise<WindowsLockRootIdentity>>();
 const MAX_RECOVERY_VALIDATION_BYTES = 64 * 1024 * 1024;
 const MAX_RECOVERY_SCAN_BYTES = MAX_RECOVERY_VALIDATION_BYTES + 1;
 const RECORDER_LOCK_RETRY_MS = 100;
