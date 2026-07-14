@@ -1,10 +1,12 @@
-import { readFile, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { open, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
 import { CrablineError, ensureErrorMessage } from "../core/errors.js";
 import { type ManifestDefinition, ManifestSchema } from "./schema.js";
 
 const DEFAULT_CONFIG_CANDIDATES = ["crabline.yaml", "crabline.yml", "crabline.json"] as const;
+const MAX_MANIFEST_BYTES = 1024 * 1024;
 
 class DuplicateJsonKeyError extends SyntaxError {}
 
@@ -52,6 +54,39 @@ function parseJson(raw: string): unknown {
   return parsed;
 }
 
+async function readManifestFile(resolvedPath: string): Promise<string> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(
+      resolvedPath,
+      process.platform === "win32" ? "r" : fsConstants.O_RDONLY | fsConstants.O_NONBLOCK,
+    );
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw new Error("Config path must be a regular file.");
+    }
+    if (stats.size > MAX_MANIFEST_BYTES) {
+      throw new Error(`Config file exceeds the ${MAX_MANIFEST_BYTES}-byte limit.`);
+    }
+
+    const buffer = Buffer.alloc(MAX_MANIFEST_BYTES + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, null);
+      if (bytesRead === 0) {
+        break;
+      }
+      offset += bytesRead;
+    }
+    if (offset > MAX_MANIFEST_BYTES) {
+      throw new Error(`Config file exceeds the ${MAX_MANIFEST_BYTES}-byte limit.`);
+    }
+    return buffer.toString("utf8", 0, offset);
+  } finally {
+    await handle?.close();
+  }
+}
+
 export async function resolveConfigPath(explicitPath?: string): Promise<string> {
   if (explicitPath) {
     return path.resolve(explicitPath);
@@ -88,7 +123,7 @@ export async function loadManifest(
   const resolvedPath = await resolveConfigPath(configPath);
   let raw: string;
   try {
-    raw = await readFile(resolvedPath, "utf8");
+    raw = await readManifestFile(resolvedPath);
   } catch (error) {
     throw configLoadError(resolvedPath, error, ensureErrorMessage(error));
   }

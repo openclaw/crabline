@@ -270,6 +270,10 @@ async function abortAndDrainInboundWait(
   );
 }
 
+function isPermanentFailure(result: CommandRunResult): boolean {
+  return result.failureKind === "auth" || result.failureKind === "config";
+}
+
 export async function runFixtureCommand(params: {
   fixtureId: string;
   manifest: ManifestDefinition;
@@ -309,6 +313,7 @@ export async function runFixtureCommand(params: {
     providerId: fixture.provider,
     userName: params.manifest.userName,
   };
+  const maxAttempts = fixture.retries + 1;
 
   let result: CommandRunResult | undefined;
   try {
@@ -345,30 +350,51 @@ export async function runFixtureCommand(params: {
     if (result) {
       // Preflight failures still flow through provider cleanup before returning.
     } else if (mode === "probe") {
-      try {
-        if (contextBase.config.adapter === "script") {
-          assertScriptStdinPayloadSize(scriptPayloadBase(contextBase));
+      let attempts = 0;
+      let lastFailure: CommandRunResult | null = null;
+      while (attempts < maxAttempts) {
+        attempts += 1;
+        try {
+          if (contextBase.config.adapter === "script") {
+            assertScriptStdinPayloadSize(scriptPayloadBase(contextBase));
+          }
+          const probeResult = await withFixtureDeadline(
+            async (signal) => await provider.probe({ ...contextBase, signal }),
+            fixture.timeoutMs,
+            "probe",
+          );
+          const probeAttempt: CommandRunResult = {
+            diagnostics: probeResult.details,
+            failureKind: probeResult.healthy ? undefined : "connectivity",
+            fixtureId: fixture.id,
+            mode,
+            ok: probeResult.healthy,
+            providerId: fixture.provider,
+          };
+          if (probeAttempt.ok) {
+            return (result = probeAttempt);
+          }
+          lastFailure = probeAttempt;
+        } catch (error) {
+          lastFailure = toFailure(fixture.id, fixture.provider, mode, error, "connectivity");
+          if (error instanceof UnsettledProviderOperationError) {
+            abortDrainFailed = true;
+            unsettledProviderOperations.push(error.operation);
+            break;
+          }
+          if (isPermanentFailure(lastFailure)) {
+            break;
+          }
         }
-        const probeResult = await withFixtureDeadline(
-          async (signal) => await provider.probe({ ...contextBase, signal }),
-          fixture.timeoutMs,
-          "probe",
-        );
-        return (result = {
-          diagnostics: probeResult.details,
-          failureKind: probeResult.healthy ? undefined : "connectivity",
-          fixtureId: fixture.id,
-          mode,
-          ok: probeResult.healthy,
-          providerId: fixture.provider,
-        });
-      } catch (error) {
-        if (error instanceof UnsettledProviderOperationError) {
-          abortDrainFailed = true;
-          unsettledProviderOperations.push(error.operation);
-        }
-        return (result = toFailure(fixture.id, fixture.provider, mode, error, "connectivity"));
       }
+      return (result = lastFailure ?? {
+        diagnostics: ["unknown failure"],
+        failureKind: "connectivity",
+        fixtureId: fixture.id,
+        mode,
+        ok: false,
+        providerId: fixture.provider,
+      });
     } else {
       let compiledInboundRegex: ReturnType<typeof compileInboundRegex> | undefined;
       if (fixture.inboundMatch.strategy === "regex" && fixture.inboundMatch.pattern) {
@@ -393,7 +419,6 @@ export async function runFixtureCommand(params: {
         : fixture.inboundMatch;
 
       let attempts = 0;
-      const maxAttempts = fixture.retries + 1;
       let lastFailure: CommandRunResult | null = null;
 
       while (attempts < maxAttempts) {
@@ -434,7 +459,7 @@ export async function runFixtureCommand(params: {
               unsettledProviderOperations.push(error.operation);
               break;
             }
-            if (lastFailure.failureKind === "auth" || lastFailure.failureKind === "config") {
+            if (isPermanentFailure(lastFailure)) {
               break;
             }
             continue;
