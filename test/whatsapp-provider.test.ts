@@ -132,8 +132,8 @@ describe("WhatsApp webhook normalizer", () => {
 
     expect(() =>
       resolveWhatsAppAdapterConfig(config, {
-        WHATSAPP_APP_SECRET: "app-secret",
-        WHATSAPP_VERIFY_TOKEN: "verify-token",
+        WHATSAPP_APP_SECRET: "redacted",
+        WHATSAPP_VERIFY_TOKEN: "redacted",
         [field]: " \t ",
       }),
     ).toThrow("requires appSecret and verifyToken");
