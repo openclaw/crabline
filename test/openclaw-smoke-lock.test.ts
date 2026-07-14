@@ -1972,9 +1972,34 @@ describe("OpenClaw smoke lock cleanup", () => {
   it("fails pointer fencing after a heartbeat renewal error", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
+    let runHeartbeat: (() => Promise<void>) | undefined;
     try {
       const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
-        leaseMs: 30,
+        startHeartbeat: (renew) => {
+          let failure: unknown;
+          let pending: Promise<void> | undefined;
+          runHeartbeat = async () => {
+            pending = renew().catch((error: unknown) => {
+              failure ??= error;
+            });
+            await pending;
+          };
+          return {
+            assertHealthy() {
+              if (failure !== undefined) {
+                throw new Error("OpenClaw Crabline smoke lock heartbeat failed.", {
+                  cause: failure,
+                });
+              }
+            },
+            async settle() {
+              await pending;
+            },
+            async stop() {
+              await pending;
+            },
+          };
+        },
       });
       const ownerPath = path.join(await findOwnedLockDirectory(outputDir), "owner.json");
       const owner = await fs.readFile(ownerPath, "utf8");
@@ -1982,7 +2007,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         ownerPath,
         `${JSON.stringify({ ...JSON.parse(owner), token: "replacement-owner" })}\n`,
       );
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      await runHeartbeat?.();
 
       await expect(
         lock.commitFileAtomically({
