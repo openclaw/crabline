@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CrablineError } from "../src/core/errors.js";
 import { LoopbackChatAdapter } from "../src/providers/builtin/loopback.js";
 
 let adapter: LoopbackChatAdapter | undefined;
 
 afterEach(() => {
+  vi.useRealTimers();
   adapter = undefined;
 });
 
@@ -15,9 +16,38 @@ describe("loopback chat adapter", () => {
     for (const address of [
       { id: "user:1", threadId: "dm::1" },
       { channelId: "channel:1", id: "user:1", threadId: "topic::1" },
+      {
+        channelId: "channel/%:?#[]@!$&'()*+,;=\u96EA",
+        id: "user/%:?#[]@!$&'()*+,;=\u72D0",
+        threadId: "topic/%:?#[]@!$&'()*+,;=\uD83E\uDD8A",
+      },
     ]) {
       expect(adapter.decodeThreadId(adapter.encodeThreadId(address))).toEqual(address);
     }
+  });
+
+  it.each([
+    { id: "" },
+    { channelId: "", id: "user" },
+    { id: "user", threadId: "" },
+    { id: "\uD800" },
+    { channelId: "\uD800", id: "user" },
+    { id: "user", threadId: "\uD800" },
+  ])("rejects invalid v2 encoder components: %o", (address) => {
+    adapter = new LoopbackChatAdapter("crabline");
+
+    let failure: unknown;
+    try {
+      adapter.encodeThreadId(address);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(CrablineError);
+    expect(failure).toMatchObject({
+      kind: "inbound",
+      message: "Loopback v2 thread address is malformed.",
+    });
   });
 
   it("recovers delimiter-containing v2 channel ids for thread metadata", async () => {
@@ -132,6 +162,42 @@ describe("loopback chat adapter", () => {
       );
     },
   );
+
+  it("preserves message order with unique timestamps across coarse and regressing clocks", async () => {
+    vi.useFakeTimers();
+    const initialTime = new Date("2026-07-14T07:00:00.000Z");
+    vi.setSystemTime(initialTime);
+    adapter = new LoopbackChatAdapter("crabline");
+    const threadId = adapter.encodeThreadId({ id: "user-1" });
+
+    const first = adapter.ingestUserMessage(threadId, "first");
+    const second = await adapter.postMessage(threadId, "second");
+    vi.setSystemTime(new Date(initialTime.getTime() - 1_000));
+    adapter.ingestUserMessage(threadId, "third");
+    await adapter.editMessage(threadId, second.id, "second edited");
+
+    const messages = adapter.listSince(threadId, first.raw.timestamp);
+    expect(messages.map((message) => message.text)).toEqual(["first", "second edited", "third"]);
+    expect(messages.map((message) => Date.parse(message.raw.timestamp))).toEqual([
+      initialTime.getTime(),
+      initialTime.getTime() + 1,
+      initialTime.getTime() + 2,
+    ]);
+    expect(messages[1]?.metadata.editedAt?.getTime()).toBe(initialTime.getTime() + 3);
+  });
+
+  it("rejects invalid history timestamps instead of reporting empty history", () => {
+    adapter = new LoopbackChatAdapter("crabline");
+    const threadId = adapter.encodeThreadId({ id: "user-1" });
+    adapter.ingestUserMessage(threadId, "first");
+
+    expect(() => adapter!.listSince(threadId, "not-a-date")).toThrow(
+      expect.objectContaining({
+        kind: "config",
+        message: "Loopback since timestamp must be a valid date.",
+      }),
+    );
+  });
 
   it("isolates stored messages from mutable inputs and returns", async () => {
     adapter = new LoopbackChatAdapter("crabline");

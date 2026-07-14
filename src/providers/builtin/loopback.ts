@@ -65,6 +65,17 @@ function malformedThreadAddress(cause?: unknown): CrablineError {
   });
 }
 
+function encodeThreadAddressComponent(value: string): string {
+  if (!value) {
+    throw malformedThreadAddress();
+  }
+  try {
+    return encodeURIComponent(value);
+  } catch (error) {
+    throw malformedThreadAddress(error);
+  }
+}
+
 function decodeThreadAddressComponent(value: string): string {
   let decoded: string;
   let canonical: string;
@@ -87,6 +98,7 @@ export class LoopbackChatAdapter {
 
   readonly #messages = new Map<string, StoredLoopbackMessage[]>();
   readonly #nextSequence = new Map<string, number>();
+  #lastMessageTimestamp = -1;
 
   constructor(userName: string) {
     this.userName = userName;
@@ -169,18 +181,20 @@ export class LoopbackChatAdapter {
     existing.text = text;
     existing.formatted = text;
     existing.metadata.edited = true;
-    existing.metadata.editedAt = new Date();
+    existing.metadata.editedAt = new Date(this.#nextMessageTimestamp());
     existing.raw.text = text;
     return Promise.resolve({ id: existing.id, raw: cloneRawMessage(existing.raw), threadId });
   }
 
   encodeThreadId(platformData: ThreadAddress): string {
-    const address = platformData.channelId
-      ? `${LOOPBACK_V2_PREFIX}${encodeURIComponent(platformData.channelId)}:${encodeURIComponent(platformData.id)}`
-      : `${LOOPBACK_V2_PREFIX}${encodeURIComponent(platformData.id)}`;
-    return platformData.threadId
-      ? `${address}::${encodeURIComponent(platformData.threadId)}`
-      : address;
+    const id = encodeThreadAddressComponent(platformData.id);
+    const address =
+      platformData.channelId === undefined
+        ? `${LOOPBACK_V2_PREFIX}${id}`
+        : `${LOOPBACK_V2_PREFIX}${encodeThreadAddressComponent(platformData.channelId)}:${id}`;
+    return platformData.threadId === undefined
+      ? address
+      : `${address}::${encodeThreadAddressComponent(platformData.threadId)}`;
   }
 
   fetchMessages(
@@ -274,7 +288,7 @@ export class LoopbackChatAdapter {
       id: createMessageId(),
       text,
       threadId,
-      timestamp: new Date().toISOString(),
+      timestamp: this.#nextMessageTimestamp(),
     } satisfies LoopbackRawMessage;
     const parsed = this.parseMessage(raw);
     this.#append(threadId, parsed);
@@ -299,7 +313,7 @@ export class LoopbackChatAdapter {
       id: createMessageId(),
       text,
       threadId,
-      timestamp: new Date().toISOString(),
+      timestamp: this.#nextMessageTimestamp(),
     } satisfies LoopbackRawMessage;
     const parsed = this.parseMessage(raw);
     this.#append(threadId, parsed);
@@ -308,6 +322,11 @@ export class LoopbackChatAdapter {
 
   listSince(threadId: string, since: string): LoopbackMessage[] {
     const sinceTime = new Date(since).getTime();
+    if (!Number.isFinite(sinceTime)) {
+      throw new CrablineError("Loopback since timestamp must be a valid date.", {
+        kind: "config",
+      });
+    }
     return (this.#messages.get(threadId) ?? [])
       .map((entry) => entry.message)
       .filter((message) => message.metadata.dateSent.getTime() >= sinceTime)
@@ -320,6 +339,12 @@ export class LoopbackChatAdapter {
     bucket.push({ message: cloneMessage(message), sequence });
     this.#messages.set(threadId, bucket);
     this.#nextSequence.set(threadId, sequence);
+  }
+
+  #nextMessageTimestamp(): string {
+    const timestamp = Math.max(Date.now(), this.#lastMessageTimestamp + 1);
+    this.#lastMessageTimestamp = timestamp;
+    return new Date(timestamp).toISOString();
   }
 }
 
