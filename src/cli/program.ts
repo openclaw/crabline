@@ -223,28 +223,54 @@ async function print(value: string): Promise<boolean> {
 
 class WatchShutdownDeadlineError extends CrablineError {}
 
-async function withWatchShutdownDeadline<T>(
-  operation: PromiseLike<T>,
-  operationName: string,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(
-        new WatchShutdownDeadlineError(
-          `Provider ${operationName} did not settle within ${WATCH_SHUTDOWN_GRACE_MS}ms during watch shutdown.`,
-          { kind: "timeout" },
-        ),
-      );
-    }, WATCH_SHUTDOWN_GRACE_MS);
-  });
-  try {
-    return await Promise.race([Promise.resolve(operation), deadline]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-  }
+function createWatchShutdownDeadline(): {
+  race<T>(operation: PromiseLike<T>, operationName: string): Promise<T>;
+  start(): void;
+} {
+  let deadlineAt: number | undefined;
+  const controller = new AbortController();
+  return {
+    async race<T>(operation: PromiseLike<T>, operationName: string): Promise<T> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let removeStartListener: (() => void) | undefined;
+      const deadline = new Promise<never>((_, reject) => {
+        const arm = () => {
+          timer = setTimeout(
+            () => {
+              reject(
+                new WatchShutdownDeadlineError(
+                  `Provider ${operationName} did not settle within ${WATCH_SHUTDOWN_GRACE_MS}ms during watch shutdown.`,
+                  { kind: "timeout" },
+                ),
+              );
+            },
+            Math.max(0, deadlineAt! - Date.now()),
+          );
+        };
+        if (controller.signal.aborted) {
+          arm();
+          return;
+        }
+        controller.signal.addEventListener("abort", arm, { once: true });
+        removeStartListener = () => controller.signal.removeEventListener("abort", arm);
+      });
+      try {
+        return await Promise.race([Promise.resolve(operation), deadline]);
+      } finally {
+        removeStartListener?.();
+        if (timer) {
+          clearTimeout(timer);
+        }
+      }
+    },
+    start() {
+      if (deadlineAt !== undefined) {
+        return;
+      }
+      deadlineAt = Date.now() + WATCH_SHUTDOWN_GRACE_MS;
+      controller.abort();
+    },
+  };
 }
 
 function containsWatchShutdownDeadline(error: unknown, seen = new Set<object>()): boolean {
@@ -520,14 +546,16 @@ export function createProgram(
         }
 
         const controller = new AbortController();
+        const shutdownDeadline = createWatchShutdownDeadline();
         let iterator:
           | AsyncIterator<NonNullable<Awaited<ReturnType<typeof provider.waitForInbound>>>>
           | undefined;
         const stopWatch = onceAsync(async () => {
+          shutdownDeadline.start();
           controller.abort();
           const returnResult = iterator?.return?.();
           if (returnResult) {
-            await withWatchShutdownDeadline(returnResult, "watch iterator return");
+            await shutdownDeadline.race(returnResult, "watch iterator return");
           }
         });
         const shutdown = installShutdownHandler(stopWatch);
@@ -566,10 +594,13 @@ export function createProgram(
               break;
             }
             const message = result.value;
-            const written = await print(
-              options.json
-                ? formatCliJson(message)
-                : `${sanitizeTerminalText(message.sentAt, true)} ${sanitizeTerminalText(message.author, true)} ${sanitizeTerminalText(message.text, true)}`,
+            const written = await shutdownDeadline.race(
+              print(
+                options.json
+                  ? formatCliJson(message)
+                  : `${sanitizeTerminalText(message.sentAt, true)} ${sanitizeTerminalText(message.author, true)} ${sanitizeTerminalText(message.text, true)}`,
+              ),
+              "watch output write",
             );
             if (!written) {
               break;
@@ -588,7 +619,7 @@ export function createProgram(
         try {
           const cleanup = provider.cleanup?.();
           if (cleanup) {
-            await withWatchShutdownDeadline(cleanup, "cleanup");
+            await shutdownDeadline.race(cleanup, "cleanup");
           }
         } catch (error) {
           if (!lifecycleErrors.includes(error)) {

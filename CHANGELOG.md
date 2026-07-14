@@ -52,6 +52,7 @@
 - Verify downloaded npm tarball integrity, retry transient provenance lookups, and revalidate release tags immediately before publication mutations.
 - Validate effective fixture mode overrides and stop retrying permanent provider send failures.
 - Bound watch iterator return and provider cleanup during CLI shutdown, forcing process exit after deadline failures.
+- Apply the watch shutdown deadline to backpressured CLI output writes.
 - Correct provider-native channel target examples, admin-ingress setup, and contract maintenance coverage.
 - Document the complete ready and script-bridge channel matrix and validate the shipped example against the manifest schema.
 - Preserve native Slack rich text and block fallbacks, isolate Feishu replay identities, ignore non-message Google Chat interactions, and fail closed on invalid Zalo adapter inputs.
