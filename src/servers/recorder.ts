@@ -347,29 +347,31 @@ function isRecorderLockContention(error: unknown): boolean {
   );
 }
 
-async function securePrivateServerRecorderLockRoot(
-  root: string,
+async function verifyPrivateServerRecorderDirectory(
+  directory: string,
   currentUserId: number,
-): Promise<string> {
-  await mkdir(root, { mode: 0o700, recursive: true });
+  requirePrivateMode: boolean,
+): Promise<void> {
   const handle = await open(
-    root,
+    directory,
     fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
   );
   try {
     const identity = await handle.stat({ bigint: true });
-    const current = await lstat(root, { bigint: true });
+    const current = await lstat(directory, { bigint: true });
     if (
       !identity.isDirectory() ||
       !current.isDirectory() ||
+      current.isSymbolicLink() ||
       identity.dev !== current.dev ||
       identity.ino !== current.ino ||
       identity.uid !== BigInt(currentUserId) ||
-      current.uid !== BigInt(currentUserId)
+      current.uid !== BigInt(currentUserId) ||
+      (!requirePrivateMode && (identity.mode & 0o022n) !== 0n)
     ) {
       throw new Error("Server recorder lock directory is not privately owned.");
     }
-    if ((identity.mode & 0o777n) !== 0o700n) {
+    if (requirePrivateMode && (identity.mode & 0o777n) !== 0o700n) {
       await handle.chmod(0o700);
       const secured = await handle.stat({ bigint: true });
       if ((secured.mode & 0o777n) !== 0o700n) {
@@ -379,7 +381,92 @@ async function securePrivateServerRecorderLockRoot(
   } finally {
     await handle.close();
   }
-  return root;
+}
+
+async function securePrivateServerRecorderLockRoot(
+  baseDirectory: string,
+  components: string[],
+  currentUserId: number,
+): Promise<string> {
+  await verifyPrivateServerRecorderLockAncestry(baseDirectory, currentUserId);
+  let currentPath = await realpath(baseDirectory);
+  await verifyPrivateServerRecorderLockAncestry(currentPath, currentUserId);
+  await verifyPrivateServerRecorderDirectory(currentPath, currentUserId, false);
+  for (const component of components) {
+    currentPath = path.join(currentPath, component);
+    let created = false;
+    try {
+      await mkdir(currentPath, { mode: 0o700 });
+      created = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+    }
+    if (created) {
+      await chmod(currentPath, 0o700);
+    }
+    await verifyPrivateServerRecorderDirectory(currentPath, currentUserId, true);
+  }
+  return currentPath;
+}
+
+async function verifyPrivateServerRecorderLockAncestry(
+  directory: string,
+  currentUserId: number,
+): Promise<void> {
+  let currentPath = path.resolve(directory);
+  for (;;) {
+    const current = await lstat(currentPath, { bigint: true });
+    const ownerIsTrusted = current.uid === BigInt(currentUserId) || current.uid === 0n;
+    if (current.isSymbolicLink()) {
+      if (!ownerIsTrusted) {
+        throw new Error("Server recorder lock directory parent namespace is not trusted.");
+      }
+    } else {
+      const peerWritable = (current.mode & 0o022n) !== 0n;
+      const sticky = (current.mode & 0o1000n) !== 0n;
+      if (!current.isDirectory() || !ownerIsTrusted || (peerWritable && !sticky)) {
+        throw new Error("Server recorder lock directory parent namespace is not trusted.");
+      }
+    }
+    const parent = path.dirname(currentPath);
+    if (parent === currentPath) {
+      return;
+    }
+    currentPath = parent;
+  }
+}
+
+async function serverRecorderUnixLockRoot(currentUserId: number): Promise<string> {
+  let homeDirectory: string;
+  try {
+    homeDirectory = userInfo().homedir;
+  } catch (error) {
+    throw new Error(
+      `Server recorder identity locking requires an OS account home or ${RECORDER_LOCK_DIRECTORY_ENV}.`,
+      { cause: error },
+    );
+  }
+  await verifyPrivateServerRecorderLockAncestry(homeDirectory, currentUserId);
+  const cacheDirectory = path.join(homeDirectory, ".cache");
+  let cacheCreated = false;
+  try {
+    await mkdir(cacheDirectory, { mode: 0o700 });
+    cacheCreated = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw error;
+    }
+  }
+  if (cacheCreated) {
+    await chmod(cacheDirectory, 0o700);
+  }
+  return await securePrivateServerRecorderLockRoot(
+    cacheDirectory,
+    ["crabline", "locks", "server-recorder"],
+    currentUserId,
+  );
 }
 
 async function secureRecorderLockRoot(root: string): Promise<string> {
@@ -487,19 +574,7 @@ async function recorderIdentityLockTarget(fileIdentity: RecorderFileIdentity): P
     if (currentUserId === undefined) {
       throw new Error("Server recorder identity locking requires a current user id.");
     }
-    let privateRoot: string;
-    try {
-      privateRoot = path.join(userInfo().homedir, ".cache", "crabline", "locks", "server-recorder");
-    } catch (error) {
-      throw new Error(
-        `Server recorder identity locking requires a private home directory or ${RECORDER_LOCK_DIRECTORY_ENV}.`,
-        { cause: error },
-      );
-    }
-    return recorderIdentityLockPath(
-      await securePrivateServerRecorderLockRoot(privateRoot, currentUserId),
-      fileIdentity,
-    );
+    return recorderIdentityLockPath(await serverRecorderUnixLockRoot(currentUserId), fileIdentity);
   }
   if (!path.isAbsolute(configuredRoot)) {
     throw new Error(`${RECORDER_LOCK_DIRECTORY_ENV} must be an absolute path.`);

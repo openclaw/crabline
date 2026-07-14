@@ -260,6 +260,7 @@ async function expectSerializedWrites(
 describe("recorder append serialization", () => {
   it("serializes server event appends to the same JSONL file", async () => {
     const recorderPath = path.join("/tmp", "crabline-server-recorder.jsonl");
+    osMocks.userInfo.mockClear();
     fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
     const firstEvent = {
       at: "2026-07-12T10:00:00.000Z",
@@ -294,24 +295,126 @@ describe("recorder append serialization", () => {
     expect(fsMocks.serverSync).toHaveBeenCalledTimes(2);
     expect(fsMocks.serverDirectorySync).toHaveBeenCalledTimes(2);
     expect(fsMocks.lock).toHaveBeenCalledTimes(4);
-    const unixIdentityLockRoot = path.join(
-      await realpath(path.join(userInfo().homedir, ".cache", "crabline", "locks")),
-      "server-recorder",
-    );
-    expect(
-      fsMocks.lock.mock.calls
-        .map(([lockPath]) => String(lockPath))
-        .filter((lockPath) => path.dirname(lockPath) === unixIdentityLockRoot),
-    ).toEqual(
-      process.platform === "win32"
-        ? []
-        : [
-            path.join(unixIdentityLockRoot, "recorder-1-1"),
-            path.join(unixIdentityLockRoot, "recorder-1-1"),
-          ],
+    const unixIdentityLockPaths = fsMocks.lock.mock.calls
+      .map(([lockPath]) => String(lockPath))
+      .filter((lockPath) => path.basename(lockPath) === "recorder-1-1");
+    expect(unixIdentityLockPaths).toEqual(
+      process.platform === "win32" ? [] : [unixIdentityLockPaths[0]!, unixIdentityLockPaths[0]!],
     );
     expect(fsMocks.serverOpen.mock.calls.map(([, flags]) => flags)).toEqual(["ax+", "ax+", "a+"]);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "uses one home lock namespace without changing cache permissions",
+    async () => {
+      const homeDirectory = await mkdtemp(path.join(tmpdir(), "crabline-lock-home-"));
+      const cacheDirectory = path.join(homeDirectory, ".cache");
+      await mkdir(cacheDirectory, { mode: 0o755 });
+      await chmod(cacheDirectory, 0o755);
+      const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
+      osMocks.userInfo.mockImplementationOnce(() => ({
+        ...actualOs.userInfo(),
+        homedir: homeDirectory,
+      }));
+      const recorderPath = path.join("/tmp", "crabline-server-recorder-runtime.jsonl");
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+
+      try {
+        await recordServerEvent({
+          event: {
+            at: "2026-07-12T10:00:00.000Z",
+            method: "POST",
+            path: "/runtime-lock-root",
+            query: {},
+            type: "api",
+          },
+          onEvent: () => undefined,
+          recorderPath,
+        });
+
+        const identityLockPath = fsMocks.lock.mock.calls
+          .map(([lockPath]) => String(lockPath))
+          .find((lockPath) => path.basename(lockPath) === "recorder-1-1");
+        expect(path.dirname(identityLockPath!)).toBe(
+          path.join(await realpath(cacheDirectory), "crabline", "locks", "server-recorder"),
+        );
+        expect((await stat(cacheDirectory)).mode & 0o777).toBe(0o755);
+      } finally {
+        await rm(homeDirectory, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "normalizes a newly created home cache under a restrictive umask",
+    async () => {
+      const homeDirectory = await mkdtemp(path.join(tmpdir(), "crabline-lock-home-create-"));
+      const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
+      osMocks.userInfo.mockImplementationOnce(() => ({
+        ...actualOs.userInfo(),
+        homedir: homeDirectory,
+      }));
+      const recorderPath = path.join("/tmp", "crabline-server-recorder-cache-create.jsonl");
+      fsMocks.serverDirectory = await realpath(path.dirname(recorderPath));
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+      const previousUmask = process.umask(0o777);
+
+      try {
+        await recordServerEvent({
+          event: {
+            at: "2026-07-12T10:00:00.000Z",
+            method: "POST",
+            path: "/created-cache-lock-root",
+            query: {},
+            type: "api",
+          },
+          onEvent: () => undefined,
+          recorderPath,
+        });
+        expect((await stat(path.join(homeDirectory, ".cache"))).mode & 0o777).toBe(0o700);
+      } finally {
+        process.umask(previousUmask);
+        await rm(homeDirectory, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a lock namespace beneath a peer-writable non-sticky ancestor",
+    async () => {
+      const tempRoot = await mkdtemp(path.join(tmpdir(), "crabline-lock-ancestry-"));
+      const unsafeParent = path.join(tempRoot, "unsafe");
+      const homeDirectory = path.join(unsafeParent, "home");
+      await mkdir(homeDirectory, { mode: 0o700, recursive: true });
+      await chmod(unsafeParent, 0o777);
+      const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
+      osMocks.userInfo.mockImplementationOnce(() => ({
+        ...actualOs.userInfo(),
+        homedir: homeDirectory,
+      }));
+      fsMocks.serverDirectory = await realpath(path.dirname("/tmp/server-recorder.jsonl"));
+      fsMocks.serverWrite.mockResolvedValue(undefined);
+
+      try {
+        await expect(
+          recordServerEvent({
+            event: {
+              at: "2026-07-12T10:00:00.000Z",
+              method: "POST",
+              path: "/unsafe-lock-root",
+              query: {},
+              type: "api",
+            },
+            onEvent: () => undefined,
+            recorderPath: "/tmp/server-recorder.jsonl",
+          }),
+        ).rejects.toThrow("parent namespace is not trusted");
+      } finally {
+        await rm(tempRoot, { force: true, recursive: true });
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "preserves committed status when an identity lock release fails",
