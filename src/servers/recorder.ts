@@ -150,7 +150,16 @@ async function truncateRecorderFile(
     await file.truncate(length);
     return true;
   }
-  const repairFile = await open(filePath, "r+");
+  let repairFile: Awaited<ReturnType<typeof open>>;
+  try {
+    repairFile = await open(filePath, "r+");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR" || code === "ELOOP") {
+      return false;
+    }
+    throw error;
+  }
   let result = false;
   let operationFailed = false;
   let operationError: unknown;

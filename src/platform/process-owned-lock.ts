@@ -568,6 +568,49 @@ function parseOwner(lockDirectory: fs.PathLike): ParsedLockOwner | null | undefi
   return parsed ?? null;
 }
 
+function hasRecoverableMalformedOwner(lockDirectory: fs.PathLike): boolean {
+  let ownerHandle: number;
+  try {
+    ownerHandle = fs.openSync(
+      path.join(String(lockDirectory), OWNER_FILE),
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+    );
+  } catch {
+    return false;
+  }
+  let recoverable = false;
+  try {
+    const stats = fs.fstatSync(ownerHandle);
+    if (!stats.isFile() || stats.size > MAX_OWNER_BYTES) {
+      recoverable = false;
+    } else if (stats.size === 0) {
+      recoverable = true;
+    } else {
+      const raw = Buffer.alloc(stats.size);
+      let offset = 0;
+      while (offset < raw.byteLength) {
+        const bytesRead = fs.readSync(ownerHandle, raw, offset, raw.byteLength - offset, offset);
+        if (bytesRead === 0) {
+          recoverable = true;
+          break;
+        }
+        offset += bytesRead;
+      }
+      if (offset === raw.byteLength) {
+        JSON.parse(raw.toString("utf8"));
+      }
+    }
+  } catch (error) {
+    recoverable = error instanceof SyntaxError;
+  }
+  try {
+    fs.closeSync(ownerHandle);
+  } catch {
+    return false;
+  }
+  return recoverable;
+}
+
 function syntheticFreshStat(stats: fs.Stats): fs.Stats {
   const fresh = Object.assign(Object.create(Object.getPrototypeOf(stats)), stats) as fs.Stats;
   Object.defineProperty(fresh, "mtime", {
@@ -1053,9 +1096,11 @@ export function createProcessOwnedLockFileSystem(
           releaseRecoveryClaim(directory, coordinationClaim, () => callback(error));
           return;
         }
+        let ownerPublished = false;
         let publicationError: NodeJS.ErrnoException | null = null;
         try {
           publishOwner(directory);
+          ownerPublished = true;
           const publishedDirectory = fs.lstatSync(directory);
           if (!publishedDirectory.isDirectory() || publishedDirectory.isSymbolicLink()) {
             throw new Error("Recorder lock directory changed during owner publication.");
@@ -1069,6 +1114,9 @@ export function createProcessOwnedLockFileSystem(
           publicationError = ownerError as NodeJS.ErrnoException;
         }
         if (publicationError) {
+          if (ownerPublished) {
+            abandonOwner(directory);
+          }
           fs.rmdir(directoryPath, () =>
             releaseRecoveryClaim(directory, coordinationClaim, () => callback(publicationError)),
           );
@@ -1101,8 +1149,9 @@ export function createProcessOwnedLockFileSystem(
         (candidate === undefined || candidate === null) &&
         directoryIdentityMatches(interruptedPublicationIdentities.get(coordinationKey), stats) &&
         Date.now() - stats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
-      const recoverableLegacyOwnerless =
-        candidate === undefined && isRecoverableOwnerlessClaim(stats);
+      const recoverableAgedUnverifiableOwner =
+        isRecoverableOwnerlessClaim(stats) &&
+        (candidate === undefined || (candidate === null && hasRecoverableMalformedOwner(filePath)));
       const recoverableForeign =
         candidate !== undefined &&
         candidate !== null &&
@@ -1117,7 +1166,7 @@ export function createProcessOwnedLockFileSystem(
           status === "dead" ||
           recoverableForeign ||
           recoverableInterruptedPublication ||
-          recoverableLegacyOwnerless ||
+          recoverableAgedUnverifiableOwner ||
           (candidate !== undefined &&
             candidate !== null &&
             isRecoverableUnverifiableOwner(candidate, status))
@@ -1209,7 +1258,7 @@ export function createProcessOwnedLockFileSystem(
         let foreignStats: fs.Stats | undefined;
         let recoverableAbandoned = false;
         let recoverableInterruptedPublication = false;
-        let recoverableLegacyOwnerless = false;
+        let recoverableAgedUnverifiableOwner = false;
         const status = ownerStatus(candidate);
         const recoverableUnverifiable =
           candidate !== undefined &&
@@ -1237,8 +1286,10 @@ export function createProcessOwnedLockFileSystem(
                 interruptedPublicationIdentities.get(coordinationKey),
                 ownerlessStats,
               ) && Date.now() - ownerlessStats.mtimeMs >= OWNERLESS_LOCK_RECOVERY_MS;
-            recoverableLegacyOwnerless =
-              candidate === undefined && isRecoverableOwnerlessClaim(ownerlessStats);
+            recoverableAgedUnverifiableOwner =
+              isRecoverableOwnerlessClaim(ownerlessStats) &&
+              (candidate === undefined ||
+                (candidate === null && hasRecoverableMalformedOwner(directoryPath)));
           } catch (error) {
             finish(error as NodeJS.ErrnoException);
             return;
@@ -1250,7 +1301,7 @@ export function createProcessOwnedLockFileSystem(
           !recoverableUnverifiable &&
           !recoverableAbandoned &&
           !recoverableInterruptedPublication &&
-          !recoverableLegacyOwnerless
+          !recoverableAgedUnverifiableOwner
         ) {
           finish(
             Object.assign(new Error("Recorder lock owner is still active or cannot be verified."), {
@@ -1313,11 +1364,12 @@ export function createProcessOwnedLockFileSystem(
             recoveryStillAuthorized = false;
           }
         }
-        if (recoverableLegacyOwnerless && ownerlessStats) {
+        if (recoverableAgedUnverifiableOwner && ownerlessStats) {
           try {
             const refreshedStats = fs.statSync(directoryPath);
             recoveryStillAuthorized =
-              refreshed === undefined &&
+              (candidate === undefined ? refreshed === undefined : refreshed === null) &&
+              (candidate !== null || hasRecoverableMalformedOwner(directoryPath)) &&
               refreshedStats.dev === ownerlessStats.dev &&
               refreshedStats.ino === ownerlessStats.ino &&
               refreshedStats.mtimeMs === ownerlessStats.mtimeMs &&

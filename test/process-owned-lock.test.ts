@@ -625,6 +625,33 @@ describe("process-owned lock filesystem", () => {
     }
   });
 
+  it("abandons a published owner when directory verification fails", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    const ownerPath = path.join(lockDirectory, "crabline-owner.json");
+    const lstatSync = fs.lstatSync.bind(fs);
+    let verificationFailed = false;
+    const lstatSpy = vi.spyOn(fs, "lstatSync").mockImplementation(((filePath, options) => {
+      if (String(filePath) === lockDirectory && fs.existsSync(ownerPath) && !verificationFailed) {
+        verificationFailed = true;
+        throw Object.assign(new Error("directory verification failed"), { code: "EIO" });
+      }
+      return lstatSync(filePath, options as never);
+    }) as typeof fs.lstatSync);
+
+    try {
+      await expect(acquire(target)).rejects.toMatchObject({ code: "EIO" });
+      await expect(readFile(ownerPath, "utf8")).resolves.toContain('"token"');
+
+      const release = await acquire(target);
+      expect(release).toBeTypeOf("function");
+      await release();
+    } finally {
+      lstatSpy.mockRestore();
+      await rm(lockDirectory, { force: true, recursive: true });
+    }
+  });
+
   it("recovers an owner-preserving release failure in the same process", async () => {
     const target = await createLockTarget();
     const lockDirectory = `${target}.lock`;
@@ -899,6 +926,18 @@ describe("process-owned lock filesystem", () => {
     const claimPath = recoveryClaimPath(lockDirectory);
     await mkdir(claimPath);
     await writeDepartedExecutionOwner(claimPath, owner);
+
+    const release = await acquire(target);
+    expect(release).toBeTypeOf("function");
+    await release();
+  });
+
+  it("recovers an aged lock with truncated owner metadata", async () => {
+    const target = await createLockTarget();
+    const lockDirectory = `${target}.lock`;
+    await mkdir(lockDirectory);
+    await writeFile(path.join(lockDirectory, "crabline-owner.json"), "");
+    await utimes(lockDirectory, new Date(0), new Date(0));
 
     const release = await acquire(target);
     expect(release).toBeTypeOf("function");
