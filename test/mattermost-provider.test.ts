@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CrablineError } from "../src/core/errors.js";
 import {
   MattermostProviderAdapter,
   matchesMattermostThread,
@@ -32,7 +33,23 @@ describe("Mattermost webhook normalizer", () => {
       webhookToken: "sample",
     });
     expect(() => resolveMattermostAdapterConfig(config, { MATTERMOST_TOKEN: " \t" })).toThrow(
-      "MATTERMOST_TOKEN must not be empty or whitespace-only.",
+      expect.objectContaining({
+        kind: "config",
+        message: "MATTERMOST_TOKEN must not be empty or whitespace-only.",
+      }),
+    );
+    expect(() => resolveMattermostAdapterConfig(config, { MATTERMOST_TOKEN: " " })).toThrow(
+      CrablineError,
+    );
+
+    config.mattermost!.webhookToken = "\t";
+    expect(() =>
+      resolveMattermostAdapterConfig(config, { MATTERMOST_TOKEN: "environment-token" }),
+    ).toThrow(
+      expect.objectContaining({
+        kind: "config",
+        message: "Mattermost webhookToken must not be empty or whitespace-only.",
+      }),
     );
   });
 

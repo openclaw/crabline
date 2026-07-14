@@ -7,6 +7,7 @@
 - Keep Telegram multipart fields prototype-safe, synthetic chat IDs within 52 significant bits, and topic identities scoped to their chats.
 - Preserve opaque Mattermost identifiers exactly instead of trimming REST and WebSocket inputs.
 - Preserve Zalo polling arrival order until each older HTTP response commits.
+- Classify empty Zalo and Mattermost webhook credentials as configuration failures.
 - Stream Telegram multipart uploads with bounded parser metadata instead of copying complete files through `FormData`.
 - Keep Unix recorder identity locks in one validated private per-user namespace across processes and recorder path changes.
 - Reject non-positive Telegram admin message IDs and enforce native Mattermost channel types and unique normalized usernames.

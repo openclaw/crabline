@@ -51,18 +51,21 @@ export function resolveMattermostAdapterConfig(
       { kind: "config" },
     );
   }
-  if (
-    config.mattermost?.webhookToken === undefined &&
-    env.MATTERMOST_TOKEN !== undefined &&
-    !env.MATTERMOST_TOKEN.trim()
-  ) {
-    throw new Error("MATTERMOST_TOKEN must not be empty or whitespace-only.");
+  const configuredWebhookToken = config.mattermost?.webhookToken;
+  const webhookToken = configuredWebhookToken ?? env.MATTERMOST_TOKEN;
+  if (webhookToken !== undefined && !webhookToken.trim()) {
+    throw new CrablineError(
+      configuredWebhookToken === undefined
+        ? "MATTERMOST_TOKEN must not be empty or whitespace-only."
+        : "Mattermost webhookToken must not be empty or whitespace-only.",
+      { kind: "config" },
+    );
   }
   return {
     baseUrl,
     botToken: config.mattermost?.botToken ?? env.MATTERMOST_BOT_TOKEN ?? "local-mock-token",
     userName: config.mattermost?.userName,
-    webhookToken: config.mattermost?.webhookToken ?? env.MATTERMOST_TOKEN,
+    webhookToken,
   };
 }
 
