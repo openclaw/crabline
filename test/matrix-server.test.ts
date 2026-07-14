@@ -1480,4 +1480,82 @@ describe("Matrix local provider server", () => {
     );
     await expect(untouchedRetry.json()).resolves.toEqual({ event_id: secondEventId });
   }, 15_000);
+
+  it("bounds sync responses without skipping the newest deliverable event", async () => {
+    const server = await startMatrixServer({
+      accessToken: "test-token-placeholder",
+      maxSyncResponseBytes: 2_500,
+      roomId: "!sync-budget:matrix.test",
+    });
+    servers.push(server);
+    for (let index = 0; index < 12; index += 1) {
+      const response = await fetch(
+        `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!sync-budget:matrix.test")}/send/m.room.message/budget-${index}`,
+        {
+          body: JSON.stringify({
+            body: `${index}:${"x".repeat(300)}`,
+            msgtype: "m.text",
+          }),
+          headers: {
+            ...auth("test-token-placeholder"),
+            "content-type": "application/json",
+          },
+          method: "PUT",
+        },
+      );
+      expect(response.status).toBe(200);
+    }
+
+    const response = await fetch(server.manifest.endpoints.syncUrl, {
+      headers: auth("test-token-placeholder"),
+    });
+    const rawBody = await response.text();
+    const body = JSON.parse(rawBody) as {
+      rooms: {
+        join: Record<
+          string,
+          { timeline: { events: Array<{ content: { body: string } }>; limited: boolean } }
+        >;
+      };
+    };
+    const timeline = body.rooms.join["!sync-budget:matrix.test"]?.timeline;
+
+    expect(response.status).toBe(200);
+    expect(Buffer.byteLength(rawBody, "utf8")).toBeLessThanOrEqual(2_500);
+    expect(timeline?.limited).toBe(true);
+    expect(timeline?.events.length).toBeGreaterThan(0);
+    expect(timeline?.events.length).toBeLessThan(12);
+    expect(timeline?.events.at(-1)?.content.body).toBe(`11:${"x".repeat(300)}`);
+  });
+
+  it("returns a native resource-limit error when the newest sync event cannot fit", async () => {
+    const server = await startMatrixServer({
+      accessToken: "test-token-placeholder",
+      maxSyncResponseBytes: 1_500,
+      roomId: "!sync-too-large:matrix.test",
+    });
+    servers.push(server);
+    const sent = await fetch(
+      `${server.manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent("!sync-too-large:matrix.test")}/send/m.room.message/oversized-sync`,
+      {
+        body: JSON.stringify({ body: "x".repeat(3_000), msgtype: "m.text" }),
+        headers: {
+          ...auth("test-token-placeholder"),
+          "content-type": "application/json",
+        },
+        method: "PUT",
+      },
+    );
+    expect(sent.status).toBe(200);
+
+    const response = await fetch(server.manifest.endpoints.syncUrl, {
+      headers: auth("test-token-placeholder"),
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      admin_contact: "mailto:admin@localhost",
+      errcode: "M_RESOURCE_LIMIT_EXCEEDED",
+      error: "Sync response exceeds the configured byte limit",
+    });
+  });
 });
