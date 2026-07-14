@@ -574,6 +574,20 @@ function recorderSharedIdentityLockPath(root: string, identity: RecorderFileIden
   return path.join(root, `recorder-${identity.ino}`);
 }
 
+function deduplicateRecorderLockTargets(targets: string[]): string[] {
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    const resolved = path.resolve(target);
+    const key =
+      process.platform === "win32" ? path.win32.normalize(resolved).toLowerCase() : resolved;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
 export async function secureServerRecorderWindowsLockRoot(
   root: string,
   options: {
@@ -668,17 +682,17 @@ async function recorderIdentityLockTargets(fileIdentity: RecorderFileIdentity): 
     }
     const sharedRoot = await secureRecorderLockRoot(configuredRoot);
     // Lock every configured writer in the shared namespace before a first hardlink can appear.
-    return [
+    return deduplicateRecorderLockTargets([
       await recorderLocalIdentityLockTarget(fileIdentity),
       recorderSharedIdentityLockPath(sharedRoot, fileIdentity),
-    ];
+    ]);
   }
   if (fileIdentity.nlink > 1n) {
     throw new Error(
       `Server recorder hardlinks require ${RECORDER_LOCK_DIRECTORY_ENV} to name one shared writable lock directory for every writer.`,
     );
   }
-  return [await recorderLocalIdentityLockTarget(fileIdentity)];
+  return deduplicateRecorderLockTargets([await recorderLocalIdentityLockTarget(fileIdentity)]);
 }
 
 async function acquireSingleRecorderLock(filePath: string): Promise<() => Promise<void>> {
