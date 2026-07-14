@@ -1395,13 +1395,27 @@ export function createProcessOwnedLockFileSystem(
           releaseRecoveryClaim(directory, coordinationClaim, () => callback(error));
           return;
         }
+        let createdIdentity: DirectoryIdentity | undefined;
         let ownerPublished = false;
         let publicationError: NodeJS.ErrnoException | null = null;
         try {
+          const createdDirectory = fs.lstatSync(directoryPath, { bigint: true });
+          if (!createdDirectory.isDirectory() || createdDirectory.isSymbolicLink()) {
+            throw new Error("Recorder lock directory changed during creation.");
+          }
+          const candidateIdentity = directoryIdentity(createdDirectory);
+          const createdEntries = fs.readdirSync(directoryPath);
+          if (
+            createdEntries.length > 0 ||
+            !verifiedLockDirectoryStats(directoryPath, candidateIdentity)
+          ) {
+            throw lockCleanupError("Recorder lock directory changed during creation.");
+          }
+          createdIdentity = candidateIdentity;
           publishOwner(directory);
           ownerPublished = true;
-          const publishedDirectory = fs.lstatSync(directory, { bigint: true });
-          if (!publishedDirectory.isDirectory() || publishedDirectory.isSymbolicLink()) {
+          const publishedDirectory = verifiedLockDirectoryStats(directory, createdIdentity);
+          if (!publishedDirectory) {
             throw new Error("Recorder lock directory changed during owner publication.");
           }
           ownedDirectories.set(
@@ -1413,12 +1427,22 @@ export function createProcessOwnedLockFileSystem(
           publicationError = ownerError as NodeJS.ErrnoException;
         }
         if (publicationError) {
-          if (ownerPublished) {
-            abandonOwner(directory);
+          if (ownerPublished && createdIdentity) {
+            try {
+              if (verifiedLockDirectoryStats(directory, createdIdentity)) {
+                abandonOwner(directory);
+              }
+            } catch {
+              // Preserve an unverified replacement instead of mutating it by pathname.
+            }
+          } else if (createdIdentity) {
+            try {
+              removeVerifiedLockDirectorySync(directoryPath, createdIdentity);
+            } catch {
+              // Preserve an unverified replacement instead of deleting it by pathname.
+            }
           }
-          fs.rmdir(directoryPath, () =>
-            releaseRecoveryClaim(directory, coordinationClaim, () => callback(publicationError)),
-          );
+          releaseRecoveryClaim(directory, coordinationClaim, () => callback(publicationError));
           return;
         }
         releaseRecoveryClaim(directory, coordinationClaim, () => callback(null));

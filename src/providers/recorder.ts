@@ -668,7 +668,11 @@ export async function secureProviderRecorderLockRoot(
           return { dev: identity.dev, ino: identity.ino };
         })();
         securedWindowsLockRoots.set(cacheKey, secured);
-        void secured.catch(() => securedWindowsLockRoots.delete(cacheKey));
+        void secured.catch(() => {
+          if (securedWindowsLockRoots.get(cacheKey) === secured) {
+            securedWindowsLockRoots.delete(cacheKey);
+          }
+        });
       }
       const expected = await secured;
       let current: Awaited<ReturnType<typeof lstat>>;
@@ -692,7 +696,9 @@ export async function secureProviderRecorderLockRoot(
       ) {
         return root;
       }
-      securedWindowsLockRoots.delete(cacheKey);
+      if (securedWindowsLockRoots.get(cacheKey) === secured) {
+        securedWindowsLockRoots.delete(cacheKey);
+      }
     }
   }
 

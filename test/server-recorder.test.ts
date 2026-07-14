@@ -302,6 +302,27 @@ describe("server recorder", () => {
     expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
   });
 
+  it("deduplicates concurrent Windows process-lock root replacement recovery", async () => {
+    const lockRoot = path.join("/tmp", "crabline-server-recorder-concurrent-locks");
+    const createWindowsDirectory = vi.fn(async () => undefined);
+
+    await secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory });
+    fsMocks.lstat.mockResolvedValue({
+      dev: 10n,
+      ino: 21n,
+      isDirectory: () => true,
+      isSymbolicLink: () => false,
+      mode: 0o700n,
+      uid: BigInt(process.geteuid?.() ?? 0),
+    });
+    await Promise.all([
+      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+      secureServerRecorderWindowsLockRoot(lockRoot, { createWindowsDirectory }),
+    ]);
+
+    expect(createWindowsDirectory).toHaveBeenCalledTimes(2);
+  });
+
   it("re-secures a Windows process-lock root when wide file IDs differ", async () => {
     const lockRoot = path.join("/tmp", "crabline-server-recorder-wide-id-locks");
     const createWindowsDirectory = vi.fn(async () => undefined);
