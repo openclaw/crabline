@@ -1039,7 +1039,9 @@ export async function appendRecordedInbound(
   filePath: string,
   event: RecordableInboundEnvelope,
 ): Promise<RecordedInboundEnvelope> {
-  const firstCreatedDirectory = await mkdir(path.dirname(filePath), { recursive: true });
+  const createdDirectory = await mkdir(path.dirname(filePath), { recursive: true });
+  const firstCreatedDirectory =
+    createdDirectory === undefined ? undefined : await realpath(createdDirectory);
 
   const recorded = {
     ...event,
@@ -1063,7 +1065,9 @@ export async function appendRecordedInboundBatch(
   if (events.length === 0) {
     return [];
   }
-  const firstCreatedDirectory = await mkdir(path.dirname(filePath), { recursive: true });
+  const createdDirectory = await mkdir(path.dirname(filePath), { recursive: true });
+  const firstCreatedDirectory =
+    createdDirectory === undefined ? undefined : await realpath(createdDirectory);
   for (let attempt = 0; ; attempt++) {
     try {
       return await serializeAppend(

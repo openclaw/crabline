@@ -22,6 +22,7 @@ const fsMocks = vi.hoisted(() => ({
   lock: vi.fn<(filePath: string, options?: unknown) => Promise<() => Promise<void>>>(),
   lockRelease: vi.fn<() => Promise<void>>(),
   providerDirectory: "",
+  providerDeniedDirectory: "",
   providerDirectorySync: vi.fn<(directoryPath: string) => Promise<void>>(),
   providerLstatFailure: undefined as Error | undefined,
   providerLstatFailureAfterLocks: 0,
@@ -82,6 +83,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     },
     open: async (...args: Parameters<typeof actual.open>) => {
       const filePath = String(args[0]);
+      if (args[1] === "r" && filePath === fsMocks.providerDeniedDirectory) {
+        throw Object.assign(new Error("execute-only ancestor"), { code: "EACCES" });
+      }
       if (args[1] === "r" && filePath === fsMocks.serverDirectory) {
         return {
           close: async () => {},
@@ -186,6 +190,7 @@ beforeEach(() => {
   fsMocks.lock.mockReset();
   fsMocks.lock.mockResolvedValue(fsMocks.lockRelease);
   fsMocks.providerDirectory = "";
+  fsMocks.providerDeniedDirectory = "";
   fsMocks.providerDirectorySync.mockReset();
   fsMocks.providerDirectorySync.mockResolvedValue(undefined);
   fsMocks.providerLstatFailure = undefined;
@@ -783,6 +788,39 @@ describe("recorder append serialization", () => {
         expect(fsMocks.providerDirectorySync).toHaveBeenCalledTimes(2);
       } finally {
         await rm(recorderPath, { force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "canonicalizes a created-directory durability boundary through a symlink",
+    async () => {
+      const tempRoot = await mkdtemp(path.join(tmpdir(), "crabline-provider-symlink-durability-"));
+      const targetRoot = path.join(tempRoot, "target");
+      const aliasRoot = path.join(tempRoot, "alias");
+      await mkdir(targetRoot);
+      await symlink(targetRoot, aliasRoot, "dir");
+      const recorderPath = path.join(aliasRoot, "nested", "events.jsonl");
+      const canonicalCreatedDirectory = path.join(await realpath(targetRoot), "nested");
+      fsMocks.providerDirectory = canonicalCreatedDirectory;
+      fsMocks.providerDeniedDirectory = await realpath(tempRoot);
+      fsMocks.providerWrite.mockResolvedValue(undefined);
+      const event = {
+        author: "assistant" as const,
+        id: "symlink-durability",
+        provider: "slack",
+        sentAt: "2026-07-12T10:00:00.000Z",
+        text: "durable",
+        threadId: "slack:C123",
+      };
+
+      try {
+        await expect(appendRecordedInbound(recorderPath, event)).resolves.toMatchObject({
+          id: event.id,
+        });
+        expect(fsMocks.providerDirectorySync).toHaveBeenCalledWith(canonicalCreatedDirectory);
+      } finally {
+        await rm(tempRoot, { force: true, recursive: true });
       }
     },
   );

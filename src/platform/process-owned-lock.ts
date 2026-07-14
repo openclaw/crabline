@@ -807,7 +807,13 @@ export function createProcessOwnedLockFileSystem(
           ? "foreign"
           : "active";
       }
-      return claim.processStartedAtMs === CURRENT_PROCESS_STARTED_AT_MS ? "active" : "superseded";
+      if (claim.processStartedAtMs !== CURRENT_PROCESS_STARTED_AT_MS) {
+        return "superseded";
+      }
+      return claim.executionIdentity !== null &&
+        claim.executionIdentity !== CURRENT_EXECUTION_IDENTITY
+        ? "superseded"
+        : "active";
     }
     const now = Date.now();
     if (
