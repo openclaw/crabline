@@ -5,6 +5,7 @@ import { WebSocket } from "ws";
 import {
   decodeBinaryNode,
   encodeBinaryNode,
+  WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES,
   WHATSAPP_BINARY_NODE_MAX_DEPTH,
   WHATSAPP_BINARY_NODE_MAX_DECOMPRESSED_BYTES,
   WHATSAPP_BINARY_NODE_MAX_FRAME_BYTES,
@@ -626,6 +627,26 @@ describe("WhatsApp binary nodes", () => {
 
     await expect(decodeBinaryNode(Buffer.concat([Buffer.from([2]), compressed]))).rejects.toThrow(
       "WhatsApp binary node expands beyond",
+    );
+  });
+
+  it("enforces the compressed payload limit after the frame flag", async () => {
+    const node = {
+      attrs: {},
+      content: Buffer.alloc(WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES - 176),
+      tag: "message",
+    };
+    const compressed = deflateSync(encodeBinaryNode(node).subarray(1), { level: 0 });
+    const frame = Buffer.concat([Buffer.from([2]), compressed]);
+
+    expect(compressed).toHaveLength(WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES);
+    await expect(decodeBinaryNode(frame)).resolves.toEqual(node);
+    await expect(
+      decodeBinaryNode(Buffer.concat([frame, Buffer.from([0])])),
+    ).rejects.toThrow(
+      `Compressed WhatsApp binary node frame is too large: ${
+        WHATSAPP_BINARY_NODE_MAX_COMPRESSED_BYTES + 1
+      }.`,
     );
   });
 
