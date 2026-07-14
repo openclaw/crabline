@@ -73,7 +73,7 @@ describe("CI workflow hardening", () => {
     }
   });
 
-  it("inspects reusable workflow jobs and composite action steps", async () => {
+  it("distinguishes local reusable workflows from local action steps", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-action-pins-"));
     try {
       await Promise.all([
@@ -87,6 +87,8 @@ describe("CI workflow hardening", () => {
           path.join(root, ".github", "workflows", "reusable.yml"),
           [
             "jobs:",
+            "  local:",
+            "    uses: ./.github/workflows/local.yml",
             "  external:",
             "    uses: owner/repository/.github/workflows/check.yml@main",
             "  containerized:",
@@ -99,6 +101,16 @@ describe("CI workflow hardening", () => {
             "    steps:",
             "      - run: echo ok",
             "      - uses: ./ci/outside",
+          ].join("\n"),
+        ),
+        fs.writeFile(
+          path.join(root, ".github", "workflows", "local.yml"),
+          [
+            "jobs:",
+            "  nested:",
+            "    runs-on: ubuntu-latest",
+            "    steps:",
+            "      - uses: owner/local-workflow-action@v3",
           ].join("\n"),
         ),
         fs.writeFile(
@@ -126,6 +138,7 @@ describe("CI workflow hardening", () => {
       expect(actionRefs.toSorted()).toEqual(
         [
           "owner/repository/.github/workflows/check.yml@main",
+          "owner/local-workflow-action@v3",
           "docker://ghcr.io/owner/runtime:latest",
           "docker://postgres:17",
           "owner/action@v1",
@@ -138,6 +151,7 @@ describe("CI workflow hardening", () => {
       expect(actionRefs.filter((actionRef) => !isImmutableActionRef(actionRef)).toSorted()).toEqual(
         [
           "owner/repository/.github/workflows/check.yml@main",
+          "owner/local-workflow-action@v3",
           "docker://ghcr.io/owner/runtime:latest",
           "docker://postgres:17",
           "owner/action@v1",
@@ -203,26 +217,30 @@ async function collectExternalActionRefs(root: string): Promise<string[]> {
     await Promise.all(
       workflowFiles.map(async (filePath) => {
         const workflow = await readWorkflow(filePath);
-        return Object.values(workflow.jobs ?? {}).flatMap((job) => {
+        return Object.values(workflow.jobs ?? {}).map((job) => {
           const containerImage = workflowImage(job.container);
           const serviceImages = Object.values(job.services ?? {}).flatMap((service) => {
             const image = workflowImage(service);
             return image ? [image] : [];
           });
-          return [
-            ...(job.uses ? [job.uses] : []),
-            ...(containerImage ? [containerImage] : []),
-            ...serviceImages,
-            ...(job.steps?.flatMap((step) => (step.uses ? [step.uses] : [])) ?? []),
-          ];
+          const stepRefs = job.steps?.flatMap((step) => (step.uses ? [step.uses] : [])) ?? [];
+          return {
+            external: [
+              ...(job.uses && !job.uses.startsWith("./") ? [job.uses] : []),
+              ...(containerImage ? [containerImage] : []),
+              ...serviceImages,
+              ...stepRefs.filter((uses) => !uses.startsWith("./")),
+            ],
+            localActions: stepRefs.filter((uses) => uses.startsWith("./")),
+          };
         });
       }),
     )
   ).flat();
 
-  const externalRefs = workflowRefs.filter((uses) => !uses.startsWith("./"));
+  const externalRefs = workflowRefs.flatMap((refs) => refs.external);
   const actionFiles = await listYamlFiles(path.join(root, ".github", "actions"));
-  for (const localRef of workflowRefs.filter((uses) => uses.startsWith("./"))) {
+  for (const localRef of workflowRefs.flatMap((refs) => refs.localActions)) {
     actionFiles.push(await resolveLocalActionManifest(root, localRef));
   }
 
