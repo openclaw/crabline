@@ -1,4 +1,4 @@
-const WHATSAPP_USER_JID_RE = /^(\d{7,15})(?::(\d+))?@(c\.us|lid|s\.whatsapp\.net)$/iu;
+const WHATSAPP_USER_JID_RE = /^(\d{7,15})(?:_(\d+))?(?::(\d+))?@(c\.us|lid|s\.whatsapp\.net)$/iu;
 const WHATSAPP_GROUP_JID_RE = /^(\d{5,20}(?:-\d{5,20})?)@g\.us$/iu;
 
 export function canonicalizeWhatsAppUserJid(value: string): string | undefined {
@@ -7,10 +7,13 @@ export function canonicalizeWhatsAppUserJid(value: string): string | undefined {
     return undefined;
   }
   const user = match[1]!;
-  const device = match[2];
-  const rawServer = match[3]!.toLowerCase();
+  const agent = match[2];
+  const device = match[3];
+  const rawServer = match[4]!.toLowerCase();
   const server = rawServer === "c.us" ? "s.whatsapp.net" : rawServer;
-  return `${user}${device === undefined ? "" : `:${device}`}@${server}`;
+  return `${user}${agent === undefined ? "" : `_${agent}`}${
+    device === undefined ? "" : `:${device}`
+  }@${server}`;
 }
 
 export function canonicalizeWhatsAppUserCorrelationJid(value: string): string | undefined {
@@ -19,7 +22,7 @@ export function canonicalizeWhatsAppUserCorrelationJid(value: string): string | 
     return undefined;
   }
   const separator = jid.lastIndexOf("@");
-  return `${jid.slice(0, separator).split(":", 1)[0]}@${jid.slice(separator + 1)}`;
+  return `${jid.slice(0, separator).split(/[_:]/u, 1)[0]}@${jid.slice(separator + 1)}`;
 }
 
 export function canonicalizeWhatsAppGroupJid(value: string): string | undefined {
