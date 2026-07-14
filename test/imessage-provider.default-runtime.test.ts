@@ -28,7 +28,7 @@ describe("imessage provider default runtime", () => {
   });
 
   it("keeps remote gateway metadata optional for the local mock", () => {
-    vi.stubEnv("IMESSAGE_API_KEY", "ambient-api-key");
+    vi.stubEnv("IMESSAGE_API_KEY", "sample");
     vi.stubEnv("IMESSAGE_SERVER_URL", "https://ambient-imessage.example.com");
 
     expect(resolveIMessageAdapterConfig(createConfig())).toEqual({
@@ -41,11 +41,11 @@ describe("imessage provider default runtime", () => {
   it("accepts an explicitly isolated environment", () => {
     expect(
       resolveIMessageAdapterConfig(createConfig(), {
-        IMESSAGE_API_KEY: "isolated-api-key",
+        IMESSAGE_API_KEY: "test-token-placeholder",
         IMESSAGE_SERVER_URL: "https://isolated-imessage.example.com",
       }),
     ).toEqual({
-      apiKey: "isolated-api-key",
+      apiKey: "test-token-placeholder",
       local: true,
       serverUrl: "https://isolated-imessage.example.com",
     });
