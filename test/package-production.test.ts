@@ -419,6 +419,22 @@ describe("production package", () => {
     expect(launcher).toContain("Python 3.10 or newer is required");
   });
 
+  it("keeps the published and development Node floors distinct", async () => {
+    const pkg = JSON.parse(await fs.readFile("package.json", "utf8")) as {
+      devEngines?: { runtime?: { name?: string; onFail?: string; version?: string } };
+      engines?: { node?: string };
+      packageManager?: string;
+    };
+
+    expect(pkg.engines?.node).toBe(">=22");
+    expect(pkg.packageManager).toBe("pnpm@11.13.0");
+    expect(pkg.devEngines?.runtime).toEqual({
+      name: "node",
+      onFail: "error",
+      version: ">=22.13.0",
+    });
+  });
+
   it("lints repository tooling with the type-aware gate", async () => {
     const [pkgContents, launcher] = await Promise.all([
       fs.readFile("package.json", "utf8"),

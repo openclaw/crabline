@@ -12,7 +12,15 @@ type WorkflowStep = {
 };
 
 type Workflow = {
-  jobs?: Record<string, { steps?: WorkflowStep[]; uses?: string }>;
+  jobs?: Record<
+    string,
+    {
+      container?: string | { image?: string };
+      services?: Record<string, string | { image?: string }>;
+      steps?: WorkflowStep[];
+      uses?: string;
+    }
+  >;
   on?: {
     pull_request?: { paths?: string[] };
     push?: { paths?: string[] };
@@ -39,9 +47,21 @@ describe("CI workflow hardening", () => {
     );
 
     expect(commands).toContain(
-      "go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 " +
-        '-ignore \'unexpected key "queue" for "concurrency" section\'',
+      "cd tools && " +
+        "go run github.com/rhysd/actionlint/cmd/actionlint " +
+        "-config-file ../.github/actionlint.yaml " +
+        '-ignore \'unexpected key "queue" for "concurrency" section\' ' +
+        "../.github/workflows/*.yml",
     );
+  });
+
+  it("uses the package manager that enforces the development Node floor", async () => {
+    const workflow = await readWorkflow(".github/workflows/ci.yml");
+    const setupStep = Object.values(workflow.jobs ?? {})
+      .flatMap((job) => job.steps ?? [])
+      .find((step) => step.uses?.startsWith("pnpm/action-setup@"));
+
+    expect(setupStep?.with?.version).toBe("11.13.0");
   });
 
   it("pins every external workflow action and image to immutable revisions", async () => {
@@ -68,6 +88,15 @@ describe("CI workflow hardening", () => {
             "jobs:",
             "  external:",
             "    uses: owner/repository/.github/workflows/check.yml@main",
+            "  containerized:",
+            "    runs-on: ubuntu-latest",
+            "    container:",
+            "      image: ghcr.io/owner/runtime:latest",
+            "    services:",
+            "      database:",
+            "        image: postgres:17",
+            "    steps:",
+            "      - run: echo ok",
           ].join("\n"),
         ),
         fs.writeFile(
@@ -91,6 +120,8 @@ describe("CI workflow hardening", () => {
       expect(actionRefs.toSorted()).toEqual(
         [
           "owner/repository/.github/workflows/check.yml@main",
+          "docker://ghcr.io/owner/runtime:latest",
+          "docker://postgres:17",
           "owner/action@v1",
           "docker://alpine:3.20",
           `docker://ghcr.io/owner/action@sha256:${"0".repeat(64)}`,
@@ -100,6 +131,8 @@ describe("CI workflow hardening", () => {
       expect(actionRefs.filter((actionRef) => !isImmutableActionRef(actionRef)).toSorted()).toEqual(
         [
           "owner/repository/.github/workflows/check.yml@main",
+          "docker://ghcr.io/owner/runtime:latest",
+          "docker://postgres:17",
           "owner/action@v1",
           "docker://alpine:3.20",
           "docker://busybox:1.37",
@@ -133,6 +166,8 @@ describe("CI workflow hardening", () => {
     ]);
 
     expect(codeowners).toContain("/.github/actions/ @openclaw/openclaw-secops");
+    expect(codeowners).toContain("/.github/pull_request_template.md @openclaw/openclaw-secops");
+    expect(codeowners).toContain("/tools/ @openclaw/openclaw-secops");
     expect(codeqlWorkflow.on?.push?.paths).toContain(".github/actions/**");
     expect(codeqlWorkflow.on?.pull_request?.paths).toContain(".github/actions/**");
     expect(codeqlWorkflow.on?.push?.paths).toContain("tools/**");
@@ -158,10 +193,19 @@ async function collectExternalActionRefs(root: string): Promise<string[]> {
     await Promise.all(
       workflowFiles.map(async (filePath) => {
         const workflow = await readWorkflow(filePath);
-        return Object.values(workflow.jobs ?? {}).flatMap((job) => [
-          ...(job.uses ? [job.uses] : []),
-          ...(job.steps?.flatMap((step) => (step.uses ? [step.uses] : [])) ?? []),
-        ]);
+        return Object.values(workflow.jobs ?? {}).flatMap((job) => {
+          const containerImage = workflowImage(job.container);
+          const serviceImages = Object.values(job.services ?? {}).flatMap((service) => {
+            const image = workflowImage(service);
+            return image ? [image] : [];
+          });
+          return [
+            ...(job.uses ? [job.uses] : []),
+            ...(containerImage ? [containerImage] : []),
+            ...serviceImages,
+            ...(job.steps?.flatMap((step) => (step.uses ? [step.uses] : [])) ?? []),
+          ];
+        });
       }),
     )
   ).flat();
@@ -182,6 +226,11 @@ async function collectExternalActionRefs(root: string): Promise<string[]> {
   ).flat();
 
   return [...workflowRefs, ...compositeRefs].filter((uses) => !uses.startsWith("./"));
+}
+
+function workflowImage(value: string | { image?: string } | undefined): string | undefined {
+  const image = typeof value === "string" ? value : value?.image;
+  return image ? `docker://${image}` : undefined;
 }
 
 function isImmutableActionRef(actionRef: string): boolean {
