@@ -69,9 +69,9 @@
     "@vitest/coverage-v8": "^4.1.10",
     "baileys": "7.0.0-rc13",
     "matrix-js-sdk": "41.9.0",
-    "oxfmt": "^0.58.0",
+    "oxfmt": "^0.59.0",
     "oxlint": "^1.73.0",
-    "oxlint-tsgolint": "^0.24.0",
+    "oxlint-tsgolint": "^0.25.0",
     "tsx": "^4.23.0",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vitest": "^4.1.10"
