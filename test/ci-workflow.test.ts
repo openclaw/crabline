@@ -49,7 +49,7 @@ describe("CI workflow hardening", () => {
     );
 
     expect(steps[setupGoIndex]).toEqual({
-      uses: "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16",
+      uses: "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
       with: {
         "cache-dependency-path": "tools/go.sum",
         "go-version-file": "tools/go.mod",
@@ -74,7 +74,7 @@ describe("CI workflow hardening", () => {
       .flatMap((job) => job.steps ?? [])
       .find((step) => step.uses?.startsWith("pnpm/action-setup@"));
 
-    expect(setupStep?.with?.version).toBe("11.13.0");
+    expect(setupStep?.with?.version).toBe("11.17.0");
   });
 
   it("pins every external workflow action and image to immutable revisions", async () => {

@@ -182,7 +182,7 @@ describe("release workflow", () => {
     ).toBe(22);
     expect(
       verifySteps.find((step) => step.uses?.startsWith("pnpm/action-setup@"))?.with?.version,
-    ).toBe("11.13.0");
+    ).toBe("11.17.0");
     expect(commands).toContain("npm install -g npm@12.0.1");
     for (const jobName of ["verify", "publish"]) {
       const jobCommands = jobSteps(workflow, jobName)
@@ -315,10 +315,10 @@ describe("release workflow", () => {
     );
 
     expect(contents).toContain(
-      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0",
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
     );
     expect(contents).not.toContain(
-      "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6",
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6",
     );
     expect(contents).toContain('      - ".github/actions/**"');
     expect(contents).toContain('      - ".github/workflows/**"');

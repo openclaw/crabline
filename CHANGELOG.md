@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Refresh runtime, toolchain, and GitHub Actions dependencies, and move off the broken pnpm 11.13.0 release.
 - Preserve native identity boundaries across Discord, Slack, loopback threads, and malformed smoke-lock records.
 - Preserve active WhatsApp inbound identities across replay-cache eviction, reject self-authored admin ingress, canonicalize Cloud webhook senders, and bound retained Zalo polling updates by bytes.
 - Accept valid fallback iMessage aliases and attachment-only Teams activities, canonicalize equal Telegram chat/topic IDs, and harden nonce, regex, JWT, Slack structured-text, and Telegram readiness validation.
