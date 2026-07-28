@@ -198,10 +198,17 @@ function requireSlackToken(
   state: SlackServerState,
 ): Response | undefined {
   const authorization = request.headers.authorization;
-  const tokenFromHeader =
-    typeof authorization === "string"
-      ? /^Bearer\s+(.+)$/iu.exec(authorization.trim())?.[1]?.trim()
-      : undefined;
+  let tokenFromHeader: string | undefined;
+  if (typeof authorization === "string") {
+    const trimmed = authorization.trim();
+    if (trimmed.slice(0, 6).toLowerCase() === "bearer" && /\s/u.test(trimmed[6] ?? "")) {
+      let tokenStart = 7;
+      while (tokenStart < trimmed.length && /\s/u.test(trimmed[tokenStart]!)) {
+        tokenStart += 1;
+      }
+      tokenFromHeader = trimmed.slice(tokenStart).trim() || undefined;
+    }
+  }
   const token = tokenFromHeader ?? readTrimmedString(body.token);
   if (!token) {
     return slackError("not_authed");
