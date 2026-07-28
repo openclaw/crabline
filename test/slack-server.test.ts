@@ -115,6 +115,11 @@ describe("slack local provider server", () => {
       method: "POST",
     });
     await expect(lowerCaseBearer.json()).resolves.toMatchObject({ ok: true });
+    const paddedBearer = await fetch(`${server.manifest.endpoints.apiRoot}auth.test`, {
+      headers: { authorization: `Bearer${" ".repeat(8_000)}xoxb-fake` },
+      method: "POST",
+    });
+    await expect(paddedBearer.json()).resolves.toMatchObject({ ok: true });
 
     const unauthenticated = await fetch(`${server.manifest.endpoints.apiRoot}auth.test`, {
       method: "POST",

@@ -1617,6 +1617,62 @@ function stripTelegramMarkdownExpandableMarker(line: string): string {
   return markers % 2 === 1 ? line.slice(0, -2) : line;
 }
 
+// Keep this scan strictly forward-only: this request path accepts client-controlled
+// Markdown, and backtracking over malformed link destinations amplifies CPU use.
+function stripTelegramMarkdownLinks(value: string): string {
+  const output: string[] = [];
+  let copyStart = 0;
+  let searchStart = 0;
+
+  while (searchStart < value.length) {
+    const labelStart = value.indexOf("[", searchStart);
+    if (labelStart < 0) {
+      break;
+    }
+
+    let labelEnd = labelStart + 1;
+    while (labelEnd < value.length && value[labelEnd] !== "]" && value[labelEnd] !== "\n") {
+      labelEnd += 1;
+    }
+    if (labelEnd === labelStart + 1 || value[labelEnd] !== "]" || value[labelEnd + 1] !== "(") {
+      searchStart = labelEnd < value.length ? labelEnd + 1 : value.length;
+      continue;
+    }
+
+    let destinationEnd = labelEnd + 2;
+    let matched = false;
+    while (destinationEnd < value.length) {
+      const character = value[destinationEnd]!;
+      if (character === "\n") {
+        break;
+      }
+      if (character === ")") {
+        output.push(value.slice(copyStart, labelStart), value.slice(labelStart + 1, labelEnd));
+        copyStart = destinationEnd + 1;
+        searchStart = copyStart;
+        matched = true;
+        break;
+      }
+      if (
+        character === "\\" &&
+        destinationEnd + 1 < value.length &&
+        value[destinationEnd + 1] !== "\n"
+      ) {
+        destinationEnd += 2;
+        continue;
+      }
+      destinationEnd += 1;
+    }
+    if (matched) {
+      continue;
+    }
+    searchStart = destinationEnd < value.length ? destinationEnd + 1 : value.length;
+  }
+
+  output.push(value.slice(copyStart));
+  return output.join("");
+}
+
 function telegramMarkdownText(value: string, versionTwo: boolean): string {
   let parsed = protectTelegramMarkdownEscapes(value, versionTwo)
     .replace(/```(?:[^\n]*\n)?([\s\S]*?)```/gu, (_match, content: string) =>
@@ -1626,8 +1682,8 @@ function telegramMarkdownText(value: string, versionTwo: boolean): string {
     .replace(
       /!\[([^\]\n]+)\]\(tg:\/\/(?:emoji\?id=\d+|time\?unix=-?\d+(?:&format=[rwdDtT]+)?)\)/gu,
       "$1",
-    )
-    .replace(/\[([^\]\n]+)\]\((?:\\.|[^)\n])*\)/gu, "$1");
+    );
+  parsed = stripTelegramMarkdownLinks(parsed);
   if (versionTwo) {
     parsed = parsed
       .replace(/^(?:\*\*)?>[^\n]*$/gmu, stripTelegramMarkdownExpandableMarker)

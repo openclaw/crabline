@@ -927,6 +927,32 @@ describe("telegram local provider server", () => {
         })
       ).status,
     ).toBe(200);
+    expect(
+      (
+        await fetch(`${apiRoot}/sendMessage`, {
+          body: JSON.stringify({
+            chat_id: 42,
+            parse_mode: "MarkdownV2",
+            text: `[${"x".repeat(4096)}](https://example.test/a\\)b)`,
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await fetch(`${apiRoot}/sendMessage`, {
+          body: JSON.stringify({
+            chat_id: 42,
+            parse_mode: "MarkdownV2",
+            text: `[x](${"a".repeat(1024 * 1024)})`,
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+      ).status,
+    ).toBe(200);
     for (const text of [
       `\`${"*".repeat(4096)}\``,
       `\`\`\`\n${"*".repeat(4096)}\`\`\``,
@@ -1063,6 +1089,27 @@ describe("telegram local provider server", () => {
         })
       ).status,
     ).toBe(400);
+  });
+
+  it("parses unterminated Markdown link destinations without backtracking", async () => {
+    const server = await startTelegramServer({ botToken: "test-token-placeholder" });
+    servers.push(server);
+    const startedAt = performance.now();
+    const response = await fetch(
+      `${server.manifest.baseUrl}/bottest-token-placeholder/sendMessage`,
+      {
+        body: JSON.stringify({
+          chat_id: 42,
+          parse_mode: "MarkdownV2",
+          text: `[x](${"\\".repeat(38)}`,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
   });
 
   it("rejects control characters in webhook secrets", async () => {
