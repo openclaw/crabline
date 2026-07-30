@@ -134,7 +134,7 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           channel: "matrix",
-          createChannelDriverSmokeEnv: (env) => ({ ...env, ...matrix.env }),
+          createProviderReadinessEnv: (env) => ({ ...env, ...matrix.env }),
           createGatewayConfig: (openclawConfig = {}) => {
             const channels = isRecord(openclawConfig.channels) ? openclawConfig.channels : {};
             const matrixConfig = isRecord(channels.matrix) ? channels.matrix : {};

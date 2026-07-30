@@ -4,12 +4,10 @@ import type { ServerEventObserver } from "../servers/recorder.js";
 
 export const DEFAULT_ACCOUNT_ID = "default";
 export const OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH =
-  "crabline-fake-provider-capabilities.json";
-export const OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH = "crabline-fake-provider-smoke.json";
-/** @deprecated Use OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH. */
-export const OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH = OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH;
-export const OPENCLAW_CRABLINE_MANIFEST_PATH = "crabline-fake-provider-server.json";
-export const OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY = ".crabline-smoke-artifacts";
+  "crabline-channel-driver-capabilities.json";
+export const OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH = "crabline-provider-readiness.json";
+export const OPENCLAW_CRABLINE_MANIFEST_PATH = "crabline-provider-server.json";
+export const OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY = ".crabline-channel-driver-artifacts";
 export const OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH = `${OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY}/current.json`;
 export const OPENCLAW_CRABLINE_DEFAULT_CHANNEL = "telegram";
 
@@ -30,25 +28,18 @@ export type OpenClawCrablineChannelDriverSelection = {
   channel: CrablineServerChannel;
   channelDriver: "crabline";
   capabilityMatrixPath: typeof OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH;
-  providerReadinessArtifactPath?: typeof OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH;
-  smokeArtifactPath: typeof OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH;
+  providerReadinessArtifactPath: typeof OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH;
 };
 
-/** @deprecated Use OpenClawCrablineProviderReadinessResult. */
-export type OpenClawCrablineChannelDriverSmokeResult = {
+export type OpenClawCrablineProviderReadinessResult = {
   artifactPointerPath: string;
   capabilityReport: unknown;
   capabilityMatrixPath: string;
   generation: string;
   manifestPath: string;
-  smoke: unknown;
-  smokeArtifactPath: string;
-  warnings?: string[];
-};
-
-export type OpenClawCrablineProviderReadinessResult = OpenClawCrablineChannelDriverSmokeResult & {
   providerReadiness: unknown;
   providerReadinessArtifactPath: string;
+  warnings?: string[];
 };
 export type OpenClawCrablineConversation = {
   id: string;
@@ -58,7 +49,7 @@ export type OpenClawCrablineConversation = {
 export type OpenClawCrablineGatewayBinding = {
   accountId: string;
   channel: string;
-  createChannelDriverSmokeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+  createProviderReadinessEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   createGatewayConfig(openclawConfig?: Record<string, unknown>): Record<string, unknown>;
   requiredPluginIds: string[];
 };

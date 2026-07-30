@@ -3,44 +3,31 @@ export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
 export { startMattermostServer } from "./servers/mattermost.js";
 export { startMatrixServer } from "./servers/matrix.js";
 export { startSignalServer } from "./servers/signal.js";
-export { startSlackServer, startSlackServer as startSlackFakeServer } from "./servers/slack.js";
-export {
-  startTelegramServer,
-  startTelegramServer as startTelegramFakeServer,
-} from "./servers/telegram.js";
-export {
-  startWhatsAppServer,
-  startWhatsAppServer as startWhatsAppFakeServer,
-} from "./servers/whatsapp.js";
+export { startSlackServer } from "./servers/slack.js";
+export { startTelegramServer } from "./servers/telegram.js";
+export { startWhatsAppServer } from "./servers/whatsapp.js";
 export { startZaloServer } from "./servers/zalo.js";
 export {
   CRABLINE_SERVER_CHANNELS,
-  CRABLINE_SERVER_CHANNELS as CRABLINE_FAKE_PROVIDER_CHANNELS,
   isCrablineServerChannel,
-  isCrablineServerChannel as isCrablineFakeProviderChannel,
   startCrablineServer,
-  startCrablineServer as startCrablineFakeProviderServer,
 } from "./servers/index.js";
 export {
   createOpenClawCrablineAgentDelivery,
   createOpenClawCrablineChannelReportNotes,
-  createOpenClawCrablineProviderBinding as createOpenClawCrablineFakeProviderBinding,
   createOpenClawCrablineProviderBinding,
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent,
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
-  OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
   OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
-  probeOpenClawCrablineProvider as probeOpenClawCrablineFakeProvider,
   probeOpenClawCrablineProvider,
   resolveOpenClawCrablineChannel,
   resolveOpenClawCrablineChannelDriverSelection,
   runOpenClawCrablineProviderReadiness,
-  runOpenClawCrablineChannelDriverSmoke,
   startOpenClawCrablineAdapter,
 } from "./openclaw.js";
 export {
@@ -95,28 +82,19 @@ export type {
   StartSignalServerParams,
 } from "./servers/signal.js";
 export type {
-  SlackServerManifest as SlackFakeServerManifest,
   SlackServerManifest,
-  StartedSlackServer as StartedSlackFakeServer,
   StartedSlackServer,
-  StartSlackServerParams as StartSlackFakeServerParams,
   StartSlackServerParams,
 } from "./servers/slack.js";
 export type {
-  StartedTelegramServer as StartedTelegramFakeServer,
   StartedTelegramServer,
-  StartTelegramServerParams as StartTelegramFakeServerParams,
   StartTelegramServerParams,
-  TelegramServerManifest as TelegramFakeServerManifest,
   TelegramServerManifest,
 } from "./servers/telegram.js";
 export type {
-  StartedWhatsAppServer as StartedWhatsAppFakeServer,
   StartedWhatsAppServer,
-  StartWhatsAppServerParams as StartWhatsAppFakeServerParams,
   StartWhatsAppServerParams,
   WhatsAppBaileysMessage,
-  WhatsAppServerManifest as WhatsAppFakeServerManifest,
   WhatsAppServerManifest,
 } from "./servers/whatsapp.js";
 export type {
@@ -125,19 +103,14 @@ export type {
   ZaloServerManifest,
 } from "./servers/zalo.js";
 export type {
-  CrablineServerChannel as CrablineFakeProviderChannel,
   CrablineServerChannel,
-  CrablineServerManifest as CrablineFakeProviderManifest,
   CrablineServerManifest,
-  StartedCrablineServer as StartedCrablineFakeProviderServer,
   StartedCrablineServer,
-  StartCrablineServerParams as StartCrablineFakeProviderServerParams,
   StartCrablineServerParams,
 } from "./servers/index.js";
 export type {
   OpenClawCrablineAgentDelivery,
   OpenClawCrablineChannelDriverSelection,
-  OpenClawCrablineChannelDriverSmokeResult,
   OpenClawCrablineProviderReadinessResult,
   OpenClawCrablineConversation,
   OpenClawCrablineGatewayBinding,

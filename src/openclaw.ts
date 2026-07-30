@@ -18,7 +18,6 @@ import { WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/w
 import { ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/zalo.js";
 import {
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
-  OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
   OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
@@ -49,9 +48,9 @@ import {
   type SecuredPrivateDirectory,
 } from "./openclaw/private-file.js";
 import {
-  acquireOpenClawCrablineSmokeRunLock,
-  releaseOpenClawCrablineSmokeRunLock,
-} from "./openclaw/smoke-lock.js";
+  acquireOpenClawCrablineProviderReadinessLock,
+  releaseOpenClawCrablineProviderReadinessLock,
+} from "./openclaw/provider-readiness-lock.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -59,7 +58,6 @@ export {
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
-  OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
   OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
@@ -67,7 +65,6 @@ export {
 export type {
   OpenClawCrablineAgentDelivery,
   OpenClawCrablineChannelDriverSelection,
-  OpenClawCrablineChannelDriverSmokeResult,
   OpenClawCrablineProviderReadinessResult,
   OpenClawCrablineConversation,
   OpenClawCrablineGatewayBinding,
@@ -92,7 +89,7 @@ const OPENCLAW_CRABLINE_PROVIDER_BRIDGE_LIST = Object.values(
   OPENCLAW_CRABLINE_PROVIDER_BRIDGES,
 ) as readonly OpenClawCrablineProviderBridge[];
 const RECORDER_TEMP_NAME_PATTERN =
-  /^\.([a-z]+)-fake-provider\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl\.tmp$/iu;
+  /^\.([a-z]+)-provider-server\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl\.tmp$/iu;
 const RECORDER_LOCK_REMOVAL_TOMBSTONE_PATTERN =
   /^\.(.+)\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove$/iu;
 const OPENCLAW_CRABLINE_PROVIDER_PROBE_CLEANUP_GRACE_MS = 250;
@@ -217,7 +214,7 @@ function openClawCrablineRecorderLockTombstoneBaseName(name: string): string | n
 async function reclaimOpenClawCrablineRecorderTemporaryLock(
   directoryPath: string,
   name: string,
-  lock: Awaited<ReturnType<typeof acquireOpenClawCrablineSmokeRunLock>>,
+  lock: Awaited<ReturnType<typeof acquireOpenClawCrablineProviderReadinessLock>>,
   quarantineBaseName = name,
 ): Promise<void> {
   const lockPath = path.join(directoryPath, name);
@@ -266,7 +263,7 @@ async function reclaimOpenClawCrablineRecorderTemporaryLock(
 
 async function reclaimOpenClawCrablineRecorderTemporaries(
   directory: SecuredPrivateDirectory,
-  lock: Awaited<ReturnType<typeof acquireOpenClawCrablineSmokeRunLock>>,
+  lock: Awaited<ReturnType<typeof acquireOpenClawCrablineProviderReadinessLock>>,
 ): Promise<void> {
   const directoryPath = directory.directoryPath;
   await directory.assertIdentityAt();
@@ -419,7 +416,6 @@ export function resolveOpenClawCrablineChannelDriverSelection(params: {
     channelDriver: "crabline",
     capabilityMatrixPath: OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
     providerReadinessArtifactPath: OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
-    smokeArtifactPath: OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   };
 }
 
@@ -511,9 +507,9 @@ export async function startOpenClawCrablineAdapter(
 }
 
 type ProviderReadinessDependencies = {
-  acquireLock?: typeof acquireOpenClawCrablineSmokeRunLock;
+  acquireLock?: typeof acquireOpenClawCrablineProviderReadinessLock;
   publishGeneration?: typeof publishOpenClawCrablineArtifactGeneration;
-  releaseLock?: typeof releaseOpenClawCrablineSmokeRunLock;
+  releaseLock?: typeof releaseOpenClawCrablineProviderReadinessLock;
   startAdapter?: typeof startOpenClawCrablineAdapter;
   syncParent?: typeof syncParentDirectory;
 };
@@ -567,9 +563,11 @@ export async function runOpenClawCrablineProviderReadiness(
   dependencies: ProviderReadinessDependencies = {},
 ): Promise<OpenClawCrablineProviderReadinessResult> {
   const outputDir = path.resolve(params.outputDir);
-  const releaseLock = dependencies.releaseLock ?? releaseOpenClawCrablineSmokeRunLock;
+  const releaseLock = dependencies.releaseLock ?? releaseOpenClawCrablineProviderReadinessLock;
   const syncRecorderParent = dependencies.syncParent ?? syncParentDirectory;
-  const smokeLock = await (dependencies.acquireLock ?? acquireOpenClawCrablineSmokeRunLock)({
+  const providerReadinessLock = await (
+    dependencies.acquireLock ?? acquireOpenClawCrablineProviderReadinessLock
+  )({
     channel: params.selection.channel,
     outputDir,
   });
@@ -587,10 +585,10 @@ export async function runOpenClawCrablineProviderReadiness(
     );
     await artifactsDirectory.assertIdentityAt();
     await recorderDirectory.assertIdentityAt();
-    await reclaimOpenClawCrablineRecorderTemporaries(recorderDirectory, smokeLock);
+    await reclaimOpenClawCrablineRecorderTemporaries(recorderDirectory, providerReadinessLock);
     recorderPath = path.join(
       recorderDirectory.directoryPath,
-      `.${params.selection.channel}-fake-provider.${randomUUID()}.jsonl.tmp`,
+      `.${params.selection.channel}-provider-server.${randomUUID()}.jsonl.tmp`,
     );
     const adapter = await (dependencies.startAdapter ?? startOpenClawCrablineAdapter)({
       channel: params.selection.channel,
@@ -679,12 +677,12 @@ export async function runOpenClawCrablineProviderReadiness(
       dependencies.publishGeneration ?? publishOpenClawCrablineArtifactGeneration
     )({
       capabilityReport,
-      lock: smokeLock,
+      lock: providerReadinessLock,
       manifest: adapter.manifest,
       outputDir,
       recorderSnapshot: {
         contents: recorderSnapshotContents,
-        fileName: `${params.selection.channel}-fake-provider.jsonl`,
+        fileName: `${params.selection.channel}-provider-server.jsonl`,
       },
       selection: params.selection,
       providerReadiness,
@@ -712,8 +710,6 @@ export async function runOpenClawCrablineProviderReadiness(
         manifestPath: generation.manifestPath,
         providerReadiness: generation.providerReadiness,
         providerReadinessArtifactPath: generation.providerReadinessArtifactPath,
-        smoke: generation.providerReadiness,
-        smokeArtifactPath: generation.providerReadinessArtifactPath,
         ...(generation.warnings || recorderCleanupWarning
           ? {
               warnings: [
@@ -768,7 +764,7 @@ export async function runOpenClawCrablineProviderReadiness(
   }
 
   try {
-    await releaseLock(smokeLock);
+    await releaseLock(providerReadinessLock);
   } catch (cleanupError) {
     // The pointer switch is authoritative; lock removal cannot roll it back.
     if (!outcome.committed) {
@@ -782,7 +778,7 @@ export async function runOpenClawCrablineProviderReadiness(
                 ? cleanupError
                 : new AggregateError(
                     [existingCause, cleanupError],
-                    "OpenClaw Crabline smoke failure cleanup also failed.",
+                    "OpenClaw Crabline provider readiness failure cleanup also failed.",
                   ),
           });
         } catch {
@@ -790,9 +786,12 @@ export async function runOpenClawCrablineProviderReadiness(
         }
         throw outcome.error;
       }
-      const combinedError = new Error("OpenClaw Crabline smoke and lock cleanup both failed.", {
-        cause: cleanupError,
-      });
+      const combinedError = new Error(
+        "OpenClaw Crabline provider readiness and lock cleanup both failed.",
+        {
+          cause: cleanupError,
+        },
+      );
       Object.defineProperty(combinedError, "errors", {
         value: [outcome.error, cleanupError],
       });
@@ -803,7 +802,7 @@ export async function runOpenClawCrablineProviderReadiness(
       ...outcome.result,
       warnings: [
         ...(outcome.result.warnings ?? []),
-        `OpenClaw Crabline smoke committed but lock cleanup failed: ${detail}`,
+        `OpenClaw Crabline provider readiness committed but lock cleanup failed: ${detail}`,
       ],
     };
   }
@@ -813,9 +812,6 @@ export async function runOpenClawCrablineProviderReadiness(
   }
   return outcome.result;
 }
-
-/** @deprecated Use runOpenClawCrablineProviderReadiness. */
-export const runOpenClawCrablineChannelDriverSmoke = runOpenClawCrablineProviderReadiness;
 
 export function createOpenClawCrablineChannelReportNotes(
   selection: OpenClawCrablineChannelDriverSelection | null | undefined,
@@ -828,7 +824,7 @@ export function createOpenClawCrablineChannelReportNotes(
     `Channel driver: ${selection.channelDriver} local provider for ${selection.channel}.`,
     `Channel artifact pointer: ${OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH}.`,
     `Generation capability filename: ${selection.capabilityMatrixPath}.`,
-    `Generation provider-readiness filename: ${selection.providerReadinessArtifactPath ?? selection.smokeArtifactPath}.`,
+    `Generation provider-readiness filename: ${selection.providerReadinessArtifactPath}.`,
     "Crabline verifies the local provider API is ready; OpenClaw channel behavior is proven separately by QA scenarios that run the real channel adapter.",
   ];
 }

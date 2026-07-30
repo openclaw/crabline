@@ -91,7 +91,7 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           channel: "signal",
-          createChannelDriverSmokeEnv: (env) => env,
+          createProviderReadinessEnv: (env) => env,
           createGatewayConfig: (openclawConfig = {}) => {
             const channels = isRecord(openclawConfig.channels) ? openclawConfig.channels : {};
             const signalConfig = isRecord(channels.signal) ? channels.signal : {};

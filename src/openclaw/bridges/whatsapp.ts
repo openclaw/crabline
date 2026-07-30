@@ -73,7 +73,7 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           channel: "whatsapp",
-          createChannelDriverSmokeEnv: (env) => ({
+          createProviderReadinessEnv: (env) => ({
             ...env,
             CRABLINE_WHATSAPP_ADMIN_TOKEN: whatsapp.adminToken,
             CRABLINE_WHATSAPP_RECORDER_PATH: whatsapp.recorderPath,

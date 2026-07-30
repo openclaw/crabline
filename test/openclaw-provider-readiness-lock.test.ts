@@ -2,14 +2,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  acquireOpenClawCrablineSmokeRunLock,
+  acquireOpenClawCrablineProviderReadinessLock,
   darwinProcessIdentityEnvironment,
   isProcessAlive,
   processIdentityFromDarwin,
   processIdentityFromLinuxStat,
   processStartedAtMsFromTimeOrigin,
-  releaseOpenClawCrablineSmokeRunLock,
-} from "../src/openclaw/smoke-lock.js";
+  releaseOpenClawCrablineProviderReadinessLock,
+} from "../src/openclaw/provider-readiness-lock.js";
 import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "../src/openclaw/shared.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
@@ -23,12 +23,14 @@ async function findOwnedLockDirectory(outputDir: string): Promise<string> {
   const prefix = `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock.owned.`;
   const matches = (await fs.readdir(outputDir)).filter((entry) => entry.startsWith(prefix));
   if (matches.length !== 1) {
-    throw new Error(`Expected one owned smoke-lock directory, found ${matches.length}.`);
+    throw new Error(
+      `Expected one owned provider-readiness-lock directory, found ${matches.length}.`,
+    );
   }
   return path.join(outputDir, matches[0]!);
 }
 
-describe("OpenClaw smoke lock cleanup", () => {
+describe("OpenClaw provider readiness lock cleanup", () => {
   it("extracts the exact Linux process start token", () => {
     expect(
       processIdentityFromLinuxStat(
@@ -87,7 +89,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     async () => {
       const outputDir = await createTempDir();
       try {
-        const lock = await acquireOpenClawCrablineSmokeRunLock(
+        const lock = await acquireOpenClawCrablineProviderReadinessLock(
           { channel: "telegram", outputDir },
           { startHeartbeat: disableHeartbeat },
         );
@@ -140,7 +142,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
 
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(
+        acquireOpenClawCrablineProviderReadinessLock(
           { channel: "telegram", outputDir },
           {
             isProcessAlive: () => true,
@@ -150,7 +152,7 @@ describe("OpenClaw smoke lock cleanup", () => {
             startHeartbeat: disableHeartbeat,
           },
         ),
-      ).rejects.toThrow("OpenClaw Crabline smoke lock owner metadata is malformed.");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
     } finally {
       await disposeTempDir(outputDir);
     }
@@ -167,7 +169,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       await fs.writeFile(path.join(lockDirectory, "owner.json"), "null\n");
 
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(
+        acquireOpenClawCrablineProviderReadinessLock(
           { channel: "telegram", outputDir },
           {
             isProcessAlive: () => true,
@@ -177,7 +179,7 @@ describe("OpenClaw smoke lock cleanup", () => {
             startHeartbeat: disableHeartbeat,
           },
         ),
-      ).rejects.toThrow("OpenClaw Crabline smoke lock owner metadata is malformed.");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
     } finally {
       await disposeTempDir(outputDir);
     }
@@ -189,7 +191,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const stageFile = vi.fn(async () => undefined);
     try {
       await fs.mkdir(path.join(outputDir, "nested"));
-      const lock = await acquireOpenClawCrablineSmokeRunLock(
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         { startHeartbeat: disableHeartbeat },
       );
@@ -236,7 +238,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const stageFile = vi.fn(async () => undefined);
     try {
       await fs.symlink(outsideDir, stageDirectory, "dir");
-      const lock = await acquireOpenClawCrablineSmokeRunLock(
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         { startHeartbeat: disableHeartbeat },
       );
@@ -266,7 +268,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     try {
       await fs.mkdir(outsideStage);
       await fs.symlink(outsideDir, linkedAncestor, "dir");
-      const lock = await acquireOpenClawCrablineSmokeRunLock(
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         { startHeartbeat: disableHeartbeat },
       );
@@ -301,7 +303,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const displacedDirectory = path.join(outputDir, "displaced-nested");
     try {
       await fs.mkdir(destinationDirectory);
-      const lock = await acquireOpenClawCrablineSmokeRunLock(
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           beforeCommitRename: async () => {
@@ -339,7 +341,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const displacedAncestor = path.join(outsideDir, "ancestor");
     try {
       await fs.mkdir(destinationDirectory, { recursive: true });
-      const lock = await acquireOpenClawCrablineSmokeRunLock(
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           beforeCommitRename: async () => {
@@ -374,7 +376,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const outsideDir = await createTempDir();
     let now = 1_000;
     try {
-      const expiredLock = await acquireOpenClawCrablineSmokeRunLock(
+      const expiredLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           isProcessAlive: () => true,
@@ -413,7 +415,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
 
       now = 2_001;
-      const successorLock = await acquireOpenClawCrablineSmokeRunLock(
+      const successorLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           isProcessAlive: () => true,
@@ -441,7 +443,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     let now = 1_000;
     try {
       await fs.mkdir(stageDirectory);
-      const expiredLock = await acquireOpenClawCrablineSmokeRunLock(
+      const expiredLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           isProcessAlive: () => true,
@@ -482,7 +484,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
 
       now = 2_001;
-      const successorLock = await acquireOpenClawCrablineSmokeRunLock(
+      const successorLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           isProcessAlive: () => true,
@@ -508,7 +510,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const displacedDirectory = path.join(outputDir, "displaced-stage");
     try {
       await fs.mkdir(stageDirectory);
-      const lock = await acquireOpenClawCrablineSmokeRunLock(
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           beforeCommitFileRename: async () => {
@@ -545,7 +547,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         events.push("secure");
         expect(await fs.readdir(directoryPath)).toEqual([]);
       });
-      const lock = await acquireOpenClawCrablineSmokeRunLock(
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           now: () => 1_000,
@@ -558,12 +560,9 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
 
       const ownedDirectory = await findOwnedLockDirectory(outputDir);
-      const compatibilityDirectory = path.join(
-        outputDir,
-        `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
-      );
+      const reservationDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
       expect(await fs.readdir(ownedDirectory)).toEqual(expect.arrayContaining(["owner.json"]));
-      expect(await fs.readdir(compatibilityDirectory)).toEqual(
+      expect(await fs.readdir(reservationDirectory)).toEqual(
         expect.arrayContaining(["owner.json"]),
       );
 
@@ -591,7 +590,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const aclError = new Error("ACL unavailable");
     try {
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(
+        acquireOpenClawCrablineProviderReadinessLock(
           { channel: "telegram", outputDir },
           {
             now: () => 1_000,
@@ -622,10 +621,10 @@ describe("OpenClaw smoke lock cleanup", () => {
     let displacedPath = "";
     try {
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(
+        acquireOpenClawCrablineProviderReadinessLock(
           { channel: "telegram", outputDir },
           {
-            afterLockOwnerWrite: async (candidateDirectory) => {
+            afterLockReservationWrite: async (candidateDirectory) => {
               displacedPath = `${candidateDirectory}.displaced`;
               await fs.rename(candidateDirectory, displacedPath);
               await fs.mkdir(candidateDirectory);
@@ -651,7 +650,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     let displacedPath = "";
     try {
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(
+        acquireOpenClawCrablineProviderReadinessLock(
           { channel: "telegram", outputDir },
           {
             afterLockCandidateInstall: async (lockDirectory) => {
@@ -677,13 +676,13 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("retires an installed compatibility marker when owner-claim setup fails", async () => {
+  it("removes an installed reservation when owner-claim setup fails", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const setupFailure = new Error("owner claim setup failed");
     try {
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
+        acquireOpenClawCrablineProviderReadinessLock(params, {
           afterLockOwnerClaimInstall: async () => {
             throw setupFailure;
           },
@@ -695,20 +694,12 @@ describe("OpenClaw smoke lock cleanup", () => {
           entry.startsWith(`.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock.owned.`),
         ),
       ).toEqual([]);
-      const compatibilityOwnerPath = path.join(
-        outputDir,
-        `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
-        "owner.json",
-      );
-      expect(JSON.parse(await fs.readFile(compatibilityOwnerPath, "utf8"))).toMatchObject({
-        createdAtMs: 1,
-        pid: 2_147_483_647,
-        processStartedAtMs: 1,
-      });
-      expect((await fs.stat(compatibilityOwnerPath)).mtimeMs).toBeCloseTo(1, 0);
+      await expect(
+        fs.access(path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`)),
+      ).rejects.toMatchObject({ code: "ENOENT" });
 
       const sleep = vi.fn(async () => undefined);
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         sleep,
         startHeartbeat: disableHeartbeat,
       });
@@ -730,7 +721,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const sleep = vi.fn(async (_delayMs: number) => undefined);
 
     await expect(
-      releaseOpenClawCrablineSmokeRunLock({ release }, { sleep }),
+      releaseOpenClawCrablineProviderReadinessLock({ release }, { sleep }),
     ).resolves.toBeUndefined();
 
     expect(release).toHaveBeenCalledTimes(3);
@@ -744,7 +735,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     });
     const sleep = vi.fn(async (_delayMs: number) => undefined);
 
-    await expect(releaseOpenClawCrablineSmokeRunLock({ release }, { sleep })).rejects.toBe(
+    await expect(releaseOpenClawCrablineProviderReadinessLock({ release }, { sleep })).rejects.toBe(
       releaseError,
     );
 
@@ -765,17 +756,17 @@ describe("OpenClaw smoke lock cleanup", () => {
         await fs.rm(lockDirectory, { force: true, recursive: true });
       });
       const params = { channel: "telegram" as const, outputDir };
-      const lock = await acquireOpenClawCrablineSmokeRunLock(params, { removeDirectory });
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(params, { removeDirectory });
 
       await expect(lock.release()).rejects.toBe(removalError);
-      await expect(acquireOpenClawCrablineSmokeRunLock(params)).rejects.toThrow(
-        `OpenClaw Crabline smoke is already running for channel "telegram" in "${path.resolve(outputDir)}"`,
+      await expect(acquireOpenClawCrablineProviderReadinessLock(params)).rejects.toThrow(
+        `OpenClaw Crabline provider readiness is already running for channel "telegram" in "${path.resolve(outputDir)}"`,
       );
 
       await expect(lock.release()).resolves.toBeUndefined();
-      expect(removeDirectory).toHaveBeenCalledTimes(2);
+      expect(removeDirectory).toHaveBeenCalledTimes(3);
 
-      const nextLock = await acquireOpenClawCrablineSmokeRunLock(params);
+      const nextLock = await acquireOpenClawCrablineProviderReadinessLock(params);
       await expect(nextLock.release()).resolves.toBeUndefined();
     } finally {
       await disposeTempDir(outputDir);
@@ -787,13 +778,13 @@ describe("OpenClaw smoke lock cleanup", () => {
     const params = { channel: "telegram" as const, outputDir };
     let sentinelPath: string | undefined;
     try {
-      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         beforeReleaseRemove: async () => {
           const releaseDirectory = (await fs.readdir(outputDir))
             .filter((entry) => entry.includes(".lock.release."))
             .map((entry) => path.join(outputDir, entry))[0];
           if (!releaseDirectory) {
-            throw new Error("Expected a smoke lock release directory.");
+            throw new Error("Expected a provider readiness lock release directory.");
           }
           await fs.rename(releaseDirectory, `${releaseDirectory}.original`);
           const replacementTree = path.join(releaseDirectory, "replacement");
@@ -805,7 +796,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       });
 
       await expect(lock.release()).rejects.toThrow(
-        "OpenClaw Crabline smoke lock cleanup target changed.",
+        "OpenClaw Crabline provider readiness lock cleanup target changed.",
       );
       expect(sentinelPath).toBeDefined();
       const quarantineDirectory = (await fs.readdir(outputDir))
@@ -826,13 +817,13 @@ describe("OpenClaw smoke lock cleanup", () => {
     let releaseDirectory: string | undefined;
     let replacementIdentity: { dev: bigint; ino: bigint } | undefined;
     try {
-      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         beforeReleaseRemove: async () => {
           releaseDirectory = (await fs.readdir(outputDir))
             .filter((entry) => entry.includes(".lock.release."))
             .map((entry) => path.join(outputDir, entry))[0];
           if (!releaseDirectory) {
-            throw new Error("Expected a smoke lock release directory.");
+            throw new Error("Expected a provider readiness lock release directory.");
           }
           await fs.rename(releaseDirectory, `${releaseDirectory}.original`);
           await fs.mkdir(releaseDirectory);
@@ -843,7 +834,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       });
 
       await expect(lock.release()).rejects.toThrow(
-        "OpenClaw Crabline smoke lock cleanup target changed.",
+        "OpenClaw Crabline provider readiness lock cleanup target changed.",
       );
       const quarantineDirectory = (await fs.readdir(outputDir))
         .filter((entry) => entry.includes(".lock.release.") && entry.includes(".cleanup."))
@@ -866,13 +857,13 @@ describe("OpenClaw smoke lock cleanup", () => {
     const params = { channel: "telegram" as const, outputDir };
     try {
       await fs.writeFile(outsideOwnerPath, "preserve\n");
-      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         beforeReleaseRemove: async () => {
           const releaseDirectory = (await fs.readdir(outputDir))
             .filter((entry) => entry.includes(".lock.release."))
             .map((entry) => path.join(outputDir, entry))[0];
           if (!releaseDirectory) {
-            throw new Error("Expected a smoke lock release directory.");
+            throw new Error("Expected a provider readiness lock release directory.");
           }
           await fs.rename(releaseDirectory, `${releaseDirectory}.original`);
           await fs.symlink(outsideDir, releaseDirectory, "dir");
@@ -881,7 +872,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       });
 
       await expect(lock.release()).rejects.toThrow(
-        "OpenClaw Crabline smoke lock cleanup target changed.",
+        "OpenClaw Crabline provider readiness lock cleanup target changed.",
       );
       await expect(fs.readFile(outsideOwnerPath, "utf8")).resolves.toBe("preserve\n");
     } finally {
@@ -893,7 +884,7 @@ describe("OpenClaw smoke lock cleanup", () => {
   it("does not transiently relocate a successor while its heartbeat runs", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
-    let suspendedMarkerDirectory = "";
+    let suspendedReservationDirectory = "";
     let suspendedOwnerDirectory = "";
     let resumeRelease: (() => void) | undefined;
     let releaseValidated: (() => void) | undefined;
@@ -903,10 +894,12 @@ describe("OpenClaw smoke lock cleanup", () => {
     const releaseValidatedPromise = new Promise<void>((resolve) => {
       releaseValidated = resolve;
     });
-    let successorLock: Awaited<ReturnType<typeof acquireOpenClawCrablineSmokeRunLock>> | undefined;
+    let successorLock:
+      | Awaited<ReturnType<typeof acquireOpenClawCrablineProviderReadinessLock>>
+      | undefined;
     let successorRenew: (() => Promise<void>) | undefined;
     try {
-      const oldLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const oldLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         beforeReleaseRename: async () => {
           releaseValidated?.();
           await resumeReleasePromise;
@@ -918,14 +911,14 @@ describe("OpenClaw smoke lock cleanup", () => {
         outputDir,
         `.suspended-${path.basename(oldOwnerDirectory)}`,
       );
-      const markerDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
-      suspendedMarkerDirectory = path.join(outputDir, ".suspended-compatibility-marker");
+      const reservationDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
+      suspendedReservationDirectory = path.join(outputDir, ".suspended-reservation");
       const oldRelease = oldLock.release();
       await releaseValidatedPromise;
 
       await fs.rename(oldOwnerDirectory, suspendedOwnerDirectory);
-      await fs.rename(markerDirectory, suspendedMarkerDirectory);
-      successorLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      await fs.rename(reservationDirectory, suspendedReservationDirectory);
+      successorLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         startHeartbeat: (renew, intervalMs) => {
           successorRenew = renew;
           return disableHeartbeat(renew, intervalMs);
@@ -937,15 +930,15 @@ describe("OpenClaw smoke lock cleanup", () => {
       await expect(successorRenew!()).resolves.toBeUndefined();
       await expect(successorLock.assertOwned()).resolves.toBeUndefined();
       await expect(fs.stat(await findOwnedLockDirectory(outputDir))).resolves.toBeDefined();
-      await expect(fs.stat(markerDirectory)).resolves.toBeDefined();
+      await expect(fs.stat(reservationDirectory)).resolves.toBeDefined();
     } finally {
       resumeRelease?.();
       await successorLock?.release();
       if (suspendedOwnerDirectory) {
         await fs.rm(suspendedOwnerDirectory, { force: true, recursive: true });
       }
-      if (suspendedMarkerDirectory) {
-        await fs.rm(suspendedMarkerDirectory, { force: true, recursive: true });
+      if (suspendedReservationDirectory) {
+        await fs.rm(suspendedReservationDirectory, { force: true, recursive: true });
       }
       await disposeTempDir(outputDir);
     }
@@ -955,14 +948,14 @@ describe("OpenClaw smoke lock cleanup", () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     try {
-      const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const firstLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         now: () => 1_000,
         pid: 4_242,
         processIdentity: "test:first",
         processStartedAtMs: 100,
       });
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         now: () => 1_100,
         pid: 4_242,
@@ -972,14 +965,14 @@ describe("OpenClaw smoke lock cleanup", () => {
 
       await firstLock.release();
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
+        acquireOpenClawCrablineProviderReadinessLock(params, {
           isProcessAlive: () => true,
           now: () => 1_200,
           pid: 4_242,
           processIdentity: "test:second",
           processStartedAtMs: 200,
         }),
-      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness is already running");
       await replacementLock.release();
     } finally {
       await disposeTempDir(outputDir);
@@ -990,14 +983,14 @@ describe("OpenClaw smoke lock cleanup", () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     try {
-      const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const firstLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         now: () => 1_000,
         pid: 4_242,
         processIdentity: null,
         processStartedAtMs: 100,
       });
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         now: () => 1_100,
         pid: 4_242,
@@ -1013,14 +1006,13 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("keeps an active legacy-format lock owned by its live PID", async () => {
+  it("rejects an unversioned minimal owner record", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
       path.resolve(outputDir),
       `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
     );
-    let legacyOwnerAlive = true;
     try {
       await fs.mkdir(lockDirectory, { mode: 0o700 });
       await fs.writeFile(
@@ -1028,35 +1020,26 @@ describe("OpenClaw smoke lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           pid: 4_242,
-          token: "legacy",
+          token: "unversioned",
         })}\n`,
         { mode: 0o600 },
       );
       await fs.utimes(path.join(lockDirectory, "owner.json"), new Date(1_000), new Date(1_000));
 
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
-          isProcessAlive: () => legacyOwnerAlive,
+        acquireOpenClawCrablineProviderReadinessLock(params, {
+          isProcessAlive: () => true,
           now: () => 2_000,
           pid: 5_252,
           processStartedAtMs: 200,
         }),
-      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
-
-      legacyOwnerAlive = false;
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
-        isProcessAlive: () => legacyOwnerAlive,
-        now: () => 2_000,
-        pid: 5_252,
-        processStartedAtMs: 200,
-      });
-      await replacementLock.release();
+      ).rejects.toThrow("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
     } finally {
       await disposeTempDir(outputDir);
     }
   });
 
-  it("keeps an active pre-heartbeat owner beyond its original lease age", async () => {
+  it("rejects an unversioned process-identified owner record", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
@@ -1079,7 +1062,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
 
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
+        acquireOpenClawCrablineProviderReadinessLock(params, {
           isProcessAlive: () => true,
           getProcessIdentity: () => "test:prior",
           leaseMs: 1_000,
@@ -1087,13 +1070,13 @@ describe("OpenClaw smoke lock cleanup", () => {
           pid: 5_252,
           processStartedAtMs: 200,
         }),
-      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
     } finally {
       await disposeTempDir(outputDir);
     }
   });
 
-  it("matches a recent legacy Darwin owner using its stable coarse identity", async () => {
+  it("matches a recent canonical Darwin owner using its stable coarse identity", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
@@ -1109,6 +1092,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: coarseIdentity,
           processStartedAtMs: 100,
@@ -1119,7 +1103,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       await fs.utimes(ownerPath, new Date(1_000), new Date(1_000));
 
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
+        acquireOpenClawCrablineProviderReadinessLock(params, {
           getProcessIdentity: () => coarseIdentity,
           isProcessAlive: () => true,
           leaseMs: 1_000,
@@ -1127,7 +1111,7 @@ describe("OpenClaw smoke lock cleanup", () => {
           pid: 5_252,
           processStartedAtMs: 200,
         }),
-      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness is already running");
     } finally {
       await disposeTempDir(outputDir);
     }
@@ -1149,6 +1133,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: coarseIdentity,
           processStartedAtMs: 100,
@@ -1158,7 +1143,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
       await fs.utimes(ownerPath, new Date(1_000), new Date(1_000));
 
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         getProcessIdentity: () => coarseIdentity,
         isProcessAlive: () => true,
         leaseMs: 1_000,
@@ -1175,7 +1160,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("keeps a stale remote owner when its precise Darwin identity is verified", async () => {
+  it("reclaims a stale canonical owner when its precise Darwin identity is verified", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
@@ -1192,6 +1177,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: coarseIdentity,
           processIdentityV2: preciseIdentity,
@@ -1202,17 +1188,18 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
       await fs.utimes(ownerPath, new Date(1_000), new Date(1_000));
 
-      await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
-          getProcessIdentity: () => coarseIdentity,
-          getProcessIdentityV2: () => preciseIdentity,
-          isProcessAlive: () => true,
-          leaseMs: 1_000,
-          now: () => 10_000,
-          pid: 5_252,
-          processStartedAtMs: 200,
-        }),
-      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
+        getProcessIdentity: () => coarseIdentity,
+        getProcessIdentityV2: () => preciseIdentity,
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 10_000,
+        pid: 5_252,
+        processStartedAtMs: 200,
+        startHeartbeat: disableHeartbeat,
+      });
+      await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
+      await replacementLock.release();
     } finally {
       await disposeTempDir(outputDir);
     }
@@ -1232,6 +1219,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: "darwin:1783864000.123456:Sun Jul 12 16:04:00 2026",
           processIdentityV2: "darwin:1783864000.123456:us:1783872240100000",
@@ -1241,7 +1229,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         { mode: 0o600 },
       );
 
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         getProcessIdentity: () => "darwin:1783864000.123456:Sun Jul 12 16:04:00 2026",
         getProcessIdentityV2: () => "darwin:1783864000.123456:us:1783872240900000",
         isProcessAlive: () => true,
@@ -1259,7 +1247,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("reclaims a dead pre-heartbeat owner when its start time is unavailable", async () => {
+  it("reclaims a dead canonical owner when its start time is unavailable", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
@@ -1273,6 +1261,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processStartedAtMs: 100,
           token: "prior",
@@ -1280,7 +1269,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         { mode: 0o600 },
       );
 
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         getProcessIdentity: () => null,
         isProcessAlive: () => false,
         leaseMs: 1_000,
@@ -1296,7 +1285,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("reclaims a pre-heartbeat lock after its PID is reused", async () => {
+  it("reclaims a canonical lock after its PID is reused", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
@@ -1310,6 +1299,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: "test:prior",
           processStartedAtMs: 100,
@@ -1318,7 +1308,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         { mode: 0o600 },
       );
 
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         getProcessIdentity: () => "test:replacement",
         isProcessAlive: () => true,
         leaseMs: 1_000,
@@ -1348,6 +1338,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: "test:prior",
           processStartedAtMs: 100,
@@ -1356,7 +1347,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         { mode: 0o600 },
       );
 
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         getProcessIdentity: () => null,
         isProcessAlive: () => true,
         leaseMs: 1_000,
@@ -1388,6 +1379,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: darwinIdentity,
           processStartedAtMs: 100,
@@ -1396,7 +1388,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         { mode: 0o600 },
       );
 
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         getProcessIdentity: () => darwinIdentity,
         isProcessAlive: () => true,
         leaseMs: 1_000,
@@ -1431,46 +1423,11 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
 
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(
+        acquireOpenClawCrablineProviderReadinessLock(
           { channel: "telegram", outputDir },
           { isProcessAlive: () => true, now: () => 1_000, pid: 5_252 },
         ),
-      ).rejects.toThrow("OpenClaw Crabline smoke lock owner metadata is malformed.");
-    } finally {
-      await disposeTempDir(outputDir);
-    }
-  });
-
-  it("keeps an expired legacy lock while its PID is still alive", async () => {
-    const outputDir = await createTempDir();
-    const params = { channel: "telegram" as const, outputDir };
-    const lockDirectory = path.join(
-      path.resolve(outputDir),
-      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
-    );
-    const ownerPath = path.join(lockDirectory, "owner.json");
-    try {
-      await fs.mkdir(lockDirectory, { mode: 0o700 });
-      await fs.writeFile(
-        ownerPath,
-        `${JSON.stringify({
-          channel: "telegram",
-          pid: 4_242,
-          token: "legacy",
-        })}\n`,
-        { mode: 0o600 },
-      );
-      await fs.utimes(ownerPath, new Date(1_000), new Date(1_000));
-
-      await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
-          isProcessAlive: () => true,
-          leaseMs: 1_000,
-          now: () => 3_001,
-          pid: 5_252,
-          processStartedAtMs: 200,
-        }),
-      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
     } finally {
       await disposeTempDir(outputDir);
     }
@@ -1482,13 +1439,13 @@ describe("OpenClaw smoke lock cleanup", () => {
     let now = 1_000;
     let renew: (() => Promise<void>) | undefined;
     const stop = vi.fn(async () => undefined);
-    let suspendedMarkerDirectory = "";
+    let suspendedReservationDirectory = "";
     let suspendedOwnerDirectory = "";
     let replacementLock:
-      | Awaited<ReturnType<typeof acquireOpenClawCrablineSmokeRunLock>>
+      | Awaited<ReturnType<typeof acquireOpenClawCrablineProviderReadinessLock>>
       | undefined;
     try {
-      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         leaseMs: 1_000,
         now: () => now,
@@ -1504,21 +1461,24 @@ describe("OpenClaw smoke lock cleanup", () => {
       now = 1_800;
       await renew!();
       const ownerDirectory = await findOwnedLockDirectory(outputDir);
-      const markerDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
-      const markerOwnerPath = path.join(markerDirectory, "owner.json");
+      const reservationDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
+      const reservationOwnerPath = path.join(reservationDirectory, "owner.json");
       const ownedOwner = JSON.parse(
         await fs.readFile(path.join(ownerDirectory, "owner.json"), "utf8"),
       );
-      const markerOwner = JSON.parse(await fs.readFile(markerOwnerPath, "utf8"));
-      expect(markerOwner.token).toBe(ownedOwner.token);
-      expect((await fs.stat(markerOwnerPath)).mtimeMs).toBeCloseTo(1_800, 0);
+      const reservationOwner = JSON.parse(await fs.readFile(reservationOwnerPath, "utf8"));
+      expect(reservationOwner.token).toBe(ownedOwner.token);
+      expect(
+        (await fs.stat(path.join(reservationDirectory, `lease.${reservationOwner.token}.json`)))
+          .mtimeMs,
+      ).toBeCloseTo(1_800, 0);
       suspendedOwnerDirectory = path.join(outputDir, `.suspended-${path.basename(ownerDirectory)}`);
-      suspendedMarkerDirectory = path.join(outputDir, ".suspended-compatibility-marker");
+      suspendedReservationDirectory = path.join(outputDir, ".suspended-reservation");
       await fs.rename(ownerDirectory, suspendedOwnerDirectory);
-      await fs.rename(markerDirectory, suspendedMarkerDirectory);
+      await fs.rename(reservationDirectory, suspendedReservationDirectory);
       now = 2_600;
-      await expect(renew!()).rejects.toThrow("smoke lock ownership was lost");
-      replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      await expect(renew!()).rejects.toThrow("provider readiness lock ownership was lost");
+      replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         leaseMs: 1_000,
         now: () => 2_600,
@@ -1534,8 +1494,8 @@ describe("OpenClaw smoke lock cleanup", () => {
       if (suspendedOwnerDirectory) {
         await fs.rm(suspendedOwnerDirectory, { force: true, recursive: true });
       }
-      if (suspendedMarkerDirectory) {
-        await fs.rm(suspendedMarkerDirectory, { force: true, recursive: true });
+      if (suspendedReservationDirectory) {
+        await fs.rm(suspendedReservationDirectory, { force: true, recursive: true });
       }
       await disposeTempDir(outputDir);
     }
@@ -1547,7 +1507,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     let now = 1_000;
     let renew: (() => Promise<void>) | undefined;
     try {
-      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         leaseMs: 1_000,
         now: () => now,
@@ -1561,7 +1521,7 @@ describe("OpenClaw smoke lock cleanup", () => {
 
       now = 2_001;
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
+        acquireOpenClawCrablineProviderReadinessLock(params, {
           beforeRecoveryDeleteClaim: async () => {
             now = 1_999;
             await renew!();
@@ -1574,7 +1534,7 @@ describe("OpenClaw smoke lock cleanup", () => {
           processStartedAtMs: 200,
           startHeartbeat: disableHeartbeat,
         }),
-      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness is already running");
 
       await expect(fs.stat(await findOwnedLockDirectory(outputDir))).resolves.toBeDefined();
       await lock.release();
@@ -1599,7 +1559,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     let now = 1_000;
     let commitPromise: Promise<void> | undefined;
     try {
-      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         beforeCommitFileRename: async () => {
           commitClaimed?.();
           await allowCommitPromise;
@@ -1625,7 +1585,7 @@ describe("OpenClaw smoke lock cleanup", () => {
 
       now = 2_001;
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
+        acquireOpenClawCrablineProviderReadinessLock(params, {
           beforeRecoveryDeleteClaim: async () => {
             now = 1_999;
             await renew!();
@@ -1638,7 +1598,7 @@ describe("OpenClaw smoke lock cleanup", () => {
           processStartedAtMs: 200,
           startHeartbeat: disableHeartbeat,
         }),
-      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness is already running");
 
       const lockClaims = (await fs.readdir(outputDir)).filter((entry) => entry.includes(".lock."));
       expect(lockClaims.filter((entry) => entry.includes(".commit."))).toHaveLength(1);
@@ -1655,7 +1615,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("fences an expired commit after a successor replaces its compatibility marker", async () => {
+  it("fences an expired commit after a successor replaces its reservation", async () => {
     const outputDir = await createTempDir();
     const stageDirectory = path.join(outputDir, "artifacts");
     const destinationPath = path.join(stageDirectory, "current.json");
@@ -1671,7 +1631,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     let oldCommit: Promise<void> | undefined;
     try {
       await fs.mkdir(stageDirectory);
-      const oldLock = await acquireOpenClawCrablineSmokeRunLock(
+      const oldLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           beforeCommitRename: async () => {
@@ -1697,7 +1657,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       await oldCommitReadyPromise;
 
       now = 2_001;
-      const successorLock = await acquireOpenClawCrablineSmokeRunLock(
+      const successorLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           isProcessAlive: () => true,
@@ -1719,7 +1679,7 @@ describe("OpenClaw smoke lock cleanup", () => {
 
       allowOldCommit?.();
       await expect(oldCommit).rejects.toThrow(
-        "Private directory path identity changed during publication.",
+        "OpenClaw Crabline provider readiness lock reservation was lost.",
       );
       await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe("successor\n");
       await oldLock.release();
@@ -1738,7 +1698,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     let failCommitClaim = true;
     try {
       await fs.mkdir(stageDirectory);
-      const lock = await acquireOpenClawCrablineSmokeRunLock(
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           beforeCommitClaim: async () => {
@@ -1773,7 +1733,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const outputDir = await createTempDir();
     let now = 1_000;
     try {
-      const expiredLock = await acquireOpenClawCrablineSmokeRunLock(
+      const expiredLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           isProcessAlive: () => true,
@@ -1792,7 +1752,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       );
 
       now = 2_001;
-      const successorLock = await acquireOpenClawCrablineSmokeRunLock(
+      const successorLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           isProcessAlive: () => true,
@@ -1821,7 +1781,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const params = { channel: "telegram" as const, outputDir };
     const confirmationSleep = vi.fn(async (_delayMs: number) => undefined);
     try {
-      const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const firstLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         leaseMs: 1_000,
         now: () => 1_000,
@@ -1831,16 +1791,16 @@ describe("OpenClaw smoke lock cleanup", () => {
       });
 
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
+        acquireOpenClawCrablineProviderReadinessLock(params, {
           isProcessAlive: () => true,
           leaseMs: 1_000,
           now: () => 1_999,
           pid: 5_252,
           processStartedAtMs: 200,
         }),
-      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness is already running");
 
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         leaseMs: 1_000,
         now: () => 2_001,
@@ -1863,7 +1823,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     try {
-      const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const firstLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         leaseMs: 1_000,
         now: () => 1_000,
@@ -1872,7 +1832,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         startHeartbeat: disableHeartbeat,
       });
       const future = new Date(10_000);
-      const compatibilityOwnerPath = path.join(
+      const reservationOwnerPath = path.join(
         outputDir,
         `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
         "owner.json",
@@ -1882,9 +1842,9 @@ describe("OpenClaw smoke lock cleanup", () => {
         future,
         future,
       );
-      await fs.utimes(compatibilityOwnerPath, future, future);
+      await fs.utimes(reservationOwnerPath, future, future);
 
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         leaseMs: 1_000,
         now: () => 2_000,
@@ -1906,7 +1866,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     let now = 1_000;
     let renew: (() => Promise<void>) | undefined;
     try {
-      const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const firstLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         leaseMs: 1_000,
         now: () => now,
@@ -1920,7 +1880,7 @@ describe("OpenClaw smoke lock cleanup", () => {
 
       now = 100_000;
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
+        acquireOpenClawCrablineProviderReadinessLock(params, {
           isProcessAlive: () => true,
           leaseMs: 1_000,
           now: () => now,
@@ -1931,7 +1891,7 @@ describe("OpenClaw smoke lock cleanup", () => {
           },
           startHeartbeat: disableHeartbeat,
         }),
-      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness is already running");
 
       await firstLock.release();
     } finally {
@@ -1945,7 +1905,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     let now = 100_000;
     let renew: (() => Promise<void>) | undefined;
     try {
-      const firstLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const firstLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
         leaseMs: 1_000,
         now: () => now,
@@ -1960,7 +1920,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       now = 1_000;
       await renew!();
       await expect(
-        acquireOpenClawCrablineSmokeRunLock(params, {
+        acquireOpenClawCrablineProviderReadinessLock(params, {
           isProcessAlive: () => true,
           leaseMs: 1_000,
           now: () => now,
@@ -1971,7 +1931,7 @@ describe("OpenClaw smoke lock cleanup", () => {
           },
           startHeartbeat: disableHeartbeat,
         }),
-      ).rejects.toThrow("OpenClaw Crabline smoke is already running");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness is already running");
 
       await firstLock.release();
     } finally {
@@ -1983,7 +1943,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     try {
-      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         startHeartbeat: disableHeartbeat,
       });
       const ownerPath = path.join(await findOwnedLockDirectory(outputDir), "owner.json");
@@ -1993,7 +1953,9 @@ describe("OpenClaw smoke lock cleanup", () => {
         await fs.writeFile(ownerPath, owner);
       });
 
-      await expect(releaseOpenClawCrablineSmokeRunLock(lock, { sleep })).resolves.toBeUndefined();
+      await expect(
+        releaseOpenClawCrablineProviderReadinessLock(lock, { sleep }),
+      ).resolves.toBeUndefined();
       expect(sleep).toHaveBeenCalledTimes(1);
     } finally {
       await disposeTempDir(outputDir);
@@ -2005,7 +1967,7 @@ describe("OpenClaw smoke lock cleanup", () => {
     const params = { channel: "telegram" as const, outputDir };
     let runHeartbeat: (() => Promise<void>) | undefined;
     try {
-      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         startHeartbeat: (renew) => {
           let failure: unknown;
           let pending: Promise<void> | undefined;
@@ -2018,7 +1980,7 @@ describe("OpenClaw smoke lock cleanup", () => {
           return {
             assertHealthy() {
               if (failure !== undefined) {
-                throw new Error("OpenClaw Crabline smoke lock heartbeat failed.", {
+                throw new Error("OpenClaw Crabline provider readiness lock heartbeat failed.", {
                   cause: failure,
                 });
               }
@@ -2048,7 +2010,7 @@ describe("OpenClaw smoke lock cleanup", () => {
             await fs.writeFile(filePath, contents);
           },
         }),
-      ).rejects.toThrow("OpenClaw Crabline smoke lock heartbeat failed.");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness lock heartbeat failed.");
 
       await fs.writeFile(ownerPath, owner);
       await expect(lock.release()).resolves.toBeUndefined();
@@ -2057,24 +2019,24 @@ describe("OpenClaw smoke lock cleanup", () => {
     }
   });
 
-  it("drains an in-flight renewal before retiring the compatibility marker", async () => {
+  it("drains an in-flight renewal before removing the reservation", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
-    let allowMarkerRenewal: (() => void) | undefined;
-    let markerRenewalStarted: (() => void) | undefined;
+    let allowReservationRenewal: (() => void) | undefined;
+    let reservationRenewalStarted: (() => void) | undefined;
     let renew: (() => Promise<void>) | undefined;
-    const markerRenewalGate = new Promise<void>((resolve) => {
-      allowMarkerRenewal = resolve;
+    const reservationRenewalGate = new Promise<void>((resolve) => {
+      allowReservationRenewal = resolve;
     });
-    const markerRenewalStartedPromise = new Promise<void>((resolve) => {
-      markerRenewalStarted = resolve;
+    const reservationRenewalStartedPromise = new Promise<void>((resolve) => {
+      reservationRenewalStarted = resolve;
     });
-    let lock: Awaited<ReturnType<typeof acquireOpenClawCrablineSmokeRunLock>> | undefined;
+    let lock: Awaited<ReturnType<typeof acquireOpenClawCrablineProviderReadinessLock>> | undefined;
     try {
-      lock = await acquireOpenClawCrablineSmokeRunLock(params, {
-        beforeCompatibilityMarkerRenew: async () => {
-          markerRenewalStarted?.();
-          await markerRenewalGate;
+      lock = await acquireOpenClawCrablineProviderReadinessLock(params, {
+        beforeReservationRenew: async () => {
+          reservationRenewalStarted?.();
+          await reservationRenewalGate;
         },
         startHeartbeat: (heartbeat, intervalMs) => {
           renew = heartbeat;
@@ -2082,7 +2044,7 @@ describe("OpenClaw smoke lock cleanup", () => {
         },
       });
       const renewal = renew!();
-      await markerRenewalStartedPromise;
+      await reservationRenewalStartedPromise;
 
       let releaseSettled = false;
       const release = lock.release().then(() => {
@@ -2091,28 +2053,20 @@ describe("OpenClaw smoke lock cleanup", () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(releaseSettled).toBe(false);
 
-      allowMarkerRenewal?.();
+      allowReservationRenewal?.();
       await renewal;
       await release;
 
-      const compatibilityOwnerPath = path.join(
-        outputDir,
-        `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
-        "owner.json",
-      );
-      expect(JSON.parse(await fs.readFile(compatibilityOwnerPath, "utf8"))).toMatchObject({
-        createdAtMs: 1,
-        pid: 2_147_483_647,
-        processStartedAtMs: 1,
-      });
-      expect((await fs.stat(compatibilityOwnerPath)).mtimeMs).toBeCloseTo(1, 0);
+      await expect(
+        fs.access(path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`)),
+      ).rejects.toMatchObject({ code: "ENOENT" });
 
-      const replacementLock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         startHeartbeat: disableHeartbeat,
       });
       await replacementLock.release();
     } finally {
-      allowMarkerRenewal?.();
+      allowReservationRenewal?.();
       await lock?.release().catch(() => undefined);
       await disposeTempDir(outputDir);
     }
@@ -2128,7 +2082,7 @@ describe("OpenClaw smoke lock cleanup", () => {
       allowScheduledRenewal = resolve;
     });
     try {
-      const lock = await acquireOpenClawCrablineSmokeRunLock(params, {
+      const lock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         beforeCommitFileRename: async () => {
           startScheduledRenewal?.();
         },
@@ -2144,7 +2098,7 @@ describe("OpenClaw smoke lock cleanup", () => {
           return {
             assertHealthy() {
               if (failure !== undefined) {
-                throw new Error("OpenClaw Crabline smoke lock heartbeat failed.", {
+                throw new Error("OpenClaw Crabline provider readiness lock heartbeat failed.", {
                   cause: failure,
                 });
               }
@@ -2181,7 +2135,7 @@ describe("OpenClaw smoke lock cleanup", () => {
             await fs.writeFile(filePath, contents);
           },
         }),
-      ).rejects.toThrow("OpenClaw Crabline smoke lock heartbeat failed.");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness lock heartbeat failed.");
       await expect(fs.stat(destinationPath)).rejects.toMatchObject({ code: "ENOENT" });
       await lock.release();
     } finally {

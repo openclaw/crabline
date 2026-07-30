@@ -4,7 +4,7 @@ Crabline is a local mock service for OpenClaw channel contracts. It has two
 surfaces:
 
 - fixture-level local mocks used directly by the Crabline CLI
-- local provider servers that OpenClaw live adapters can target
+- local provider servers that real OpenClaw channel plugins can target
 
 Live channel testing belongs in OpenClaw's live channel adapters. Crabline
 belongs in deterministic smoke CI and local QA where the test needs
@@ -478,7 +478,6 @@ Manifest fields:
 - `endpoints.adminInboundUrl`: authenticated admin ingress for test user
   messages using the WhatsApp Business webhook payload shape
 - `endpoints.messagesUrl`: provider-native Cloud API message and status endpoint
-- `endpoints.statusUrl`: alias for the same provider-native status endpoint
 - `recorderPath`: JSONL provider traffic recorder for HTTP traffic and Baileys
   WebSocket stanzas. Multi-message webhook deliveries use one versioned batch
   line that Crabline's recorder APIs flatten into individual events.
@@ -511,8 +510,8 @@ The admin ingress accepts JSON like:
 }
 ```
 
-Outbound text sends and composing presence are recorded through the fake
-provider messages and presence endpoints.
+Outbound text sends and composing presence are recorded through the local
+provider server's messages and presence endpoints.
 
 ### Zalo Server
 
@@ -639,7 +638,7 @@ chat IDs must be negative. Zero is invalid for every Telegram target kind.
 
 ## Smoke CI Guidance
 
-For deterministic CI, use Crabline through a mock channel driver:
+For deterministic CI, use the Crabline channel driver:
 
 ```yaml
 profile: smoke-ci
@@ -663,8 +662,8 @@ roundtrip. Real OpenClaw channel proof comes from QA scenarios that launch the
 gateway and run its normal channel adapter against the local provider.
 
 Crabline stages the manifest, capability report, and provider-readiness report
-inside one owner-only generation directory under the legacy
-`.crabline-smoke-artifacts/` store name, atomically installs the complete
+inside one owner-only generation directory under the
+`.crabline-channel-driver-artifacts/` store name, atomically installs the complete
 directory, and then atomically switches the single `current.json` pointer.
 Readers therefore see either the prior complete generation or the next complete
 generation, never per-file mixtures. Setup, probe, cleanup, staging, or
@@ -687,17 +686,16 @@ contain `capabilityReport` and `providerReadiness` payloads while their manifest
 capability, and provider-readiness paths identify the authoritative immutable
 generation.
 
-Lock owners record both PID and process-start identity. Dead owners, and stale
-locks whose PID was reused by the next Crabline process, are reclaimed on the
-next run. New lock owners renew a 10-minute lease while the readiness run
-remains active, so a live run retains exclusive ownership beyond the initial
-lease. A heartbeat failure or lost ownership aborts publication before the
-generation is committed. Recovery first atomically moves a stale candidate away
-from the heartbeat path, then revalidates its token-specific lease before
-deletion; a renewal that wins the rename race is restored rather than reclaimed.
-The lease also bounds stale locks when an unrelated live process has inherited
-the abandoned PID. Older owner records remain PID-protected for compatibility
-and are reclaimed only after their recorded process exits.
+Lock owners use one versioned format containing the PID, process-start identity,
+and token-specific lease. Both the acquisition reservation and owner claim renew
+their 10-minute leases while the readiness run remains active, so a live run
+retains exclusive ownership beyond the initial lease. A heartbeat failure or
+lost ownership aborts publication before the generation is committed. Recovery
+first atomically moves a stale reservation into a uniquely named recovery claim,
+then revalidates its token-specific lease before deletion; a renewal that wins
+the rename race is restored rather than reclaimed. The lease also bounds stale
+locks when an unrelated live process has inherited the abandoned PID. Malformed
+or unversioned owner records fail closed and are not migrated or recovered.
 
 For release or live verification, use OpenClaw's live driver:
 

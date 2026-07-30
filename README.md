@@ -5,8 +5,10 @@
 Deterministic local messaging-channel mocks for OpenClaw QA.
 
 `crabline` is config-driven, CI-friendly, and deliberately has no `openclaw`
-dependency. It can run fixture-level local mocks, and it can also serve local
-provider APIs that OpenClaw live adapters can target during deterministic QA.
+dependency. A fixture-level **local mock provider** is a Crabline adapter used
+directly by fixture commands. A **local provider server** is a separate process
+that the Crabline channel driver starts so a real OpenClaw channel plugin can
+exercise its normal provider protocol during deterministic QA.
 
 ## What It Provides
 
@@ -15,16 +17,17 @@ provider APIs that OpenClaw live adapters can target during deterministic QA.
   `whatsapp`, and `zalo`
 - a `script` bridge for channels that are still exercised by external commands
 - per-provider local webhook endpoints for inbound events
-- local provider servers for live-adapter smoke tests for Mattermost, Matrix,
+- local provider servers for Crabline channel-driver tests for Mattermost, Matrix,
   Signal, Slack, Telegram, WhatsApp, and Zalo
 - JSONL recorder files for deterministic wait/watch behavior
 - nonce-based `send`, `roundtrip`, `agent`, `probe`, `run`, `watch`, and
   `doctor` commands
 - text output by default and stable `--json` output for automation
 
-Crabline local servers are not live-provider coverage. They let OpenClaw run its
-normal channel adapter code against a local provider-shaped API. Release lanes
-still need the `live` driver and real provider credentials.
+Crabline local provider servers are not live-provider coverage and are not the
+fixture-level local mock provider feature. They let the real OpenClaw channel
+plugin run against a local provider-shaped API. Release lanes still need the
+`live` driver and real provider credentials.
 
 ## Install
 
@@ -143,9 +146,10 @@ them only from sources you trust and review changes before use.
 
 ## Local Provider Servers
 
-`serve` starts provider-shaped HTTP APIs for OpenClaw live adapters. This is the
-preferred Smoke CI path because OpenClaw still uses its normal channel adapter,
-but the provider endpoint is local and deterministic.
+`serve` starts local provider servers for real OpenClaw channel plugins. This is
+the preferred Crabline channel-driver path because the plugin still uses its
+normal provider protocol while the provider endpoint is local and
+deterministic. It does not use Crabline's fixture-level local mock provider.
 
 Commands in this section use the installed-package form. In a source checkout,
 replace `crabline` with `pnpm dev`.
@@ -347,7 +351,6 @@ The JSON manifest contains:
 - `endpoints.adminInboundUrl`: authenticated POST endpoint for test user
   messages using the WhatsApp Business webhook payload shape
 - `endpoints.messagesUrl`: provider-native Cloud API message and status endpoint
-- `endpoints.statusUrl`: alias for the same provider-native status endpoint
 - `recorderPath`: JSONL file of local provider API/admin traffic and Baileys
   WebSocket stanzas
 
