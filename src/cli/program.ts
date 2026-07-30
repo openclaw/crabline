@@ -107,6 +107,13 @@ type ServeCredentialName = (typeof SERVE_CREDENTIAL_ENV)[number][0];
 type ServeCredentials = Partial<Record<ServeCredentialName, string>>;
 
 const SERVE_PARAM_FACTORIES = {
+  discord: (shared, commandOptions) => ({
+    ...shared,
+    adminToken: commandOptions.adminToken,
+    botToken: commandOptions.botToken,
+    botUsername: commandOptions.botUsername,
+    channel: "discord",
+  }),
   mattermost: (shared, commandOptions) => ({
     ...shared,
     adminToken: commandOptions.adminToken,
@@ -642,7 +649,7 @@ export function createProgram(
     .option("--account <number>", "Signal account number")
     .option(
       "--bot-username <username>",
-      "Mattermost, Telegram, or Zalo bot username",
+      "Discord, Mattermost, Telegram, or Zalo bot username",
       "crabline_bot",
     )
     .option(
@@ -1180,6 +1187,15 @@ function renderServeProviderFields(
   showSecrets: boolean,
 ): string[] | undefined {
   const secret = (value: string) => (showSecrets ? value : "<redacted>");
+  if (manifest.provider === "discord") {
+    return [
+      `  adminToken: ${secret(manifest.adminToken)}`,
+      `  botToken: ${secret(manifest.botToken)}`,
+      `  applicationId: ${manifest.applicationId}`,
+      `  botUserId: ${manifest.botUserId}`,
+      `  gateway: ${manifest.endpoints.gatewayUrl}`,
+    ];
+  }
   if (manifest.provider === "mattermost") {
     return [
       `  adminToken: ${secret(manifest.adminToken)}`,

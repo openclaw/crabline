@@ -17,8 +17,8 @@ exercise its normal provider protocol during deterministic QA.
   `whatsapp`, and `zalo`
 - a `script` bridge for channels that are still exercised by external commands
 - per-provider local webhook endpoints for inbound events
-- local provider servers for Crabline channel-driver tests for Mattermost, Matrix,
-  Signal, Slack, Telegram, WhatsApp, and Zalo
+- local provider servers for Crabline channel-driver tests for Discord,
+  Mattermost, Matrix, Signal, Slack, Telegram, WhatsApp, and Zalo
 - JSONL recorder files for deterministic wait/watch behavior
 - nonce-based `send`, `roundtrip`, `agent`, `probe`, `run`, `watch`, and
   `doctor` commands
@@ -198,6 +198,30 @@ no symlink components. Scope each lock directory to one recorder filesystem;
 lock identities omit device numbers so containers that mount the same inode
 under different device IDs still coordinate. Otherwise, Unix writers coordinate
 through the OS account's `~/.cache/crabline/locks/server-recorder` namespace.
+
+Discord:
+
+```bash
+crabline --json serve discord --ready-file .crabline/discord-server.json
+```
+
+The manifest contains the bot/application identity, bot token, REST API root,
+Gateway metadata endpoint, Gateway WebSocket URL, authenticated admin ingress,
+and recorder path. The server implements the Discord REST v10 and Gateway
+subset used by the real OpenClaw Discord plugin: bot identity, `/gateway/bot`,
+JSON Gateway HELLO/IDENTIFY/READY/heartbeat/resume, DM and guild text channels,
+message sends and replies, typing, basic guild/member lookups, and application
+command registration. Admin ingress turns an injected user message into a
+normal `MESSAGE_CREATE` Gateway dispatch.
+
+This local provider server is separate from the fixture-level Discord local
+mock provider listed under Built-In Mock Channels. The fixture adapter models
+Discord interactions directly for Crabline commands; the server lets a real
+Discord client exercise provider-native REST and Gateway boundaries.
+
+The supported Gateway is v10 JSON with one shard. Transport compression,
+voice, interactions, attachments/multipart uploads, audit logs, and Discord's
+distributed permission and rate-limit systems are outside the current subset.
 
 Mattermost:
 

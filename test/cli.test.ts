@@ -1872,6 +1872,50 @@ describe("cli", () => {
     expect(await fs.readdir(path.dirname(readyFile))).toEqual([]);
   });
 
+  it("prints a Discord server runtime manifest", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    vi.stubEnv("CRABLINE_ADMIN_TOKEN", "test-auth-token");
+    const readyFile = path.join(directory, ".crabline", "discord-server.json");
+    const captured = await captureWrites(async () => {
+      expect(
+        await runCli([
+          "node",
+          "crabline",
+          "--json",
+          "serve",
+          "discord",
+          "--once",
+          "--ready-file",
+          readyFile,
+          "--recorder",
+          path.join(directory, "discord.jsonl"),
+        ]),
+      ).toBe(0);
+    });
+
+    const manifest = JSON.parse(captured.stdout.join("")) as {
+      adminToken?: string;
+      applicationId?: string;
+      botToken?: string;
+      endpoints?: { adminInboundUrl?: string; apiRoot?: string; gatewayUrl?: string };
+      env?: { DISCORD_BOT_TOKEN?: string };
+      provider?: string;
+    };
+    expect(manifest).toMatchObject({
+      adminToken: "test-auth-token",
+      applicationId: "135000000000000001",
+      provider: "discord",
+    });
+    expect(manifest.endpoints?.apiRoot).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/api$/u);
+    expect(manifest.endpoints?.gatewayUrl).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/gateway$/u);
+    expect(manifest.endpoints?.adminInboundUrl).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/crabline\/discord\/inbound$/u,
+    );
+    expect(manifest.env?.DISCORD_BOT_TOKEN).toBe(manifest.botToken);
+    await expect(fs.readFile(readyFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("prints a Zalo server runtime manifest", async () => {
     const directory = await createTempDir();
     directories.push(directory);

@@ -704,12 +704,12 @@ describe("OpenClaw local provider bridge", () => {
     expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " ZALO " })).toMatchObject({
       channel: "zalo",
     });
-    expect(() => resolveOpenClawCrablineChannelDriverSelection({ channel: "discord" })).toThrow(
-      '--channel must be one of mattermost, matrix, signal, slack, telegram, whatsapp, zalo for --channel-driver crabline, got "discord"',
-    );
+    expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " DISCORD " })).toMatchObject({
+      channel: "discord",
+    });
     for (const channel of ["", "   "]) {
       expect(() => resolveOpenClawCrablineChannelDriverSelection({ channel })).toThrow(
-        /--channel must be one of mattermost, matrix, signal, slack, telegram, whatsapp, zalo for --channel-driver crabline/u,
+        /--channel must be one of discord, mattermost, matrix, signal, slack, telegram, whatsapp, zalo for --channel-driver crabline/u,
       );
     }
   });
@@ -3162,6 +3162,7 @@ describe("OpenClaw local provider bridge", () => {
             driver: "crabline",
             selectedChannel: "telegram",
             supportedChannels: [
+              "discord",
               "mattermost",
               "matrix",
               "signal",

@@ -101,6 +101,22 @@ function isGeneratedManifest(value: Record<string, unknown>): boolean {
   const env = value.env;
   const baseUrl = value.baseUrl as string;
   switch (value.provider) {
+    case "discord":
+      return (
+        hasNonEmptyStringFields(value, ["applicationId", "botToken", "botUserId"]) &&
+        hasNonEmptyStringFields(endpoints, [
+          "adminInboundUrl",
+          "apiRoot",
+          "gatewayBotUrl",
+          "gatewayUrl",
+        ]) &&
+        hasNonEmptyStringFields(env, ["DISCORD_BOT_TOKEN"]) &&
+        endpoints.adminInboundUrl === `${baseUrl}/crabline/discord/inbound` &&
+        endpoints.apiRoot === `${baseUrl}/api` &&
+        endpoints.gatewayBotUrl === `${baseUrl}/api/v10/gateway/bot` &&
+        endpoints.gatewayUrl === `${baseUrl.replace(/^http/u, "ws")}/gateway` &&
+        env.DISCORD_BOT_TOKEN === value.botToken
+      );
     case "mattermost":
       return (
         hasNonEmptyStringFields(value, ["botToken", "botUserId"]) &&
@@ -221,6 +237,13 @@ function isSuccessfulProbe(
     return false;
   }
   switch (manifest.provider) {
+    case "discord":
+      return (
+        value.id === manifest.botUserId &&
+        value.bot === true &&
+        typeof value.username === "string" &&
+        value.username.trim().length > 0
+      );
     case "mattermost":
       return (
         value.id === manifest.botUserId &&

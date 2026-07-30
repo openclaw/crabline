@@ -224,9 +224,9 @@ watch commands are terminated when cancellation fires.
 
 ## Local Provider Servers
 
-Server-backed channels currently include Mattermost, Matrix, Signal, Slack,
-Telegram, WhatsApp, and Zalo. Loopback binds retain stable local credentials for
-fixture compatibility. Non-loopback binds generate fresh provider-shaped
+Server-backed channels currently include Discord, Mattermost, Matrix, Signal,
+Slack, Telegram, WhatsApp, and Zalo. Loopback binds retain stable local
+credentials for deterministic tests. Non-loopback binds generate fresh provider-shaped
 credentials unless the corresponding credential is supplied.
 WhatsApp is loopback-only because its HTTP and WebSocket endpoints carry bearer
 credentials over cleartext and the built-in server does not terminate TLS.
@@ -263,6 +263,53 @@ or replaces them with POSIX mode `0600`, but the parent directory still needs
 to be private. Exclude ready files from version control and CI artifact
 collection, and delete them after use. On non-POSIX or shared filesystems,
 verify the effective ACLs before publishing one.
+
+### Discord
+
+```bash
+crabline --json serve discord --ready-file .crabline/discord-server.json
+```
+
+The ready manifest exposes `applicationId`, `botUserId`, `botToken`,
+`endpoints.apiRoot`, `endpoints.gatewayBotUrl`, `endpoints.gatewayUrl`,
+`endpoints.adminInboundUrl`, `adminToken`, and `recorderPath`. OpenClaw-specific
+endpoint injection and target translation belong to the Crabline OpenClaw
+bridge and the OpenClaw Discord plugin; the provider server itself implements
+Discord's public protocol subset and contains no OpenClaw behavior.
+
+Post an inbound user message to `endpoints.adminInboundUrl` with the manifest's
+admin token:
+
+```json
+{
+  "channelId": "135000000000000010",
+  "guildId": "135000000000000011",
+  "senderId": "135000000000000012",
+  "senderName": "Alice",
+  "content": "hello"
+}
+```
+
+The control plane creates provider state and emits a normal Discord
+`MESSAGE_CREATE` dispatch on an identified Gateway session. `parentChannelId`
+turns `channelId` into a public thread channel. Supported client boundaries are
+REST v10 bot/application identity, Gateway metadata, guild/channel/member
+lookups, DM creation, text message create/read/reply, typing, application
+command registration, and a v10 JSON Gateway with HELLO, IDENTIFY, READY,
+heartbeat acknowledgement, resume, and deterministic shutdown.
+
+Current fidelity limits are one Gateway shard, no transport compression, and no
+missed-dispatch replay: resume succeeds only from the retained session's latest
+sequence. The server also omits voice, interaction dispatch,
+attachment/multipart upload, and Discord's distributed permission or
+bucket-allocation systems.
+The server still returns provider-native authentication, JSON error, and basic
+rate-limit headers for its supported routes.
+
+This is not the fixture-level Discord local mock. The fixture adapter's
+interactions webhook remains available to Crabline fixture commands; the
+Discord provider server exists so the real OpenClaw Discord plugin can use
+normal REST and Gateway transports without contacting Discord.
 
 ### Mattermost
 

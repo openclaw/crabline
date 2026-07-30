@@ -1,5 +1,6 @@
 export { resolveTelegramAdapterConfig } from "./providers/builtin/telegram.js";
 export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
+export { startDiscordServer } from "./servers/discord.js";
 export { startMattermostServer } from "./servers/mattermost.js";
 export { startMatrixServer } from "./servers/matrix.js";
 export { startSignalServer } from "./servers/signal.js";
@@ -46,6 +47,11 @@ export type { CatalogEntry } from "./providers/catalog.js";
 export type { Registry } from "./providers/registry.js";
 export type { ServerRequestEvent } from "./servers/http.js";
 export type { ServerEventObserver } from "./servers/recorder.js";
+export type {
+  DiscordServerManifest,
+  StartedDiscordServer,
+  StartDiscordServerParams,
+} from "./servers/discord.js";
 export type {
   BuiltinAdapterId,
   FixtureDefinition,
