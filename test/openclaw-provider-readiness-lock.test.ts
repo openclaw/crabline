@@ -1679,7 +1679,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
 
       allowOldCommit?.();
       await expect(oldCommit).rejects.toThrow(
-        "Private directory path identity changed during publication.",
+        "OpenClaw Crabline provider readiness lock reservation was lost.",
       );
       await expect(fs.readFile(destinationPath, "utf8")).resolves.toBe("successor\n");
       await oldLock.release();

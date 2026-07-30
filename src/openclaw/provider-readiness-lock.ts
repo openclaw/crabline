@@ -806,9 +806,19 @@ async function assertReservationOwned(params: {
   securedDirectory: Awaited<ReturnType<typeof securePrivateDirectory>>;
   token: string;
 }): Promise<void> {
-  await params.securedDirectory.assertIdentityAt(params.lockDirectory);
   const observed = await readLockRecord(params.lockDirectory);
   if (observed.kind === "missing" || observed.record.owner.token !== params.token) {
+    throw new Error("OpenClaw Crabline provider readiness lock reservation was lost.");
+  }
+  try {
+    await params.securedDirectory.assertIdentityAt(params.lockDirectory);
+  } catch (error) {
+    throw new Error("OpenClaw Crabline provider readiness lock reservation was lost.", {
+      cause: error,
+    });
+  }
+  const revalidated = await readLockRecord(params.lockDirectory);
+  if (revalidated.kind === "missing" || revalidated.record.owner.token !== params.token) {
     throw new Error("OpenClaw Crabline provider readiness lock reservation was lost.");
   }
 }
