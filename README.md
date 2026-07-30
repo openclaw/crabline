@@ -351,7 +351,6 @@ The JSON manifest contains:
 - `endpoints.adminInboundUrl`: authenticated POST endpoint for test user
   messages using the WhatsApp Business webhook payload shape
 - `endpoints.messagesUrl`: provider-native Cloud API message and status endpoint
-- `endpoints.statusUrl`: alias for the same provider-native status endpoint
 - `recorderPath`: JSONL file of local provider API/admin traffic and Baileys
   WebSocket stanzas
 

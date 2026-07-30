@@ -560,12 +560,9 @@ describe("OpenClaw provider readiness lock cleanup", () => {
       );
 
       const ownedDirectory = await findOwnedLockDirectory(outputDir);
-      const compatibilityDirectory = path.join(
-        outputDir,
-        `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
-      );
+      const reservationDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
       expect(await fs.readdir(ownedDirectory)).toEqual(expect.arrayContaining(["owner.json"]));
-      expect(await fs.readdir(compatibilityDirectory)).toEqual(
+      expect(await fs.readdir(reservationDirectory)).toEqual(
         expect.arrayContaining(["owner.json"]),
       );
 
@@ -627,7 +624,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         acquireOpenClawCrablineProviderReadinessLock(
           { channel: "telegram", outputDir },
           {
-            afterLockOwnerWrite: async (candidateDirectory) => {
+            afterLockReservationWrite: async (candidateDirectory) => {
               displacedPath = `${candidateDirectory}.displaced`;
               await fs.rename(candidateDirectory, displacedPath);
               await fs.mkdir(candidateDirectory);
@@ -679,7 +676,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
     }
   });
 
-  it("retires an installed compatibility marker when owner-claim setup fails", async () => {
+  it("removes an installed reservation when owner-claim setup fails", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const setupFailure = new Error("owner claim setup failed");
@@ -697,17 +694,9 @@ describe("OpenClaw provider readiness lock cleanup", () => {
           entry.startsWith(`.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock.owned.`),
         ),
       ).toEqual([]);
-      const compatibilityOwnerPath = path.join(
-        outputDir,
-        `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
-        "owner.json",
-      );
-      expect(JSON.parse(await fs.readFile(compatibilityOwnerPath, "utf8"))).toMatchObject({
-        createdAtMs: 1,
-        pid: 2_147_483_647,
-        processStartedAtMs: 1,
-      });
-      expect((await fs.stat(compatibilityOwnerPath)).mtimeMs).toBeCloseTo(1, 0);
+      await expect(
+        fs.access(path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`)),
+      ).rejects.toMatchObject({ code: "ENOENT" });
 
       const sleep = vi.fn(async () => undefined);
       const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
@@ -775,7 +764,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
       );
 
       await expect(lock.release()).resolves.toBeUndefined();
-      expect(removeDirectory).toHaveBeenCalledTimes(2);
+      expect(removeDirectory).toHaveBeenCalledTimes(3);
 
       const nextLock = await acquireOpenClawCrablineProviderReadinessLock(params);
       await expect(nextLock.release()).resolves.toBeUndefined();
@@ -895,7 +884,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
   it("does not transiently relocate a successor while its heartbeat runs", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
-    let suspendedMarkerDirectory = "";
+    let suspendedReservationDirectory = "";
     let suspendedOwnerDirectory = "";
     let resumeRelease: (() => void) | undefined;
     let releaseValidated: (() => void) | undefined;
@@ -922,13 +911,13 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         outputDir,
         `.suspended-${path.basename(oldOwnerDirectory)}`,
       );
-      const markerDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
-      suspendedMarkerDirectory = path.join(outputDir, ".suspended-compatibility-marker");
+      const reservationDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
+      suspendedReservationDirectory = path.join(outputDir, ".suspended-reservation");
       const oldRelease = oldLock.release();
       await releaseValidatedPromise;
 
       await fs.rename(oldOwnerDirectory, suspendedOwnerDirectory);
-      await fs.rename(markerDirectory, suspendedMarkerDirectory);
+      await fs.rename(reservationDirectory, suspendedReservationDirectory);
       successorLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         startHeartbeat: (renew, intervalMs) => {
           successorRenew = renew;
@@ -941,15 +930,15 @@ describe("OpenClaw provider readiness lock cleanup", () => {
       await expect(successorRenew!()).resolves.toBeUndefined();
       await expect(successorLock.assertOwned()).resolves.toBeUndefined();
       await expect(fs.stat(await findOwnedLockDirectory(outputDir))).resolves.toBeDefined();
-      await expect(fs.stat(markerDirectory)).resolves.toBeDefined();
+      await expect(fs.stat(reservationDirectory)).resolves.toBeDefined();
     } finally {
       resumeRelease?.();
       await successorLock?.release();
       if (suspendedOwnerDirectory) {
         await fs.rm(suspendedOwnerDirectory, { force: true, recursive: true });
       }
-      if (suspendedMarkerDirectory) {
-        await fs.rm(suspendedMarkerDirectory, { force: true, recursive: true });
+      if (suspendedReservationDirectory) {
+        await fs.rm(suspendedReservationDirectory, { force: true, recursive: true });
       }
       await disposeTempDir(outputDir);
     }
@@ -1017,14 +1006,13 @@ describe("OpenClaw provider readiness lock cleanup", () => {
     }
   });
 
-  it("keeps an active legacy-format lock owned by its live PID", async () => {
+  it("rejects an unversioned minimal owner record", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
       path.resolve(outputDir),
       `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
     );
-    let legacyOwnerAlive = true;
     try {
       await fs.mkdir(lockDirectory, { mode: 0o700 });
       await fs.writeFile(
@@ -1032,7 +1020,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           pid: 4_242,
-          token: "legacy",
+          token: "unversioned",
         })}\n`,
         { mode: 0o600 },
       );
@@ -1040,27 +1028,18 @@ describe("OpenClaw provider readiness lock cleanup", () => {
 
       await expect(
         acquireOpenClawCrablineProviderReadinessLock(params, {
-          isProcessAlive: () => legacyOwnerAlive,
+          isProcessAlive: () => true,
           now: () => 2_000,
           pid: 5_252,
           processStartedAtMs: 200,
         }),
-      ).rejects.toThrow("OpenClaw Crabline provider readiness is already running");
-
-      legacyOwnerAlive = false;
-      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
-        isProcessAlive: () => legacyOwnerAlive,
-        now: () => 2_000,
-        pid: 5_252,
-        processStartedAtMs: 200,
-      });
-      await replacementLock.release();
+      ).rejects.toThrow("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
     } finally {
       await disposeTempDir(outputDir);
     }
   });
 
-  it("keeps an active pre-heartbeat owner beyond its original lease age", async () => {
+  it("rejects an unversioned process-identified owner record", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
@@ -1091,13 +1070,13 @@ describe("OpenClaw provider readiness lock cleanup", () => {
           pid: 5_252,
           processStartedAtMs: 200,
         }),
-      ).rejects.toThrow("OpenClaw Crabline provider readiness is already running");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
     } finally {
       await disposeTempDir(outputDir);
     }
   });
 
-  it("matches a recent legacy Darwin owner using its stable coarse identity", async () => {
+  it("matches a recent canonical Darwin owner using its stable coarse identity", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
@@ -1113,6 +1092,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: coarseIdentity,
           processStartedAtMs: 100,
@@ -1153,6 +1133,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: coarseIdentity,
           processStartedAtMs: 100,
@@ -1179,7 +1160,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
     }
   });
 
-  it("keeps a stale remote owner when its precise Darwin identity is verified", async () => {
+  it("reclaims a stale canonical owner when its precise Darwin identity is verified", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
@@ -1196,6 +1177,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: coarseIdentity,
           processIdentityV2: preciseIdentity,
@@ -1206,17 +1188,18 @@ describe("OpenClaw provider readiness lock cleanup", () => {
       );
       await fs.utimes(ownerPath, new Date(1_000), new Date(1_000));
 
-      await expect(
-        acquireOpenClawCrablineProviderReadinessLock(params, {
-          getProcessIdentity: () => coarseIdentity,
-          getProcessIdentityV2: () => preciseIdentity,
-          isProcessAlive: () => true,
-          leaseMs: 1_000,
-          now: () => 10_000,
-          pid: 5_252,
-          processStartedAtMs: 200,
-        }),
-      ).rejects.toThrow("OpenClaw Crabline provider readiness is already running");
+      const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
+        getProcessIdentity: () => coarseIdentity,
+        getProcessIdentityV2: () => preciseIdentity,
+        isProcessAlive: () => true,
+        leaseMs: 1_000,
+        now: () => 10_000,
+        pid: 5_252,
+        processStartedAtMs: 200,
+        startHeartbeat: disableHeartbeat,
+      });
+      await expect(replacementLock.assertOwned()).resolves.toBeUndefined();
+      await replacementLock.release();
     } finally {
       await disposeTempDir(outputDir);
     }
@@ -1236,6 +1219,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: "darwin:1783864000.123456:Sun Jul 12 16:04:00 2026",
           processIdentityV2: "darwin:1783864000.123456:us:1783872240100000",
@@ -1263,7 +1247,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
     }
   });
 
-  it("reclaims a dead pre-heartbeat owner when its start time is unavailable", async () => {
+  it("reclaims a dead canonical owner when its start time is unavailable", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
@@ -1277,6 +1261,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processStartedAtMs: 100,
           token: "prior",
@@ -1300,7 +1285,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
     }
   });
 
-  it("reclaims a pre-heartbeat lock after its PID is reused", async () => {
+  it("reclaims a canonical lock after its PID is reused", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     const lockDirectory = path.join(
@@ -1314,6 +1299,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: "test:prior",
           processStartedAtMs: 100,
@@ -1352,6 +1338,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: "test:prior",
           processStartedAtMs: 100,
@@ -1392,6 +1379,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         `${JSON.stringify({
           channel: "telegram",
           createdAtMs: 1_000,
+          lockVersion: 1,
           pid: 4_242,
           processIdentity: darwinIdentity,
           processStartedAtMs: 100,
@@ -1445,48 +1433,13 @@ describe("OpenClaw provider readiness lock cleanup", () => {
     }
   });
 
-  it("keeps an expired legacy lock while its PID is still alive", async () => {
-    const outputDir = await createTempDir();
-    const params = { channel: "telegram" as const, outputDir };
-    const lockDirectory = path.join(
-      path.resolve(outputDir),
-      `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
-    );
-    const ownerPath = path.join(lockDirectory, "owner.json");
-    try {
-      await fs.mkdir(lockDirectory, { mode: 0o700 });
-      await fs.writeFile(
-        ownerPath,
-        `${JSON.stringify({
-          channel: "telegram",
-          pid: 4_242,
-          token: "legacy",
-        })}\n`,
-        { mode: 0o600 },
-      );
-      await fs.utimes(ownerPath, new Date(1_000), new Date(1_000));
-
-      await expect(
-        acquireOpenClawCrablineProviderReadinessLock(params, {
-          isProcessAlive: () => true,
-          leaseMs: 1_000,
-          now: () => 3_001,
-          pid: 5_252,
-          processStartedAtMs: 200,
-        }),
-      ).rejects.toThrow("OpenClaw Crabline provider readiness is already running");
-    } finally {
-      await disposeTempDir(outputDir);
-    }
-  });
-
   it("does not renew a lock after its owned claim is moved", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
     let now = 1_000;
     let renew: (() => Promise<void>) | undefined;
     const stop = vi.fn(async () => undefined);
-    let suspendedMarkerDirectory = "";
+    let suspendedReservationDirectory = "";
     let suspendedOwnerDirectory = "";
     let replacementLock:
       | Awaited<ReturnType<typeof acquireOpenClawCrablineProviderReadinessLock>>
@@ -1508,18 +1461,21 @@ describe("OpenClaw provider readiness lock cleanup", () => {
       now = 1_800;
       await renew!();
       const ownerDirectory = await findOwnedLockDirectory(outputDir);
-      const markerDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
-      const markerOwnerPath = path.join(markerDirectory, "owner.json");
+      const reservationDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
+      const reservationOwnerPath = path.join(reservationDirectory, "owner.json");
       const ownedOwner = JSON.parse(
         await fs.readFile(path.join(ownerDirectory, "owner.json"), "utf8"),
       );
-      const markerOwner = JSON.parse(await fs.readFile(markerOwnerPath, "utf8"));
-      expect(markerOwner.token).toBe(ownedOwner.token);
-      expect((await fs.stat(markerOwnerPath)).mtimeMs).toBeCloseTo(1_800, 0);
+      const reservationOwner = JSON.parse(await fs.readFile(reservationOwnerPath, "utf8"));
+      expect(reservationOwner.token).toBe(ownedOwner.token);
+      expect(
+        (await fs.stat(path.join(reservationDirectory, `lease.${reservationOwner.token}.json`)))
+          .mtimeMs,
+      ).toBeCloseTo(1_800, 0);
       suspendedOwnerDirectory = path.join(outputDir, `.suspended-${path.basename(ownerDirectory)}`);
-      suspendedMarkerDirectory = path.join(outputDir, ".suspended-compatibility-marker");
+      suspendedReservationDirectory = path.join(outputDir, ".suspended-reservation");
       await fs.rename(ownerDirectory, suspendedOwnerDirectory);
-      await fs.rename(markerDirectory, suspendedMarkerDirectory);
+      await fs.rename(reservationDirectory, suspendedReservationDirectory);
       now = 2_600;
       await expect(renew!()).rejects.toThrow("provider readiness lock ownership was lost");
       replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
@@ -1538,8 +1494,8 @@ describe("OpenClaw provider readiness lock cleanup", () => {
       if (suspendedOwnerDirectory) {
         await fs.rm(suspendedOwnerDirectory, { force: true, recursive: true });
       }
-      if (suspendedMarkerDirectory) {
-        await fs.rm(suspendedMarkerDirectory, { force: true, recursive: true });
+      if (suspendedReservationDirectory) {
+        await fs.rm(suspendedReservationDirectory, { force: true, recursive: true });
       }
       await disposeTempDir(outputDir);
     }
@@ -1659,7 +1615,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
     }
   });
 
-  it("fences an expired commit after a successor replaces its compatibility marker", async () => {
+  it("fences an expired commit after a successor replaces its reservation", async () => {
     const outputDir = await createTempDir();
     const stageDirectory = path.join(outputDir, "artifacts");
     const destinationPath = path.join(stageDirectory, "current.json");
@@ -1876,7 +1832,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         startHeartbeat: disableHeartbeat,
       });
       const future = new Date(10_000);
-      const compatibilityOwnerPath = path.join(
+      const reservationOwnerPath = path.join(
         outputDir,
         `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
         "owner.json",
@@ -1886,7 +1842,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         future,
         future,
       );
-      await fs.utimes(compatibilityOwnerPath, future, future);
+      await fs.utimes(reservationOwnerPath, future, future);
 
       const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         isProcessAlive: () => true,
@@ -2063,24 +2019,24 @@ describe("OpenClaw provider readiness lock cleanup", () => {
     }
   });
 
-  it("drains an in-flight renewal before retiring the compatibility marker", async () => {
+  it("drains an in-flight renewal before removing the reservation", async () => {
     const outputDir = await createTempDir();
     const params = { channel: "telegram" as const, outputDir };
-    let allowMarkerRenewal: (() => void) | undefined;
-    let markerRenewalStarted: (() => void) | undefined;
+    let allowReservationRenewal: (() => void) | undefined;
+    let reservationRenewalStarted: (() => void) | undefined;
     let renew: (() => Promise<void>) | undefined;
-    const markerRenewalGate = new Promise<void>((resolve) => {
-      allowMarkerRenewal = resolve;
+    const reservationRenewalGate = new Promise<void>((resolve) => {
+      allowReservationRenewal = resolve;
     });
-    const markerRenewalStartedPromise = new Promise<void>((resolve) => {
-      markerRenewalStarted = resolve;
+    const reservationRenewalStartedPromise = new Promise<void>((resolve) => {
+      reservationRenewalStarted = resolve;
     });
     let lock: Awaited<ReturnType<typeof acquireOpenClawCrablineProviderReadinessLock>> | undefined;
     try {
       lock = await acquireOpenClawCrablineProviderReadinessLock(params, {
-        beforeCompatibilityMarkerRenew: async () => {
-          markerRenewalStarted?.();
-          await markerRenewalGate;
+        beforeReservationRenew: async () => {
+          reservationRenewalStarted?.();
+          await reservationRenewalGate;
         },
         startHeartbeat: (heartbeat, intervalMs) => {
           renew = heartbeat;
@@ -2088,7 +2044,7 @@ describe("OpenClaw provider readiness lock cleanup", () => {
         },
       });
       const renewal = renew!();
-      await markerRenewalStartedPromise;
+      await reservationRenewalStartedPromise;
 
       let releaseSettled = false;
       const release = lock.release().then(() => {
@@ -2097,28 +2053,20 @@ describe("OpenClaw provider readiness lock cleanup", () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(releaseSettled).toBe(false);
 
-      allowMarkerRenewal?.();
+      allowReservationRenewal?.();
       await renewal;
       await release;
 
-      const compatibilityOwnerPath = path.join(
-        outputDir,
-        `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`,
-        "owner.json",
-      );
-      expect(JSON.parse(await fs.readFile(compatibilityOwnerPath, "utf8"))).toMatchObject({
-        createdAtMs: 1,
-        pid: 2_147_483_647,
-        processStartedAtMs: 1,
-      });
-      expect((await fs.stat(compatibilityOwnerPath)).mtimeMs).toBeCloseTo(1, 0);
+      await expect(
+        fs.access(path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`)),
+      ).rejects.toMatchObject({ code: "ENOENT" });
 
       const replacementLock = await acquireOpenClawCrablineProviderReadinessLock(params, {
         startHeartbeat: disableHeartbeat,
       });
       await replacementLock.release();
     } finally {
-      allowMarkerRenewal?.();
+      allowReservationRenewal?.();
       await lock?.release().catch(() => undefined);
       await disposeTempDir(outputDir);
     }

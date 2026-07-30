@@ -78,7 +78,6 @@ export type WhatsAppServerManifest = {
     baileysWebSocketUrl: string;
     messagesUrl: string;
     phoneNumberUrl: string;
-    statusUrl: string;
   };
   env: {
     CLOUD_API_ACCESS_TOKEN: string;
@@ -845,7 +844,6 @@ export async function startWhatsAppServer(
         baileysWebSocketUrl,
         messagesUrl,
         phoneNumberUrl,
-        statusUrl: messagesUrl,
       },
       env: {
         CLOUD_API_ACCESS_TOKEN: state.accessToken,

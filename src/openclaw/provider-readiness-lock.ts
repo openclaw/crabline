@@ -8,27 +8,16 @@ import { isCrablineServerChannel, type CrablineServerChannel } from "../servers/
 import { resolveWindowsPowerShellPath, securePrivateDirectory } from "./private-file.js";
 import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "./shared.js";
 
-type LegacyProviderReadinessLockOwner = {
+type ProviderReadinessLockOwner = {
   channel: CrablineServerChannel;
-  pid: number;
-  token: string;
-};
-
-type ProcessIdentifiedProviderReadinessLockOwner = LegacyProviderReadinessLockOwner & {
   createdAtMs: number;
+  lockVersion: 1;
+  pid: number;
   processIdentity?: string;
   processIdentityV2?: string;
   processStartedAtMs: number;
+  token: string;
 };
-
-type RenewableProviderReadinessLockOwner = ProcessIdentifiedProviderReadinessLockOwner & {
-  leaseVersion: 1;
-};
-
-type ProviderReadinessLockOwner =
-  | LegacyProviderReadinessLockOwner
-  | ProcessIdentifiedProviderReadinessLockOwner
-  | RenewableProviderReadinessLockOwner;
 
 type ProviderReadinessLockRecord = {
   owner: ProviderReadinessLockOwner;
@@ -59,7 +48,7 @@ type GetProcessIdentity = (pid: number) => string | null;
 type StartHeartbeat = (renew: () => Promise<void>, intervalMs: number) => HeartbeatController;
 type BeforeRecoveryClaim = () => Promise<void>;
 type BeforeRecoveryDeleteClaim = () => Promise<void>;
-type BeforeCompatibilityMarkerRenew = () => Promise<void>;
+type BeforeReservationRenew = () => Promise<void>;
 type BeforeReleaseClaim = () => Promise<void>;
 type BeforeReleaseRename = () => Promise<void>;
 type BeforeReleaseRemove = () => Promise<void>;
@@ -68,7 +57,7 @@ type BeforeCommitFileRename = () => Promise<void>;
 type BeforeCommitRename = () => Promise<void>;
 type SecureWindowsDirectory = (directoryPath: string) => Promise<void>;
 type AfterLockDirectoryWrite = (directoryPath: string) => Promise<void>;
-type LockClaimKind = "commit" | "owned" | "recovering" | "release";
+type LockClaimKind = "commit" | "owned" | "recovery" | "release";
 type LockClaim = {
   directoryPath: string;
   kind: LockClaimKind;
@@ -96,7 +85,7 @@ const LOCK_OWNER_FILE = "owner.json";
 const LOCK_LEASE_FILE_PREFIX = "lease.";
 const LOCK_COMMIT_STAGE_FILE_PREFIX = "commit-stage.";
 const LOCK_STAGED_FILE_PREFIX = ".commit-file.";
-const LEGACY_RECOVERY_SUFFIX = ".recovering";
+const RECOVERY_CLAIM_SUFFIX = ".recovery";
 const COMMIT_CLAIM_SUFFIX = ".commit";
 const OWNED_CLAIM_SUFFIX = ".owned";
 const RELEASE_CLAIM_SUFFIX = ".release";
@@ -346,29 +335,16 @@ function parseLockOwner(contents: string): ProviderReadinessLockOwner {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
   }
-  const owner = parsed as Partial<RenewableProviderReadinessLockOwner>;
+  const owner = parsed as Partial<ProviderReadinessLockOwner>;
   if (
     typeof owner.channel !== "string" ||
     !isCrablineServerChannel(owner.channel) ||
-    !isValidProcessId(owner.pid) ||
-    typeof owner.token !== "string" ||
-    !LOCK_TOKEN_PATTERN.test(owner.token)
-  ) {
-    throw new Error("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
-  }
-
-  const hasCreatedAt = owner.createdAtMs !== undefined;
-  const hasProcessStartedAt = owner.processStartedAtMs !== undefined;
-  if (!hasCreatedAt && !hasProcessStartedAt && owner.leaseVersion === undefined) {
-    return {
-      channel: owner.channel,
-      pid: owner.pid,
-      token: owner.token,
-    };
-  }
-  if (
     !isPositiveSafeInteger(owner.createdAtMs) ||
+    owner.lockVersion !== 1 ||
+    !isValidProcessId(owner.pid) ||
     !isPositiveSafeInteger(owner.processStartedAtMs) ||
+    typeof owner.token !== "string" ||
+    !LOCK_TOKEN_PATTERN.test(owner.token) ||
     (owner.processIdentity !== undefined &&
       (typeof owner.processIdentity !== "string" ||
         owner.processIdentity.length === 0 ||
@@ -380,24 +356,10 @@ function parseLockOwner(contents: string): ProviderReadinessLockOwner {
   ) {
     throw new Error("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
   }
-  if (owner.leaseVersion === undefined) {
-    return {
-      channel: owner.channel,
-      createdAtMs: owner.createdAtMs,
-      pid: owner.pid,
-      ...(owner.processIdentity ? { processIdentity: owner.processIdentity } : {}),
-      ...(owner.processIdentityV2 ? { processIdentityV2: owner.processIdentityV2 } : {}),
-      processStartedAtMs: owner.processStartedAtMs,
-      token: owner.token,
-    };
-  }
-  if (owner.leaseVersion !== 1) {
-    throw new Error("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
-  }
   return {
     channel: owner.channel,
     createdAtMs: owner.createdAtMs,
-    leaseVersion: owner.leaseVersion,
+    lockVersion: owner.lockVersion,
     pid: owner.pid,
     ...(owner.processIdentity ? { processIdentity: owner.processIdentity } : {}),
     ...(owner.processIdentityV2 ? { processIdentityV2: owner.processIdentityV2 } : {}),
@@ -432,18 +394,14 @@ async function readLockRecord(lockDirectory: string): Promise<LockRecordReadResu
   try {
     handle = await fs.open(path.join(lockDirectory, LOCK_OWNER_FILE), "r");
     const record = await readLockRecordFromHandle(handle);
-    if (isRenewableOwner(record.owner)) {
-      try {
-        const leaseStats = await fs.stat(
-          path.join(lockDirectory, leaseFileName(record.owner.token)),
-        );
-        if (Number.isFinite(leaseStats.mtimeMs) && leaseStats.mtimeMs > 0) {
-          record.renewedAtMs = Math.max(record.renewedAtMs, leaseStats.mtimeMs);
-        }
-      } catch (error) {
-        if (!isMissingPathError(error)) {
-          throw error;
-        }
+    try {
+      const leaseStats = await fs.stat(path.join(lockDirectory, leaseFileName(record.owner.token)));
+      if (Number.isFinite(leaseStats.mtimeMs) && leaseStats.mtimeMs > 0) {
+        record.renewedAtMs = Math.max(record.renewedAtMs, leaseStats.mtimeMs);
+      }
+    } catch (error) {
+      if (!isMissingPathError(error)) {
+        throw error;
       }
     }
     return { kind: "record", record };
@@ -455,18 +413,6 @@ async function readLockRecord(lockDirectory: string): Promise<LockRecordReadResu
   } finally {
     await handle?.close();
   }
-}
-
-function hasProcessIdentity(
-  owner: ProviderReadinessLockOwner,
-): owner is ProcessIdentifiedProviderReadinessLockOwner | RenewableProviderReadinessLockOwner {
-  return "processStartedAtMs" in owner;
-}
-
-function isRenewableOwner(
-  owner: ProviderReadinessLockOwner,
-): owner is RenewableProviderReadinessLockOwner {
-  return "leaseVersion" in owner && owner.leaseVersion === 1;
 }
 
 export const isProcessAlive: IsProcessAlive = (pid) => {
@@ -625,35 +571,21 @@ function getCachedCurrentProcessIdentityV2(): string | null {
   return (cachedCurrentProcessIdentityV2 ??= getProcessIdentityV2(process.pid));
 }
 
-function hasExactProcessIdentity(owner: ProviderReadinessLockOwner): owner is (
-  | ProcessIdentifiedProviderReadinessLockOwner
-  | RenewableProviderReadinessLockOwner
-) & {
+function hasExactProcessIdentity(
+  owner: ProviderReadinessLockOwner,
+): owner is ProviderReadinessLockOwner & {
   processIdentity: string;
 } {
-  return hasProcessIdentity(owner) && typeof owner.processIdentity === "string";
+  return typeof owner.processIdentity === "string";
 }
 
-function hasCoarseDarwinProcessIdentity(owner: ProviderReadinessLockOwner): owner is (
-  | ProcessIdentifiedProviderReadinessLockOwner
-  | RenewableProviderReadinessLockOwner
-) & {
-  processIdentity: string;
-} {
-  if (!hasExactProcessIdentity(owner)) {
-    return false;
-  }
-  return /^darwin:\d+\.\d+:(?!us:).+$/u.test(owner.processIdentity);
-}
-
-type ProcessIdentityMatch = "legacy" | "mismatch" | "unknown" | "v2";
+type ProcessIdentityMatch = "match" | "mismatch" | "unknown";
 
 function compareProcessIdentity(
   owner: ProviderReadinessLockOwner,
   runtime: ProviderReadinessLockRuntime,
 ): ProcessIdentityMatch {
   if (
-    hasProcessIdentity(owner) &&
     owner.pid === runtime.currentPid &&
     owner.processStartedAtMs !== runtime.currentProcessStartedAtMs
   ) {
@@ -662,13 +594,13 @@ function compareProcessIdentity(
   if (!hasExactProcessIdentity(owner)) {
     return "unknown";
   }
-  if (hasProcessIdentity(owner) && typeof owner.processIdentityV2 === "string") {
+  if (typeof owner.processIdentityV2 === "string") {
     const actualProcessIdentityV2 =
       owner.pid === runtime.currentPid
         ? runtime.currentProcessIdentityV2
         : runtime.getProcessIdentityV2(owner.pid);
     if (actualProcessIdentityV2 !== null) {
-      return owner.processIdentityV2 === actualProcessIdentityV2 ? "v2" : "mismatch";
+      return owner.processIdentityV2 === actualProcessIdentityV2 ? "match" : "mismatch";
     }
   }
   const actualProcessIdentity =
@@ -678,7 +610,7 @@ function compareProcessIdentity(
   if (actualProcessIdentity === null) {
     return "unknown";
   }
-  return owner.processIdentity === actualProcessIdentity ? "legacy" : "mismatch";
+  return owner.processIdentity === actualProcessIdentity ? "match" : "mismatch";
 }
 
 function hasProcessIdentityMismatch(
@@ -700,17 +632,6 @@ function isLockOwnerActive(
   if (identityMatch === "mismatch") {
     return false;
   }
-  if (!isRenewableOwner(owner)) {
-    if (
-      owner.pid !== runtime.currentPid &&
-      hasCoarseDarwinProcessIdentity(owner) &&
-      identityMatch !== "v2"
-    ) {
-      const ageMs = runtime.now() - Math.max(owner.createdAtMs, record.renewedAtMs);
-      return ageMs >= -runtime.leaseMs && ageMs <= runtime.leaseMs;
-    }
-    return true;
-  }
   const ageMs = runtime.now() - Math.max(owner.createdAtMs, record.renewedAtMs);
   return ageMs >= -runtime.leaseMs && ageMs <= runtime.leaseMs;
 }
@@ -720,7 +641,6 @@ function needsLiveOwnerConfirmation(
   runtime: ProviderReadinessLockRuntime,
 ): boolean {
   return (
-    isRenewableOwner(record.owner) &&
     runtime.isProcessAlive(record.owner.pid) &&
     !hasProcessIdentityMismatch(record.owner, runtime) &&
     !isLockOwnerActive(record, runtime)
@@ -881,27 +801,7 @@ async function removeOwnedLock(params: {
   return true;
 }
 
-async function renewCompatibilityMarker(params: {
-  handle: FileHandle;
-  lockDirectory: string;
-  renewedAtMs: number;
-  securedDirectory: Awaited<ReturnType<typeof securePrivateDirectory>>;
-  token: string;
-}): Promise<boolean> {
-  await params.securedDirectory.assertIdentityAt(params.lockDirectory);
-  const observed = await readLockRecord(params.lockDirectory);
-  if (observed.kind === "missing" || observed.record.owner.token !== params.token) {
-    return false;
-  }
-  const renewedAt = new Date(params.renewedAtMs);
-  await params.handle.utimes(renewedAt, renewedAt);
-  await params.handle.sync();
-  await params.securedDirectory.assertIdentityAt(params.lockDirectory);
-  const revalidated = await readLockRecord(params.lockDirectory);
-  return revalidated.kind === "record" && revalidated.record.owner.token === params.token;
-}
-
-async function assertCompatibilityMarkerOwned(params: {
+async function assertReservationOwned(params: {
   lockDirectory: string;
   securedDirectory: Awaited<ReturnType<typeof securePrivateDirectory>>;
   token: string;
@@ -909,37 +809,8 @@ async function assertCompatibilityMarkerOwned(params: {
   await params.securedDirectory.assertIdentityAt(params.lockDirectory);
   const observed = await readLockRecord(params.lockDirectory);
   if (observed.kind === "missing" || observed.record.owner.token !== params.token) {
-    throw new Error("OpenClaw Crabline provider readiness lock compatibility marker was lost.");
+    throw new Error("OpenClaw Crabline provider readiness lock reservation was lost.");
   }
-}
-
-async function retireCompatibilityMarker(
-  handle: FileHandle,
-  owner: RenewableProviderReadinessLockOwner,
-): Promise<void> {
-  const retiredOwner: RenewableProviderReadinessLockOwner = {
-    ...owner,
-    createdAtMs: 1,
-    pid: MAX_PROCESS_ID,
-    ...(owner.processIdentity ? { processIdentity: "retired" } : {}),
-    ...(owner.processIdentityV2 ? { processIdentityV2: "retired" } : {}),
-    processStartedAtMs: 1,
-  };
-  const originalBytes = Buffer.byteLength(`${JSON.stringify(owner)}\n`, "utf8");
-  const retiredJson = JSON.stringify(retiredOwner);
-  const retiredBytes = Buffer.byteLength(retiredJson, "utf8") + 1;
-  const targetBytes = Math.max(originalBytes, retiredBytes);
-  const paddingBytes = targetBytes - retiredBytes;
-  const retiredContents = `${retiredJson}${" ".repeat(paddingBytes)}\n`;
-  const written = await handle.write(retiredContents, 0, "utf8");
-  if (written.bytesWritten !== targetBytes) {
-    throw new Error(
-      "OpenClaw Crabline provider readiness lock compatibility marker retirement was incomplete.",
-    );
-  }
-  const retiredAt = new Date(1);
-  await handle.utimes(retiredAt, retiredAt);
-  await handle.sync();
 }
 
 async function renewOwnedLock(
@@ -956,7 +827,7 @@ async function renewOwnedLock(
     if (
       observed.kind === "missing" ||
       observed.record.owner.token !== token ||
-      !isRenewableOwner(observed.record.owner)
+      observed.record.owner.lockVersion !== 1
     ) {
       return false;
     }
@@ -972,7 +843,7 @@ async function renewOwnedLock(
     if (
       revalidated.kind === "missing" ||
       revalidated.record.owner.token !== token ||
-      !isRenewableOwner(revalidated.record.owner)
+      revalidated.record.owner.lockVersion !== 1
     ) {
       return false;
     }
@@ -995,7 +866,7 @@ function claimPrefix(lockDirectory: string, suffix: string): string {
 async function listLockClaims(lockDirectory: string): Promise<LockClaim[]> {
   const directory = path.dirname(lockDirectory);
   const prefixes: Array<{ kind: LockClaimKind; prefix: string }> = [
-    { kind: "recovering", prefix: claimPrefix(lockDirectory, LEGACY_RECOVERY_SUFFIX) },
+    { kind: "recovery", prefix: claimPrefix(lockDirectory, RECOVERY_CLAIM_SUFFIX) },
     { kind: "commit", prefix: claimPrefix(lockDirectory, COMMIT_CLAIM_SUFFIX) },
     { kind: "owned", prefix: claimPrefix(lockDirectory, OWNED_CLAIM_SUFFIX) },
     { kind: "release", prefix: claimPrefix(lockDirectory, RELEASE_CLAIM_SUFFIX) },
@@ -1016,32 +887,6 @@ async function listLockClaims(lockDirectory: string): Promise<LockClaim[]> {
     });
   }
   return claims.sort((left, right) => left.directoryPath.localeCompare(right.directoryPath));
-}
-
-async function claimLegacyRecoveryDirectory(
-  lockDirectory: string,
-  expectedToken?: string,
-): Promise<void> {
-  const legacyRecoveryDirectory = `${lockDirectory}${LEGACY_RECOVERY_SUFFIX}`;
-  if (!(await pathExists(legacyRecoveryDirectory))) {
-    return;
-  }
-  if (expectedToken !== undefined) {
-    const observed = await readLockRecord(legacyRecoveryDirectory);
-    if (observed.kind === "missing" || observed.record.owner.token !== expectedToken) {
-      return;
-    }
-  }
-  try {
-    await fs.rename(
-      legacyRecoveryDirectory,
-      `${lockDirectory}${LEGACY_RECOVERY_SUFFIX}.${randomUUID()}`,
-    );
-  } catch (error) {
-    if (!isMissingPathError(error)) {
-      throw error;
-    }
-  }
 }
 
 async function resolveLockClaim(params: {
@@ -1073,7 +918,7 @@ async function resolveLockClaim(params: {
     return;
   }
   if (isLockOwnerActive(observed.record, params.runtime)) {
-    if (params.claim.kind === "recovering") {
+    if (params.claim.kind === "recovery") {
       try {
         await fs.rename(params.claim.directoryPath, params.lockDirectory);
       } catch (error) {
@@ -1094,7 +939,7 @@ async function resolveLockClaim(params: {
     params.runtime,
   );
   if (confirmation === "renewed") {
-    if (params.claim.kind === "recovering") {
+    if (params.claim.kind === "recovery") {
       try {
         await fs.rename(params.claim.directoryPath, params.lockDirectory);
       } catch (error) {
@@ -1146,7 +991,6 @@ async function resolveLockClaims(params: {
   requestedChannel: CrablineServerChannel;
   runtime: ProviderReadinessLockRuntime;
 }): Promise<void> {
-  await claimLegacyRecoveryDirectory(params.lockDirectory);
   for (const claim of await listLockClaims(params.lockDirectory)) {
     await resolveLockClaim({
       ...params,
@@ -1193,7 +1037,7 @@ async function resolveLockContention(params: {
   }
 
   await params.beforeRecoveryClaim();
-  const claimDirectory = `${params.lockDirectory}${LEGACY_RECOVERY_SUFFIX}.${randomUUID()}`;
+  const claimDirectory = `${params.lockDirectory}${RECOVERY_CLAIM_SUFFIX}.${randomUUID()}`;
   try {
     await fs.rename(params.lockDirectory, claimDirectory);
   } catch (error) {
@@ -1208,7 +1052,7 @@ async function resolveLockContention(params: {
     ...params,
     claim: {
       directoryPath: claimDirectory,
-      kind: "recovering",
+      kind: "recovery",
     },
   });
 }
@@ -1218,7 +1062,7 @@ async function createLockCandidate(params: {
   candidateDirectory?: string;
   includeLease?: boolean;
   lockDirectory: string;
-  owner: RenewableProviderReadinessLockOwner;
+  owner: ProviderReadinessLockOwner;
   platform?: NodeJS.Platform;
   secureWindowsDirectory?: SecureWindowsDirectory;
 }): Promise<{
@@ -1279,7 +1123,7 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
   dependencies: {
     afterLockCandidateInstall?: AfterLockDirectoryWrite;
     afterLockOwnerClaimInstall?: AfterLockDirectoryWrite;
-    afterLockOwnerWrite?: AfterLockDirectoryWrite;
+    afterLockReservationWrite?: AfterLockDirectoryWrite;
     getProcessIdentity?: GetProcessIdentity;
     getProcessIdentityV2?: GetProcessIdentity;
     isProcessAlive?: IsProcessAlive;
@@ -1294,7 +1138,7 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
     beforeCommitClaim?: BeforeCommitClaim;
     beforeCommitFileRename?: BeforeCommitFileRename;
     beforeCommitRename?: BeforeCommitRename;
-    beforeCompatibilityMarkerRenew?: BeforeCompatibilityMarkerRenew;
+    beforeReservationRenew?: BeforeReservationRenew;
     beforeRecoveryDeleteClaim?: BeforeRecoveryDeleteClaim;
     beforeRecoveryClaim?: BeforeRecoveryClaim;
     beforeReleaseClaim?: BeforeReleaseClaim;
@@ -1363,10 +1207,10 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
   ) {
     throw new Error("Invalid OpenClaw Crabline provider readiness lock runtime.");
   }
-  const owner: RenewableProviderReadinessLockOwner = {
+  const owner: ProviderReadinessLockOwner = {
     channel: params.channel,
     createdAtMs,
-    leaseVersion: 1,
+    lockVersion: 1,
     pid: runtime.currentPid,
     ...(runtime.currentProcessIdentity ? { processIdentity: runtime.currentProcessIdentity } : {}),
     ...(runtime.currentProcessIdentityV2
@@ -1375,14 +1219,9 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
     processStartedAtMs: runtime.currentProcessStartedAtMs,
     token,
   };
-  const compatibilityOwner: RenewableProviderReadinessLockOwner = {
-    ...owner,
-    createdAtMs: 1,
-  };
-
   for (;;) {
     const lockClaims = await listLockClaims(lockDirectory);
-    if (lockClaims.length > 0 || (await pathExists(`${lockDirectory}${LEGACY_RECOVERY_SUFFIX}`))) {
+    if (lockClaims.length > 0) {
       await resolveLockClaims({
         beforeRecoveryDeleteClaim:
           dependencies.beforeRecoveryDeleteClaim ?? (async () => undefined),
@@ -1396,12 +1235,11 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
 
     const ownerDirectory = `${lockDirectory}${OWNED_CLAIM_SUFFIX}.${token}`;
     const { candidateDirectory, securedDirectory } = await createLockCandidate({
-      ...(dependencies.afterLockOwnerWrite
-        ? { afterOwnerWrite: dependencies.afterLockOwnerWrite }
+      ...(dependencies.afterLockReservationWrite
+        ? { afterOwnerWrite: dependencies.afterLockReservationWrite }
         : {}),
-      includeLease: false,
       lockDirectory,
-      owner: compatibilityOwner,
+      owner,
       ...(dependencies.platform ? { platform: dependencies.platform } : {}),
       ...(dependencies.secureWindowsDirectory
         ? { secureWindowsDirectory: dependencies.secureWindowsDirectory }
@@ -1422,39 +1260,9 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
       await fs.rm(candidateDirectory, { force: true, recursive: true }).catch(() => undefined);
       throw error;
     }
-    let compatibilityMarkerHandle: FileHandle | undefined;
-    try {
-      compatibilityMarkerHandle = await fs.open(
-        path.join(candidateDirectory, LOCK_OWNER_FILE),
-        "r+",
-      );
-      const compatibilityRecord = await readLockRecordFromHandle(compatibilityMarkerHandle);
-      if (compatibilityRecord.owner.token !== token) {
-        throw new Error(
-          "OpenClaw Crabline provider readiness lock compatibility marker was replaced.",
-        );
-      }
-      const activeAt = new Date(createdAtMs);
-      await compatibilityMarkerHandle.utimes(activeAt, activeAt);
-      await compatibilityMarkerHandle.sync();
-    } catch (error) {
-      await compatibilityMarkerHandle?.close().catch(() => undefined);
-      await fs.rm(candidateDirectory, { force: true, recursive: true }).catch(() => undefined);
-      await fs
-        .rm(ownerCandidate.candidateDirectory, { force: true, recursive: true })
-        .catch(() => undefined);
-      throw error;
-    }
-    if (!compatibilityMarkerHandle) {
-      throw new Error(
-        "OpenClaw Crabline provider readiness lock compatibility marker was not opened.",
-      );
-    }
-    const markerHandle = compatibilityMarkerHandle;
     try {
       await fs.rename(candidateDirectory, lockDirectory);
     } catch (error) {
-      await markerHandle.close().catch(() => undefined);
       await fs.rm(candidateDirectory, { force: true, recursive: true }).catch(() => undefined);
       await fs
         .rm(ownerCandidate.candidateDirectory, { force: true, recursive: true })
@@ -1477,8 +1285,6 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
       await securedDirectory.assertIdentityAt(lockDirectory);
       const installed = await readLockRecord(lockDirectory);
       if (installed.kind !== "record" || installed.record.owner.token !== token) {
-        await retireCompatibilityMarker(markerHandle, compatibilityOwner);
-        await markerHandle.close();
         await fs.rm(ownerCandidate.candidateDirectory, { force: true, recursive: true });
         continue;
       }
@@ -1498,20 +1304,13 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
         } else {
           await fs.rm(ownerCandidate.candidateDirectory, { force: true, recursive: true });
         }
-        await retireCompatibilityMarker(markerHandle, compatibilityOwner);
+        await removeOwnedLock({
+          lockDirectory,
+          ownedDirectory: lockDirectory,
+          token,
+        });
       } catch (caughtCleanupError) {
         cleanupError = caughtCleanupError;
-      }
-      try {
-        await markerHandle.close();
-      } catch (closeError) {
-        cleanupError =
-          cleanupError === undefined
-            ? closeError
-            : new AggregateError(
-                [cleanupError, closeError],
-                "OpenClaw Crabline provider readiness lock setup cleanup also failed.",
-              );
       }
       if (cleanupError !== undefined) {
         const aggregateError = new AggregateError(
@@ -1527,23 +1326,23 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
     const competingClaims = (await listLockClaims(lockDirectory)).filter(
       (claim) => claim.directoryPath !== ownerDirectory,
     );
-    if (
-      competingClaims.length > 0 ||
-      (await pathExists(`${lockDirectory}${LEGACY_RECOVERY_SUFFIX}`))
-    ) {
+    if (competingClaims.length > 0) {
       const removed = await removeOwnedLock({
         lockDirectory,
         ownedDirectory: ownerDirectory,
         token,
       });
       if (!removed) {
-        await markerHandle.close();
         throw new Error("OpenClaw Crabline provider readiness lock ownership was lost.");
       }
-      try {
-        await retireCompatibilityMarker(markerHandle, compatibilityOwner);
-      } finally {
-        await markerHandle.close();
+      if (
+        !(await removeOwnedLock({
+          lockDirectory,
+          ownedDirectory: lockDirectory,
+          token,
+        }))
+      ) {
+        throw new Error("OpenClaw Crabline provider readiness lock reservation was lost.");
       }
       await resolveLockClaims({
         beforeRecoveryDeleteClaim:
@@ -1562,19 +1361,7 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
     let lastRenewedAtMs = createdAtMs;
     let pendingRenewal = Promise.resolve();
     let commitFenceConsumed = false;
-    let markerClosed = false;
-    let markerRetired = false;
     let heartbeat: HeartbeatController;
-    const retireMarker = async () => {
-      if (!markerRetired) {
-        await retireCompatibilityMarker(markerHandle, compatibilityOwner);
-        markerRetired = true;
-      }
-      if (!markerClosed) {
-        await markerHandle.close();
-        markerClosed = true;
-      }
-    };
     const renew = async () => {
       const renewal = pendingRenewal
         .catch(() => undefined)
@@ -1595,19 +1382,9 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
           if (!(await renewOwnedLock(ownedDirectory, token, renewedAtMs))) {
             throw new Error("OpenClaw Crabline provider readiness lock ownership was lost.");
           }
-          await dependencies.beforeCompatibilityMarkerRenew?.();
-          if (
-            !(await renewCompatibilityMarker({
-              handle: markerHandle,
-              lockDirectory,
-              renewedAtMs,
-              securedDirectory,
-              token,
-            }))
-          ) {
-            throw new Error(
-              "OpenClaw Crabline provider readiness lock compatibility marker was lost.",
-            );
+          await dependencies.beforeReservationRenew?.();
+          if (!(await renewOwnedLock(lockDirectory, token, renewedAtMs))) {
+            throw new Error("OpenClaw Crabline provider readiness lock reservation was lost.");
           }
           lastRenewedAtMs = renewedAtMs;
         });
@@ -1626,7 +1403,11 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
           ownedDirectory: ownerDirectory,
           token,
         });
-        await retireMarker();
+        await removeOwnedLock({
+          lockDirectory,
+          ownedDirectory: lockDirectory,
+          token,
+        });
       } catch (cleanupError) {
         const aggregateError = new AggregateError(
           [error, cleanupError],
@@ -1647,7 +1428,7 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
         heartbeat.assertHealthy();
         await renew();
         heartbeat.assertHealthy();
-        await assertCompatibilityMarkerOwned({
+        await assertReservationOwned({
           lockDirectory,
           securedDirectory,
           token,
@@ -1749,7 +1530,7 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
         heartbeat.assertHealthy();
 
         await dependencies.beforeCommitClaim?.();
-        await assertCompatibilityMarkerOwned({
+        await assertReservationOwned({
           lockDirectory,
           securedDirectory,
           token,
@@ -1805,7 +1586,7 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
         await heartbeat.settle();
         heartbeat.assertHealthy();
         await dependencies.beforeCommitRename?.();
-        await assertCompatibilityMarkerOwned({
+        await assertReservationOwned({
           lockDirectory,
           securedDirectory,
           token,
@@ -1908,7 +1689,6 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
             : {}),
           token,
         });
-        await claimLegacyRecoveryDirectory(lockDirectory, token);
         for (const claim of await listLockClaims(lockDirectory)) {
           await removeOwnedLock({
             lockDirectory,
@@ -1919,7 +1699,14 @@ export async function acquireOpenClawCrablineProviderReadinessLock(
             token,
           });
         }
-        await retireMarker();
+        await removeOwnedLock({
+          lockDirectory,
+          ownedDirectory: lockDirectory,
+          ...(dependencies.removeDirectory
+            ? { removeDirectory: dependencies.removeDirectory }
+            : {}),
+          token,
+        });
         released = true;
       },
     };

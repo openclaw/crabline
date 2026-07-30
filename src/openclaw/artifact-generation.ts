@@ -177,7 +177,6 @@ function isGeneratedManifest(value: Record<string, unknown>): boolean {
           "baileysWebSocketUrl",
           "messagesUrl",
           "phoneNumberUrl",
-          "statusUrl",
         ]) &&
         hasNonEmptyStringFields(env, [
           "CLOUD_API_ACCESS_TOKEN",
@@ -190,7 +189,6 @@ function isGeneratedManifest(value: Record<string, unknown>): boolean {
         endpoints.phoneNumberUrl ===
           `${endpoints.apiRoot as string}/${value.phoneNumberId as string}` &&
         endpoints.messagesUrl === `${endpoints.phoneNumberUrl as string}/messages` &&
-        endpoints.statusUrl === endpoints.messagesUrl &&
         endpoints.baileysWebSocketUrl ===
           `${baseUrl.replace(/^http/u, "ws")}/ws/chat?access_token=${encodeURIComponent(
             value.accessToken as string,

@@ -654,7 +654,7 @@ describe("whatsapp local provider server", () => {
       },
     });
 
-    const outboundStatus = await fetch(server.manifest.endpoints.statusUrl, {
+    const outboundStatus = await fetch(server.manifest.endpoints.messagesUrl, {
       body: JSON.stringify({
         message_id: sentPayload.messages[0]!.id,
         messaging_product: "whatsapp",
@@ -670,7 +670,7 @@ describe("whatsapp local provider server", () => {
     await expect(outboundStatus.json()).resolves.toMatchObject({
       error: { message: "(#100) Invalid parameter: message_id" },
     });
-    const unknownStatus = await fetch(server.manifest.endpoints.statusUrl, {
+    const unknownStatus = await fetch(server.manifest.endpoints.messagesUrl, {
       body: JSON.stringify({
         message_id: "wamid.UNKNOWN",
         messaging_product: "whatsapp",
@@ -749,7 +749,7 @@ describe("whatsapp local provider server", () => {
         object: "whatsapp_business_account",
       },
     });
-    const status = await fetch(server.manifest.endpoints.statusUrl, {
+    const status = await fetch(server.manifest.endpoints.messagesUrl, {
       body: JSON.stringify({
         message_id: inboundPayload.message.key.id,
         messaging_product: "whatsapp",

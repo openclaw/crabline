@@ -256,7 +256,6 @@ const whatsappManifest: CrablineServerManifest = {
     baileysWebSocketUrl: "ws://127.0.0.1:5678/ws/chat?access_token=crabline-whatsapp-access-token",
     messagesUrl: "http://127.0.0.1:5678/v25.0/100000000000000/messages",
     phoneNumberUrl: "http://127.0.0.1:5678/v25.0/100000000000000",
-    statusUrl: "http://127.0.0.1:5678/v25.0/100000000000000/messages",
   },
   env: {
     CLOUD_API_ACCESS_TOKEN: "crabline-whatsapp-access-token",

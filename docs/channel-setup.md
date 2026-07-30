@@ -478,7 +478,6 @@ Manifest fields:
 - `endpoints.adminInboundUrl`: authenticated admin ingress for test user
   messages using the WhatsApp Business webhook payload shape
 - `endpoints.messagesUrl`: provider-native Cloud API message and status endpoint
-- `endpoints.statusUrl`: alias for the same provider-native status endpoint
 - `recorderPath`: JSONL provider traffic recorder for HTTP traffic and Baileys
   WebSocket stanzas. Multi-message webhook deliveries use one versioned batch
   line that Crabline's recorder APIs flatten into individual events.
@@ -687,17 +686,16 @@ contain `capabilityReport` and `providerReadiness` payloads while their manifest
 capability, and provider-readiness paths identify the authoritative immutable
 generation.
 
-Lock owners record both PID and process-start identity. Dead owners, and stale
-locks whose PID was reused by the next Crabline process, are reclaimed on the
-next run. New lock owners renew a 10-minute lease while the readiness run
-remains active, so a live run retains exclusive ownership beyond the initial
-lease. A heartbeat failure or lost ownership aborts publication before the
-generation is committed. Recovery first atomically moves a stale candidate away
-from the heartbeat path, then revalidates its token-specific lease before
-deletion; a renewal that wins the rename race is restored rather than reclaimed.
-The lease also bounds stale locks when an unrelated live process has inherited
-the abandoned PID. Older owner records remain PID-protected for compatibility
-and are reclaimed only after their recorded process exits.
+Lock owners use one versioned format containing the PID, process-start identity,
+and token-specific lease. Both the acquisition reservation and owner claim renew
+their 10-minute leases while the readiness run remains active, so a live run
+retains exclusive ownership beyond the initial lease. A heartbeat failure or
+lost ownership aborts publication before the generation is committed. Recovery
+first atomically moves a stale reservation into a uniquely named recovery claim,
+then revalidates its token-specific lease before deletion; a renewal that wins
+the rename race is restored rather than reclaimed. The lease also bounds stale
+locks when an unrelated live process has inherited the abandoned PID. Malformed
+or unversioned owner records fail closed and are not migrated or recovered.
 
 For release or live verification, use OpenClaw's live driver:
 

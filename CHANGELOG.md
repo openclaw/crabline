@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Remove obsolete provider-server aliases, duplicate artifact paths, and fallback readers; require canonical provider-readiness owner records and manifests.
+
 ## 0.1.12 - 2026-07-27
 
 ### Provider fidelity
@@ -141,7 +143,7 @@
 
 ## 0.1.5 - 2026-06-29
 
-- Introduce canonical local provider server APIs while preserving the then-current compatibility aliases and artifact paths.
+- Introduce the initial local provider server APIs and artifact paths.
 
 ## 0.1.4 - 2026-06-29
 

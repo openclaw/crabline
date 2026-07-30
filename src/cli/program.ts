@@ -1221,7 +1221,6 @@ function renderServeProviderFields(
       `  baileysWebSocket: ${baileysWebSocketUrl}`,
       `  messages: ${manifest.endpoints.messagesUrl}`,
       `  phoneNumber: ${manifest.endpoints.phoneNumberUrl}`,
-      `  status: ${manifest.endpoints.statusUrl}`,
       `  selfJid: ${manifest.selfJid}`,
     ];
   }
