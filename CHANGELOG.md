@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.13 - 2026-07-30
 
 - Add a canonical Discord local provider server and OpenClaw bridge with REST
   v10, Gateway WebSocket, admin ingress, command registration, and recorder
