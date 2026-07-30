@@ -298,10 +298,11 @@ lookups, DM creation, text message create/read/reply, typing, application
 command registration, and a v10 JSON Gateway with HELLO, IDENTIFY, READY,
 heartbeat acknowledgement, resume, and deterministic shutdown.
 
-Current fidelity limits are one Gateway shard, no transport compression, no
-missed-dispatch replay when resuming a retained Gateway session, no voice, no
-interaction dispatch, no attachment/multipart upload, and no attempt to
-reproduce Discord's distributed permission or bucket-allocation systems.
+Current fidelity limits are one Gateway shard, no transport compression, and no
+missed-dispatch replay: resume succeeds only from the retained session's latest
+sequence. The server also omits voice, interaction dispatch,
+attachment/multipart upload, and Discord's distributed permission or
+bucket-allocation systems.
 The server still returns provider-native authentication, JSON error, and basic
 rate-limit headers for its supported routes.
 

@@ -90,10 +90,18 @@ describe("Discord local provider server", () => {
       username: "crabline",
     });
 
-    const gateway = await fetch(server.manifest.endpoints.gatewayBotUrl, {
+    const publicGateway = await fetch(`${server.manifest.endpoints.apiRoot}/v10/gateway`);
+    expect(publicGateway.status).toBe(200);
+    await expect(publicGateway.json()).resolves.toEqual({
+      url: server.manifest.endpoints.gatewayUrl,
+    });
+
+    const unauthorizedGatewayBot = await fetch(server.manifest.endpoints.gatewayBotUrl);
+    expect(unauthorizedGatewayBot.status).toBe(401);
+    const gatewayBot = await fetch(server.manifest.endpoints.gatewayBotUrl, {
       headers: auth(server),
     });
-    await expect(gateway.json()).resolves.toMatchObject({
+    await expect(gatewayBot.json()).resolves.toMatchObject({
       shards: 1,
       url: server.manifest.endpoints.gatewayUrl,
       session_start_limit: { max_concurrency: 1 },
@@ -237,6 +245,26 @@ describe("Discord local provider server", () => {
     first.close(1000, "test reconnect");
     await firstClose;
 
+    const expectInvalidResume = async (sequence: unknown) => {
+      const invalid = new WebSocket(server.manifest.endpoints.gatewayUrl);
+      const invalidHello = nextMessage(invalid);
+      await waitForOpen(invalid);
+      await invalidHello;
+      const invalidSession = nextMessage(invalid);
+      invalid.send(
+        JSON.stringify({
+          d: { seq: sequence, session_id: sessionId, token: server.manifest.botToken },
+          op: 6,
+        }),
+      );
+      await expect(invalidSession).resolves.toEqual({ d: false, op: 9 });
+      const invalidClose = waitForClose(invalid);
+      invalid.close();
+      await invalidClose;
+    };
+    await expectInvalidResume("1");
+    await expectInvalidResume((ready.s as number) - 1);
+
     const resumed = new WebSocket(server.manifest.endpoints.gatewayUrl);
     const resumedHello = nextMessage(resumed);
     await waitForOpen(resumed);
@@ -248,8 +276,31 @@ describe("Discord local provider server", () => {
         op: 6,
       }),
     );
-    await expect(resumedEvent).resolves.toMatchObject({ d: {}, op: 0, t: "RESUMED" });
+    const resumedPayload = await resumedEvent;
+    expect(resumedPayload).toMatchObject({ d: {}, op: 0, t: "RESUMED" });
+    const resumedClose = waitForClose(resumed);
     resumed.close();
+    await resumedClose;
+
+    const secondResume = new WebSocket(server.manifest.endpoints.gatewayUrl);
+    const secondHello = nextMessage(secondResume);
+    await waitForOpen(secondResume);
+    await secondHello;
+    const secondResumedEvent = nextMessage(secondResume);
+    secondResume.send(
+      JSON.stringify({
+        d: {
+          seq: resumedPayload.s,
+          session_id: sessionId,
+          token: server.manifest.botToken,
+        },
+        op: 6,
+      }),
+    );
+    await expect(secondResumedEvent).resolves.toMatchObject({ d: {}, op: 0, t: "RESUMED" });
+    const secondClose = waitForClose(secondResume);
+    secondResume.close();
+    await secondClose;
   });
 
   it("supports native application-command overwrite and listing", async () => {
@@ -261,7 +312,8 @@ describe("Discord local provider server", () => {
       method: "PUT",
     });
     expect(overwrite.status).toBe(200);
-    await expect(overwrite.json()).resolves.toEqual([
+    const overwrittenCommands = (await overwrite.json()) as Array<Record<string, unknown>>;
+    expect(overwrittenCommands).toEqual([
       expect.objectContaining({
         application_id: server.manifest.applicationId,
         description: "Run a Crabline check",
@@ -269,8 +321,31 @@ describe("Discord local provider server", () => {
         type: 1,
       }),
     ]);
+    const overwrittenId = overwrittenCommands[0]!.id;
+    const upsert = await fetch(commandUrl, {
+      body: JSON.stringify({ description: "Updated check", name: "check", type: 1 }),
+      headers: auth(server),
+      method: "POST",
+    });
+    expect(upsert.status).toBe(200);
+    await expect(upsert.json()).resolves.toMatchObject({
+      description: "Updated check",
+      id: overwrittenId,
+      name: "check",
+      type: 1,
+    });
+    const distinctType = await fetch(commandUrl, {
+      body: JSON.stringify({ name: "check", type: 2 }),
+      headers: auth(server),
+      method: "POST",
+    });
+    expect(distinctType.status).toBe(201);
+    await expect(distinctType.json()).resolves.toMatchObject({ name: "check", type: 2 });
     const list = await fetch(commandUrl, { headers: auth(server) });
-    await expect(list.json()).resolves.toEqual([expect.objectContaining({ name: "check" })]);
+    await expect(list.json()).resolves.toEqual([
+      expect.objectContaining({ id: overwrittenId, name: "check", type: 1 }),
+      expect.objectContaining({ name: "check", type: 2 }),
+    ]);
 
     await fetch(server.manifest.endpoints.adminInboundUrl, {
       body: JSON.stringify({
@@ -296,7 +371,8 @@ describe("Discord local provider server", () => {
       expect.objectContaining({ guild_id: GUILD_ID, name: "guild-check" }),
     ]);
     await expect((await fetch(commandUrl, { headers: auth(server) })).json()).resolves.toEqual([
-      expect.objectContaining({ name: "check" }),
+      expect.objectContaining({ id: overwrittenId, name: "check", type: 1 }),
+      expect.objectContaining({ name: "check", type: 2 }),
     ]);
   });
 

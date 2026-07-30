@@ -604,11 +604,15 @@ function attachGatewayServer(params: {
         }
         const token = readTrimmedString(payload.d.token);
         const sessionId = readTrimmedString(payload.d.session_id);
+        const session = sessionId ? params.state.sessions.get(sessionId) : undefined;
         if (
           !token ||
           !constantTimeTokenEqual(token, params.state.botToken) ||
           !sessionId ||
-          !params.state.sessions.has(sessionId)
+          !Number.isSafeInteger(payload.d.seq) ||
+          (payload.d.seq as number) < 0 ||
+          !session ||
+          payload.d.seq !== session.lastSequence
         ) {
           sendGatewayPayload(socket, { d: false, op: 9 });
           return;
@@ -616,13 +620,14 @@ function attachGatewayServer(params: {
         clearTimeout(identifyTimeout);
         client.identified = true;
         client.sessionId = sessionId;
-        const session = params.state.sessions.get(sessionId)!;
         params.state.sessions.delete(sessionId);
         params.state.sessions.set(sessionId, session);
+        const resumedSequence = params.state.nextSequence++;
+        session.lastSequence = resumedSequence;
         sendGatewayPayload(socket, {
           d: {},
           op: 0,
-          s: params.state.nextSequence++,
+          s: resumedSequence,
           t: "RESUMED",
         });
         return;
@@ -766,10 +771,10 @@ async function handleDiscordApi(params: {
       verify_key: "crabline",
     });
   }
-  if (
-    params.method === "GET" &&
-    (route.join("/") === "gateway/bot" || route.join("/") === "gateway")
-  ) {
+  if (params.method === "GET" && route.join("/") === "gateway") {
+    return discordJson({ url: params.state.gatewayUrl });
+  }
+  if (params.method === "GET" && route.join("/") === "gateway/bot") {
     return discordJson({
       session_start_limit: {
         max_concurrency: 1,
@@ -905,9 +910,14 @@ async function handleDiscordApi(params: {
         if (!isJsonObject(params.body)) {
           throw new DiscordRequestError(400, 50_035, "Invalid Form Body");
         }
-        const command = commandBody(params.state, params.body, undefined, guildId);
+        const name = readTrimmedString(params.body.name);
+        const type = typeof params.body.type === "number" ? params.body.type : 1;
+        const existing = [...commands.values()].find(
+          (command) => command.name === name && command.type === type,
+        );
+        const command = commandBody(params.state, params.body, existing, guildId);
         commands.set(command.id, command);
-        return discordJson(command, 201);
+        return discordJson(command, existing ? 200 : 201);
       }
       if (commandId) {
         const existing = commands.get(commandId);
@@ -967,7 +977,10 @@ async function handleRequest(params: {
     });
     return response;
   }
-  const authError = authorizationError(params.request, params.state);
+  const authError =
+    method === "GET" && url.pathname === "/api/v10/gateway"
+      ? null
+      : authorizationError(params.request, params.state);
   if (authError) {
     params.request.resume();
     return authError;
