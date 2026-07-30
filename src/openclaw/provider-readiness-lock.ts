@@ -8,34 +8,34 @@ import { isCrablineServerChannel, type CrablineServerChannel } from "../servers/
 import { resolveWindowsPowerShellPath, securePrivateDirectory } from "./private-file.js";
 import { OPENCLAW_CRABLINE_MANIFEST_PATH } from "./shared.js";
 
-type LegacySmokeLockOwner = {
+type LegacyProviderReadinessLockOwner = {
   channel: CrablineServerChannel;
   pid: number;
   token: string;
 };
 
-type ProcessIdentifiedSmokeLockOwner = LegacySmokeLockOwner & {
+type ProcessIdentifiedProviderReadinessLockOwner = LegacyProviderReadinessLockOwner & {
   createdAtMs: number;
   processIdentity?: string;
   processIdentityV2?: string;
   processStartedAtMs: number;
 };
 
-type RenewableSmokeLockOwner = ProcessIdentifiedSmokeLockOwner & {
+type RenewableProviderReadinessLockOwner = ProcessIdentifiedProviderReadinessLockOwner & {
   leaseVersion: 1;
 };
 
-type SmokeLockOwner =
-  | LegacySmokeLockOwner
-  | ProcessIdentifiedSmokeLockOwner
-  | RenewableSmokeLockOwner;
+type ProviderReadinessLockOwner =
+  | LegacyProviderReadinessLockOwner
+  | ProcessIdentifiedProviderReadinessLockOwner
+  | RenewableProviderReadinessLockOwner;
 
-type SmokeLockRecord = {
-  owner: SmokeLockOwner;
+type ProviderReadinessLockRecord = {
+  owner: ProviderReadinessLockOwner;
   renewedAtMs: number;
 };
 
-export type OpenClawCrablineSmokeRunLock = {
+export type OpenClawCrablineProviderReadinessLock = {
   assertOwned(): Promise<void>;
   commitFileAtomically(params: {
     contents: string;
@@ -79,7 +79,7 @@ type DirectoryIdentity = {
 };
 type FileIdentity = DirectoryIdentity;
 
-type SmokeLockRuntime = {
+type ProviderReadinessLockRuntime = {
   currentProcessIdentity: string | null;
   currentProcessIdentityV2: string | null;
   currentPid: number;
@@ -149,7 +149,9 @@ const startHeartbeat: StartHeartbeat = (renew, intervalMs) => {
   return {
     assertHealthy() {
       if (failure !== undefined) {
-        throw new Error("OpenClaw Crabline smoke lock heartbeat failed.", { cause: failure });
+        throw new Error("OpenClaw Crabline provider readiness lock heartbeat failed.", {
+          cause: failure,
+        });
       }
     },
     async settle() {
@@ -182,7 +184,7 @@ async function readDirectoryIdentity(directoryPath: string): Promise<DirectoryId
   try {
     const stats = await fs.lstat(directoryPath, { bigint: true });
     if (!stats.isDirectory() || stats.ino <= 0n) {
-      throw new Error("OpenClaw Crabline smoke lock claim is not a directory.");
+      throw new Error("OpenClaw Crabline provider readiness lock claim is not a directory.");
     }
     return {
       device: stats.dev,
@@ -248,7 +250,7 @@ async function removeVerifiedLockDirectory(params: {
       await readDirectoryIdentity(params.directoryPath),
     )
   ) {
-    throw new Error("OpenClaw Crabline smoke lock cleanup target changed.");
+    throw new Error("OpenClaw Crabline provider readiness lock cleanup target changed.");
   }
   await params.beforeRemove?.();
   const quarantinePath = `${params.directoryPath}.cleanup.${randomUUID()}`;
@@ -259,14 +261,16 @@ async function removeVerifiedLockDirectory(params: {
     quarantinedIdentity = { device: stats.dev, inode: stats.ino };
   }
   if (!hasSameDirectoryIdentity(params.expectedIdentity, quarantinedIdentity)) {
-    throw new Error("OpenClaw Crabline smoke lock cleanup target changed.");
+    throw new Error("OpenClaw Crabline provider readiness lock cleanup target changed.");
   }
 
   const entries = fsSync.readdirSync(quarantinePath);
   const artifacts: Array<{ identity: FileIdentity; path: string }> = [];
   for (const entry of entries) {
     if (!isOwnedLockArtifactName(entry, params.token)) {
-      throw new Error("OpenClaw Crabline smoke lock cleanup found an unexpected artifact.");
+      throw new Error(
+        "OpenClaw Crabline provider readiness lock cleanup found an unexpected artifact.",
+      );
     }
     const artifactPath = path.join(quarantinePath, entry);
     const artifactStats = fsSync.lstatSync(artifactPath, { bigint: true });
@@ -276,7 +280,9 @@ async function removeVerifiedLockDirectory(params: {
       artifactStats.nlink !== 1n ||
       artifactStats.ino <= 0n
     ) {
-      throw new Error("OpenClaw Crabline smoke lock cleanup found an unsafe artifact.");
+      throw new Error(
+        "OpenClaw Crabline provider readiness lock cleanup found an unsafe artifact.",
+      );
     }
     artifacts.push({
       identity: { device: artifactStats.dev, inode: artifactStats.ino },
@@ -302,7 +308,7 @@ async function removeVerifiedLockDirectory(params: {
       artifactStats.dev !== artifact.identity.device ||
       artifactStats.ino !== artifact.identity.inode
     ) {
-      throw new Error("OpenClaw Crabline smoke lock cleanup artifact changed.");
+      throw new Error("OpenClaw Crabline provider readiness lock cleanup artifact changed.");
     }
     fsSync.unlinkSync(artifact.path);
   }
@@ -313,7 +319,7 @@ async function removeVerifiedLockDirectory(params: {
     finalStats.dev !== params.expectedIdentity.device ||
     finalStats.ino !== params.expectedIdentity.inode
   ) {
-    throw new Error("OpenClaw Crabline smoke lock cleanup target changed.");
+    throw new Error("OpenClaw Crabline provider readiness lock cleanup target changed.");
   }
   fsSync.rmdirSync(quarantinePath);
 }
@@ -328,19 +334,19 @@ function isValidProcessId(value: unknown): value is number {
 
 const LOCK_TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
-function parseLockOwner(contents: string): SmokeLockOwner {
+function parseLockOwner(contents: string): ProviderReadinessLockOwner {
   let parsed: unknown;
   try {
     parsed = JSON.parse(contents);
   } catch (error) {
-    throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.", {
+    throw new Error("OpenClaw Crabline provider readiness lock owner metadata is malformed.", {
       cause: error,
     });
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.");
+    throw new Error("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
   }
-  const owner = parsed as Partial<RenewableSmokeLockOwner>;
+  const owner = parsed as Partial<RenewableProviderReadinessLockOwner>;
   if (
     typeof owner.channel !== "string" ||
     !isCrablineServerChannel(owner.channel) ||
@@ -348,7 +354,7 @@ function parseLockOwner(contents: string): SmokeLockOwner {
     typeof owner.token !== "string" ||
     !LOCK_TOKEN_PATTERN.test(owner.token)
   ) {
-    throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.");
+    throw new Error("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
   }
 
   const hasCreatedAt = owner.createdAtMs !== undefined;
@@ -372,7 +378,7 @@ function parseLockOwner(contents: string): SmokeLockOwner {
         owner.processIdentityV2.length === 0 ||
         owner.processIdentityV2.length > 256))
   ) {
-    throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.");
+    throw new Error("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
   }
   if (owner.leaseVersion === undefined) {
     return {
@@ -386,7 +392,7 @@ function parseLockOwner(contents: string): SmokeLockOwner {
     };
   }
   if (owner.leaseVersion !== 1) {
-    throw new Error("OpenClaw Crabline smoke lock owner metadata is malformed.");
+    throw new Error("OpenClaw Crabline provider readiness lock owner metadata is malformed.");
   }
   return {
     channel: owner.channel,
@@ -404,7 +410,7 @@ function leaseFileName(token: string): string {
   return `${LOCK_LEASE_FILE_PREFIX}${token}.json`;
 }
 
-async function readLockRecordFromHandle(handle: FileHandle): Promise<SmokeLockRecord> {
+async function readLockRecordFromHandle(handle: FileHandle): Promise<ProviderReadinessLockRecord> {
   const owner = parseLockOwner(await handle.readFile("utf8"));
   const stats = await handle.stat();
   return {
@@ -413,7 +419,9 @@ async function readLockRecordFromHandle(handle: FileHandle): Promise<SmokeLockRe
   };
 }
 
-type LockRecordReadResult = { kind: "missing" } | { kind: "record"; record: SmokeLockRecord };
+type LockRecordReadResult =
+  | { kind: "missing" }
+  | { kind: "record"; record: ProviderReadinessLockRecord };
 
 function isMissingPathError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
@@ -450,12 +458,14 @@ async function readLockRecord(lockDirectory: string): Promise<LockRecordReadResu
 }
 
 function hasProcessIdentity(
-  owner: SmokeLockOwner,
-): owner is ProcessIdentifiedSmokeLockOwner | RenewableSmokeLockOwner {
+  owner: ProviderReadinessLockOwner,
+): owner is ProcessIdentifiedProviderReadinessLockOwner | RenewableProviderReadinessLockOwner {
   return "processStartedAtMs" in owner;
 }
 
-function isRenewableOwner(owner: SmokeLockOwner): owner is RenewableSmokeLockOwner {
+function isRenewableOwner(
+  owner: ProviderReadinessLockOwner,
+): owner is RenewableProviderReadinessLockOwner {
   return "leaseVersion" in owner && owner.leaseVersion === 1;
 }
 
@@ -615,18 +625,18 @@ function getCachedCurrentProcessIdentityV2(): string | null {
   return (cachedCurrentProcessIdentityV2 ??= getProcessIdentityV2(process.pid));
 }
 
-function hasExactProcessIdentity(owner: SmokeLockOwner): owner is (
-  | ProcessIdentifiedSmokeLockOwner
-  | RenewableSmokeLockOwner
+function hasExactProcessIdentity(owner: ProviderReadinessLockOwner): owner is (
+  | ProcessIdentifiedProviderReadinessLockOwner
+  | RenewableProviderReadinessLockOwner
 ) & {
   processIdentity: string;
 } {
   return hasProcessIdentity(owner) && typeof owner.processIdentity === "string";
 }
 
-function hasCoarseDarwinProcessIdentity(owner: SmokeLockOwner): owner is (
-  | ProcessIdentifiedSmokeLockOwner
-  | RenewableSmokeLockOwner
+function hasCoarseDarwinProcessIdentity(owner: ProviderReadinessLockOwner): owner is (
+  | ProcessIdentifiedProviderReadinessLockOwner
+  | RenewableProviderReadinessLockOwner
 ) & {
   processIdentity: string;
 } {
@@ -639,8 +649,8 @@ function hasCoarseDarwinProcessIdentity(owner: SmokeLockOwner): owner is (
 type ProcessIdentityMatch = "legacy" | "mismatch" | "unknown" | "v2";
 
 function compareProcessIdentity(
-  owner: SmokeLockOwner,
-  runtime: SmokeLockRuntime,
+  owner: ProviderReadinessLockOwner,
+  runtime: ProviderReadinessLockRuntime,
 ): ProcessIdentityMatch {
   if (
     hasProcessIdentity(owner) &&
@@ -671,11 +681,17 @@ function compareProcessIdentity(
   return owner.processIdentity === actualProcessIdentity ? "legacy" : "mismatch";
 }
 
-function hasProcessIdentityMismatch(owner: SmokeLockOwner, runtime: SmokeLockRuntime): boolean {
+function hasProcessIdentityMismatch(
+  owner: ProviderReadinessLockOwner,
+  runtime: ProviderReadinessLockRuntime,
+): boolean {
   return compareProcessIdentity(owner, runtime) === "mismatch";
 }
 
-function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): boolean {
+function isLockOwnerActive(
+  record: ProviderReadinessLockRecord,
+  runtime: ProviderReadinessLockRuntime,
+): boolean {
   const { owner } = record;
   if (!runtime.isProcessAlive(owner.pid)) {
     return false;
@@ -699,7 +715,10 @@ function isLockOwnerActive(record: SmokeLockRecord, runtime: SmokeLockRuntime): 
   return ageMs >= -runtime.leaseMs && ageMs <= runtime.leaseMs;
 }
 
-function needsLiveOwnerConfirmation(record: SmokeLockRecord, runtime: SmokeLockRuntime): boolean {
+function needsLiveOwnerConfirmation(
+  record: ProviderReadinessLockRecord,
+  runtime: ProviderReadinessLockRuntime,
+): boolean {
   return (
     isRenewableOwner(record.owner) &&
     runtime.isProcessAlive(record.owner.pid) &&
@@ -716,8 +735,8 @@ function heartbeatIntervalMs(leaseMs: number): number {
 
 async function confirmObservedOwner(
   lockDirectory: string,
-  observed: SmokeLockRecord,
-  runtime: SmokeLockRuntime,
+  observed: ProviderReadinessLockRecord,
+  runtime: ProviderReadinessLockRuntime,
 ): Promise<OwnerConfirmation> {
   if (!needsLiveOwnerConfirmation(observed, runtime)) {
     return "unchanged";
@@ -743,7 +762,7 @@ function activeRunError(params: {
   requestedChannel: CrablineServerChannel;
 }): Error {
   return new Error(
-    `OpenClaw Crabline smoke is already running for channel "${params.channel ?? "unknown"}" in "${params.outputDir}"; cannot start channel "${params.requestedChannel}".`,
+    `OpenClaw Crabline provider readiness is already running for channel "${params.channel ?? "unknown"}" in "${params.outputDir}"; cannot start channel "${params.requestedChannel}".`,
     params.cause === undefined ? undefined : { cause: params.cause },
   );
 }
@@ -764,17 +783,21 @@ async function resolveConfinedPath(
 ): Promise<string> {
   const resolvedPath = path.resolve(candidatePath);
   if (resolvedPath !== candidatePath) {
-    throw new Error(`OpenClaw Crabline smoke lock ${description} escapes its output directory.`);
+    throw new Error(
+      `OpenClaw Crabline provider readiness lock ${description} escapes its output directory.`,
+    );
   }
   const parentPath = candidateKind === "directory" ? resolvedPath : path.dirname(resolvedPath);
   let realParentPath: string;
   try {
     realParentPath = await fs.realpath(parentPath);
   } catch {
-    throw new Error(`OpenClaw Crabline smoke lock ${description} is invalid.`);
+    throw new Error(`OpenClaw Crabline provider readiness lock ${description} is invalid.`);
   }
   if (!isPathConfinedTo(rootPath, realParentPath)) {
-    throw new Error(`OpenClaw Crabline smoke lock ${description} escapes its output directory.`);
+    throw new Error(
+      `OpenClaw Crabline provider readiness lock ${description} escapes its output directory.`,
+    );
   }
   return candidateKind === "directory"
     ? realParentPath
@@ -789,7 +812,7 @@ async function removeOwnedLock(params: {
   onOwnedDirectoryChange?: (directoryPath: string) => void;
   ownedDirectory: string;
   removeDirectory?: RemoveLockDirectory;
-  runtime?: SmokeLockRuntime;
+  runtime?: ProviderReadinessLockRuntime;
   token: string;
 }): Promise<boolean> {
   await params.beforeClaim?.();
@@ -886,15 +909,15 @@ async function assertCompatibilityMarkerOwned(params: {
   await params.securedDirectory.assertIdentityAt(params.lockDirectory);
   const observed = await readLockRecord(params.lockDirectory);
   if (observed.kind === "missing" || observed.record.owner.token !== params.token) {
-    throw new Error("OpenClaw Crabline smoke lock compatibility marker was lost.");
+    throw new Error("OpenClaw Crabline provider readiness lock compatibility marker was lost.");
   }
 }
 
 async function retireCompatibilityMarker(
   handle: FileHandle,
-  owner: RenewableSmokeLockOwner,
+  owner: RenewableProviderReadinessLockOwner,
 ): Promise<void> {
-  const retiredOwner: RenewableSmokeLockOwner = {
+  const retiredOwner: RenewableProviderReadinessLockOwner = {
     ...owner,
     createdAtMs: 1,
     pid: MAX_PROCESS_ID,
@@ -910,7 +933,9 @@ async function retireCompatibilityMarker(
   const retiredContents = `${retiredJson}${" ".repeat(paddingBytes)}\n`;
   const written = await handle.write(retiredContents, 0, "utf8");
   if (written.bytesWritten !== targetBytes) {
-    throw new Error("OpenClaw Crabline smoke lock compatibility marker retirement was incomplete.");
+    throw new Error(
+      "OpenClaw Crabline provider readiness lock compatibility marker retirement was incomplete.",
+    );
   }
   const retiredAt = new Date(1);
   await handle.utimes(retiredAt, retiredAt);
@@ -983,7 +1008,7 @@ async function listLockClaims(lockDirectory: string): Promise<LockClaim[]> {
       continue;
     }
     if (!entry.isDirectory()) {
-      throw new Error("OpenClaw Crabline smoke lock claim is not a directory.");
+      throw new Error("OpenClaw Crabline provider readiness lock claim is not a directory.");
     }
     claims.push({
       directoryPath: path.join(directory, entry.name),
@@ -1025,7 +1050,7 @@ async function resolveLockClaim(params: {
   lockDirectory: string;
   outputDir: string;
   requestedChannel: CrablineServerChannel;
-  runtime: SmokeLockRuntime;
+  runtime: ProviderReadinessLockRuntime;
 }): Promise<void> {
   const observed = await readLockRecord(params.claim.directoryPath);
   if (observed.kind === "missing") {
@@ -1119,7 +1144,7 @@ async function resolveLockClaims(params: {
   lockDirectory: string;
   outputDir: string;
   requestedChannel: CrablineServerChannel;
-  runtime: SmokeLockRuntime;
+  runtime: ProviderReadinessLockRuntime;
 }): Promise<void> {
   await claimLegacyRecoveryDirectory(params.lockDirectory);
   for (const claim of await listLockClaims(params.lockDirectory)) {
@@ -1136,7 +1161,7 @@ async function resolveLockContention(params: {
   lockDirectory: string;
   outputDir: string;
   requestedChannel: CrablineServerChannel;
-  runtime: SmokeLockRuntime;
+  runtime: ProviderReadinessLockRuntime;
   beforeRecoveryClaim: BeforeRecoveryClaim;
 }): Promise<void> {
   const observed = await readLockRecord(params.lockDirectory);
@@ -1193,7 +1218,7 @@ async function createLockCandidate(params: {
   candidateDirectory?: string;
   includeLease?: boolean;
   lockDirectory: string;
-  owner: RenewableSmokeLockOwner;
+  owner: RenewableProviderReadinessLockOwner;
   platform?: NodeJS.Platform;
   secureWindowsDirectory?: SecureWindowsDirectory;
 }): Promise<{
@@ -1246,7 +1271,7 @@ async function createLockCandidate(params: {
   }
 }
 
-export async function acquireOpenClawCrablineSmokeRunLock(
+export async function acquireOpenClawCrablineProviderReadinessLock(
   params: {
     channel: CrablineServerChannel;
     outputDir: string;
@@ -1279,7 +1304,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     sleep?: Sleep;
     startHeartbeat?: StartHeartbeat;
   } = {},
-): Promise<OpenClawCrablineSmokeRunLock> {
+): Promise<OpenClawCrablineProviderReadinessLock> {
   const requestedOutputDir = path.resolve(params.outputDir);
   await fs.mkdir(requestedOutputDir, { recursive: true });
   const outputDir = await fs.realpath(requestedOutputDir);
@@ -1293,7 +1318,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
   await securedOutputDirectory.assertIdentityAt(outputDir);
   const outputDirectoryIdentity = await readDirectoryIdentity(outputDir);
   if (outputDirectoryIdentity === null) {
-    throw new Error("OpenClaw Crabline smoke lock output directory is invalid.");
+    throw new Error("OpenClaw Crabline provider readiness lock output directory is invalid.");
   }
   const lockDirectory = path.join(outputDir, `.${OPENCLAW_CRABLINE_MANIFEST_PATH}.lock`);
   const token = randomUUID();
@@ -1305,7 +1330,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     dependencies.getProcessIdentityV2 ??
     ((pid) =>
       pid === process.pid ? getCachedCurrentProcessIdentityV2() : getProcessIdentityV2(pid));
-  const runtime: SmokeLockRuntime = {
+  const runtime: ProviderReadinessLockRuntime = {
     currentPid,
     currentProcessIdentity:
       dependencies.processIdentity === undefined
@@ -1336,9 +1361,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     !isPositiveSafeInteger(runtime.leaseMs) ||
     !isPositiveSafeInteger(createdAtMs)
   ) {
-    throw new Error("Invalid OpenClaw Crabline smoke lock runtime.");
+    throw new Error("Invalid OpenClaw Crabline provider readiness lock runtime.");
   }
-  const owner: RenewableSmokeLockOwner = {
+  const owner: RenewableProviderReadinessLockOwner = {
     channel: params.channel,
     createdAtMs,
     leaseVersion: 1,
@@ -1350,7 +1375,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     processStartedAtMs: runtime.currentProcessStartedAtMs,
     token,
   };
-  const compatibilityOwner: RenewableSmokeLockOwner = {
+  const compatibilityOwner: RenewableProviderReadinessLockOwner = {
     ...owner,
     createdAtMs: 1,
   };
@@ -1405,7 +1430,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       );
       const compatibilityRecord = await readLockRecordFromHandle(compatibilityMarkerHandle);
       if (compatibilityRecord.owner.token !== token) {
-        throw new Error("OpenClaw Crabline smoke lock compatibility marker was replaced.");
+        throw new Error(
+          "OpenClaw Crabline provider readiness lock compatibility marker was replaced.",
+        );
       }
       const activeAt = new Date(createdAtMs);
       await compatibilityMarkerHandle.utimes(activeAt, activeAt);
@@ -1419,7 +1446,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       throw error;
     }
     if (!compatibilityMarkerHandle) {
-      throw new Error("OpenClaw Crabline smoke lock compatibility marker was not opened.");
+      throw new Error(
+        "OpenClaw Crabline provider readiness lock compatibility marker was not opened.",
+      );
     }
     const markerHandle = compatibilityMarkerHandle;
     try {
@@ -1481,13 +1510,13 @@ export async function acquireOpenClawCrablineSmokeRunLock(
             ? closeError
             : new AggregateError(
                 [cleanupError, closeError],
-                "OpenClaw Crabline smoke lock setup cleanup also failed.",
+                "OpenClaw Crabline provider readiness lock setup cleanup also failed.",
               );
       }
       if (cleanupError !== undefined) {
         const aggregateError = new AggregateError(
           [error, cleanupError],
-          "OpenClaw Crabline smoke lock setup and cleanup failed.",
+          "OpenClaw Crabline provider readiness lock setup and cleanup failed.",
         );
         aggregateError.cause = error;
         throw aggregateError;
@@ -1509,7 +1538,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       });
       if (!removed) {
         await markerHandle.close();
-        throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
+        throw new Error("OpenClaw Crabline provider readiness lock ownership was lost.");
       }
       try {
         await retireCompatibilityMarker(markerHandle, compatibilityOwner);
@@ -1559,10 +1588,12 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           lastObservedNowMs = nowMs;
           const renewedAtMs = clockRegressed ? lastRenewedAtMs + 1 : nowMs;
           if (!Number.isSafeInteger(renewedAtMs)) {
-            throw new Error("OpenClaw Crabline smoke lock renewal timestamp overflowed.");
+            throw new Error(
+              "OpenClaw Crabline provider readiness lock renewal timestamp overflowed.",
+            );
           }
           if (!(await renewOwnedLock(ownedDirectory, token, renewedAtMs))) {
-            throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
+            throw new Error("OpenClaw Crabline provider readiness lock ownership was lost.");
           }
           await dependencies.beforeCompatibilityMarkerRenew?.();
           if (
@@ -1574,7 +1605,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(
               token,
             }))
           ) {
-            throw new Error("OpenClaw Crabline smoke lock compatibility marker was lost.");
+            throw new Error(
+              "OpenClaw Crabline provider readiness lock compatibility marker was lost.",
+            );
           }
           lastRenewedAtMs = renewedAtMs;
         });
@@ -1597,7 +1630,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       } catch (cleanupError) {
         const aggregateError = new AggregateError(
           [error, cleanupError],
-          "OpenClaw Crabline smoke lock heartbeat startup and cleanup failed.",
+          "OpenClaw Crabline provider readiness lock heartbeat startup and cleanup failed.",
         );
         aggregateError.cause = error;
         throw aggregateError;
@@ -1609,7 +1642,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
     return {
       async assertOwned() {
         if (released || heartbeatStopped) {
-          throw new Error("OpenClaw Crabline smoke lock has already been released.");
+          throw new Error("OpenClaw Crabline provider readiness lock has already been released.");
         }
         heartbeat.assertHealthy();
         await renew();
@@ -1622,10 +1655,12 @@ export async function acquireOpenClawCrablineSmokeRunLock(
       },
       async commitFileAtomically({ contents, destinationPath, stageDirectory, stageFile }) {
         if (released) {
-          throw new Error("OpenClaw Crabline smoke lock has already been released.");
+          throw new Error("OpenClaw Crabline provider readiness lock has already been released.");
         }
         if (commitFenceConsumed || heartbeatStopped || ownedDirectory !== ownerDirectory) {
-          throw new Error("OpenClaw Crabline smoke lock has already committed its fence.");
+          throw new Error(
+            "OpenClaw Crabline provider readiness lock has already committed its fence.",
+          );
         }
         heartbeat.assertHealthy();
         await renew();
@@ -1645,11 +1680,13 @@ export async function acquireOpenClawCrablineSmokeRunLock(
         await securedDestinationDirectory.assertIdentityAt(destinationDirectory);
         const destinationDirectoryIdentity = await readDirectoryIdentity(destinationDirectory);
         if (destinationDirectoryIdentity === null) {
-          throw new Error("OpenClaw Crabline smoke lock commit destination is invalid.");
+          throw new Error(
+            "OpenClaw Crabline provider readiness lock commit destination is invalid.",
+          );
         }
         if (destinationDirectoryIdentity.device !== outputDirectoryIdentity.device) {
           throw new Error(
-            "OpenClaw Crabline smoke lock commit destination is on another filesystem.",
+            "OpenClaw Crabline provider readiness lock commit destination is on another filesystem.",
           );
         }
         const resolvedStageDirectory = stageDirectory
@@ -1665,20 +1702,25 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           try {
             stageDirectoryIdentity = await readDirectoryIdentity(resolvedStageDirectory);
           } catch (error) {
-            throw new Error("OpenClaw Crabline smoke lock commit stage directory is invalid.", {
-              cause: error,
-            });
+            throw new Error(
+              "OpenClaw Crabline provider readiness lock commit stage directory is invalid.",
+              {
+                cause: error,
+              },
+            );
           }
         }
         if (stageDirectory && stageDirectoryIdentity === null) {
-          throw new Error("OpenClaw Crabline smoke lock commit stage directory is invalid.");
+          throw new Error(
+            "OpenClaw Crabline provider readiness lock commit stage directory is invalid.",
+          );
         }
         if (
           stageDirectoryIdentity !== null &&
           stageDirectoryIdentity.device !== outputDirectoryIdentity.device
         ) {
           throw new Error(
-            "OpenClaw Crabline smoke lock commit stage directory is on another filesystem.",
+            "OpenClaw Crabline provider readiness lock commit stage directory is on another filesystem.",
           );
         }
         const stagedFileName = `.commit-file.${token}.${randomUUID()}.tmp`;
@@ -1692,13 +1734,15 @@ export async function acquireOpenClawCrablineSmokeRunLock(
             )
           ) {
             throw new Error(
-              "OpenClaw Crabline smoke lock commit stage directory identity changed.",
+              "OpenClaw Crabline provider readiness lock commit stage directory identity changed.",
             );
           }
         }
         const stagedFileIdentity = await readFileIdentity(stagedFilePath);
         if (stagedFileIdentity === null) {
-          throw new Error("OpenClaw Crabline smoke lock commit stage file is invalid.");
+          throw new Error(
+            "OpenClaw Crabline provider readiness lock commit stage file is invalid.",
+          );
         }
         heartbeat.assertHealthy();
         await renew();
@@ -1718,14 +1762,14 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           observed.kind === "missing" ||
           observed.record.owner.token !== token
         ) {
-          throw new Error("OpenClaw Crabline smoke lock ownership was lost.");
+          throw new Error("OpenClaw Crabline provider readiness lock ownership was lost.");
         }
 
         try {
           await fs.rename(ownerDirectory, commitClaim);
         } catch (error) {
           if (isMissingPathError(error)) {
-            throw new Error("OpenClaw Crabline smoke lock ownership was lost.", {
+            throw new Error("OpenClaw Crabline provider readiness lock ownership was lost.", {
               cause: error,
             });
           }
@@ -1751,7 +1795,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
               }
             }
           }
-          throw new Error("OpenClaw Crabline smoke lock commit fence was lost.");
+          throw new Error("OpenClaw Crabline provider readiness lock commit fence was lost.");
         }
 
         await dependencies.beforeCommitFileRename?.();
@@ -1774,7 +1818,9 @@ export async function acquireOpenClawCrablineSmokeRunLock(
             !hasSameDirectoryIdentity(stageDirectoryIdentity, currentDirectoryIdentity) ||
             !hasSameDirectoryIdentity(stagedFileIdentity, currentFileIdentity)
           ) {
-            const error = new Error("OpenClaw Crabline smoke lock commit stage identity changed.");
+            const error = new Error(
+              "OpenClaw Crabline provider readiness lock commit stage identity changed.",
+            );
             Object.assign(error, { code: "ENOENT", path: claimedStagedFilePath });
             throw error;
           }
@@ -1784,12 +1830,16 @@ export async function acquireOpenClawCrablineSmokeRunLock(
             await readFileIdentity(claimedStagedFilePath),
           )
         ) {
-          throw new Error("OpenClaw Crabline smoke lock commit stage identity changed.");
+          throw new Error(
+            "OpenClaw Crabline provider readiness lock commit stage identity changed.",
+          );
         }
         if (
           !hasSameDirectoryIdentity(outputDirectoryIdentity, await readDirectoryIdentity(outputDir))
         ) {
-          throw new Error("OpenClaw Crabline smoke lock output directory identity changed.");
+          throw new Error(
+            "OpenClaw Crabline provider readiness lock output directory identity changed.",
+          );
         }
         await securedOutputDirectory.assertIdentityAt(outputDir);
         let currentDestinationDirectoryIdentity: DirectoryIdentity | null = null;
@@ -1805,7 +1855,7 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           )
         ) {
           throw new Error(
-            "OpenClaw Crabline smoke lock commit destination directory identity changed.",
+            "OpenClaw Crabline provider readiness lock commit destination directory identity changed.",
           );
         }
         await securedDestinationDirectory.assertIdentityAt(destinationDirectory);
@@ -1816,9 +1866,11 @@ export async function acquireOpenClawCrablineSmokeRunLock(
           "file",
         );
         if (revalidatedDestinationPath !== resolvedDestinationPath) {
-          throw new Error("OpenClaw Crabline smoke lock commit destination path identity changed.");
+          throw new Error(
+            "OpenClaw Crabline provider readiness lock commit destination path identity changed.",
+          );
         }
-        // The owner-only output tree and smoke lock serialize supported writers; confinement does
+        // The owner-only output tree and provider readiness lock serialize supported writers; confinement does
         // not treat another process running as the same OS user as a lower-privilege adversary.
         await fs.rename(claimedStagedFilePath, revalidatedDestinationPath);
       },
@@ -1874,8 +1926,8 @@ export async function acquireOpenClawCrablineSmokeRunLock(
   }
 }
 
-export async function releaseOpenClawCrablineSmokeRunLock(
-  lock: Pick<OpenClawCrablineSmokeRunLock, "release">,
+export async function releaseOpenClawCrablineProviderReadinessLock(
+  lock: Pick<OpenClawCrablineProviderReadinessLock, "release">,
   dependencies: {
     sleep?: Sleep;
   } = {},
