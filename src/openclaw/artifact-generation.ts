@@ -14,12 +14,11 @@ import {
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
-  OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
   type OpenClawCrablineChannelDriverSelection,
 } from "./shared.js";
-import type { OpenClawCrablineSmokeRunLock } from "./smoke-lock.js";
+import type { OpenClawCrablineProviderReadinessLock } from "./provider-readiness-lock.js";
 
 const GENERATION_NAME_PATTERN =
   /^generation-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
@@ -34,20 +33,16 @@ type OpenClawCrablineArtifactPointerBase = {
   manifestPath: string;
   previousGeneration?: string;
   providerReadinessArtifactPath: string;
-  smokeArtifactPath: string;
 };
 
-export type OpenClawCrablineArtifactPointer =
-  | (OpenClawCrablineArtifactPointerBase & { version: 1 })
-  | (OpenClawCrablineArtifactPointerBase & {
-      recorderSnapshotPath: string | null;
-      version: 2;
-    });
+export type OpenClawCrablineArtifactPointer = OpenClawCrablineArtifactPointerBase & {
+  recorderSnapshotPath: string | null;
+  version: 3;
+};
 
 export type PublishedOpenClawCrablineArtifactGeneration = OpenClawCrablineArtifactPointer & {
   pointerPath: string;
   providerReadiness: Record<string, unknown>;
-  smoke: Record<string, unknown>;
   warnings?: string[];
 };
 
@@ -69,14 +64,13 @@ type RecorderSnapshot = {
 function resolveProviderReadinessArtifactPath(
   selection: OpenClawCrablineChannelDriverSelection,
 ): typeof OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH {
-  const readinessPath = selection.providerReadinessArtifactPath ?? selection.smokeArtifactPath;
   if (
     selection.capabilityMatrixPath !== OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH ||
-    readinessPath !== OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH
+    selection.providerReadinessArtifactPath !== OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH
   ) {
     throw new Error("OpenClaw Crabline artifact selection paths are malformed.");
   }
-  return readinessPath;
+  return selection.providerReadinessArtifactPath;
 }
 
 function isMissingPathError(error: unknown): boolean {
@@ -353,7 +347,7 @@ function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer
     recorderSnapshotPath?: unknown;
     version?: unknown;
   };
-  if (value.version !== 1 && value.version !== 2) {
+  if (value.version !== 3) {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.");
   }
   assertGenerationName(value.generation, "generation");
@@ -374,58 +368,37 @@ function parseArtifactPointer(contents: string): OpenClawCrablineArtifactPointer
       value.generation,
       OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
     ),
-    smokeArtifactPath: generationArtifactPath(
-      value.generation,
-      OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
-    ),
   };
   if (
     typeof value.capabilityMatrixPath !== "string" ||
     value.capabilityMatrixPath !== expected.capabilityMatrixPath ||
     value.manifestPath !== expected.manifestPath ||
-    (value.version === 2 &&
-      value.providerReadinessArtifactPath !== expected.providerReadinessArtifactPath) ||
-    (value.providerReadinessArtifactPath !== undefined &&
-      value.providerReadinessArtifactPath !== expected.providerReadinessArtifactPath) ||
-    (value.smokeArtifactPath !== undefined &&
-      value.smokeArtifactPath !== expected.smokeArtifactPath) ||
-    (value.providerReadinessArtifactPath === undefined && value.smokeArtifactPath === undefined)
+    value.providerReadinessArtifactPath !== expected.providerReadinessArtifactPath
   ) {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.");
   }
-  if (value.version === 1 && value.recorderSnapshotPath !== undefined) {
+  if (value.recorderSnapshotPath !== null && typeof value.recorderSnapshotPath !== "string") {
     throw new Error("OpenClaw Crabline artifact pointer is malformed.");
   }
-  if (value.version === 2) {
-    if (value.recorderSnapshotPath !== null && typeof value.recorderSnapshotPath !== "string") {
+  if (typeof value.recorderSnapshotPath === "string") {
+    const recorderFileName = path.basename(value.recorderSnapshotPath);
+    if (
+      !recorderFileName.endsWith(".jsonl") ||
+      value.recorderSnapshotPath !== generationArtifactPath(value.generation, recorderFileName)
+    ) {
       throw new Error("OpenClaw Crabline artifact pointer is malformed.");
-    }
-    if (typeof value.recorderSnapshotPath === "string") {
-      const recorderFileName = path.basename(value.recorderSnapshotPath);
-      if (
-        !recorderFileName.endsWith(".jsonl") ||
-        value.recorderSnapshotPath !== generationArtifactPath(value.generation, recorderFileName)
-      ) {
-        throw new Error("OpenClaw Crabline artifact pointer is malformed.");
-      }
     }
   }
 
-  const pointer = {
+  return {
     capabilityMatrixPath: value.capabilityMatrixPath,
     generation: value.generation,
     ...(value.previousGeneration ? { previousGeneration: value.previousGeneration } : {}),
     manifestPath: value.manifestPath,
-    providerReadinessArtifactPath: value.providerReadinessArtifactPath ?? value.smokeArtifactPath!,
-    smokeArtifactPath: value.smokeArtifactPath ?? value.providerReadinessArtifactPath!,
+    providerReadinessArtifactPath: value.providerReadinessArtifactPath,
+    recorderSnapshotPath: value.recorderSnapshotPath as string | null,
+    version: 3,
   };
-  return value.version === 1
-    ? { ...pointer, version: 1 }
-    : {
-        ...pointer,
-        recorderSnapshotPath: value.recorderSnapshotPath as string | null,
-        version: 2,
-      };
 }
 
 export async function readOpenClawCrablineArtifactPointer(
@@ -521,7 +494,6 @@ async function assertArtifactGenerationExists(
   const capabilityMatrix = await readArtifactObject(pointer.capabilityMatrixPath);
   const readiness = await readArtifactObject(pointer.providerReadinessArtifactPath);
   const providerReadiness = readiness.providerReadiness;
-  const smoke = readiness.smoke;
   if (
     !isGeneratedManifest(manifest) ||
     capabilityMatrix.version !== 1 ||
@@ -533,52 +505,24 @@ async function assertArtifactGenerationExists(
     capabilityMatrix.report === null ||
     typeof capabilityMatrix.report !== "object" ||
     Array.isArray(capabilityMatrix.report) ||
-    readiness.version !== 1 ||
+    readiness.version !== 2 ||
     readiness.source !== "openclaw/crabline" ||
     readiness.manifestPath !== pointer.manifestPath ||
     readiness.channelDriver !== "crabline" ||
     readiness.selectedChannel !== capabilityMatrix.selectedChannel ||
     manifest.provider !== readiness.selectedChannel ||
-    !isReadinessSection(
-      smoke,
-      manifest,
-      pointer.manifestPath,
-      pointer.version === 2 || providerReadiness !== undefined,
-    ) ||
-    (pointer.version === 2 &&
-      (!isReadinessSection(providerReadiness, manifest, pointer.manifestPath, true) ||
-        !isDeepStrictEqual(providerReadiness, smoke))) ||
-    (pointer.version === 1 &&
-      providerReadiness !== undefined &&
-      (!isReadinessSection(providerReadiness, manifest, pointer.manifestPath, true) ||
-        !isDeepStrictEqual(providerReadiness, smoke)))
+    !isReadinessSection(providerReadiness, manifest, pointer.manifestPath, true)
   ) {
     throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
   }
   const manifestRecorderPath =
     typeof manifest.recorderPath === "string" ? manifest.recorderPath : undefined;
-  const providerReadinessRecorderPath = isRecord(providerReadiness)
-    ? readNestedRecorderPath(providerReadiness)
-    : undefined;
-  const smokeRecorderPath = readNestedRecorderPath(smoke);
-  const readinessRecorderPaths = [
-    ...(isRecord(providerReadiness) ? [providerReadinessRecorderPath] : []),
-    smokeRecorderPath,
-  ];
-  const recorderPaths = [manifestRecorderPath, ...readinessRecorderPaths];
+  const providerReadinessRecorderPath = readNestedRecorderPath(providerReadiness);
+  const recorderPaths = [manifestRecorderPath, providerReadinessRecorderPath];
   if (manifest.recorderPath !== undefined && typeof manifest.recorderPath !== "string") {
     throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
   }
-  // The artifact store is owner-only; v1 compatibility covers historical layouts, not hostile same-owner rewrites.
-  if (
-    pointer.version === 1 &&
-    readinessRecorderPaths.every((recorderPath) => recorderPath === undefined) &&
-    (manifestRecorderPath === undefined ||
-      path.dirname(path.resolve(outputDir, manifestRecorderPath)) !== generationDirectory)
-  ) {
-    return;
-  }
-  if (pointer.version === 2 && pointer.recorderSnapshotPath === null) {
+  if (pointer.recorderSnapshotPath === null) {
     if (recorderPaths.some((recorderPath) => recorderPath !== undefined)) {
       throw new Error("OpenClaw Crabline current artifact generation is incomplete.");
     }
@@ -598,7 +542,6 @@ async function assertArtifactGenerationExists(
   }
   const recorderPath = resolvedRecorderPaths[0]!;
   if (
-    pointer.version === 2 &&
     pointer.recorderSnapshotPath !== null &&
     recorderPath !== path.resolve(outputDir, pointer.recorderSnapshotPath)
   ) {
@@ -653,7 +596,7 @@ async function readValidCurrentArtifactGeneration(
 }
 
 async function pruneArtifactStore(params: {
-  lock: OpenClawCrablineSmokeRunLock;
+  lock: OpenClawCrablineProviderReadinessLock;
   pointer: OpenClawCrablineArtifactPointer | null;
   store: Awaited<ReturnType<typeof securePrivateDirectory>>;
   directoryOptions?: Parameters<typeof securePrivateDirectory>[1];
@@ -696,7 +639,7 @@ async function pruneArtifactStore(params: {
 export async function publishOpenClawCrablineArtifactGeneration(
   params: {
     capabilityReport: unknown;
-    lock: OpenClawCrablineSmokeRunLock;
+    lock: OpenClawCrablineProviderReadinessLock;
     manifest: CrablineServerManifest;
     outputDir: string;
     recorderSnapshot?: RecorderSnapshot;
@@ -786,8 +729,7 @@ export async function publishOpenClawCrablineArtifactGeneration(
         providerReadinessArtifactPath,
       ),
       recorderSnapshotPath: recorderSnapshotPath ?? null,
-      smokeArtifactPath: generationArtifactPath(generation, providerReadinessArtifactPath),
-      version: 2,
+      version: 3,
     };
     const publishedManifest = recorderSnapshotPath
       ? { ...params.manifest, recorderPath: recorderSnapshotPath }
@@ -825,13 +767,12 @@ export async function publishOpenClawCrablineArtifactGeneration(
       {
         contents: `${JSON.stringify(
           {
-            version: 1,
+            version: 2,
             source: "openclaw/crabline",
             channelDriver: params.selection.channelDriver,
             selectedChannel: params.selection.channel,
             manifestPath: pointer.manifestPath,
             providerReadiness,
-            smoke: providerReadiness,
           },
           null,
           2,
@@ -916,7 +857,6 @@ export async function publishOpenClawCrablineArtifactGeneration(
       ...pointer,
       pointerPath: OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
       providerReadiness,
-      smoke: providerReadiness,
       ...(warnings ? { warnings } : {}),
     };
   } catch (error) {

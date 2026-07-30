@@ -177,7 +177,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           channel: "telegram",
-          createChannelDriverSmokeEnv: (env) => ({
+          createProviderReadinessEnv: (env) => ({
             ...env,
             TELEGRAM_BOT_TOKEN: telegram.botToken,
           }),

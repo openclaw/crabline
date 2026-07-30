@@ -63,7 +63,7 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           channel: "mattermost",
-          createChannelDriverSmokeEnv: (env) => ({ ...env, ...mattermost.env }),
+          createProviderReadinessEnv: (env) => ({ ...env, ...mattermost.env }),
           createGatewayConfig: (openclawConfig = {}) => {
             const channels = isRecord(openclawConfig.channels) ? openclawConfig.channels : {};
             const mattermostConfig = isRecord(channels.mattermost) ? channels.mattermost : {};

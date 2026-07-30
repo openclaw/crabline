@@ -250,7 +250,7 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           channel: "slack",
-          createChannelDriverSmokeEnv: (env) => ({
+          createProviderReadinessEnv: (env) => ({
             ...env,
             SLACK_API_URL: slack.endpoints.apiRoot,
             SLACK_BOT_TOKEN: slack.botToken,

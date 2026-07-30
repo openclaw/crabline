@@ -13,5 +13,5 @@ Include the affected version or commit, reproduction steps, impact, and any
 suggested mitigation. We will acknowledge reports as soon as practical and
 coordinate disclosure after a fix is available.
 
-Crabline is intended for local and CI test environments. Do not use its fake
+Crabline is intended for local and CI test environments. Do not use its local
 provider endpoints as production services or expose them to untrusted networks.

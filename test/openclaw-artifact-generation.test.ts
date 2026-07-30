@@ -12,9 +12,9 @@ import {
   type CrablineServerManifest,
 } from "../src/index.js";
 import {
-  acquireOpenClawCrablineSmokeRunLock,
-  type OpenClawCrablineSmokeRunLock,
-} from "../src/openclaw/smoke-lock.js";
+  acquireOpenClawCrablineProviderReadinessLock,
+  type OpenClawCrablineProviderReadinessLock,
+} from "../src/openclaw/provider-readiness-lock.js";
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const manifest: CrablineServerManifest = {
@@ -52,10 +52,10 @@ const mattermostManifest = {
   version: 1,
 } satisfies CrablineServerManifest;
 
-function createLock(): OpenClawCrablineSmokeRunLock & {
+function createLock(): OpenClawCrablineProviderReadinessLock & {
   assertOwned: ReturnType<typeof vi.fn<() => Promise<void>>>;
   commitFileAtomically: ReturnType<
-    typeof vi.fn<OpenClawCrablineSmokeRunLock["commitFileAtomically"]>
+    typeof vi.fn<OpenClawCrablineProviderReadinessLock["commitFileAtomically"]>
   >;
 } {
   return {
@@ -104,7 +104,7 @@ function publishParamsWithRecorderSnapshot(outputDir: string, lock = createLock(
     ...publishParams(outputDir, lock),
     recorderSnapshot: {
       contents: '{"accepted":true}\n',
-      fileName: "telegram-fake-provider.jsonl",
+      fileName: "telegram-provider-server.jsonl",
     },
   };
 }
@@ -147,75 +147,6 @@ describe("OpenClaw artifact generation publication", () => {
       /Post-commit\s+cleanup retains only the current and previous pointer generations/u,
     );
     expect(channelSetup).not.toContain("not removed automatically");
-  });
-
-  it("reads legacy smoke-only artifact pointers", async () => {
-    const outputDir = await createTempDir();
-    try {
-      const result = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
-        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
-      });
-      const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
-      const pointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<string, unknown>;
-      delete pointer.providerReadinessArtifactPath;
-      delete pointer.recorderSnapshotPath;
-      pointer.version = 1;
-      await fs.writeFile(pointerPath, `${JSON.stringify(pointer, null, 2)}\n`);
-
-      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toMatchObject({
-        providerReadinessArtifactPath: result.providerReadinessArtifactPath,
-        smokeArtifactPath: result.smokeArtifactPath,
-        version: 1,
-      });
-    } finally {
-      await disposeTempDir(outputDir);
-    }
-  });
-
-  it("validates every existing section in legacy smoke-only generations", async () => {
-    const outputDir = await createTempDir();
-    try {
-      const first = await publishOpenClawCrablineArtifactGeneration(
-        publishParamsWithRecorderSnapshot(outputDir),
-        { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
-      );
-      const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
-      const pointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<string, unknown>;
-      delete pointer.providerReadinessArtifactPath;
-      delete pointer.recorderSnapshotPath;
-      pointer.version = 1;
-      await fs.writeFile(pointerPath, `${JSON.stringify(pointer, null, 2)}\n`);
-
-      const readinessPath = path.join(outputDir, first.smokeArtifactPath);
-      const readiness = JSON.parse(await fs.readFile(readinessPath, "utf8")) as {
-        providerReadiness?: unknown;
-        smoke: { result: Record<string, unknown> };
-      };
-      delete readiness.providerReadiness;
-      delete readiness.smoke.result.proof;
-      delete readiness.smoke.result.ready;
-      const validSmokeOnlyReadiness = `${JSON.stringify(readiness, null, 2)}\n`;
-      readiness.smoke.result.endpoints = {};
-      await fs.writeFile(readinessPath, `${JSON.stringify(readiness, null, 2)}\n`);
-
-      await expect(
-        publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
-          createGenerationId: () => "22222222-2222-4222-8222-222222222222",
-        }),
-      ).rejects.toThrow("OpenClaw Crabline current artifact generation is incomplete.");
-
-      await fs.writeFile(readinessPath, validSmokeOnlyReadiness);
-      await expect(
-        publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
-          createGenerationId: () => "22222222-2222-4222-8222-222222222222",
-        }),
-      ).resolves.toMatchObject({
-        previousGeneration: first.generation,
-        version: 2,
-      });
-    } finally {
-      await disposeTempDir(outputDir);
-    }
   });
 
   it("rejects whitespace-only Mattermost usernames in readiness evidence", async () => {
@@ -326,8 +257,7 @@ describe("OpenClaw artifact generation publication", () => {
         manifestPath: result.manifestPath,
         providerReadinessArtifactPath: result.providerReadinessArtifactPath,
         recorderSnapshotPath: null,
-        smokeArtifactPath: result.providerReadinessArtifactPath,
-        version: 2,
+        version: 3,
       });
       for (const artifactPath of [
         result.manifestPath,
@@ -379,10 +309,8 @@ describe("OpenClaw artifact generation publication", () => {
         await fs.readFile(path.join(outputDir, first.providerReadinessArtifactPath), "utf8"),
       ) as {
         providerReadiness: { result: Record<string, unknown> };
-        smoke: { result: Record<string, unknown> };
       };
       expect(readiness.providerReadiness.result).not.toHaveProperty("recorderPath");
-      expect(readiness.smoke.result).not.toHaveProperty("recorderPath");
 
       await expect(
         publishOpenClawCrablineArtifactGeneration(paramsWithRecorderReference, {
@@ -391,88 +319,14 @@ describe("OpenClaw artifact generation publication", () => {
       ).resolves.toMatchObject({
         previousGeneration: first.generation,
         recorderSnapshotPath: null,
-        version: 2,
+        version: 3,
       });
     } finally {
       await disposeTempDir(outputDir);
     }
   });
 
-  it("replaces a legacy generation with an external recorder path", async () => {
-    const outputDir = await createTempDir();
-    try {
-      const first = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
-        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
-      });
-      const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
-      const legacyPointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<
-        string,
-        unknown
-      >;
-      delete legacyPointer.recorderSnapshotPath;
-      legacyPointer.version = 1;
-      await fs.writeFile(pointerPath, `${JSON.stringify(legacyPointer, null, 2)}\n`);
-
-      const legacyManifestPath = path.join(outputDir, first.manifestPath);
-      const legacyManifest = JSON.parse(await fs.readFile(legacyManifestPath, "utf8")) as Record<
-        string,
-        unknown
-      >;
-      legacyManifest.recorderPath = "/tmp/crabline/legacy-telegram.jsonl";
-      await fs.writeFile(legacyManifestPath, `${JSON.stringify(legacyManifest, null, 2)}\n`);
-
-      const replacement = await publishOpenClawCrablineArtifactGeneration(
-        publishParams(outputDir),
-        { createGenerationId: () => "22222222-2222-4222-8222-222222222222" },
-      );
-
-      expect(replacement).toMatchObject({
-        previousGeneration: first.generation,
-        version: 2,
-      });
-      await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toMatchObject({
-        generation: replacement.generation,
-        previousGeneration: first.generation,
-        version: 2,
-      });
-      await expect(
-        fs.readFile(path.join(outputDir, replacement.manifestPath), "utf8"),
-      ).resolves.not.toContain("recorderPath");
-    } finally {
-      await disposeTempDir(outputDir);
-    }
-  });
-
-  it("replaces a legacy generation without recorder evidence", async () => {
-    const outputDir = await createTempDir();
-    try {
-      const first = await publishOpenClawCrablineArtifactGeneration(publishParams(outputDir), {
-        createGenerationId: () => "11111111-1111-4111-8111-111111111111",
-      });
-      const pointerPath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH);
-      const legacyPointer = JSON.parse(await fs.readFile(pointerPath, "utf8")) as Record<
-        string,
-        unknown
-      >;
-      delete legacyPointer.recorderSnapshotPath;
-      legacyPointer.version = 1;
-      await fs.writeFile(pointerPath, `${JSON.stringify(legacyPointer, null, 2)}\n`);
-
-      const replacement = await publishOpenClawCrablineArtifactGeneration(
-        publishParams(outputDir),
-        { createGenerationId: () => "22222222-2222-4222-8222-222222222222" },
-      );
-
-      expect(replacement).toMatchObject({
-        previousGeneration: first.generation,
-        version: 2,
-      });
-    } finally {
-      await disposeTempDir(outputDir);
-    }
-  });
-
-  it("rejects a current pointer downgraded without a legacy manifest shape", async () => {
+  it("rejects a current pointer with an unsupported schema version", async () => {
     const outputDir = await createTempDir();
     try {
       await publishOpenClawCrablineArtifactGeneration(
@@ -755,17 +609,6 @@ describe("OpenClaw artifact generation publication", () => {
         },
       }),
     },
-    {
-      label: "smoke readiness with a mismatched manifest reference",
-      path: "providerReadinessArtifactPath",
-      corrupt: (artifact: Record<string, unknown>) => ({
-        ...artifact,
-        smoke: {
-          ...(artifact.smoke as Record<string, unknown>),
-          manifestPath: "other-manifest.json",
-        },
-      }),
-    },
   ] as const)(
     "rejects a generated $label before pointer publication",
     async ({ corrupt, path: field }) => {
@@ -813,10 +656,8 @@ describe("OpenClaw artifact generation publication", () => {
       const readinessPath = path.join(outputDir, current.providerReadinessArtifactPath);
       const readiness = JSON.parse(await fs.readFile(readinessPath, "utf8")) as {
         providerReadiness: { result: Record<string, unknown> };
-        smoke: { result: Record<string, unknown> };
       };
       delete readiness.providerReadiness.result.recorderPath;
-      delete readiness.smoke.result.recorderPath;
       await fs.writeFile(readinessPath, `${JSON.stringify(readiness, null, 2)}\n`);
 
       await expect(
@@ -854,10 +695,8 @@ describe("OpenClaw artifact generation publication", () => {
       const readinessPath = path.join(outputDir, second.providerReadinessArtifactPath);
       const readiness = JSON.parse(await fs.readFile(readinessPath, "utf8")) as {
         providerReadiness: { result: { recorderPath: string } };
-        smoke: { result: { recorderPath: string } };
       };
       readiness.providerReadiness.result.recorderPath = firstManifest.recorderPath;
-      readiness.smoke.result.recorderPath = firstManifest.recorderPath;
       await fs.writeFile(readinessPath, `${JSON.stringify(readiness)}\n`);
 
       await expect(
@@ -971,10 +810,6 @@ describe("OpenClaw artifact generation publication", () => {
                 generation,
                 successorGeneration,
               ),
-              smokeArtifactPath: String(pointer.smokeArtifactPath).replace(
-                generation,
-                successorGeneration,
-              ),
             },
             null,
             2,
@@ -1056,13 +891,13 @@ describe("OpenClaw artifact generation publication", () => {
       async settle() {},
       async stop() {},
     });
-    let expiredLock: OpenClawCrablineSmokeRunLock | undefined;
-    let successorLock: OpenClawCrablineSmokeRunLock | undefined;
+    let expiredLock: OpenClawCrablineProviderReadinessLock | undefined;
+    let successorLock: OpenClawCrablineProviderReadinessLock | undefined;
     let successorPublication:
       | ReturnType<typeof publishOpenClawCrablineArtifactGeneration>
       | undefined;
     try {
-      expiredLock = await acquireOpenClawCrablineSmokeRunLock(
+      expiredLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           isProcessAlive: () => true,
@@ -1075,7 +910,7 @@ describe("OpenClaw artifact generation publication", () => {
       );
 
       now = 2_001;
-      successorLock = await acquireOpenClawCrablineSmokeRunLock(
+      successorLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           isProcessAlive: () => true,
@@ -1118,7 +953,7 @@ describe("OpenClaw artifact generation publication", () => {
           },
           { createGenerationId: () => "11111111-1111-4111-8111-111111111111" },
         ),
-      ).rejects.toThrow("OpenClaw Crabline smoke lock ownership was lost.");
+      ).rejects.toThrow("OpenClaw Crabline provider readiness lock ownership was lost.");
       await expect(fs.stat(successorGenerationPath)).resolves.toBeDefined();
 
       resumeSuccessor?.();
@@ -1153,10 +988,10 @@ describe("OpenClaw artifact generation publication", () => {
       async settle() {},
       async stop() {},
     });
-    let oldLock: OpenClawCrablineSmokeRunLock | undefined;
-    let successorLock: OpenClawCrablineSmokeRunLock | undefined;
+    let oldLock: OpenClawCrablineProviderReadinessLock | undefined;
+    let successorLock: OpenClawCrablineProviderReadinessLock | undefined;
     try {
-      oldLock = await acquireOpenClawCrablineSmokeRunLock(
+      oldLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           beforeCommitFileRename: async () => {
@@ -1185,7 +1020,7 @@ describe("OpenClaw artifact generation publication", () => {
 
       await oldOwnerFencedPromise;
       now = 2_001;
-      successorLock = await acquireOpenClawCrablineSmokeRunLock(
+      successorLock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           isProcessAlive: () => true,
@@ -1210,7 +1045,7 @@ describe("OpenClaw artifact generation publication", () => {
 
       resumeOldOwner?.();
       await expect(oldPublication).rejects.toThrow(
-        "OpenClaw Crabline smoke lock ownership was lost.",
+        "OpenClaw Crabline provider readiness lock ownership was lost.",
       );
       await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toMatchObject({
         generation: successor.generation,
@@ -1295,7 +1130,7 @@ describe("OpenClaw artifact generation publication", () => {
           String(args[0]).endsWith(
             path.join(
               "generation-11111111-1111-4111-8111-111111111111",
-              "crabline-fake-provider-server.json",
+              "crabline-provider-server.json",
             ),
           )
         ) {
@@ -1342,9 +1177,9 @@ describe("OpenClaw artifact generation publication", () => {
     const outputDir = await createTempDir();
     const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
     const displacedStorePath = `${storePath}.displaced`;
-    let lock: OpenClawCrablineSmokeRunLock | undefined;
+    let lock: OpenClawCrablineProviderReadinessLock | undefined;
     try {
-      lock = await acquireOpenClawCrablineSmokeRunLock(
+      lock = await acquireOpenClawCrablineProviderReadinessLock(
         { channel: "telegram", outputDir },
         {
           beforeCommitFileRename: async () => {

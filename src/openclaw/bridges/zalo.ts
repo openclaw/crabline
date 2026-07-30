@@ -54,7 +54,7 @@ export const ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProv
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           channel: "zalo",
-          createChannelDriverSmokeEnv: (env) => ({ ...env, ...zalo.env }),
+          createProviderReadinessEnv: (env) => ({ ...env, ...zalo.env }),
           createGatewayConfig: (openclawConfig = {}) => {
             const channels = isRecord(openclawConfig.channels) ? openclawConfig.channels : {};
             const zaloConfig = isRecord(channels.zalo) ? channels.zalo : {};

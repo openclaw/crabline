@@ -21,7 +21,7 @@
 
 ### OpenClaw integration
 
-- Version and validate artifact generations, readiness manifests, capability reports, recorder evidence, atomic pointers, legacy migration, and smoke-lock recovery.
+- Version and validate artifact generations, readiness manifests, capability reports, recorder evidence, atomic pointers, migration, and provider-readiness lock recovery.
 - Preserve native provider, target, thread, sender, direct-recipient, and accepted-send identities through OpenClaw bridge normalization without conflating local mock proof with OpenClaw execution.
 
 ### CLI, documentation, and delivery
@@ -38,7 +38,7 @@
 ## 0.1.11 - 2026-07-13
 
 - Contain Telegram response delivery failures when clients disconnect during request handling.
-- Recover interrupted artifact and recorder writes, publish immutable readiness evidence, and harden private-directory and smoke-lock durability.
+- Recover interrupted artifact and recorder writes, publish immutable readiness evidence, and harden private-directory and provider-readiness lock durability.
 
 ## 0.1.10 - 2026-07-13
 
@@ -63,7 +63,7 @@
 - Enforce safe Telegram identities while acknowledging valid unsupported updates.
 - Align Slack callback, thread-history, and message-text behavior with its native protocol.
 - Canonicalize WhatsApp identities and accepted-send evidence, publish webhook batches atomically with bounded retry deduplication, and preserve Zalo updates across disconnects and concurrent polls.
-- Harden shared runtime cleanup, terminal and script diagnostics, smoke artifact rollback, test helpers, source maps, and stable release publication.
+- Harden shared runtime cleanup, terminal and script diagnostics, provider-readiness artifact rollback, test helpers, source maps, and stable release publication.
 - Report Crabline provider readiness without claiming OpenClaw execution, require accepted exact-route recorder events for outbound delivery, pin production package exports and public types, and document canonical WhatsApp targets.
 - Harden release, CI, config, CLI, package, and OpenClaw artifact and process-identity boundaries.
 - Restore provider-native callbacks and authentication, preserve conversation targets and recorder progress, and harden local mock lifecycle and parsing.
@@ -72,13 +72,13 @@
 - Preserve Zalo polling updates across disconnects and webhook changes, reject future Matrix sync tokens, normalize JSON media types, and bound Signal SSE clients and buffers.
 - Authenticate configured Discord interactions, answer native PING requests, exclude outbound mock records from inbound matching, filter WhatsApp webhooks by phone number, and validate loopback pagination limits.
 - Bound WhatsApp binary-node complexity and signal bundles, align encoder and decoder limits, preserve coherent X25519 fallback behavior, validate queue startup before listening, keep reconnect delivery FIFO, and accept bounded legacy group JIDs.
-- Preserve primary watch and adapter-start failures, retain shutdown handlers through cleanup, validate smoke-lock tokens, enforce Zalo probe envelopes, and reject ambiguous config names and formats.
+- Preserve primary watch and adapter-start failures, retain shutdown handlers through cleanup, validate provider-readiness lock tokens, enforce Zalo probe envelopes, and reject ambiguous config names and formats.
 - Preserve provider-native WhatsApp message acknowledgements, legacy group JIDs, bounded inbound admission, WebSocket error isolation, and strict handshake varints.
 - Authenticate built-in Telegram, Slack, and Zalo webhooks, bound recorder wait state, accept Slack user send targets, preserve canonical Telegram topics, and complete WhatsApp cleanup after close failures.
 - Harden HTTP stream failure handling, bound Mattermost WebSocket delivery, move Slack rate-limit controls out of provider payloads, drain Slack callback bodies, and validate release dispatch and existing release state.
 - Harden ready-file replacement and artifact cleanup, use linear-time inbound regex matching, reject blank channel selections, redact malformed JSON details, and preserve slash-containing QA thread targets.
 - Hold serve ready-file ownership across startup and shutdown, preserve live manifests on failed replacement, and retain compound cleanup failures.
-- Reject invalid matchers and provider/fixture mismatches before side effects, drain aborted provider work before cleanup, preserve frozen primary smoke failures, and recover stale smoke locks after PID reuse.
+- Reject invalid matchers and provider/fixture mismatches before side effects, drain aborted provider work before cleanup, preserve frozen primary readiness failures, and recover stale provider-readiness locks after PID reuse.
 - Preserve Slack thread scope and validate Telegram command entities.
 - Authenticate WhatsApp webhook verification and deliveries and reject malformed batches atomically.
 - Cancel silent script watches and redact configured payload secrets from subprocess diagnostics.
@@ -88,7 +88,7 @@
 - Reject truncated WhatsApp GCM tags, invalid handshake wire types, and trailing binary-node data.
 - Randomize externally bound provider credentials, preserve Slack MPIM and Matrix sync errors, bound server shutdown, and enforce safe Zalo webhooks.
 - Order lazy cleanup after admitted dispatch, isolate loopback message state, and enforce effective modes and inbound deadlines.
-- Fence OpenClaw smoke artifact paths, clean abandoned generations safely, preserve primary probe failures and replacement files, and report post-commit lock cleanup failures.
+- Fence OpenClaw provider-readiness artifact paths, clean abandoned generations safely, preserve primary probe failures and replacement files, and report post-commit lock cleanup failures.
 - Isolate verified release packaging from OIDC-enabled npm publication and inspect the generated tarball before upload.
 - Reject Telegram protocol errors returned with HTTP 200 and preserve numeric identities without unsafe integer coercion.
 - Retire serve ready files on shutdown, preserve replacement manifests, and redact text-mode credentials unless explicitly requested.
@@ -99,7 +99,7 @@
 - Preserve recorder continuity across file replacement, keep fixture waits on one outbound until a match, and require canonical nonce tokens.
 - Enforce provider capability and adapter-config contracts, share native target normalization across lazy adapters, and make WhatsApp cleanup terminal.
 - Serialize WhatsApp Noise frames per session and reject invalid X25519 peer keys.
-- Serialize recorder persistence, atomically switch owner-only OpenClaw smoke generations under ownership-safe renewable locks, secure stable file identities with platform-native permissions, and enforce strict QA target and recorder normalization.
+- Serialize recorder persistence, atomically switch owner-only OpenClaw provider-readiness generations under ownership-safe renewable locks, secure stable file identities with platform-native permissions, and enforce strict QA target and recorder normalization.
 - Make CLI failures machine-readable, preserve stage-specific failure contracts, validate fixture provider references, redact script commands, and verify production-only tarball installs.
 - Normalize provider bridge thread IDs and round-trip canonical Telegram topic targets.
 - Drain authentication-rejected provider bodies, bound Zalo parsing, and enforce Telegram media fields.
@@ -141,26 +141,26 @@
 
 ## 0.1.5 - 2026-06-29
 
-- Rename fake-server internals and public server APIs while preserving fake-provider compatibility aliases and artifact paths.
+- Introduce canonical local provider server APIs while preserving the then-current compatibility aliases and artifact paths.
 
 ## 0.1.4 - 2026-06-29
 
-- Add the Baileys WebSocket WhatsApp fake provider server for OpenClaw WebSocket URL smoke runs.
+- Add the Baileys WebSocket WhatsApp local provider server for OpenClaw WebSocket URL smoke runs.
 
 ## 0.1.3 - 2026-06-26
 
-- Add the Slack fake provider server and WhatsApp runtime socket factory to the releasable package.
+- Add the Slack local provider server and WhatsApp runtime socket factory to the releasable package.
 - Preserve generated WhatsApp inbound message IDs when recorder-backed runtime sockets replay admin inbound messages.
 
 ## 0.1.1 - 2026-06-24
 
-- Add the WhatsApp fake provider server with Baileys-style mock socket support for OpenClaw QA runs.
-- Move OpenClaw fake-provider binding code to typed per-provider bridge adapters for Telegram and WhatsApp.
+- Add the WhatsApp local provider server with Baileys-style mock socket support for OpenClaw QA runs.
+- Move OpenClaw local provider binding code to typed per-provider bridge adapters for Telegram and WhatsApp.
 - Update release and CI GitHub Actions dependency pins.
 
 ## 0.1.0 - 2026-06-23
 
-- Harden deterministic provider mocks, fake Telegram APIs, recorder isolation, cleanup, and CLI behavior.
+- Harden deterministic provider mocks, local Telegram APIs, recorder isolation, cleanup, and CLI behavior.
 - Add repository security automation, CodeQL, dependency review, stale handling, and provenance-capable npm releases.
 - Add package documentation and OpenClaw ecosystem branding.
 

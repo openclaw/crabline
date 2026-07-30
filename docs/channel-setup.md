@@ -4,7 +4,7 @@ Crabline is a local mock service for OpenClaw channel contracts. It has two
 surfaces:
 
 - fixture-level local mocks used directly by the Crabline CLI
-- local provider servers that OpenClaw live adapters can target
+- local provider servers that real OpenClaw channel plugins can target
 
 Live channel testing belongs in OpenClaw's live channel adapters. Crabline
 belongs in deterministic smoke CI and local QA where the test needs
@@ -511,8 +511,8 @@ The admin ingress accepts JSON like:
 }
 ```
 
-Outbound text sends and composing presence are recorded through the fake
-provider messages and presence endpoints.
+Outbound text sends and composing presence are recorded through the local
+provider server's messages and presence endpoints.
 
 ### Zalo Server
 
@@ -639,7 +639,7 @@ chat IDs must be negative. Zero is invalid for every Telegram target kind.
 
 ## Smoke CI Guidance
 
-For deterministic CI, use Crabline through a mock channel driver:
+For deterministic CI, use the Crabline channel driver:
 
 ```yaml
 profile: smoke-ci
@@ -663,8 +663,8 @@ roundtrip. Real OpenClaw channel proof comes from QA scenarios that launch the
 gateway and run its normal channel adapter against the local provider.
 
 Crabline stages the manifest, capability report, and provider-readiness report
-inside one owner-only generation directory under the legacy
-`.crabline-smoke-artifacts/` store name, atomically installs the complete
+inside one owner-only generation directory under the
+`.crabline-channel-driver-artifacts/` store name, atomically installs the complete
 directory, and then atomically switches the single `current.json` pointer.
 Readers therefore see either the prior complete generation or the next complete
 generation, never per-file mixtures. Setup, probe, cleanup, staging, or

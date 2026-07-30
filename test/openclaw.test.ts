@@ -5,31 +5,23 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  CRABLINE_FAKE_PROVIDER_CHANNELS,
   CRABLINE_SERVER_CHANNELS,
   createOpenClawCrablineAgentDelivery,
   createOpenClawCrablineChannelReportNotes,
-  createOpenClawCrablineFakeProviderBinding,
   createOpenClawCrablineProviderBinding,
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent as translateOpenClawCrablineOutbound,
-  isCrablineFakeProviderChannel,
   isCrablineServerChannel,
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
   OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
-  OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
   OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
   OPENCLAW_CRABLINE_MANIFEST_PATH,
-  probeOpenClawCrablineFakeProvider,
   probeOpenClawCrablineProvider,
   resolveOpenClawCrablineChannelDriverSelection,
-  runOpenClawCrablineChannelDriverSmoke,
   runOpenClawCrablineProviderReadiness,
-  startCrablineFakeProviderServer,
   startCrablineServer,
   startOpenClawCrablineAdapter,
-  type CrablineFakeProviderManifest,
   type CrablineServerManifest,
   type OpenClawCrablineChannelDriverSelection,
   type OpenClawCrablineConversation,
@@ -82,11 +74,14 @@ function createOpenClawCrablineOutboundFromRecorderEvent(
   });
 }
 
-function startSmokeLockHolder(outputDir: string, channel: string): ChildProcessWithoutNullStreams {
-  const lockModuleUrl = new URL("../src/openclaw/smoke-lock.ts", import.meta.url).href;
+function startProviderReadinessLockHolder(
+  outputDir: string,
+  channel: string,
+): ChildProcessWithoutNullStreams {
+  const lockModuleUrl = new URL("../src/openclaw/provider-readiness-lock.ts", import.meta.url).href;
   const script = `
-    import { acquireOpenClawCrablineSmokeRunLock } from ${JSON.stringify(lockModuleUrl)};
-    const lock = await acquireOpenClawCrablineSmokeRunLock({
+    import { acquireOpenClawCrablineProviderReadinessLock } from ${JSON.stringify(lockModuleUrl)};
+    const lock = await acquireOpenClawCrablineProviderReadinessLock({
       channel: process.argv[2],
       outputDir: process.argv[1],
     });
@@ -102,13 +97,13 @@ function startSmokeLockHolder(outputDir: string, channel: string): ChildProcessW
   );
 }
 
-async function waitForSmokeLock(child: ChildProcessWithoutNullStreams): Promise<void> {
+async function waitForProviderReadinessLock(child: ChildProcessWithoutNullStreams): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let stdout = "";
     let stderr = "";
     const timeout = setTimeout(() => {
       cleanup();
-      reject(new Error(`Timed out waiting for smoke lock holder. stderr: ${stderr}`));
+      reject(new Error(`Timed out waiting for provider readiness lock holder. stderr: ${stderr}`));
     }, 10_000);
     const cleanup = () => {
       clearTimeout(timeout);
@@ -130,7 +125,7 @@ async function waitForSmokeLock(child: ChildProcessWithoutNullStreams): Promise<
       cleanup();
       reject(
         new Error(
-          `Smoke lock holder exited before acquiring the lock (code=${code}, signal=${signal}). stderr: ${stderr}`,
+          `Provider readiness lock holder exited before acquiring the lock (code=${code}, signal=${signal}). stderr: ${stderr}`,
         ),
       );
     };
@@ -333,7 +328,7 @@ describe("OpenClaw local provider bridge", () => {
         return {
           accountId: this.label,
           channel: this.label,
-          createChannelDriverSmokeEnv: (env: NodeJS.ProcessEnv) => env,
+          createProviderReadinessEnv: (env: NodeJS.ProcessEnv) => env,
           createGatewayConfig: () => ({}),
           requiredPluginIds: [],
         };
@@ -399,19 +394,17 @@ describe("OpenClaw local provider bridge", () => {
     expect(channelConfig.streaming === undefined || isRecord(channelConfig.streaming)).toBe(true);
   });
 
-  it("keeps legacy fake-provider root aliases", () => {
-    const legacyManifest: CrablineFakeProviderManifest = manifest;
+  it("exposes canonical server APIs and conversation types", () => {
     const conversation: OpenClawCrablineConversation = {
       id: "alice",
       kind: "direct",
     };
 
-    expect(CRABLINE_FAKE_PROVIDER_CHANNELS).toBe(CRABLINE_SERVER_CHANNELS);
-    expect(isCrablineFakeProviderChannel).toBe(isCrablineServerChannel);
-    expect(startCrablineFakeProviderServer).toBe(startCrablineServer);
-    expect(createOpenClawCrablineFakeProviderBinding).toBe(createOpenClawCrablineProviderBinding);
-    expect(probeOpenClawCrablineFakeProvider).toBe(probeOpenClawCrablineProvider);
-    expect(legacyManifest.provider).toBe("telegram");
+    expect(CRABLINE_SERVER_CHANNELS).toContain("telegram");
+    expect(isCrablineServerChannel("telegram")).toBe(true);
+    expect(startCrablineServer).toEqual(expect.any(Function));
+    expect(createOpenClawCrablineProviderBinding).toEqual(expect.any(Function));
+    expect(probeOpenClawCrablineProvider).toEqual(expect.any(Function));
     expect(conversation).toEqual({ id: "alice", kind: "direct" });
   });
 
@@ -676,23 +669,20 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("resolves channel-driver metadata through Crabline", () => {
-    expect(OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH).toBe(OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH);
-    expect(runOpenClawCrablineChannelDriverSmoke).toBe(runOpenClawCrablineProviderReadiness);
     expect(resolveOpenClawCrablineChannelDriverSelection({})).toEqual({
       capabilityMatrixPath: OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
       channel: "telegram",
       channelDriver: "crabline",
       providerReadinessArtifactPath: OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
-      smokeArtifactPath: OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
     });
-    const legacySelection: OpenClawCrablineChannelDriverSelection = {
+    const selection: OpenClawCrablineChannelDriverSelection = {
       capabilityMatrixPath: OPENCLAW_CRABLINE_CHANNEL_CAPABILITY_MATRIX_PATH,
       channel: "telegram",
       channelDriver: "crabline",
-      smokeArtifactPath: OPENCLAW_CRABLINE_CHANNEL_SMOKE_PATH,
+      providerReadinessArtifactPath: OPENCLAW_CRABLINE_PROVIDER_READINESS_PATH,
     };
-    expect(createOpenClawCrablineChannelReportNotes(legacySelection)[3]).toBe(
-      "Generation provider-readiness filename: crabline-fake-provider-smoke.json.",
+    expect(createOpenClawCrablineChannelReportNotes(selection)[3]).toBe(
+      "Generation provider-readiness filename: crabline-provider-readiness.json.",
     );
     expect(resolveOpenClawCrablineChannelDriverSelection({ channel: " TELEGRAM " })).toMatchObject({
       channel: "telegram",
@@ -733,7 +723,7 @@ describe("OpenClaw local provider bridge", () => {
       channel: "zalo",
       requiredPluginIds: ["zalo"],
     });
-    expect(binding.createChannelDriverSmokeEnv({ EXISTING: "value" })).toMatchObject({
+    expect(binding.createProviderReadinessEnv({ EXISTING: "value" })).toMatchObject({
       EXISTING: "value",
       ZALO_API_URL: "http://127.0.0.1:7531",
       ZALO_BOT_TOKEN: "crabline-zalo-bot-token",
@@ -908,7 +898,7 @@ describe("OpenClaw local provider bridge", () => {
         },
       },
     });
-    expect(binding.createChannelDriverSmokeEnv({})).toMatchObject({
+    expect(binding.createProviderReadinessEnv({})).toMatchObject({
       TELEGRAM_BOT_TOKEN: "424242:crabline-telegram-token",
     });
   });
@@ -948,7 +938,7 @@ describe("OpenClaw local provider bridge", () => {
         },
       },
     });
-    expect(binding.createChannelDriverSmokeEnv({})).toMatchObject({
+    expect(binding.createProviderReadinessEnv({})).toMatchObject({
       CRABLINE_WHATSAPP_ADMIN_TOKEN: "crabline-whatsapp-admin-token",
       CRABLINE_WHATSAPP_RECORDER_PATH: "/tmp/crabline/whatsapp.jsonl",
       CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
@@ -990,7 +980,7 @@ describe("OpenClaw local provider bridge", () => {
         },
       },
     });
-    expect(binding.createChannelDriverSmokeEnv({})).toMatchObject({
+    expect(binding.createProviderReadinessEnv({})).toMatchObject({
       SLACK_API_URL: "http://127.0.0.1:2468/api/",
       SLACK_BOT_TOKEN: "xoxb-crabline-slack-token",
       SLACK_SIGNING_SECRET: "crabline-slack-signing-secret",
@@ -3088,8 +3078,8 @@ describe("OpenClaw local provider bridge", () => {
   it("accepts exact provider API route evidence without claiming OpenClaw execution", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-provider-readiness-"));
     try {
-      const legacyManifestPath = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
-      await fs.writeFile(legacyManifestPath, "permissive stale manifest\n", { mode: 0o666 });
+      const unmanagedManifestPath = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
+      await fs.writeFile(unmanagedManifestPath, "permissive unmanaged manifest\n", { mode: 0o666 });
       const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
       const result = await runProviderReadinessWithDependencies(
         {
@@ -3134,12 +3124,6 @@ describe("OpenClaw local provider bridge", () => {
             ok: true,
             proof: "provider-api-probe",
             provider: "telegram",
-            ready: true,
-          },
-        },
-        smoke: {
-          result: {
-            ok: true,
             ready: true,
           },
         },
@@ -3198,7 +3182,7 @@ describe("OpenClaw local provider bridge", () => {
         manifestPath: result.manifestPath,
         selectedChannel: "telegram",
         source: "openclaw/crabline",
-        version: 1,
+        version: 2,
         providerReadiness: {
           manifestPath: result.manifestPath,
           result: {
@@ -3209,7 +3193,7 @@ describe("OpenClaw local provider bridge", () => {
             recorderPath: path.join(
               OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
               result.generation,
-              "telegram-fake-provider.jsonl",
+              "telegram-provider-server.jsonl",
             ),
             probe: {
               ok: true,
@@ -3218,12 +3202,6 @@ describe("OpenClaw local provider bridge", () => {
                 username: "crabline_bot",
               },
             },
-          },
-        },
-        smoke: {
-          result: {
-            ok: true,
-            ready: true,
           },
         },
       });
@@ -3235,7 +3213,7 @@ describe("OpenClaw local provider bridge", () => {
         path.join(
           OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
           result.generation,
-          "telegram-fake-provider.jsonl",
+          "telegram-provider-server.jsonl",
         ),
       );
       await expect(
@@ -3246,7 +3224,9 @@ describe("OpenClaw local provider bridge", () => {
           entry.endsWith(".tmp"),
         ),
       ).toEqual([]);
-      expect(await fs.readFile(legacyManifestPath, "utf8")).toBe("permissive stale manifest\n");
+      expect(await fs.readFile(unmanagedManifestPath, "utf8")).toBe(
+        "permissive unmanaged manifest\n",
+      );
       const manifestMode = (await fs.stat(path.join(outputDir, result.manifestPath))).mode & 0o777;
       const expectedMode = process.platform === "win32" ? manifestMode : 0o600;
       expect(manifestMode).toBe(expectedMode);
@@ -3256,9 +3236,9 @@ describe("OpenClaw local provider bridge", () => {
       });
       expect(createOpenClawCrablineChannelReportNotes(selection)).toEqual([
         "Channel driver: crabline local provider for telegram.",
-        "Channel artifact pointer: .crabline-smoke-artifacts/current.json.",
-        "Generation capability filename: crabline-fake-provider-capabilities.json.",
-        "Generation provider-readiness filename: crabline-fake-provider-smoke.json.",
+        "Channel artifact pointer: .crabline-channel-driver-artifacts/current.json.",
+        "Generation capability filename: crabline-channel-driver-capabilities.json.",
+        "Generation provider-readiness filename: crabline-provider-readiness.json.",
         "Crabline verifies the local provider API is ready; OpenClaw channel behavior is proven separately by QA scenarios that run the real channel adapter.",
       ]);
     } finally {
@@ -3525,7 +3505,7 @@ describe("OpenClaw local provider bridge", () => {
       const externalDirectory = await fs.mkdtemp(
         path.join(os.tmpdir(), "crabline-recorder-external-"),
       );
-      const staleName = ".telegram-fake-provider.11111111-1111-4111-8111-111111111111.jsonl.tmp";
+      const staleName = ".telegram-provider-server.11111111-1111-4111-8111-111111111111.jsonl.tmp";
       const sentinelPath = path.join(externalDirectory, staleName);
       const startAdapter = vi.fn<typeof startOpenClawCrablineAdapter>();
       try {
@@ -3560,15 +3540,16 @@ describe("OpenClaw local provider bridge", () => {
   it("reclaims only exact stale readiness recorder temporaries", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-recovery-"));
     const recorderDirectory = path.join(outputDir, "artifacts", "crabline");
-    const staleTelegram = ".telegram-fake-provider.11111111-1111-4111-8111-111111111111.jsonl.tmp";
-    const staleSlack = ".slack-fake-provider.22222222-2222-4222-8222-222222222222.jsonl.tmp";
+    const staleTelegram =
+      ".telegram-provider-server.11111111-1111-4111-8111-111111111111.jsonl.tmp";
+    const staleSlack = ".slack-provider-server.22222222-2222-4222-8222-222222222222.jsonl.tmp";
     const staleTelegramLock = `${staleTelegram}.lock`;
-    const lookalike = ".telegram-fake-provider.not-a-uuid.jsonl.tmp";
+    const lookalike = ".telegram-provider-server.not-a-uuid.jsonl.tmp";
     const lookalikeLock = `${staleTelegram}.lock.extra`;
     const unrelatedLock = "unrelated.lock";
     const lookalikeTombstone = `.${staleTelegramLock}.1234.not-a-uuid.remove`;
     const matchingDirectory =
-      ".telegram-fake-provider.33333333-3333-4333-8333-333333333333.jsonl.tmp";
+      ".telegram-provider-server.33333333-3333-4333-8333-333333333333.jsonl.tmp";
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     try {
       await fs.mkdir(path.join(recorderDirectory, matchingDirectory), { recursive: true });
@@ -3632,7 +3613,8 @@ describe("OpenClaw local provider bridge", () => {
   it("reclaims recorder lock tombstones after interrupted removal", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-lock-retry-"));
     const recorderDirectory = path.join(outputDir, "artifacts", "crabline");
-    const lockName = ".telegram-fake-provider.55555555-5555-4555-8555-555555555555.jsonl.tmp.lock";
+    const lockName =
+      ".telegram-provider-server.55555555-5555-4555-8555-555555555555.jsonl.tmp.lock";
     const removalFailure = new Error("simulated recorder lock tombstone removal interruption");
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     let rmSpy: ReturnType<typeof vi.spyOn> | undefined;
@@ -3671,7 +3653,7 @@ describe("OpenClaw local provider bridge", () => {
       );
       expect(retainedTombstones).toHaveLength(1);
       expect(retainedTombstones[0]).toMatch(
-        /^\.\.telegram-fake-provider\.55555555-5555-4555-8555-555555555555\.jsonl\.tmp\.lock\.\d+\.[0-9a-f-]{36}\.remove$/u,
+        /^\.\.telegram-provider-server\.55555555-5555-4555-8555-555555555555\.jsonl\.tmp\.lock\.\d+\.[0-9a-f-]{36}\.remove$/u,
       );
 
       await runProviderReadinessWithDependencies({ outputDir, selection }, { startAdapter });
@@ -3692,7 +3674,7 @@ describe("OpenClaw local provider bridge", () => {
       const recorderDirectory = path.join(outputDir, "artifacts", "crabline");
       const targetDirectory = path.join(outputDir, "external-lock-target");
       const lockName =
-        ".telegram-fake-provider.44444444-4444-4444-8444-444444444444.jsonl.tmp.lock";
+        ".telegram-provider-server.44444444-4444-4444-8444-444444444444.jsonl.tmp.lock";
       const lockPath = path.join(recorderDirectory, lockName);
       const tombstoneName = `.${lockName}.1234.66666666-6666-4666-8666-666666666666.remove`;
       const tombstonePath = path.join(recorderDirectory, tombstoneName);
@@ -3756,7 +3738,9 @@ describe("OpenClaw local provider bridge", () => {
       await publicationStarted;
       await expect(
         runOpenClawCrablineProviderReadiness({ outputDir, selection: slack }),
-      ).rejects.toThrow('OpenClaw Crabline smoke is already running for channel "telegram"');
+      ).rejects.toThrow(
+        'OpenClaw Crabline provider readiness is already running for channel "telegram"',
+      );
       resumePublication?.();
       await first;
 
@@ -3828,14 +3812,14 @@ describe("OpenClaw local provider bridge", () => {
         },
       });
       expect(result.warnings).toEqual([
-        "OpenClaw Crabline smoke committed but lock cleanup failed: lock release retries exhausted",
+        "OpenClaw Crabline provider readiness committed but lock cleanup failed: lock release retries exhausted",
       ]);
     } finally {
       await fs.rm(outputDir, { recursive: true, force: true });
     }
   });
 
-  it("preserves the primary smoke failure when lock cleanup also fails", async () => {
+  it("preserves the primary readiness failure when lock cleanup also fails", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-errors-"));
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const primaryFailure = new Error("probe failed");
@@ -3866,10 +3850,12 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
-  it("preserves a frozen smoke failure when lock cleanup also fails", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-frozen-smoke-"));
+  it("preserves a frozen readiness failure when lock cleanup also fails", async () => {
+    const outputDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "crabline-openclaw-frozen-readiness-"),
+    );
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
-    const primaryFailure = Object.freeze(new Error("frozen smoke failure"));
+    const primaryFailure = Object.freeze(new Error("frozen readiness failure"));
     try {
       await expect(
         runProviderReadinessWithDependencies(
@@ -4071,21 +4057,21 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
-  it("rejects cross-process smoke runs that share an output artifact set", async () => {
+  it("rejects concurrent provider-readiness runs that share an output artifact set", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-overlap-"));
-    const holder = startSmokeLockHolder(outputDir, "telegram");
+    const holder = startProviderReadinessLockHolder(outputDir, "telegram");
     try {
-      await waitForSmokeLock(holder);
+      await waitForProviderReadinessLock(holder);
       const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
       const otherSelection = resolveOpenClawCrablineChannelDriverSelection({ channel: "slack" });
 
       await expect(runOpenClawCrablineProviderReadiness({ outputDir, selection })).rejects.toThrow(
-        `OpenClaw Crabline smoke is already running for channel "telegram" in "${outputDir}"; cannot start channel "telegram".`,
+        `OpenClaw Crabline provider readiness is already running for channel "telegram" in "${outputDir}"; cannot start channel "telegram".`,
       );
       await expect(
         runOpenClawCrablineProviderReadiness({ outputDir, selection: otherSelection }),
       ).rejects.toThrow(
-        `OpenClaw Crabline smoke is already running for channel "telegram" in "${outputDir}"; cannot start channel "slack".`,
+        `OpenClaw Crabline provider readiness is already running for channel "telegram" in "${outputDir}"; cannot start channel "slack".`,
       );
 
       const holderExit = once(holder, "exit");
@@ -4107,11 +4093,11 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
-  it("recovers a smoke lock abandoned by a terminated process", async () => {
+  it("recovers a provider readiness lock abandoned by a terminated process", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-stale-lock-"));
-    const holder = startSmokeLockHolder(outputDir, "telegram");
+    const holder = startProviderReadinessLockHolder(outputDir, "telegram");
     try {
-      await waitForSmokeLock(holder);
+      await waitForProviderReadinessLock(holder);
       const holderExit = once(holder, "exit");
       holder.kill("SIGKILL");
       await holderExit;
