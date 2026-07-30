@@ -7,6 +7,7 @@ const MATRIX_SEND_PATH_RE =
 const TELEGRAM_SEND_PATH_RE =
   /^\/bot<redacted>\/(?:sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/iu;
 const ZALO_SEND_PATH_RE = /^\/bot<redacted>\/(?:sendMessage|sendPhoto)$/u;
+const DISCORD_SEND_PATH_RE = /^\/api\/v10\/channels\/\d{17,20}\/messages$/u;
 
 export function isAcceptedOpenClawCrablineOutbound(params: {
   event: unknown;
@@ -22,6 +23,8 @@ export function isAcceptedOpenClawCrablineOutbound(params: {
   }
 
   switch (params.manifest.provider) {
+    case "discord":
+      return method === "POST" && DISCORD_SEND_PATH_RE.test(requestPath);
     case "mattermost":
       return method === "POST" && requestPath === "/api/v4/posts";
     case "matrix":

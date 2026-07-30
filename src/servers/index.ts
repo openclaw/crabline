@@ -1,4 +1,10 @@
 import {
+  startDiscordServer,
+  type DiscordServerManifest,
+  type StartedDiscordServer,
+  type StartDiscordServerParams,
+} from "./discord.js";
+import {
   startMattermostServer,
   type MattermostServerManifest,
   type StartedMattermostServer,
@@ -43,6 +49,7 @@ import {
 import { CrablineError } from "../core/errors.js";
 
 export const CRABLINE_SERVER_CHANNELS = Object.freeze([
+  "discord",
   "mattermost",
   "matrix",
   "signal",
@@ -55,6 +62,7 @@ export const CRABLINE_SERVER_CHANNELS = Object.freeze([
 export type CrablineServerChannel = (typeof CRABLINE_SERVER_CHANNELS)[number];
 
 export type CrablineServerManifest =
+  | DiscordServerManifest
   | MattermostServerManifest
   | MatrixServerManifest
   | SignalServerManifest
@@ -64,6 +72,7 @@ export type CrablineServerManifest =
   | ZaloServerManifest;
 
 export type StartedCrablineServer =
+  | StartedDiscordServer
   | StartedMattermostServer
   | StartedMatrixServer
   | StartedSignalServer
@@ -73,6 +82,7 @@ export type StartedCrablineServer =
   | StartedZaloServer;
 
 export type StartCrablineServerParams =
+  | (StartDiscordServerParams & { channel: "discord" })
   | (StartMattermostServerParams & { channel: "mattermost" })
   | (StartMatrixServerParams & { channel: "matrix" })
   | (StartSignalServerParams & { channel: "signal" })
@@ -87,6 +97,9 @@ export function isCrablineServerChannel(value: string): value is CrablineServerC
   return CRABLINE_SERVER_CHANNEL_SET.has(value);
 }
 
+export function startCrablineServer(
+  params: StartDiscordServerParams & { channel: "discord" },
+): Promise<StartedDiscordServer>;
 export function startCrablineServer(
   params: StartMattermostServerParams & { channel: "mattermost" },
 ): Promise<StartedMattermostServer>;
@@ -115,6 +128,8 @@ export async function startCrablineServer(
   params: StartCrablineServerParams,
 ): Promise<StartedCrablineServer> {
   switch (params.channel) {
+    case "discord":
+      return await startDiscordServer(params);
     case "mattermost":
       return await startMattermostServer(params);
     case "matrix":

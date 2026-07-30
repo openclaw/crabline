@@ -10,6 +10,7 @@ import {
   type StartedCrablineServer,
 } from "./servers/index.js";
 import { SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/slack.js";
+import { DISCORD_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/discord.js";
 import { MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/mattermost.js";
 import { MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/matrix.js";
 import { SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "./openclaw/bridges/signal.js";
@@ -76,6 +77,7 @@ export type {
 } from "./openclaw/shared.js";
 
 const OPENCLAW_CRABLINE_PROVIDER_BRIDGES = {
+  discord: DISCORD_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
   mattermost: MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
   matrix: MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
   signal: SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE,
@@ -131,6 +133,11 @@ function openClawCrablineProviderProbeRequest(
   manifest: CrablineServerManifest,
 ): Pick<OpenClawCrablineRecorderEvent, "method" | "path"> {
   switch (manifest.provider) {
+    case "discord":
+      return {
+        method: "GET",
+        path: new URL(`${manifest.endpoints.apiRoot}/v10/users/@me`).pathname,
+      };
     case "mattermost":
       return {
         method: "GET",
@@ -469,7 +476,7 @@ export async function startOpenClawCrablineAdapter(
     channel: params.channel,
     onEvent: params.onEvent,
     recorderPath: params.recorderPath,
-  });
+  } as StartCrablineServerParams);
   try {
     const providerAdapter = (
       dependencies.createProviderAdapter ?? createOpenClawCrablineProviderAdapter

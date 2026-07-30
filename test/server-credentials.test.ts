@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  startDiscordServer,
   startMattermostServer,
   startMatrixServer,
   startSlackServer,
@@ -20,6 +21,10 @@ describe("externally bound provider server credentials", () => {
   it("generates fresh provider-shaped defaults and mirrors them into env manifests", async () => {
     const first = await startServers();
     const second = await startServers();
+
+    expect(first.discord.manifest.botToken).toContain(".");
+    expect(first.discord.manifest.env.DISCORD_BOT_TOKEN).toBe(first.discord.manifest.botToken);
+    expect(second.discord.manifest.botToken).not.toBe(first.discord.manifest.botToken);
 
     expect(first.mattermost.manifest.botToken).toMatch(/^[a-f0-9]{26}$/u);
     expect(first.mattermost.manifest.env.MATTERMOST_BOT_TOKEN).toBe(
@@ -64,11 +69,12 @@ describe("externally bound provider server credentials", () => {
 });
 
 async function startServers() {
+  const discord = await startDiscordServer({ host: "0.0.0.0" });
   const mattermost = await startMattermostServer({ host: "0.0.0.0" });
   const matrix = await startMatrixServer({ host: "0.0.0.0" });
   const slack = await startSlackServer({ host: "0.0.0.0" });
   const telegram = await startTelegramServer({ host: "0.0.0.0" });
   const zalo = await startZaloServer({ host: "0.0.0.0" });
-  servers.push(mattermost, matrix, slack, telegram, zalo);
-  return { mattermost, matrix, slack, telegram, zalo };
+  servers.push(discord, mattermost, matrix, slack, telegram, zalo);
+  return { discord, mattermost, matrix, slack, telegram, zalo };
 }

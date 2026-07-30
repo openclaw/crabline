@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a canonical Discord local provider server and OpenClaw bridge with REST
+  v10, Gateway WebSocket, admin ingress, command registration, and recorder
+  evidence for the real Discord plugin channel-driver lane.
 - Remove obsolete provider-server aliases, duplicate artifact paths, and fallback readers; require canonical provider-readiness owner records and manifests.
 
 ## 0.1.12 - 2026-07-27

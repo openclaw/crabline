@@ -14,6 +14,7 @@ export const OPENCLAW_CRABLINE_DEFAULT_CHANNEL = "telegram";
 const OPENCLAW_CRABLINE_PROVIDER_PROBE_TIMEOUT_MS = 5_000;
 const OPENCLAW_CRABLINE_PROVIDER_PROBE_ABORT_GRACE_MS = 250;
 const OPENCLAW_CRABLINE_PROVIDER_PROBE_LABELS = {
+  discord: "Discord users/@me",
   mattermost: "Mattermost users.me",
   matrix: "Matrix whoami",
   signal: "Signal check",
