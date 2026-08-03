@@ -47,6 +47,14 @@ export type OpenClawCrablineConversation = {
   kind: "direct" | "group";
 };
 
+export type OpenClawCrablineInboundAttachment = {
+  contentBase64?: string | undefined;
+  fileName?: string | undefined;
+  id: string;
+  kind: "image" | "video" | "audio" | "file";
+  mimeType: string;
+};
+
 export type OpenClawCrablineGatewayBinding = {
   accountId: string;
   channel: string;
@@ -63,6 +71,7 @@ export type OpenClawCrablineAgentDelivery = {
 };
 
 export type OpenClawCrablineInboundInput = {
+  attachments?: OpenClawCrablineInboundAttachment[] | undefined;
   conversation: {
     id: string;
     kind: "direct" | "group";
