@@ -557,6 +557,55 @@ The admin ingress accepts JSON like:
 }
 ```
 
+For an OpenClaw bridge voice-note fixture, pass exactly one inline audio
+attachment. The bridge ignores `text` for that inbound event and sets `ptt` to
+`true`:
+
+```json
+{
+  "attachments": [
+    {
+      "contentBase64": "T2dnUwACAAAAAAAAAAB...",
+      "id": "voice-note-1",
+      "kind": "audio",
+      "mimeType": "audio/ogg; codecs=opus"
+    }
+  ],
+  "conversation": {
+    "id": "15551234567@s.whatsapp.net",
+    "kind": "direct"
+  },
+  "senderId": "15551234567@s.whatsapp.net",
+  "text": ""
+}
+```
+
+The bridge rejects multiple attachments, non-audio attachments, and audio
+without inline `contentBase64`. It posts the corresponding provider control
+payload to `endpoints.adminInboundUrl`:
+
+```json
+{
+  "audio": {
+    "contentBase64": "T2dnUwACAAAAAAAAAAB...",
+    "mimeType": "audio/ogg; codecs=opus",
+    "ptt": true
+  },
+  "chatJid": "15551234567@s.whatsapp.net",
+  "senderJid": "15551234567@s.whatsapp.net"
+}
+```
+
+`audio.contentBase64` must be a non-empty canonical base64 string, `mimeType`
+must start with `audio/`, and optional `ptt` must be a boolean. The request must
+contain exactly one of `text` or `audio` and remains subject to the server's 1
+MiB request-body limit. Accepted audio is exposed to Baileys as a native
+encrypted `audioMessage` download. The server retains at most 1,000 active
+media fixtures and 16 MiB of encrypted media in total. A fixture expires after
+five minutes or no later than 30 seconds after its first successful download;
+later downloads cannot extend either deadline. Capacity exhaustion returns
+HTTP 503 without evicting an accepted, unexpired fixture.
+
 Outbound text sends and composing presence are recorded through the local
 provider server's messages and presence endpoints.
 
