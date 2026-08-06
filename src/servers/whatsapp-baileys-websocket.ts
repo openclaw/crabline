@@ -1378,6 +1378,13 @@ class WhatsAppBaileysWebSocketSession {
       };
     }
     if (node.attrs.xmlns === "w:g2") {
+      if (node.attrs.type === "get" && child?.tag === "participating") {
+        return {
+          attrs,
+          content: [{ attrs: {}, content: [], tag: "groups" }],
+          tag: "iq",
+        };
+      }
       if (node.attrs.type !== "get" || child?.tag !== "query") {
         return {
           attrs: { ...attrs, type: "error" },

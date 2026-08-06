@@ -1,5 +1,5 @@
 import { deflateSync } from "node:zlib";
-import { Curve as BaileysCurve, proto } from "baileys";
+import { Curve as BaileysCurve, encodeBinaryNode as encodeBaileysNode, proto } from "baileys";
 import { describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import {
@@ -178,6 +178,29 @@ describe("WhatsApp X25519 agreement", () => {
     expect(() => curve.generateKeyPair()).toThrow("native entropy source failed");
     expect(() => curve.generateKeyPair()).toThrow("native entropy source failed");
     expect(generateKeyPair).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("WhatsApp Baileys token compatibility", () => {
+  it("decodes lifecycle nodes emitted by the installed Baileys dictionary", async () => {
+    const node: BinaryNode = {
+      attrs: { type: "read", value: "1", xmlns: "abt" },
+      content: [
+        {
+          attrs: {},
+          content: [
+            { attrs: { value: "available" }, tag: "description" },
+            { attrs: { type: "composing" }, tag: "chatstate" },
+            { attrs: { type: "paused", xmlns: "w:p" }, tag: "presence" },
+            { attrs: {}, tag: "ping" },
+          ],
+          tag: "participating",
+        },
+      ],
+      tag: "protocol",
+    };
+
+    await expect(decodeBinaryNode(encodeBaileysNode(node))).resolves.toEqual(node);
   });
 });
 
