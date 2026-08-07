@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Keep normal Baileys WhatsApp sessions connected through startup, presence,
+  receipts, keepalive, and participating-group discovery.
+
 ## 0.1.13 - 2026-07-30
 
 - Add a canonical Discord local provider server and OpenClaw bridge with REST
