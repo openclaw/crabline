@@ -164,6 +164,10 @@ export function mattermostId(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 26);
 }
 
+function mattermostDirectChannelName(firstUserId: string, secondUserId: string): string {
+  return [firstUserId, secondUserId].sort().join("__");
+}
+
 async function appendEvent(
   state: MattermostServerState,
   event: ServerRequestEvent,
@@ -583,11 +587,13 @@ function handleAdminInbound(params: {
   const channelName =
     readMattermostString(params.body.channelName ?? params.body.channel_name) ??
     previousChannel?.name ??
-    channelId;
+    (channelType === "D"
+      ? mattermostDirectChannelName(params.state.botUserId, senderId)
+      : channelId);
   const channelDisplayName =
     readMattermostString(params.body.channelDisplayName ?? params.body.channel_display_name) ??
     previousChannel?.display_name ??
-    channelName;
+    (channelType === "D" ? "" : channelName);
   const channel = {
     display_name: channelDisplayName,
     id: channelId,
@@ -732,7 +738,7 @@ async function handleApi(params: {
       return mattermostError("Authenticated user must belong to the direct channel", 403);
     }
     const participantIds = [...userIds].sort();
-    const channelName = participantIds.join("__");
+    const channelName = mattermostDirectChannelName(firstUserId, secondUserId);
     const existingChannel = [...state.channels.values()].find(
       (channel) => channel.type === "D" && channel.name === channelName,
     );
