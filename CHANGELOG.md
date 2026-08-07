@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.14 - 2026-08-07
 
 - Keep normal Baileys WhatsApp sessions connected through startup, presence,
   receipts, keepalive, and participating-group discovery.
