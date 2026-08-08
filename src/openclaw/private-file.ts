@@ -4,6 +4,7 @@ import { constants as fsConstants, readFileSync, type BigIntStats } from "node:f
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
   applyOwnerOnlyWindowsDirectoryAcl as applyOwnerOnlyWindowsDirectoryAclByHandle,
@@ -1302,6 +1303,22 @@ type PrivateMutationClaim = {
   release(): Promise<void>;
 };
 
+type PrivateMutationClaimWaitOptions = {
+  now?: () => number;
+  retryDelayMs?: number;
+  signal?: AbortSignal;
+  sleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+  timeoutMs?: number;
+};
+
+type PreparedPrivateMutationClaimWait = {
+  now: () => number;
+  retryDelayMs: number;
+  signal?: AbortSignal;
+  sleep: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+  timeoutMs: number;
+};
+
 export type PrivateMutationClaimRuntime = {
   getProcessIdentity(pid: number): string | null;
   isProcessAlive(pid: number): boolean;
@@ -1322,6 +1339,42 @@ const PRIVATE_MUTATION_CLAIM_ROOT_FILE = ".crabline-private-mutation.claim";
 const PRIVATE_MUTATION_CLAIM_OWNER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const PRIVATE_MUTATION_CLAIM_METADATA_MAX_BYTES = 4096;
 const PRIVATE_MUTATION_RESERVED_BASENAME_PATTERN = /^\.crabline-private-mutation(?:\.|$)/iu;
+const PRIVATE_MUTATION_CLAIM_WAIT_TIMEOUT_MS = 60_000;
+const PRIVATE_MUTATION_CLAIM_RETRY_DELAY_MS = 50;
+
+function preparePrivateMutationClaimWait(
+  options: PrivateMutationClaimWaitOptions,
+): PreparedPrivateMutationClaimWait {
+  const timeoutMs = options.timeoutMs ?? PRIVATE_MUTATION_CLAIM_WAIT_TIMEOUT_MS;
+  const retryDelayMs = options.retryDelayMs ?? PRIVATE_MUTATION_CLAIM_RETRY_DELAY_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0) {
+    throw new Error("Private mutation claim wait timeout must be a non-negative safe integer.");
+  }
+  if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs <= 0) {
+    throw new Error("Private mutation claim retry delay must be a positive safe integer.");
+  }
+  const now = options.now ?? performance.now.bind(performance);
+  const sleep =
+    options.sleep ??
+    ((delayMs: number, signal?: AbortSignal) => delay(delayMs, undefined, { signal }));
+  if (typeof now !== "function" || typeof sleep !== "function") {
+    throw new Error("Private mutation claim wait callbacks must be functions.");
+  }
+  if (options.signal !== undefined && typeof options.signal.throwIfAborted !== "function") {
+    throw new Error("Private mutation claim wait signal is invalid.");
+  }
+  options.signal?.throwIfAborted();
+  if (!Number.isFinite(now())) {
+    throw new Error("Private mutation claim wait clock is invalid.");
+  }
+  return {
+    now,
+    retryDelayMs,
+    ...(options.signal ? { signal: options.signal } : {}),
+    sleep,
+    timeoutMs,
+  };
+}
 
 function assertNotReservedPrivateMutationPath(targetPath: string): void {
   if (PRIVATE_MUTATION_RESERVED_BASENAME_PATTERN.test(path.basename(targetPath))) {
@@ -1622,6 +1675,12 @@ class UnsupportedPrivateMutationHardLinkError extends Error {
   }
 }
 
+class ActivePrivateMutationClaimError extends Error {
+  constructor(cause: unknown) {
+    super("Private path mutation is already claimed.", { cause });
+  }
+}
+
 function isUnsupportedHardLinkError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
   return code === "EPERM" || code === "ENOTSUP" || code === "EOPNOTSUPP" || code === "ENOSYS";
@@ -1718,14 +1777,14 @@ async function acquireHardLinkPrivateMutationClaim(
             observed.owner.pid === runtime.pid &&
             observed.owner.processStartedAtMs === runtime.processStartedAtMs
           ) {
-            throw new Error("Private path mutation is already claimed.", { cause: error });
+            throw new ActivePrivateMutationClaimError(error);
           } else if (observed.owner.pid !== runtime.pid) {
             if (observed.owner.processIdentity === undefined) {
-              throw new Error("Private path mutation is already claimed.", { cause: error });
+              throw new ActivePrivateMutationClaimError(error);
             }
             const actualIdentity = runtime.getProcessIdentity(observed.owner.pid);
             if (actualIdentity === null || actualIdentity === observed.owner.processIdentity) {
-              throw new Error("Private path mutation is already claimed.", { cause: error });
+              throw new ActivePrivateMutationClaimError(error);
             }
           }
         }
@@ -2143,7 +2202,7 @@ async function acquireDirectoryPrivateMutationClaim(
           throw error;
         }
         if (privateMutationClaimOwnerIsActive(observed.metadata.owner, runtime)) {
-          throw new Error("Private path mutation is already claimed.", { cause: error });
+          throw new ActivePrivateMutationClaimError(error);
         }
         await parent.assertIdentityAt();
         const revalidated = await readPrivateMutationDirectoryClaim(claimPath);
@@ -2543,9 +2602,8 @@ async function acquirePrivateMutationClaimChain(
 ): Promise<PrivateMutationClaim> {
   const platform = options.platform ?? process.platform;
   const ancestry = await ownerOnlyPrivateClaimAncestry(leaf, platform);
-  const highestClaimDirectory = ancestry.at(-1)!;
   const outerBoundary = await captureSafePrivateDirectoryMutationParent(
-    highestClaimDirectory.directoryPath,
+    ancestry.at(-1)!.directoryPath,
     platform,
   );
   const claims: PrivateMutationClaim[] = [];
@@ -2657,6 +2715,68 @@ async function acquirePrivateMutationClaimChain(
   };
 }
 
+function privateMutationClaimTimeoutError(timeoutMs: number, cause: unknown): Error {
+  return Object.assign(
+    new Error(`Timed out after ${timeoutMs}ms waiting for a private mutation claim.`, { cause }),
+    { code: "ETIMEDOUT" },
+  );
+}
+
+async function releaseClaimAfterWaitFailure(
+  claim: PrivateMutationClaim,
+  error: unknown,
+): Promise<never> {
+  try {
+    await claim.release();
+  } catch (releaseError) {
+    const aggregateError = new AggregateError(
+      [error, releaseError],
+      "Private mutation claim wait failed and its acquired claim could not be released.",
+    );
+    aggregateError.cause = error;
+    throw aggregateError;
+  }
+  throw error;
+}
+
+async function acquirePrivateMutationClaimWithWait(
+  acquire: () => Promise<PrivateMutationClaim>,
+  wait?: PreparedPrivateMutationClaimWait,
+): Promise<PrivateMutationClaim> {
+  if (wait === undefined) {
+    return await acquire();
+  }
+  const deadlineMs = wait.now() + wait.timeoutMs;
+  let lastContentionError: ActivePrivateMutationClaimError | undefined;
+  for (;;) {
+    wait.signal?.throwIfAborted();
+    let claim: PrivateMutationClaim;
+    try {
+      claim = await acquire();
+    } catch (error) {
+      if (!(error instanceof ActivePrivateMutationClaimError) || wait.timeoutMs === 0) {
+        throw error;
+      }
+      lastContentionError = error;
+      const remainingMs = deadlineMs - wait.now();
+      if (remainingMs <= 0) {
+        throw privateMutationClaimTimeoutError(wait.timeoutMs, error);
+      }
+      await wait.sleep(Math.min(wait.retryDelayMs, remainingMs), wait.signal);
+      continue;
+    }
+    try {
+      wait.signal?.throwIfAborted();
+      if (lastContentionError && wait.now() >= deadlineMs) {
+        throw privateMutationClaimTimeoutError(wait.timeoutMs, lastContentionError);
+      }
+    } catch (error) {
+      return await releaseClaimAfterWaitFailure(claim, error);
+    }
+    return claim;
+  }
+}
+
 async function secureOwnerOnlyMutationParent(
   directoryPath: string,
 ): Promise<SecuredPrivateDirectory> {
@@ -2674,6 +2794,7 @@ export async function publishPrivateFileAtomically(
     beforeCommitRename?: (temporaryPath: string) => Promise<void>;
     beforeRename?: (temporaryPath: string) => Promise<void>;
     claimRuntime?: PrivateMutationClaimRuntime;
+    claimWait?: PrivateMutationClaimWaitOptions;
     createWindowsFile?: (temporaryPath: string) => Promise<FileIdentity>;
     createWindowsDirectories?: (directoryPath: string) => Promise<string | undefined>;
     platform?: NodeJS.Platform;
@@ -2683,6 +2804,7 @@ export async function publishPrivateFileAtomically(
   } = {},
 ): Promise<void> {
   assertNotReservedPrivateMutationPath(filePath);
+  const claimWait = preparePrivateMutationClaimWait(options.claimWait ?? {});
   const temporaryPath = path.join(
     path.dirname(filePath),
     `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
@@ -2730,11 +2852,17 @@ export async function publishPrivateFileAtomically(
   await migrationBoundary?.assertIdentityAt();
   const parent = await secureOwnerOnlyMutationParent(parentDirectory);
   await migrationBoundary?.assertIdentityAt();
-  const claim = await acquirePrivateMutationClaimChain(parent, {
+  const claimOptions = {
     ...(options.claimRuntime ? { runtime: options.claimRuntime } : {}),
     ...(options.createWindowsFile ? { createWindowsFile: options.createWindowsFile } : {}),
     ...(options.platform ? { platform: options.platform } : {}),
-  });
+  };
+  // The full ancestry fence stays held for the temporary file's lifetime so supported removals
+  // cannot quarantine a secret. Active publishers wait here without serializing their whole flow.
+  const claim = await acquirePrivateMutationClaimWithWait(
+    () => acquirePrivateMutationClaimChain(parent, claimOptions),
+    claimWait,
+  );
   let handle: FileHandle | undefined;
   let identity: FileIdentity | undefined;
   let publicationFailed = false;

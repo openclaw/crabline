@@ -61,6 +61,25 @@ async function writeOwnerOnlyClaimDirectory(
   await writeOwnerOnlyClaimFile(path.join(directoryPath, "owner.json"), contents);
 }
 
+function createForeignLiveClaimRuntimes() {
+  const identities = new Map([
+    [111, "test:holder-owner"],
+    [222, "test:waiter-owner"],
+  ]);
+  const createRuntime = (ownerId: string, pid: number) => ({
+    getProcessIdentity: vi.fn((candidatePid: number) => identities.get(candidatePid) ?? null),
+    isProcessAlive: (candidatePid: number) => identities.has(candidatePid),
+    ownerId,
+    pid,
+    processIdentity: identities.get(pid)!,
+    processStartedAtMs: pid,
+  });
+  return {
+    holder: createRuntime("holder-owner", 111),
+    waiter: createRuntime("waiter-owner", 222),
+  };
+}
+
 describe("OpenClaw private file publication", () => {
   it.skipIf(process.platform === "win32")(
     "replaces permissive POSIX files with mode 0600",
@@ -168,6 +187,41 @@ describe("OpenClaw private file publication", () => {
       }
     },
   );
+
+  it("rejects invalid claim waits before creating the publication parent", async () => {
+    const directory = await createTempDir();
+    const parent = path.join(directory, "invalid-wait");
+    try {
+      await expect(
+        publishPrivateFileAtomically(path.join(parent, "manifest.json"), "private\n", {
+          claimWait: { timeoutMs: -1 },
+        }),
+      ).rejects.toThrow("Private mutation claim wait timeout must be a non-negative safe integer.");
+
+      await expect(fs.stat(parent)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("rejects an already-aborted claim wait before creating the publication parent", async () => {
+    const directory = await createTempDir();
+    const parent = path.join(directory, "aborted-wait");
+    const controller = new AbortController();
+    const cancellation = new Error("cancel before publication setup");
+    controller.abort(cancellation);
+    try {
+      await expect(
+        publishPrivateFileAtomically(path.join(parent, "manifest.json"), "private\n", {
+          claimWait: { signal: controller.signal },
+        }),
+      ).rejects.toBe(cancellation);
+
+      await expect(fs.stat(parent)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
 
   it.skipIf(
     process.platform === "win32" ||
@@ -600,6 +654,58 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
+  it("holds publication ancestry claims through temporary-file failure cleanup", async () => {
+    const directory = await createTempDir();
+    const securedAncestor = await securePrivateDirectory(directory);
+    const outputDirectory = path.join(directory, "telegram");
+    await fs.mkdir(outputDirectory);
+    const publicationError = new Error("publication failed after removal attempt");
+    let removalRenameReached = false;
+    let removalRecursiveReached = false;
+    let temporaryPath: string | undefined;
+    try {
+      await expect(
+        publishPrivateFileAtomically(
+          path.join(outputDirectory, "manifest.json"),
+          "private credential\n",
+          {
+            beforeRename: async (candidatePath) => {
+              temporaryPath = candidatePath;
+              await expect(
+                removeSecuredPrivateDirectory(securedAncestor, undefined, "suite-root", {
+                  beforeRecursiveRemove: async () => {
+                    removalRecursiveReached = true;
+                    throw new Error("removal aborted after quarantine rename");
+                  },
+                  beforeRename: async () => {
+                    removalRenameReached = true;
+                  },
+                }),
+              ).rejects.toThrow("Private path mutation is already claimed.");
+              throw publicationError;
+            },
+          },
+        ),
+      ).rejects.toBe(publicationError);
+
+      expect(removalRenameReached).toBe(false);
+      expect(removalRecursiveReached).toBe(false);
+      expect(temporaryPath).toBeDefined();
+      await expect(fs.stat(temporaryPath!)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.stat(outputDirectory)).resolves.toBeDefined();
+      await expect(fs.stat(path.join(outputDirectory, "manifest.json"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(
+        (await fs.readdir(directory, { recursive: true })).filter(
+          (entry) => entry.includes(".tmp") || entry.includes(".remove"),
+        ),
+      ).toEqual([]);
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
   it("preserves undefined and null publication rejection reasons", async () => {
     const directory = await createTempDir();
     try {
@@ -707,9 +813,19 @@ describe("OpenClaw private file publication", () => {
       const reachedCommit = new Promise<void>((resolve) => {
         commitReached = resolve;
       });
+      let allowRetry!: () => void;
+      const retryAllowed = new Promise<void>((resolve) => {
+        allowRetry = resolve;
+      });
+      let retryReached!: () => void;
+      const reachedRetry = new Promise<void>((resolve) => {
+        retryReached = resolve;
+      });
+      let firstPublication: Promise<void> | undefined;
+      let secondPublication: Promise<void> | undefined;
       try {
         const filePath = path.join(directory, "manifest.json");
-        const firstPublication = publishPrivateFileAtomically(filePath, "first\n", {
+        firstPublication = publishPrivateFileAtomically(filePath, "first\n", {
           beforeCommitRename: async () => {
             const claimName = (await fs.readdir(directory)).find((entry) =>
               entry.endsWith(".claim"),
@@ -724,25 +840,276 @@ describe("OpenClaw private file publication", () => {
         });
         await reachedCommit;
 
-        await expect(publishPrivateFileAtomically(filePath, "second\n")).rejects.toThrow(
-          "Private path mutation is already claimed.",
-        );
+        secondPublication = publishPrivateFileAtomically(filePath, "second\n", {
+          claimWait: {
+            sleep: async () => {
+              retryReached();
+              await retryAllowed;
+            },
+          },
+        });
+        await reachedRetry;
 
         releaseCommit();
         await firstPublication;
-        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("first\n");
+        allowRetry();
+        await secondPublication;
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
         expect((await fs.readdir(directory)).filter((entry) => entry.endsWith(".claim"))).toEqual(
           [],
         );
       } finally {
         releaseCommit();
+        allowRetry();
+        await firstPublication?.catch(() => undefined);
+        await secondPublication?.catch(() => undefined);
         await disposeTempDir(directory);
       }
     },
   );
 
+  it("waits for a sibling Windows publication claim at their shared ancestor", async () => {
+    const directory = await createTempDir();
+    const { holder, waiter } = createForeignLiveClaimRuntimes();
+    const firstDirectory = path.join(directory, "telegram");
+    const secondDirectory = path.join(directory, "matrix");
+    await fs.mkdir(firstDirectory);
+    await fs.mkdir(secondDirectory);
+    let releaseCommit!: () => void;
+    const commitReleased = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    let commitReached!: () => void;
+    const reachedCommit = new Promise<void>((resolve) => {
+      commitReached = resolve;
+    });
+    let allowRetry!: () => void;
+    const retryAllowed = new Promise<void>((resolve) => {
+      allowRetry = resolve;
+    });
+    let retryReached!: () => void;
+    const reachedRetry = new Promise<void>((resolve) => {
+      retryReached = resolve;
+    });
+    let firstPublication: Promise<void> | undefined;
+    let secondPublication: Promise<void> | undefined;
+    try {
+      firstPublication = publishPrivateFileAtomically(
+        path.join(firstDirectory, "manifest.json"),
+        "telegram\n",
+        {
+          beforeCommitRename: async () => {
+            commitReached();
+            await commitReleased;
+          },
+          claimRuntime: holder,
+          platform: "win32",
+          secureWindowsFile: async () => undefined,
+        },
+      );
+      await reachedCommit;
+
+      secondPublication = publishPrivateFileAtomically(
+        path.join(secondDirectory, "manifest.json"),
+        "matrix\n",
+        {
+          claimRuntime: waiter,
+          claimWait: {
+            sleep: async () => {
+              retryReached();
+              await retryAllowed;
+            },
+          },
+          platform: "win32",
+          secureWindowsFile: async () => undefined,
+        },
+      );
+      await reachedRetry;
+      await expect(fs.readdir(secondDirectory)).resolves.toEqual([]);
+
+      releaseCommit();
+      await firstPublication;
+      allowRetry();
+      await secondPublication;
+
+      await expect(fs.readFile(path.join(firstDirectory, "manifest.json"), "utf8")).resolves.toBe(
+        "telegram\n",
+      );
+      await expect(fs.readFile(path.join(secondDirectory, "manifest.json"), "utf8")).resolves.toBe(
+        "matrix\n",
+      );
+      expect(waiter.getProcessIdentity).toHaveBeenCalledWith(holder.pid);
+    } finally {
+      releaseCommit();
+      allowRetry();
+      await firstPublication?.catch(() => undefined);
+      await secondPublication?.catch(() => undefined);
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("aborts a waiting sibling publication and removes its prepared file", async () => {
+    const directory = await createTempDir();
+    const firstDirectory = path.join(directory, "telegram");
+    const secondDirectory = path.join(directory, "matrix");
+    await fs.mkdir(firstDirectory);
+    await fs.mkdir(secondDirectory);
+    const controller = new AbortController();
+    const cancellation = new Error("cancel sibling publication");
+    const actualLink = fs.link.bind(fs);
+    let abortOnSuccessfulLink = false;
+    const linkSpy = vi.spyOn(fs, "link").mockImplementation(async (...args) => {
+      await actualLink(...args);
+      if (abortOnSuccessfulLink) {
+        controller.abort(cancellation);
+      }
+    });
+    let releaseCommit!: () => void;
+    const commitReleased = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    let commitReached!: () => void;
+    const reachedCommit = new Promise<void>((resolve) => {
+      commitReached = resolve;
+    });
+    let waitReached!: () => void;
+    const reachedWait = new Promise<void>((resolve) => {
+      waitReached = resolve;
+    });
+    let allowRetry!: () => void;
+    const retryAllowed = new Promise<void>((resolve) => {
+      allowRetry = resolve;
+    });
+    let firstPublication: Promise<void> | undefined;
+    let secondPublication: Promise<void> | undefined;
+    try {
+      firstPublication = publishPrivateFileAtomically(
+        path.join(firstDirectory, "manifest.json"),
+        "telegram\n",
+        {
+          beforeCommitRename: async () => {
+            commitReached();
+            await commitReleased;
+          },
+          platform: "win32",
+          secureWindowsFile: async () => undefined,
+        },
+      );
+      await reachedCommit;
+
+      secondPublication = publishPrivateFileAtomically(
+        path.join(secondDirectory, "manifest.json"),
+        "matrix\n",
+        {
+          claimWait: {
+            signal: controller.signal,
+            sleep: async () => {
+              waitReached();
+              await retryAllowed;
+            },
+          },
+          platform: "win32",
+          secureWindowsFile: async () => undefined,
+        },
+      );
+      await reachedWait;
+      abortOnSuccessfulLink = true;
+      releaseCommit();
+      await firstPublication;
+      allowRetry();
+
+      await expect(secondPublication).rejects.toBe(cancellation);
+      await expect(fs.readdir(secondDirectory)).resolves.toEqual([]);
+
+      expect(
+        (await fs.readdir(directory, { recursive: true })).filter((entry) =>
+          entry.includes(".crabline-private-mutation"),
+        ),
+      ).toEqual([]);
+    } finally {
+      controller.abort(cancellation);
+      releaseCommit();
+      allowRetry();
+      await firstPublication?.catch(() => undefined);
+      await secondPublication?.catch(() => undefined);
+      linkSpy.mockRestore();
+      await disposeTempDir(directory);
+    }
+  });
+
+  it("times out a waiting sibling publication with bounded non-spinning retries", async () => {
+    const directory = await createTempDir();
+    const firstDirectory = path.join(directory, "telegram");
+    const secondDirectory = path.join(directory, "matrix");
+    await fs.mkdir(firstDirectory);
+    await fs.mkdir(secondDirectory);
+    let releaseCommit!: () => void;
+    const commitReleased = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    let commitReached!: () => void;
+    const reachedCommit = new Promise<void>((resolve) => {
+      commitReached = resolve;
+    });
+    let firstPublication: Promise<void> | undefined;
+    let nowMs = 0;
+    const sleepDelays: number[] = [];
+    try {
+      firstPublication = publishPrivateFileAtomically(
+        path.join(firstDirectory, "manifest.json"),
+        "telegram\n",
+        {
+          beforeCommitRename: async () => {
+            commitReached();
+            await commitReleased;
+          },
+          platform: "win32",
+          secureWindowsFile: async () => undefined,
+        },
+      );
+      await reachedCommit;
+
+      const failure = await publishPrivateFileAtomically(
+        path.join(secondDirectory, "manifest.json"),
+        "matrix\n",
+        {
+          claimWait: {
+            now: () => nowMs,
+            retryDelayMs: 40,
+            sleep: async (delayMs) => {
+              sleepDelays.push(delayMs);
+              nowMs += delayMs;
+              if (nowMs === 100) {
+                releaseCommit();
+                await firstPublication;
+              }
+            },
+            timeoutMs: 100,
+          },
+          platform: "win32",
+          secureWindowsFile: async () => undefined,
+        },
+      ).catch((error: unknown) => error);
+
+      expect(failure).toMatchObject({
+        code: "ETIMEDOUT",
+        message: "Timed out after 100ms waiting for a private mutation claim.",
+      });
+      expect(sleepDelays).toEqual([40, 40, 20]);
+      await expect(fs.readdir(secondDirectory)).resolves.toEqual([]);
+      await expect(fs.readFile(path.join(firstDirectory, "manifest.json"), "utf8")).resolves.toBe(
+        "telegram\n",
+      );
+    } finally {
+      releaseCommit();
+      await firstPublication?.catch(() => undefined);
+      await disposeTempDir(directory);
+    }
+  });
+
   it("falls back to an atomically renamed claim directory without hard-link support", async () => {
     const directory = await createTempDir();
+    const { holder, waiter } = createForeignLiveClaimRuntimes();
     const linkSpy = vi
       .spyOn(fs, "link")
       .mockRejectedValue(Object.assign(new Error("hard links unsupported"), { code: "ENOTSUP" }));
@@ -754,7 +1121,16 @@ describe("OpenClaw private file publication", () => {
     const reachedCommit = new Promise<void>((resolve) => {
       commitReached = resolve;
     });
+    let allowRetry!: () => void;
+    const retryAllowed = new Promise<void>((resolve) => {
+      allowRetry = resolve;
+    });
+    let retryReached!: () => void;
+    const reachedRetry = new Promise<void>((resolve) => {
+      retryReached = resolve;
+    });
     let firstPublication: Promise<void> | undefined;
+    let secondPublication: Promise<void> | undefined;
     try {
       const filePath = path.join(directory, "manifest.json");
       firstPublication = publishPrivateFileAtomically(filePath, "private\n", {
@@ -762,16 +1138,27 @@ describe("OpenClaw private file publication", () => {
           commitReached();
           await commitReleased;
         },
+        claimRuntime: holder,
       });
       await reachedCommit;
 
-      await expect(publishPrivateFileAtomically(filePath, "second\n")).rejects.toThrow(
-        "Private path mutation is already claimed.",
-      );
+      secondPublication = publishPrivateFileAtomically(filePath, "second\n", {
+        claimRuntime: waiter,
+        claimWait: {
+          sleep: async () => {
+            retryReached();
+            await retryAllowed;
+          },
+        },
+      });
+      await reachedRetry;
 
       releaseCommit();
       await firstPublication;
-      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+      allowRetry();
+      await secondPublication;
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
+      expect(waiter.getProcessIdentity).toHaveBeenCalledWith(holder.pid);
       expect(
         (await fs.readdir(directory)).filter((entry) =>
           entry.startsWith(".crabline-private-mutation"),
@@ -779,7 +1166,9 @@ describe("OpenClaw private file publication", () => {
       ).toEqual([]);
     } finally {
       releaseCommit();
+      allowRetry();
       await firstPublication?.catch(() => undefined);
+      await secondPublication?.catch(() => undefined);
       linkSpy.mockRestore();
       await disposeTempDir(directory);
     }
@@ -787,6 +1176,7 @@ describe("OpenClaw private file publication", () => {
 
   it("recovers a stale directory claim on filesystems without hard-link support", async () => {
     const directory = await createTempDir();
+    const sleep = vi.fn(async () => undefined);
     try {
       const claimPath = path.join(directory, ".crabline-private-mutation.claim");
       await writeOwnerOnlyClaimDirectory(
@@ -808,6 +1198,7 @@ describe("OpenClaw private file publication", () => {
           processIdentity: "test:replacement-owner",
           processStartedAtMs: 200,
         },
+        claimWait: { sleep },
       });
 
       await expect(fs.readFile(path.join(directory, "manifest.json"), "utf8")).resolves.toBe(
@@ -818,6 +1209,7 @@ describe("OpenClaw private file publication", () => {
           entry.startsWith(".crabline-private-mutation"),
         ),
       ).toEqual([]);
+      expect(sleep).not.toHaveBeenCalled();
     } finally {
       await disposeTempDir(directory);
     }
@@ -925,6 +1317,7 @@ describe("OpenClaw private file publication", () => {
               processIdentity: "test:replacement-owner",
               processStartedAtMs: 200,
             },
+            claimWait: { timeoutMs: 0 },
           }),
         ).rejects.toThrow("Private path mutation is already claimed.");
 
@@ -1022,6 +1415,7 @@ describe("OpenClaw private file publication", () => {
             processIdentity: "test:replacement-owner",
             processStartedAtMs: 200,
           },
+          claimWait: { timeoutMs: 0 },
         }),
       ).rejects.toThrow("Private path mutation is already claimed.");
 
@@ -1083,6 +1477,7 @@ describe("OpenClaw private file publication", () => {
             processIdentity: "test:replacement-owner",
             processStartedAtMs: 200,
           },
+          claimWait: { timeoutMs: 0 },
         }),
       ).rejects.toThrow("Private path mutation is already claimed.");
 
@@ -1228,7 +1623,9 @@ describe("OpenClaw private file publication", () => {
       await reachedCommit;
 
       await expect(
-        publishPrivateFileAtomically(path.join(directory, "MANIFEST.JSON"), "second\n"),
+        publishPrivateFileAtomically(path.join(directory, "MANIFEST.JSON"), "second\n", {
+          claimWait: { timeoutMs: 0 },
+        }),
       ).rejects.toThrow("Private path mutation is already claimed.");
 
       releaseCommit();
@@ -1685,6 +2082,7 @@ describe("OpenClaw private file publication", () => {
             processIdentity: "test:second-owner",
             processStartedAtMs: 200,
           },
+          claimWait: { timeoutMs: 0 },
         }),
       ).rejects.toThrow("Private path mutation is already claimed.");
 
