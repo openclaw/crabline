@@ -299,6 +299,7 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
         requireSlackTargetKind(parsed, to);
         return {
           channel: "slack",
+          providerTargetKey: slackTargetKey(to, threadTs),
           to,
           replyChannel: "slack",
           replyTo: slackTargetKey(to, threadTs),

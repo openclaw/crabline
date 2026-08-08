@@ -497,6 +497,9 @@ export async function startOpenClawCrablineAdapter(
         }),
       manifest: server.manifest,
       probe: () => providerAdapter.probe(),
+      resolveInboundProviderTargetKey: ({ inbound, response }) =>
+        providerAdapter.resolveInboundProviderTargetKey?.({ inbound, response }) ??
+        inbound.providerTargetKey,
     };
   } catch (error) {
     try {

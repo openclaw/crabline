@@ -88,6 +88,7 @@ type MattermostWebSocketEvent = {
 };
 type MattermostRecorderEvent = ServerRequestEvent & {
   accepted?: boolean | undefined;
+  channel?: MattermostChannel | undefined;
 };
 
 type MattermostServerState = {
@@ -503,6 +504,19 @@ function nextDirectChannelId(state: MattermostServerState, seed: string): string
   return channelId;
 }
 
+function mattermostDirectChannelName(botUserId: string, userId: string): string {
+  return [botUserId, userId].sort().join("__");
+}
+
+function findDirectChannel(
+  state: MattermostServerState,
+  channelName: string,
+): MattermostChannel | undefined {
+  return [...state.channels.values()].find(
+    (channel) => channel.type === "D" && channel.name === channelName,
+  );
+}
+
 function webSocketEventTooLargeResponse(): Response {
   return mattermostError("WebSocket event is too large", 413);
 }
@@ -516,13 +530,13 @@ function handleAdminInbound(params: {
       return jsonResponse({ error: `${field} must be a string`, ok: false }, 400);
     }
   }
-  const channelId = readMattermostId(params.body.channelId ?? params.body.channel_id);
+  const requestedChannelId = readMattermostId(params.body.channelId ?? params.body.channel_id);
   const senderId = readMattermostId(params.body.senderId ?? params.body.user_id);
   const text = readMattermostMessage(params.body.text ?? params.body.message);
-  if (!channelId || !senderId || !text) {
-    return jsonResponse({ error: "channelId, senderId, and text are required", ok: false }, 400);
+  if (!senderId || !text) {
+    return jsonResponse({ error: "senderId and text are required", ok: false }, 400);
   }
-  if (!isMattermostId(channelId)) {
+  if (requestedChannelId && !isMattermostId(requestedChannelId)) {
     return jsonResponse(
       { error: "channelId must be a 26-character Mattermost ID", ok: false },
       400,
@@ -552,7 +566,6 @@ function handleAdminInbound(params: {
     return pendingQueueFullResponse(params.state);
   }
   const previousUser = params.state.users.get(senderId);
-  const previousChannel = params.state.channels.get(channelId);
   const senderName =
     params.body.senderName === undefined
       ? (previousUser?.username ?? senderId)
@@ -573,17 +586,38 @@ function handleAdminInbound(params: {
   if (usernameOwner && usernameOwner !== senderId) {
     return jsonResponse({ error: "senderName is already in use", ok: false }, 400);
   }
+  const requestedChannel = requestedChannelId
+    ? params.state.channels.get(requestedChannelId)
+    : undefined;
   const channelType =
     params.body.channelType === undefined
-      ? (previousChannel?.type ?? "D")
+      ? (requestedChannel?.type ?? "D")
       : readMattermostString(params.body.channelType);
   if (!channelType || !MATTERMOST_CHANNEL_TYPES.has(channelType)) {
     return jsonResponse({ error: "channelType is not supported", ok: false }, 400);
   }
-  const channelName =
-    readMattermostString(params.body.channelName ?? params.body.channel_name) ??
-    previousChannel?.name ??
-    channelId;
+  const suppliedChannelName = readMattermostString(
+    params.body.channelName ?? params.body.channel_name,
+  );
+  const canonicalDirectName = mattermostDirectChannelName(params.state.botUserId, senderId);
+  const resolveCanonicalDirect = channelType === "D" && !requestedChannelId;
+  if (!requestedChannelId && !resolveCanonicalDirect) {
+    return jsonResponse({ error: "channelId is required", ok: false }, 400);
+  }
+  const existingDirect = resolveCanonicalDirect
+    ? findDirectChannel(params.state, canonicalDirectName)
+    : undefined;
+  const channelId = resolveCanonicalDirect
+    ? (existingDirect?.id ??
+      nextDirectChannelId(params.state, `dm:${canonicalDirectName.replace("__", ":")}`))
+    : requestedChannelId;
+  if (!channelId) {
+    return jsonResponse({ error: "channelId is required", ok: false }, 400);
+  }
+  const previousChannel = params.state.channels.get(channelId);
+  const channelName = resolveCanonicalDirect
+    ? canonicalDirectName
+    : (suppliedChannelName ?? previousChannel?.name ?? channelId);
   const channelDisplayName =
     readMattermostString(params.body.channelDisplayName ?? params.body.channel_display_name) ??
     previousChannel?.display_name ??
@@ -733,9 +767,7 @@ async function handleApi(params: {
     }
     const participantIds = [...userIds].sort();
     const channelName = participantIds.join("__");
-    const existingChannel = [...state.channels.values()].find(
-      (channel) => channel.type === "D" && channel.name === channelName,
-    );
+    const existingChannel = findDirectChannel(state, channelName);
     if (existingChannel) {
       return jsonResponse(existingChannel, 201);
     }
@@ -951,6 +983,8 @@ async function handleRequest(request: IncomingMessage, state: MattermostServerSt
       });
   if (method === "POST" && url.pathname === "/api/v4/posts") {
     event.accepted = response.status === 201;
+    const channelId = isJsonObject(body) ? readMattermostId(body.channel_id) : undefined;
+    event.channel = channelId ? state.channels.get(channelId) : undefined;
   }
   event.accepted ??= response.ok;
   await appendEvent(state, event, response.ok && method !== "GET");

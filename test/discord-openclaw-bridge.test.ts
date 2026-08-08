@@ -56,14 +56,16 @@ describe("Discord OpenClaw bridge", () => {
     const adapter = await startOpenClawCrablineAdapter({ channel: "discord" });
     adapters.push(adapter);
     expect(adapter.createAgentDelivery({ target: `dm:${USER_ID}` })).toMatchObject({
+      providerTargetKey: expect.stringMatching(/^\d{17,20}$/u),
       to: `user:${USER_ID}`,
     });
     expect(adapter.createAgentDelivery({ target: `group:${CHANNEL_ID}` })).toMatchObject({
+      providerTargetKey: CHANNEL_ID,
       to: `channel:${CHANNEL_ID}`,
     });
     expect(
       adapter.createAgentDelivery({ target: `thread:${CHANNEL_ID}/${THREAD_ID}` }),
-    ).toMatchObject({ to: `channel:${THREAD_ID}` });
+    ).toMatchObject({ providerTargetKey: THREAD_ID, to: `channel:${THREAD_ID}` });
 
     const inbound = adapter.createInbound({
       input: {
