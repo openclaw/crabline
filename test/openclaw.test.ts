@@ -32,10 +32,8 @@ import {
 } from "../src/openclaw/artifact-generation.js";
 import { MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/matrix.js";
 import { SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/signal.js";
-import {
-  isTelegramUsernameChatId,
-  TELEGRAM_NATIVE_CHAT_ID_MAX,
-} from "../src/servers/telegram-identity.js";
+import { TELEGRAM_NATIVE_CHAT_ID_MAX } from "../src/servers/telegram-identity.js";
+import { mattermostId } from "../src/servers/mattermost.js";
 import {
   createOpenClawCrablineProviderBridge,
   isRecord,
@@ -317,6 +315,7 @@ describe("OpenClaw local provider bridge", () => {
       createAgentDelivery() {
         return {
           channel: this.label,
+          providerTargetKey: this.label,
           replyChannel: this.label,
           replyTo: this.label,
           to: this.label,
@@ -739,6 +738,9 @@ describe("OpenClaw local provider bridge", () => {
         },
       },
     });
+    expect(
+      createOpenClawCrablineAgentDelivery({ manifest: zaloManifest, target: "group:group-1" }),
+    ).toMatchObject({ providerTargetKey: "group-1", to: "group-1" });
 
     expect(
       createOpenClawCrablineInbound({
@@ -1053,11 +1055,12 @@ describe("OpenClaw local provider bridge", () => {
     });
     expect(symbolicDelivery).toEqual({
       channel: "telegram",
+      providerTargetKey: expect.stringMatching(/^\d+$/u),
       to: expect.stringMatching(/^\d+$/u),
       replyChannel: "telegram",
       replyTo: symbolicDelivery.to,
     });
-    expect(BigInt(symbolicDelivery.to)).toBeGreaterThanOrEqual(1n << 52n);
+    expect(BigInt(symbolicDelivery.to)).toBeLessThanOrEqual(TELEGRAM_NATIVE_CHAT_ID_MAX);
     expect(() =>
       createOpenClawCrablineAgentDelivery({
         manifest,
@@ -1074,14 +1077,18 @@ describe("OpenClaw local provider bridge", () => {
       manifest,
       target: "group:alice",
     });
-    expect(BigInt(symbolicGroupDelivery.to)).toBeLessThanOrEqual(-(1n << 52n));
+    expect(symbolicGroupDelivery.providerTargetKey).toBe(symbolicGroupDelivery.to);
+    expect(BigInt(symbolicGroupDelivery.to)).toBeGreaterThanOrEqual(-TELEGRAM_NATIVE_CHAT_ID_MAX);
     expect(Number.isSafeInteger(Number(symbolicGroupDelivery.to))).toBe(true);
     expect(
       createOpenClawCrablineAgentDelivery({
         manifest,
         target: "thread:alice/42",
-      }).to,
-    ).toBe(`${symbolicGroupDelivery.to}:topic:42`);
+      }),
+    ).toMatchObject({
+      providerTargetKey: `${symbolicGroupDelivery.to}:topic:42`,
+      to: `${symbolicGroupDelivery.to}:topic:42`,
+    });
     expect(createOpenClawCrablineAgentDelivery({ manifest, target: "dm:42424242" }).to).toBe(
       "42424242",
     );
@@ -1146,7 +1153,7 @@ describe("OpenClaw local provider bridge", () => {
       providerUrl: "http://127.0.0.1:1234/crabline/telegram/inbound",
       qaTarget: "dm:alice",
       stateConversation: {
-        id: symbolicDelivery.to,
+        id: "alice",
         kind: "direct",
       },
     });
@@ -1162,7 +1169,7 @@ describe("OpenClaw local provider bridge", () => {
     ).toMatchObject({
       providerBody: { chatId: "42424242", fromId: 42_424_242 },
       providerTargetKey: "42424242",
-      stateConversation: { id: "42424242", kind: "direct" },
+      stateConversation: { id: "00042424242", kind: "direct" },
     });
     const usernameDirectInbound = createOpenClawCrablineInbound({
       manifest,
@@ -1179,7 +1186,7 @@ describe("OpenClaw local provider bridge", () => {
       },
       providerTargetKey: expect.stringMatching(/^\d+$/u),
       stateConversation: {
-        id: expect.stringMatching(/^\d+$/u),
+        id: "@alice",
         kind: "direct",
       },
     });
@@ -1217,22 +1224,23 @@ describe("OpenClaw local provider bridge", () => {
     });
     expect(usernameGroupInbound).toMatchObject({
       providerBody: {
-        chatId: expect.stringMatching(/^-\d+$/u),
+        chatId: "@channelusername",
         fromId: expect.any(Number),
       },
-      providerTargetKey: expect.stringMatching(/^-\d+$/u),
+      providerTargetKey: "@channelusername",
       qaTarget: "group:@channelusername",
       stateConversation: {
-        id: expect.stringMatching(/^-\d+$/u),
+        id: "@channelusername",
         kind: "group",
       },
     });
-    expect(usernameGroupInbound.providerBody.chatId).not.toBe("@channelusername");
-    const usernameGroupChatId = BigInt(String(usernameGroupInbound.providerBody.chatId));
-    expect(usernameGroupChatId).toBeLessThan(0n);
-    expect(-usernameGroupChatId).toBeGreaterThan(TELEGRAM_NATIVE_CHAT_ID_MAX);
-    expect(isTelegramUsernameChatId(Number(usernameGroupChatId))).toBe(true);
     expect(usernameGroupInbound.providerBody.chatId).not.toBe(symbolicGroupDelivery.to);
+    expect(
+      createOpenClawCrablineAgentDelivery({
+        manifest,
+        target: "channel:@channelusername",
+      }).providerTargetKey,
+    ).toBe(usernameGroupInbound.providerTargetKey);
     expect(
       createOpenClawCrablineInbound({
         manifest,
@@ -1317,7 +1325,9 @@ describe("OpenClaw local provider bridge", () => {
         },
       }).providerBody,
     ).toMatchObject({
+      chatType: "supergroup",
       chatId: expect.stringMatching(/^-\d+$/u),
+      isForum: true,
       messageThreadId: 42,
     });
     const normalizedTopicInbound = createOpenClawCrablineInbound({
@@ -1330,7 +1340,11 @@ describe("OpenClaw local provider bridge", () => {
       },
     });
     expect(normalizedTopicInbound).toMatchObject({
-      providerBody: { messageThreadId: 42 },
+      providerBody: {
+        chatType: "supergroup",
+        isForum: true,
+        messageThreadId: 42,
+      },
       providerTargetKey: `${symbolicGroupDelivery.to}:topic:42`,
       qaTarget: "thread:/v1/alice/42",
       threadId: "42",
@@ -1460,20 +1474,15 @@ describe("OpenClaw local provider bridge", () => {
           threadId: "42",
         },
       });
-      const registration = await fetch(telegram.endpoints.adminInboundUrl, {
-        body: JSON.stringify({
-          my_chat_member: {
-            chat: {
-              id: Number(inbound.providerBody.chatId),
-              is_forum: true,
-              type: "supergroup",
-              username: "examplegroup",
-            },
-          },
-          update_id: 1,
-        }),
+      const inboundResponse = await fetch(telegram.endpoints.adminInboundUrl, {
+        body: JSON.stringify(inbound.providerBody),
         headers: inbound.providerHeaders,
         method: "POST",
+      });
+      const inboundPayload: unknown = await inboundResponse.json();
+      const inboundProviderTargetKey = adapter.resolveInboundProviderTargetKey({
+        inbound,
+        response: inboundPayload,
       });
       const response = await fetch(`${telegram.baseUrl}/bot${telegram.botToken}/sendMessage`, {
         body: JSON.stringify({
@@ -1489,11 +1498,10 @@ describe("OpenClaw local provider bridge", () => {
       };
 
       expect(delivery.to).toBe("@examplegroup");
-      expect(registration.status).toBe(200);
+      expect(inboundResponse.status).toBe(200);
       expect(response.status).toBe(200);
-      expect(String(payload.result.chat.id)).toBe(inbound.providerBody.chatId);
+      expect(inboundProviderTargetKey).toBe(`${payload.result.chat.id}:topic:42`);
       expect(payload.result.message_thread_id).toBe(42);
-      expect(inbound.providerTargetKey).toBe(`${payload.result.chat.id}:topic:42`);
       expect(
         adapter.createOutboundFromRecorderEvent({
           event: {
@@ -1507,7 +1515,10 @@ describe("OpenClaw local provider bridge", () => {
             path: "/bot<redacted>/sendMessage",
             type: "api",
           },
-          targetByProviderTarget: new Map([[inbound.providerTargetKey, inbound.qaTarget]]),
+          targetByProviderTarget: new Map([
+            [delivery.providerTargetKey, inbound.qaTarget],
+            [inboundProviderTargetKey, inbound.qaTarget],
+          ]),
         }),
       ).toMatchObject({
         text: "outbound topic message",
@@ -1660,6 +1671,7 @@ describe("OpenClaw local provider bridge", () => {
       }),
     ).toEqual({
       channel: "whatsapp",
+      providerTargetKey: "15551234567@s.whatsapp.net",
       to: "15551234567@s.whatsapp.net",
       replyChannel: "whatsapp",
       replyTo: "15551234567@s.whatsapp.net",
@@ -1917,6 +1929,7 @@ describe("OpenClaw local provider bridge", () => {
       }),
     ).toEqual({
       channel: "slack",
+      providerTargetKey: "C1234567890:thread:1700000000.000100",
       to: "C1234567890",
       replyChannel: "slack",
       replyTo: "C1234567890:thread:1700000000.000100",
@@ -1928,6 +1941,7 @@ describe("OpenClaw local provider bridge", () => {
       }),
     ).toEqual({
       channel: "slack",
+      providerTargetKey: "D1234567890:thread:1700000000.000100",
       to: "D1234567890",
       replyChannel: "slack",
       replyTo: "D1234567890:thread:1700000000.000100",
@@ -2150,6 +2164,7 @@ describe("OpenClaw local provider bridge", () => {
       createOpenClawCrablineAgentDelivery({ manifest: signalManifest, target: "group:group-1" }),
     ).toEqual({
       channel: "signal",
+      providerTargetKey: "group:group-1",
       replyChannel: "signal",
       replyTo: "group:group-1",
       to: "group:group-1",
@@ -2597,12 +2612,39 @@ describe("OpenClaw local provider bridge", () => {
     });
     expect(delivery).toEqual({
       channel: "mattermost",
+      providerTargetKey: `user:${userId}`,
       replyChannel: "mattermost",
       replyTo: `user:${userId}`,
       to: `user:${userId}`,
     });
 
-    for (const target of ["dm:alice", "group:UPPERCASEIDENTIFIER123456"]) {
+    const logicalDirectDelivery = createOpenClawCrablineAgentDelivery({
+      manifest: mattermostManifest,
+      target: "dm:alice",
+    });
+    expect(logicalDirectDelivery).toMatchObject({
+      providerTargetKey: expect.stringMatching(/^user:[a-z0-9]{26}$/u),
+      to: expect.stringMatching(/^user:[a-z0-9]{26}$/u),
+    });
+    const logicalGroupDelivery = createOpenClawCrablineAgentDelivery({
+      manifest: mattermostManifest,
+      target: "group:general",
+    });
+    expect(logicalGroupDelivery).toMatchObject({
+      providerTargetKey: expect.stringMatching(/^[a-z0-9]{26}$/u),
+      to: expect.stringMatching(/^channel:[a-z0-9]{26}$/u),
+    });
+    expect(logicalGroupDelivery.to).toBe(`channel:${logicalGroupDelivery.providerTargetKey}`);
+    const nativeGroupDelivery = createOpenClawCrablineAgentDelivery({
+      manifest: mattermostManifest,
+      target: `group:${channelId}`,
+    });
+    expect(nativeGroupDelivery).toMatchObject({
+      providerTargetKey: channelId,
+      to: `channel:${channelId}`,
+    });
+
+    for (const target of ["alice", "UPPERCASEIDENTIFIER123456"]) {
       expect(() =>
         createOpenClawCrablineAgentDelivery({
           manifest: mattermostManifest,
@@ -2610,6 +2652,23 @@ describe("OpenClaw local provider bridge", () => {
         }),
       ).toThrow("must be exactly 26 lowercase alphanumeric characters");
     }
+
+    const logicalInbound = createOpenClawCrablineInbound({
+      manifest: mattermostManifest,
+      input: {
+        conversation: { id: "alice", kind: "direct" },
+        senderId: "alice",
+        text: "logical direct",
+      },
+    });
+    expect(logicalInbound).toMatchObject({
+      providerBody: {
+        senderId: logicalDirectDelivery.to.slice("user:".length),
+      },
+      providerTargetKey: logicalDirectDelivery.providerTargetKey,
+      qaTarget: "dm:alice",
+      stateConversation: { id: "alice", kind: "direct" },
+    });
 
     expect(() =>
       createOpenClawCrablineAgentDelivery({
@@ -2641,6 +2700,8 @@ describe("OpenClaw local provider bridge", () => {
       },
     });
     expect(inbound.providerBody.senderId).toBe(userId);
+    expect(inbound.providerBody).not.toHaveProperty("channelId");
+    expect(inbound.providerTargetKey).toBe(delivery.providerTargetKey);
     expect(() =>
       createOpenClawCrablineInbound({
         manifest: mattermostManifest,
@@ -2664,12 +2725,13 @@ describe("OpenClaw local provider bridge", () => {
       ).toThrow("OpenClaw Crabline inbound conversation id is required.");
     }
 
+    const directChannelId = "ababababababababababababab";
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
         manifest: mattermostManifest,
-        targetByProviderTarget: new Map([[inbound.providerTargetKey, `dm:${userId}`]]),
+        targetByProviderTarget: new Map([[directChannelId, `dm:${userId}`]]),
         event: {
-          body: { channel_id: inbound.providerTargetKey, message: "hello from openclaw" },
+          body: { channel_id: directChannelId, message: "hello from openclaw" },
           method: "POST",
           path: "/api/v4/posts",
           type: "api",
@@ -2687,7 +2749,7 @@ describe("OpenClaw local provider bridge", () => {
         manifest: mattermostManifest,
         targetByProviderTarget: new Map(),
         event: {
-          body: { channel_id: inbound.providerTargetKey, message: "unmapped reply" },
+          body: { channel_id: directChannelId, message: "unmapped reply" },
           method: "POST",
           path: "/api/v4/posts",
           type: "api",
@@ -2714,6 +2776,10 @@ describe("OpenClaw local provider bridge", () => {
       },
     });
     expect(threadInbound.providerTargetKey).toBe(`${channelId}:thread:${rootId}`);
+    expect(threadInbound.providerBody).toMatchObject({ channelId, rootId, senderId: userId });
+    expect(threadInbound.providerTargetKey.startsWith(nativeGroupDelivery.providerTargetKey)).toBe(
+      true,
+    );
     expect(threadInbound.threadId).toBe(rootId);
     const otherThreadInbound = createOpenClawCrablineInbound({
       manifest: mattermostManifest,
@@ -2754,17 +2820,43 @@ describe("OpenClaw local provider bridge", () => {
         },
       }),
     ).toMatchObject({ to: `group:${channelId}` });
-    expect(() =>
-      createOpenClawCrablineInbound({
-        manifest: mattermostManifest,
-        input: {
-          conversation: { id: channelId, kind: "group" },
-          senderId: userId,
-          text: "invalid root",
-          threadId: "parent",
-        },
-      }),
-    ).toThrow("must be exactly 26 lowercase alphanumeric characters");
+    const logicalThreadInbound = createOpenClawCrablineInbound({
+      manifest: mattermostManifest,
+      input: {
+        conversation: { id: channelId, kind: "group" },
+        senderId: userId,
+        text: "logical root",
+        threadId: "parent",
+      },
+    });
+    expect(logicalThreadInbound.providerBody.rootId).toMatch(/^[a-z0-9]{26}$/u);
+    expect(logicalThreadInbound.providerTargetKey).toBe(
+      `${channelId}:thread:${logicalThreadInbound.providerBody.rootId}`,
+    );
+    const otherSenderLogicalThread = createOpenClawCrablineInbound({
+      manifest: mattermostManifest,
+      input: {
+        conversation: { id: channelId, kind: "group" },
+        senderId: otherUserId,
+        text: "same logical root from another sender",
+        threadId: "parent",
+      },
+    });
+    const otherGroupLogicalThread = createOpenClawCrablineInbound({
+      manifest: mattermostManifest,
+      input: {
+        conversation: { id: otherChannelId, kind: "group" },
+        senderId: userId,
+        text: "same logical root in another group",
+        threadId: "parent",
+      },
+    });
+    expect(otherSenderLogicalThread.providerBody.rootId).toBe(
+      logicalThreadInbound.providerBody.rootId,
+    );
+    expect(otherGroupLogicalThread.providerBody.rootId).not.toBe(
+      logicalThreadInbound.providerBody.rootId,
+    );
     expect(
       createOpenClawCrablineOutboundFromRecorderEvent({
         manifest: mattermostManifest,
@@ -2795,6 +2887,7 @@ describe("OpenClaw local provider bridge", () => {
       }),
     ).toEqual({
       channel: "matrix",
+      providerTargetKey: roomId,
       replyChannel: "matrix",
       replyTo: `room:${roomId}`,
       to: `room:${roomId}`,
@@ -3017,6 +3110,18 @@ describe("OpenClaw local provider bridge", () => {
       native: false,
       threadId: "42",
     });
+    expect(parseQaTarget("thread:/v1/dm/42")).toEqual({
+      id: "dm",
+      kind: "group",
+      native: false,
+      threadId: "42",
+    });
+    expect(parseQaTarget("thread:/v1/dm/alice/42")).toEqual({
+      id: "alice",
+      kind: "direct",
+      native: false,
+      threadId: "42",
+    });
 
     const binding = createOpenClawCrablineProviderBinding(matrixManifest);
     expect(binding).toMatchObject({ channel: "matrix", requiredPluginIds: ["matrix"] });
@@ -3033,6 +3138,277 @@ describe("OpenClaw local provider bridge", () => {
         },
       },
     });
+  });
+
+  it("posts symbolic Telegram direct, group, and topic inbound through the provider bridge", async () => {
+    const adapter = await startOpenClawCrablineAdapter({ channel: "telegram" });
+    try {
+      const direct = adapter.createInbound({
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          senderId: "alice",
+          text: "symbolic direct",
+        },
+      });
+      const group = adapter.createInbound({
+        input: {
+          conversation: { id: "general", kind: "group" },
+          senderId: "alice",
+          text: "symbolic group",
+        },
+      });
+      const directTopic = adapter.createInbound({
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          senderId: "alice",
+          text: "symbolic private topic",
+          threadId: "42",
+        },
+      });
+      const topic = adapter.createInbound({
+        input: {
+          conversation: { id: "general", kind: "group" },
+          senderId: "alice",
+          text: "symbolic topic",
+          threadId: "42",
+        },
+      });
+
+      expect(adapter.createAgentDelivery({ target: "dm:alice" }).providerTargetKey).toBe(
+        direct.providerTargetKey,
+      );
+      expect(adapter.createAgentDelivery({ target: "group:general" }).providerTargetKey).toBe(
+        group.providerTargetKey,
+      );
+      expect(directTopic.qaTarget).toBe("thread:/v1/dm/alice/42");
+      expect(adapter.createAgentDelivery({ target: directTopic.qaTarget }).providerTargetKey).toBe(
+        directTopic.providerTargetKey,
+      );
+      expect(directTopic.providerBody).not.toHaveProperty("chatType");
+      expect(directTopic.providerBody).not.toHaveProperty("isForum");
+      expect(adapter.createAgentDelivery({ target: "thread:general/42" }).providerTargetKey).toBe(
+        topic.providerTargetKey,
+      );
+      expect(topic.providerBody).toMatchObject({
+        chatType: "supergroup",
+        isForum: true,
+        messageThreadId: 42,
+      });
+
+      for (const inbound of [direct, directTopic, group, topic]) {
+        const response = await fetch(inbound.providerUrl, {
+          body: JSON.stringify(inbound.providerBody),
+          headers: inbound.providerHeaders,
+          method: "POST",
+        });
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toMatchObject({ ok: true });
+      }
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("keeps Telegram logical and explicit native identities distinct per adapter", async () => {
+    const logicalFirst = await startOpenClawCrablineAdapter({ channel: "telegram" });
+    const nativeFirst = await startOpenClawCrablineAdapter({ channel: "telegram" });
+    try {
+      const logicalDirect = logicalFirst.createAgentDelivery({ target: "dm:alice" });
+      expect(() =>
+        logicalFirst.createAgentDelivery({ target: logicalDirect.providerTargetKey }),
+      ).toThrow("native id conflicts with a logical identity");
+      const logicalGroup = logicalFirst.createAgentDelivery({ target: "group:general" });
+      expect(() =>
+        logicalFirst.createAgentDelivery({ target: `channel:${logicalGroup.providerTargetKey}` }),
+      ).toThrow("native id conflicts with a logical identity");
+
+      nativeFirst.createAgentDelivery({ target: logicalDirect.providerTargetKey });
+      expect(() => nativeFirst.createAgentDelivery({ target: "dm:alice" })).toThrow(
+        "conflicts with another provider identity",
+      );
+      nativeFirst.createAgentDelivery({ target: `channel:${logicalGroup.providerTargetKey}` });
+      expect(() => nativeFirst.createAgentDelivery({ target: "group:general" })).toThrow(
+        "conflicts with another provider identity",
+      );
+    } finally {
+      await Promise.all([logicalFirst.close(), nativeFirst.close()]);
+    }
+  });
+
+  it("posts symbolic Mattermost direct, group, and thread inbound through the provider bridge", async () => {
+    const adapter = await startOpenClawCrablineAdapter({ channel: "mattermost" });
+    try {
+      const direct = adapter.createInbound({
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          senderId: "alice",
+          text: "symbolic direct",
+        },
+      });
+      const group = adapter.createInbound({
+        input: {
+          conversation: { id: "general", kind: "group" },
+          senderId: "alice",
+          text: "symbolic group",
+        },
+      });
+      const thread = adapter.createInbound({
+        input: {
+          conversation: { id: "general", kind: "group" },
+          senderId: "alice",
+          text: "symbolic thread",
+          threadId: "parent",
+        },
+      });
+
+      expect(adapter.createAgentDelivery({ target: "dm:alice" }).providerTargetKey).toBe(
+        direct.providerTargetKey,
+      );
+      expect(adapter.createAgentDelivery({ target: "group:general" }).providerTargetKey).toBe(
+        group.providerTargetKey,
+      );
+      expect(thread.providerTargetKey).toMatch(
+        new RegExp(`^${group.providerTargetKey}:thread:[a-z0-9]{26}$`, "u"),
+      );
+      expect(thread.providerBody).toMatchObject({
+        channelId: group.providerTargetKey,
+        rootId: expect.stringMatching(/^[a-z0-9]{26}$/u),
+        senderId: expect.stringMatching(/^[a-z0-9]{26}$/u),
+      });
+
+      for (const inbound of [direct, group, thread]) {
+        const response = await fetch(inbound.providerUrl, {
+          body: JSON.stringify(inbound.providerBody),
+          headers: inbound.providerHeaders,
+          method: "POST",
+        });
+        expect(response.status).toBe(200);
+        const payload: unknown = await response.json();
+        expect(payload).toMatchObject({ ok: true });
+        expect(adapter.resolveInboundProviderTargetKey({ inbound, response: payload })).toMatch(
+          /^[a-z0-9]{26}(?::thread:[a-z0-9]{26})?$/u,
+        );
+      }
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("uses Mattermost's authoritative direct-channel allocation for inbound and delivery", async () => {
+    const events: unknown[] = [];
+    const adapter = await startOpenClawCrablineAdapter({
+      channel: "mattermost",
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+    try {
+      if (adapter.manifest.provider !== "mattermost") {
+        throw new Error("Expected Mattermost provider manifest.");
+      }
+      const direct = adapter.createInbound({
+        input: {
+          conversation: { id: "alice", kind: "direct" },
+          senderId: "alice",
+          text: "direct allocation",
+        },
+      });
+      const userId = String(direct.providerBody.senderId);
+      const predictedChannelId = mattermostId(
+        `dm:${[adapter.manifest.botUserId, userId].sort().join(":")}`,
+      );
+      const occupyingGroup = adapter.createInbound({
+        input: {
+          conversation: { id: predictedChannelId, kind: "group" },
+          senderId: "alice",
+          text: "occupy the direct seed",
+        },
+      });
+      const inject = async (inbound: typeof direct) => {
+        const response = await fetch(inbound.providerUrl, {
+          body: JSON.stringify(inbound.providerBody),
+          headers: inbound.providerHeaders,
+          method: "POST",
+        });
+        expect(response.status).toBe(200);
+        return (await response.json()) as unknown;
+      };
+      await inject(occupyingGroup);
+      const directPayload = await inject(direct);
+      const directProviderTargetKey = adapter.resolveInboundProviderTargetKey({
+        inbound: direct,
+        response: directPayload,
+      });
+      const channelId = directProviderTargetKey;
+      expect(channelId).toMatch(/^[a-z0-9]{26}$/u);
+      expect(channelId).not.toBe(predictedChannelId);
+
+      const delivery = adapter.createAgentDelivery({ target: "dm:alice" });
+      const directChannelResponse = await fetch(
+        `${adapter.manifest.endpoints.apiRoot}/channels/direct`,
+        {
+          body: JSON.stringify([adapter.manifest.botUserId, userId]),
+          headers: {
+            authorization: `Bearer ${adapter.manifest.botToken}`,
+            "content-type": "application/json",
+          },
+          method: "POST",
+        },
+      );
+      expect(directChannelResponse.status).toBe(201);
+      await expect(directChannelResponse.json()).resolves.toMatchObject({
+        id: channelId,
+        type: "D",
+      });
+
+      const targetByProviderTarget = new Map([[delivery.providerTargetKey, direct.qaTarget]]);
+      for (const event of events) {
+        adapter.createOutboundFromRecorderEvent({ event, targetByProviderTarget });
+      }
+      const replyResponse = await fetch(`${adapter.manifest.endpoints.apiRoot}/posts`, {
+        body: JSON.stringify({ channel_id: channelId, message: "direct reply" }),
+        headers: {
+          authorization: `Bearer ${adapter.manifest.botToken}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(replyResponse.status).toBe(201);
+      const replyEvent = events.at(-1);
+      expect(
+        adapter.createOutboundFromRecorderEvent({ event: replyEvent, targetByProviderTarget }),
+      ).toMatchObject({ text: "direct reply", to: direct.qaTarget });
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("keeps Mattermost logical and explicit native identities distinct per adapter", async () => {
+    const logicalFirst = await startOpenClawCrablineAdapter({ channel: "mattermost" });
+    const nativeFirst = await startOpenClawCrablineAdapter({ channel: "mattermost" });
+    try {
+      const logicalDirect = logicalFirst.createAgentDelivery({ target: "dm:alice" });
+      const directId = logicalDirect.to.slice("user:".length);
+      expect(() => logicalFirst.createAgentDelivery({ target: directId })).toThrow(
+        "native id conflicts with a logical identity",
+      );
+      const logicalGroup = logicalFirst.createAgentDelivery({ target: "group:general" });
+      const groupId = logicalGroup.to.slice("channel:".length);
+      expect(() => logicalFirst.createAgentDelivery({ target: `channel:${groupId}` })).toThrow(
+        "native id conflicts with a logical identity",
+      );
+
+      nativeFirst.createAgentDelivery({ target: directId });
+      expect(() => nativeFirst.createAgentDelivery({ target: "dm:alice" })).toThrow(
+        "conflicts with another provider identity",
+      );
+      nativeFirst.createAgentDelivery({ target: `channel:${groupId}` });
+      expect(() => nativeFirst.createAgentDelivery({ target: "group:general" })).toThrow(
+        "conflicts with another provider identity",
+      );
+    } finally {
+      await Promise.all([logicalFirst.close(), nativeFirst.close()]);
+    }
   });
 
   it("posts WhatsApp OpenClaw inbound with admin headers into the local provider", async () => {

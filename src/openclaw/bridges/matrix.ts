@@ -177,6 +177,7 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
         const to = `room:${roomId}`;
         return {
           channel: "matrix",
+          providerTargetKey: roomId,
           replyChannel: "matrix",
           replyTo: to,
           to,
