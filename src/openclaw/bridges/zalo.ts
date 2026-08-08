@@ -82,7 +82,7 @@ export const ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProv
           throw new Error(ZALO_UNSUPPORTED_THREAD_TARGET_ERROR);
         }
         const to = nativeId(parsed.id);
-        return { channel: "zalo", replyChannel: "zalo", replyTo: to, to };
+        return { channel: "zalo", providerTargetKey: to, replyChannel: "zalo", replyTo: to, to };
       },
       createInbound(input) {
         if (input.threadId) {

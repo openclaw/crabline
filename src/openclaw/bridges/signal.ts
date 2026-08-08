@@ -122,7 +122,13 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           throw new Error("Signal does not support thread targets.");
         }
         const to = signalTarget(parsed.kind, parsed.id);
-        return { channel: "signal", replyChannel: "signal", replyTo: to, to };
+        return {
+          channel: "signal",
+          providerTargetKey: to,
+          replyChannel: "signal",
+          replyTo: to,
+          to,
+        };
       },
       createInbound(input) {
         if (input.threadId !== undefined) {

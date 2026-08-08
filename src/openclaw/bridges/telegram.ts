@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   createAdminInboundRequest,
+  createProviderIdRegistry,
   createOpenClawCrablineProviderBridge,
   DEFAULT_ACCOUNT_ID,
   isRecord,
@@ -17,14 +18,13 @@ import {
 } from "../../servers/telegram-identity.js";
 import { throwProbeHttpError } from "./probe-response.js";
 
-const TELEGRAM_SYMBOLIC_ID_BASE = TELEGRAM_NATIVE_CHAT_ID_MAX + 1n;
-const TELEGRAM_SYMBOLIC_ID_RANGE = 1n << 50n;
+const TELEGRAM_SYMBOLIC_ID_RANGE = TELEGRAM_NATIVE_CHAT_ID_MAX;
 const TELEGRAM_OUTBOUND_METHOD_RE =
   /\/(sendAnimation|sendAudio|sendDocument|sendMessage|sendPhoto|sendVideo)$/iu;
 function normalizeTelegramChatId(
   kind: "direct" | "group",
   id: string,
-  options: { preserveGroupUsername: boolean },
+  registry: ReturnType<typeof createProviderIdRegistry>,
 ): string {
   const value = id.trim();
   if (!value) {
@@ -44,30 +44,28 @@ function normalizeTelegramChatId(
     if (numericId < -TELEGRAM_NATIVE_CHAT_ID_MAX || numericId > TELEGRAM_NATIVE_CHAT_ID_MAX) {
       throw new Error("Telegram native numeric targets must fit within 52 significant bits.");
     }
-    return numericId.toString();
+    return registry.reserveNative(numericId.toString());
   }
   if (value.startsWith("@")) {
     const username = canonicalizeTelegramUsername(value);
     if (!username) {
       throw new Error("Telegram usernames must contain 4-32 letters, digits, or underscores.");
     }
-    if (kind === "group" && options.preserveGroupUsername) {
+    if (kind === "group") {
       return username;
     }
-    if (kind === "group") {
-      return String(telegramUsernameChatId(username));
-    }
-    return syntheticTelegramChatId(kind, username);
+    return registry.resolveLogical(username);
   }
-  return syntheticTelegramChatId(kind, value);
+  return registry.resolveLogical(value);
 }
 
 function syntheticTelegramChatId(kind: "direct" | "group", value: string): string {
   const hash = createHash("sha256").update(`${kind}:${value}`).digest().readBigUInt64BE();
+  const id = 1n + (hash % TELEGRAM_SYMBOLIC_ID_RANGE);
   if (kind === "group") {
-    return String(-(TELEGRAM_SYMBOLIC_ID_BASE + (hash % TELEGRAM_SYMBOLIC_ID_RANGE)));
+    return String(-id);
   }
-  return String(TELEGRAM_SYMBOLIC_ID_BASE + (hash % TELEGRAM_SYMBOLIC_ID_RANGE));
+  return String(id);
 }
 
 function telegramTargetKey(chatId: string, threadId?: number) {
@@ -134,6 +132,16 @@ function parseTelegramThreadTargetId(value: unknown): number | undefined {
 export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
   provider: "telegram",
   createAdapter(telegram) {
+    const directIds = createProviderIdRegistry({
+      candidate: (logicalKey) => syntheticTelegramChatId("direct", logicalKey),
+      conflictLabel: "Telegram direct target",
+    });
+    const groupIds = createProviderIdRegistry({
+      candidate: (logicalKey) => syntheticTelegramChatId("group", logicalKey),
+      conflictLabel: "Telegram group target",
+    });
+    const normalizeChat = (kind: "direct" | "group", id: string) =>
+      normalizeTelegramChatId(kind, id, kind === "direct" ? directIds : groupIds);
     return {
       async probe(signal) {
         const configuredBotId = /^([1-9]\d*):/u.exec(telegram.botToken)?.[1];
@@ -231,13 +239,12 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
             TELEGRAM_CHAT_USERNAME_PATTERN.test(parsed.id.trim()))
             ? "group"
             : parsed.kind;
-        const chatId = normalizeTelegramChatId(kind, parsed.id, {
-          preserveGroupUsername: true,
-        });
+        const chatId = normalizeChat(kind, parsed.id);
         const threadId = parseTelegramThreadTargetId(parsed.threadId);
         const to = telegramTargetKey(chatId, threadId);
         return {
           channel: "telegram",
+          providerTargetKey: to,
           to,
           replyChannel: "telegram",
           replyTo: to,
@@ -245,12 +252,8 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
       },
       createInbound(input) {
         const kind = input.conversation.kind === "direct" ? "direct" : "group";
-        const chatId = normalizeTelegramChatId(kind, input.conversation.id, {
-          preserveGroupUsername: false,
-        });
-        const senderId = normalizeTelegramChatId("direct", input.senderId, {
-          preserveGroupUsername: false,
-        });
+        const chatId = normalizeChat(kind, input.conversation.id);
+        const senderId = normalizeChat("direct", input.senderId);
         if (kind === "direct" && chatId !== senderId) {
           throw new Error(
             "Telegram direct conversation and sender must normalize to the same identity.",
@@ -263,6 +266,11 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
             chatId,
             fromId: Number(senderId),
             fromName: input.senderName ?? input.senderId,
+            // Threaded group ingress must provision the same provider facts required by later
+            // Telegram topic sends; private-chat topics use the bot-level topic capability.
+            ...(threadId !== undefined && kind === "group"
+              ? { chatType: "supergroup", isForum: true }
+              : {}),
             ...(threadId !== undefined ? { messageThreadId: threadId } : {}),
             ...(input.nativeCommand
               ? {
@@ -274,7 +282,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           providerTargetKey: telegramTargetKey(chatId, threadId),
           qaTarget: qaTargetForInbound(input),
           stateConversation: {
-            id: chatId,
+            id: input.conversation.id.trim(),
             kind: kind === "group" ? "group" : "direct",
           },
           ...(threadId !== undefined ? { threadId: String(threadId) } : {}),
@@ -288,7 +296,8 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         if (!method || !isRecord(event.body)) {
           return null;
         }
-        const chatId = canonicalTelegramRecorderChatId(event.body.chat_id);
+        const requestedChatId = readString(event.body.chat_id);
+        const chatId = canonicalTelegramRecorderChatId(requestedChatId);
         const text =
           method === "sendmessage"
             ? readNonBlankString(event.body.text)
@@ -302,6 +311,9 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         } catch {
           return null;
         }
+        const requestedProviderTargetKey = requestedChatId
+          ? telegramTargetKey(requestedChatId, threadId)
+          : undefined;
         const providerTargetKey = telegramTargetKey(chatId, threadId);
         return {
           accountId: DEFAULT_ACCOUNT_ID,
@@ -309,9 +321,24 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           senderName: "OpenClaw QA",
           text,
           to:
+            (requestedProviderTargetKey
+              ? targetByProviderTarget.get(requestedProviderTargetKey)
+              : undefined) ??
             targetByProviderTarget.get(providerTargetKey) ??
             (threadId === undefined ? chatId : providerTargetKey),
         };
+      },
+      resolveInboundProviderTargetKey({ response }) {
+        const update =
+          isRecord(response) && isRecord(response.update) ? response.update : undefined;
+        const message = update && isRecord(update.message) ? update.message : undefined;
+        const chat = message && isRecord(message.chat) ? message.chat : undefined;
+        const chatId = canonicalTelegramRecorderChatId(chat?.id);
+        if (!chatId) {
+          throw new Error("Crabline Telegram inbound response did not identify its provider chat.");
+        }
+        const threadId = parseTelegramThreadTargetId(message?.message_thread_id);
+        return telegramTargetKey(chatId, threadId);
       },
     };
   },

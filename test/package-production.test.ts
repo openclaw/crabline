@@ -3,11 +3,31 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { parse } from "yaml";
+import type {
+  CrablineServerManifest,
+  OpenClawCrablineAgentDelivery,
+  OpenClawCrablineGatewayBinding,
+  OpenClawCrablineInbound,
+  OpenClawCrablineInboundInput,
+  OpenClawCrablineOutboundMessage,
+  StartedOpenClawCrablineAdapter,
+} from "../src/index.js";
 
 const execFileAsync = promisify(execFile);
 const DEV_ONLY_RUNTIME_PACKAGES = ["baileys"] as const;
+type ReleasedStartedOpenClawCrablineAdapter = OpenClawCrablineGatewayBinding & {
+  close(): Promise<void>;
+  createAgentDelivery(params: { target: string }): OpenClawCrablineAgentDelivery;
+  createInbound(params: { input: OpenClawCrablineInboundInput }): OpenClawCrablineInbound;
+  createOutboundFromRecorderEvent(params: {
+    event: unknown;
+    targetByProviderTarget: ReadonlyMap<string, string>;
+  }): OpenClawCrablineOutboundMessage | null;
+  manifest: CrablineServerManifest;
+  probe(): Promise<unknown>;
+};
 const PUBLIC_RUNTIME_EXPORTS = [
   "BUILTIN_ADAPTERS",
   "CRABLINE_SERVER_CHANNELS",
@@ -65,6 +85,7 @@ const PUBLIC_TYPE_EXPORTS = [
   "OpenClawCrablineAgentDelivery",
   "OpenClawCrablineChannelDriverSelection",
   "OpenClawCrablineConversation",
+  "OpenClawCrablineCorrelatedAgentDelivery",
   "OpenClawCrablineGatewayBinding",
   "OpenClawCrablineInbound",
   "OpenClawCrablineInboundInput",
@@ -88,6 +109,7 @@ const PUBLIC_TYPE_EXPORTS = [
   "StartedMattermostServer",
   "StartedMatrixServer",
   "StartedOpenClawCrablineAdapter",
+  "StartedOpenClawCrablineCorrelatedAdapter",
   "StartedSignalServer",
   "StartedSlackServer",
   "StartDiscordServerParams",
@@ -127,6 +149,10 @@ const OBSOLETE_SERVER_DECLARATION_PATTERN = new RegExp(
 );
 
 describe("production package", () => {
+  it("keeps the released started-adapter shape source-compatible", () => {
+    expectTypeOf<ReleasedStartedOpenClawCrablineAdapter>().toExtend<StartedOpenClawCrablineAdapter>();
+  });
+
   it("builds distributable output before running package verification", async () => {
     const pkg = JSON.parse(await fs.readFile("package.json", "utf8")) as {
       scripts?: Record<string, string>;

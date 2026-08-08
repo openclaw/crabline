@@ -28,8 +28,8 @@ import {
   isRecord,
   parseQaTarget,
   runOpenClawCrablineProviderProbe,
-  type OpenClawCrablineAgentDelivery,
   type OpenClawCrablineChannelDriverSelection,
+  type OpenClawCrablineCorrelatedAgentDelivery,
   type OpenClawCrablineProviderReadinessResult,
   type OpenClawCrablineGatewayBinding,
   type OpenClawCrablineInbound,
@@ -38,7 +38,7 @@ import {
   type OpenClawCrablineProviderAdapter,
   type OpenClawCrablineProviderBridge,
   type OpenClawCrablineProviderBridgeRegistry,
-  type StartedOpenClawCrablineAdapter,
+  type StartedOpenClawCrablineCorrelatedAdapter,
   type StartOpenClawCrablineAdapterParams,
 } from "./openclaw/shared.js";
 import { publishOpenClawCrablineArtifactGeneration } from "./openclaw/artifact-generation.js";
@@ -66,6 +66,7 @@ export {
 export type {
   OpenClawCrablineAgentDelivery,
   OpenClawCrablineChannelDriverSelection,
+  OpenClawCrablineCorrelatedAgentDelivery,
   OpenClawCrablineProviderReadinessResult,
   OpenClawCrablineConversation,
   OpenClawCrablineGatewayBinding,
@@ -73,6 +74,7 @@ export type {
   OpenClawCrablineInboundInput,
   OpenClawCrablineOutboundMessage,
   StartedOpenClawCrablineAdapter,
+  StartedOpenClawCrablineCorrelatedAdapter,
   StartOpenClawCrablineAdapterParams,
 } from "./openclaw/shared.js";
 
@@ -441,7 +443,7 @@ export function createOpenClawCrablineProviderBinding(
 export function createOpenClawCrablineAgentDelivery(params: {
   manifest: CrablineServerManifest;
   target: string;
-}): OpenClawCrablineAgentDelivery {
+}): OpenClawCrablineCorrelatedAgentDelivery {
   return createOpenClawCrablineProviderAdapter(params.manifest).createAgentDelivery(
     parseQaTarget(params.target),
   );
@@ -471,7 +473,7 @@ export async function startOpenClawCrablineAdapter(
     createProviderAdapter?: typeof createOpenClawCrablineProviderAdapter;
     startServer?: (params: StartCrablineServerParams) => Promise<StartedCrablineServer>;
   } = {},
-): Promise<StartedOpenClawCrablineAdapter> {
+): Promise<StartedOpenClawCrablineCorrelatedAdapter> {
   const server: StartedCrablineServer = await (dependencies.startServer ?? startCrablineServer)({
     channel: params.channel,
     onEvent: params.onEvent,
@@ -497,6 +499,9 @@ export async function startOpenClawCrablineAdapter(
         }),
       manifest: server.manifest,
       probe: () => providerAdapter.probe(),
+      resolveInboundProviderTargetKey: ({ inbound, response }) =>
+        providerAdapter.resolveInboundProviderTargetKey?.({ inbound, response }) ??
+        inbound.providerTargetKey,
     };
   } catch (error) {
     try {

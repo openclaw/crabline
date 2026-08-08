@@ -62,6 +62,11 @@ export type OpenClawCrablineAgentDelivery = {
   to: string;
 };
 
+export type OpenClawCrablineCorrelatedAgentDelivery = OpenClawCrablineAgentDelivery & {
+  /** Adapter correlation key used to associate later provider recorder events with this target. */
+  providerTargetKey: string;
+};
+
 export type OpenClawCrablineInboundInput = {
   conversation: {
     id: string;
@@ -111,6 +116,18 @@ export type StartedOpenClawCrablineAdapter = OpenClawCrablineGatewayBinding & {
   probe(): Promise<unknown>;
 };
 
+export type StartedOpenClawCrablineCorrelatedAdapter = Omit<
+  StartedOpenClawCrablineAdapter,
+  "createAgentDelivery"
+> & {
+  createAgentDelivery(params: { target: string }): OpenClawCrablineCorrelatedAgentDelivery;
+  /** Resolves the provider-authoritative key from a successful inbound response. */
+  resolveInboundProviderTargetKey(params: {
+    inbound: OpenClawCrablineInbound;
+    response: unknown;
+  }): string;
+};
+
 export type ParsedQaTarget = {
   kind: "direct" | "group";
   id: string;
@@ -118,8 +135,40 @@ export type ParsedQaTarget = {
   threadId?: string;
 };
 
+export function createProviderIdRegistry(params: {
+  candidate(logicalKey: string): string;
+  conflictLabel: string;
+}) {
+  const idByLogicalKey = new Map<string, string>();
+  const ownerById = new Map<string, string>();
+  return {
+    resolveLogical(logicalKey: string) {
+      const existingId = idByLogicalKey.get(logicalKey);
+      if (existingId) {
+        return existingId;
+      }
+      const candidate = params.candidate(logicalKey);
+      const owner = ownerById.get(candidate);
+      if (owner && owner !== `logical:${logicalKey}`) {
+        throw new Error(`${params.conflictLabel} conflicts with another provider identity.`);
+      }
+      idByLogicalKey.set(logicalKey, candidate);
+      ownerById.set(candidate, `logical:${logicalKey}`);
+      return candidate;
+    },
+    reserveNative(nativeId: string) {
+      const owner = ownerById.get(nativeId);
+      if (owner?.startsWith("logical:")) {
+        throw new Error(`${params.conflictLabel} native id conflicts with a logical identity.`);
+      }
+      ownerById.set(nativeId, `native:${nativeId}`);
+      return nativeId;
+    },
+  };
+}
+
 export type OpenClawCrablineProviderAdapter = {
-  createAgentDelivery(parsed: ParsedQaTarget): OpenClawCrablineAgentDelivery;
+  createAgentDelivery(parsed: ParsedQaTarget): OpenClawCrablineCorrelatedAgentDelivery;
   createBinding(): OpenClawCrablineGatewayBinding;
   createInbound(input: OpenClawCrablineInboundInput): OpenClawCrablineInbound;
   createOutboundFromRecorderEvent(params: {
@@ -127,6 +176,10 @@ export type OpenClawCrablineProviderAdapter = {
     targetByProviderTarget: ReadonlyMap<string, string>;
   }): OpenClawCrablineOutboundMessage | null;
   probe(signal?: AbortSignal): Promise<unknown>;
+  resolveInboundProviderTargetKey?(params: {
+    inbound: OpenClawCrablineInbound;
+    response: unknown;
+  }): string;
 };
 
 export type OpenClawCrablineProviderBridge<
@@ -176,6 +229,11 @@ export function createOpenClawCrablineProviderBridge<
       probe(signal) {
         return adapter.probe(signal);
       },
+      ...(adapter.resolveInboundProviderTargetKey
+        ? {
+            resolveInboundProviderTargetKey: adapter.resolveInboundProviderTargetKey.bind(adapter),
+          }
+        : {}),
     };
   };
   const bridge: OpenClawCrablineProviderBridge<ProviderManifest> = {
@@ -303,12 +361,16 @@ export function parseQaTarget(target: string): ParsedQaTarget {
   if (trimmed.startsWith("thread:")) {
     const encoded = trimmed.startsWith("thread:/v1/");
     const rest = trimmed.slice(encoded ? "thread:/v1/".length : "thread:".length);
-    const slash = rest.indexOf("/");
-    if (slash <= 0 || slash !== rest.lastIndexOf("/")) {
+    const components = rest.split("/");
+    const explicitKind =
+      encoded && components.length === 3 && (components[0] === "dm" || components[0] === "group")
+        ? components.shift()
+        : undefined;
+    if (components.length !== 2) {
       return invalidTarget();
     }
-    let id = rest.slice(0, slash).trim();
-    let threadId = rest.slice(slash + 1).trim();
+    let id = components[0]!.trim();
+    let threadId = components[1]!.trim();
     if (encoded) {
       try {
         id = decodeURIComponent(id).trim();
@@ -320,11 +382,16 @@ export function parseQaTarget(target: string): ParsedQaTarget {
     if (!id || !threadId) {
       return invalidTarget();
     }
-    return { kind: "group", id, native: false, threadId };
+    return {
+      kind: explicitKind === "dm" ? "direct" : "group",
+      id,
+      native: false,
+      threadId,
+    };
   }
   if (trimmed.startsWith("channel:")) {
     const id = trimmed.slice("channel:".length).trim();
-    return id ? { kind: "group", id, native: false } : invalidTarget();
+    return id ? { kind: "group", id, native: true } : invalidTarget();
   }
   if (trimmed.startsWith("group:")) {
     const id = trimmed.slice("group:".length).trim();
@@ -357,7 +424,7 @@ export function qaTargetForInbound(input: OpenClawCrablineInboundInput) {
   const threadId = input.threadId?.trim();
   const prefix = input.conversation.kind === "direct" ? "dm" : "group";
   return threadId
-    ? `thread:/v1/${encodeQaThreadComponent(conversationId)}/${encodeQaThreadComponent(threadId)}`
+    ? `thread:/v1/${input.conversation.kind === "direct" ? "dm/" : ""}${encodeQaThreadComponent(conversationId)}/${encodeQaThreadComponent(threadId)}`
     : `${prefix}:${conversationId}`;
 }
 
