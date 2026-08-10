@@ -877,6 +877,48 @@ describe("Mattermost local provider server", () => {
     }
   });
 
+  it("reuses an admin-injected direct channel through the native direct route", async () => {
+    const server = await startMattermostServer({
+      adminToken: "admin",
+      botToken: "fake",
+      maxCommittedChannels: 1,
+    });
+    servers.push(server);
+    const directName = [server.manifest.botUserId, USER_ID].sort().join("__");
+    const expectedChannel = {
+      display_name: "",
+      id: CHANNEL_ID,
+      name: directName,
+      type: "D",
+    };
+
+    const injected = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({ channelId: CHANNEL_ID, senderId: USER_ID, text: "direct message" }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": "admin",
+      },
+      method: "POST",
+    });
+    expect(injected.status).toBe(200);
+
+    const retained = await fetch(`${server.manifest.endpoints.apiRoot}/channels/${CHANNEL_ID}`, {
+      headers: { authorization: "Bearer fake" },
+    });
+    await expect(retained.json()).resolves.toEqual(expectedChannel);
+
+    const direct = await fetch(`${server.manifest.endpoints.apiRoot}/channels/direct`, {
+      body: JSON.stringify([USER_ID, server.manifest.botUserId]),
+      headers: {
+        authorization: "Bearer fake",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(direct.status).toBe(201);
+    await expect(direct.json()).resolves.toEqual(expectedChannel);
+  });
+
   it("preserves unrelated retained channels when direct-channel IDs collide", async () => {
     const server = await startMattermostServer({
       adminToken: "admin",
