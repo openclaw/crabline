@@ -180,7 +180,10 @@ function padSignalMessage(message: Buffer): Buffer {
   return Buffer.concat([message, Buffer.from([1])]);
 }
 
-function createBaileysTestSocket(server: StartedWhatsAppServer) {
+function createBaileysTestSocket(
+  server: StartedWhatsAppServer,
+  options: { fireInitQueries?: boolean } = {},
+) {
   const creds: AuthenticationCreds = {
     ...initAuthCreds(),
     me: {
@@ -196,7 +199,7 @@ function createBaileysTestSocket(server: StartedWhatsAppServer) {
     browser: ["crabline", "test", "1.0"],
     connectTimeoutMs: 2_000,
     defaultQueryTimeoutMs: 750,
-    fireInitQueries: false,
+    fireInitQueries: options.fireInitQueries ?? false,
     keepAliveIntervalMs: 10_000,
     logger: silentLogger,
     markOnlineOnConnect: false,
@@ -2952,7 +2955,7 @@ describe("whatsapp local provider server", () => {
       },
       ok: true,
     });
-    const socket = createBaileysTestSocket(server);
+    const socket = createBaileysTestSocket(server, { fireInitQueries: true });
     const connectionUpdates: unknown[] = [];
     socket.ev.on("connection.update", (update) => {
       connectionUpdates.push(update);
@@ -2973,6 +2976,24 @@ describe("whatsapp local provider server", () => {
           ),
         "Baileys connection open",
       );
+      await expect(socket.groupFetchAllParticipating()).resolves.toEqual({});
+      await socket.sendPresenceUpdate("available");
+      await socket.sendPresenceUpdate("composing", "15551234567@s.whatsapp.net");
+      await socket.sendPresenceUpdate("paused", "15551234567@s.whatsapp.net");
+      await socket.readMessages([
+        {
+          fromMe: false,
+          id: "real-baileys-read",
+          remoteJid: "15551234567@s.whatsapp.net",
+        },
+      ]);
+      await expect(
+        socket.query({
+          attrs: { id: "real-baileys-ping", to: "s.whatsapp.net", type: "get", xmlns: "w:p" },
+          content: [{ attrs: {}, tag: "ping" }],
+          tag: "iq",
+        }),
+      ).resolves.toMatchObject({ attrs: { id: "real-baileys-ping", type: "result" } });
       await expect(
         socket.query({
           attrs: {
