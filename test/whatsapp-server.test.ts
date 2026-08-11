@@ -27,6 +27,7 @@ import {
   startWhatsAppServer,
   type StartedWhatsAppServer,
 } from "../src/index.js";
+import { WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/whatsapp.js";
 import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
 import {
   MAX_WHATSAPP_WEBSOCKET_FRAGMENTS,
@@ -50,6 +51,7 @@ const silentLogger = createSilentLogger();
 type BaileysUpsertMessage = {
   key?: {
     fromMe?: boolean | null | undefined;
+    id?: string | null | undefined;
     participant?: string | null | undefined;
     remoteJid?: string | null | undefined;
   };
@@ -2697,7 +2699,7 @@ describe("whatsapp local provider server", () => {
     await expect(closed).resolves.toBeUndefined();
   });
 
-  it("delivers inline OGG audio through the real Baileys media download path", async () => {
+  it("delivers OpenClaw bridge OGG audio through the real Baileys media path", async () => {
     const server = await startWhatsAppServer({
       selfJid: "15550000001:0@s.whatsapp.net",
     });
@@ -2725,21 +2727,26 @@ describe("whatsapp local provider server", () => {
       );
 
       const audio = Buffer.from("OggS\u0000crabline-whatsapp-audio-fixture", "utf8");
-      const inbound = await fetch(server.manifest.endpoints.adminInboundUrl, {
-        body: JSON.stringify({
-          audio: {
+      const bridge = WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE.createAdapterFromManifest(
+        server.manifest,
+      );
+      const bridgedInbound = bridge.createInbound({
+        attachments: [
+          {
             contentBase64: audio.toString("base64"),
+            id: "voice-note",
+            kind: "audio",
             mimeType: "audio/ogg; codecs=opus",
-            ptt: true,
           },
-          chatJid: "15551234567@s.whatsapp.net",
-          pushName: "Audio Sender",
-          senderJid: "15551234567@s.whatsapp.net",
-        }),
-        headers: {
-          "content-type": "application/json",
-          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
-        },
+        ],
+        conversation: { id: "15551234567@s.whatsapp.net", kind: "direct" },
+        senderId: "15551234567@s.whatsapp.net",
+        senderName: "Audio Sender",
+        text: "",
+      });
+      const inbound = await fetch(bridgedInbound.providerUrl, {
+        body: JSON.stringify(bridgedInbound.providerBody),
+        headers: bridgedInbound.providerHeaders,
         method: "POST",
       });
       expect(inbound.status).toBe(200);
@@ -2773,6 +2780,16 @@ describe("whatsapp local provider server", () => {
       expect(received?.message?.audioMessage?.url).toMatch(/^http:\/\/127\.0\.0\.1:/u);
 
       const audioMessage = received!.message!.audioMessage!;
+      const predictableUrl = new URL(audioMessage.url!);
+      predictableUrl.pathname = `/_crabline/media/whatsapp/${encodeURIComponent(received!.key!.id!)}`;
+      const predictableResponse = await fetch(predictableUrl);
+      expect(predictableResponse.status).toBe(404);
+
+      const tamperedUrl = new URL(audioMessage.url!);
+      tamperedUrl.pathname = `${tamperedUrl.pathname}-tampered`;
+      const tamperedResponse = await fetch(tamperedUrl);
+      expect(tamperedResponse.status).toBe(404);
+
       const encryptedResponse = await fetch(audioMessage.url!);
       expect(encryptedResponse.status).toBe(200);
       const encrypted = Buffer.from(await encryptedResponse.arrayBuffer());

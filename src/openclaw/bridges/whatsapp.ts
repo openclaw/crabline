@@ -74,6 +74,7 @@ function whatsappInboundAudio(input: {
 }
 
 export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
+  allowAttachmentOnlyInbound: true,
   provider: "whatsapp",
   createAdapter(whatsapp) {
     const messagesPath = new URL(whatsapp.endpoints.messagesUrl).pathname;

@@ -155,6 +155,7 @@ export type OpenClawCrablineProviderBridgeRegistry = {
 export function createOpenClawCrablineProviderBridge<
   TProvider extends CrablineServerManifest["provider"],
 >(params: {
+  allowAttachmentOnlyInbound?: boolean;
   createAdapter(
     manifest: Extract<CrablineServerManifest, { provider: TProvider }>,
   ): OpenClawCrablineProviderAdapter;
@@ -171,7 +172,10 @@ export function createOpenClawCrablineProviderBridge<
         return adapter.createBinding();
       },
       createInbound(input) {
-        if (!readNonBlankString(input.text)) {
+        if (
+          !readNonBlankString(input.text) &&
+          !(params.allowAttachmentOnlyInbound && input.attachments?.length)
+        ) {
           throw new Error("OpenClaw Crabline inbound message text is required.");
         }
         if (input.conversation.kind !== "direct" && input.conversation.kind !== "group") {

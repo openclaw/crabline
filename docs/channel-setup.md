@@ -604,7 +604,9 @@ encrypted `audioMessage` download. The server retains at most 1,000 active
 media fixtures and 16 MiB of encrypted media in total. A fixture expires after
 five minutes or no later than 30 seconds after its first successful download;
 later downloads cannot extend either deadline. Capacity exhaustion returns
-HTTP 503 without evicting an accepted, unexpired fixture.
+HTTP 503 without evicting an accepted, unexpired fixture. Every media URL
+includes an independent 256-bit capability; a missing or altered capability
+returns HTTP 404.
 
 Outbound text sends and composing presence are recorded through the local
 provider server's messages and presence endpoints.

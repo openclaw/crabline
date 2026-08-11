@@ -53,7 +53,7 @@ describe("WhatsApp OpenClaw bridge", () => {
           ],
           conversation: { id: "15551234567@s.whatsapp.net", kind: "direct" },
           senderId: "15551234567@s.whatsapp.net",
-          text: "voice-note fixture",
+          text: "",
         },
       });
 
