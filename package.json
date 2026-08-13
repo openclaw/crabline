@@ -67,7 +67,7 @@
     "@types/ws": "^8.18.1",
     "@typescript/native": "npm:typescript@^7.0.2",
     "@vitest/coverage-v8": "^4.1.10",
-    "baileys": "7.0.0-rc13",
+    "baileys": "7.0.0-rc14",
     "matrix-js-sdk": "41.9.0",
     "oxfmt": "^0.62.0",
     "oxlint": "^1.75.0",
