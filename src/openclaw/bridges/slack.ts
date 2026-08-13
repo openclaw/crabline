@@ -331,7 +331,7 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
           ...(threadTs ? { threadId: threadTs } : {}),
         };
       },
-      createOutboundFromRecorderEvent({ event, targetByProviderTarget }) {
+      createOutboundObservation({ event }) {
         if (!isRecord(event) || event.type !== "api" || typeof event.path !== "string") {
           return null;
         }
@@ -350,7 +350,8 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
           senderId: "openclaw",
           senderName: "OpenClaw QA",
           text,
-          to: targetByProviderTarget.get(providerTargetKey) ?? providerTargetKey,
+          providerTargetKeys: [providerTargetKey],
+          fallbackTarget: providerTargetKey,
         };
       },
     };

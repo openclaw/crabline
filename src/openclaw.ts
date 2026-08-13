@@ -26,8 +26,9 @@ import {
   OPENCLAW_CRABLINE_MANIFEST_PATH,
   getUnsettledOpenClawCrablineProviderProbe,
   isRecord,
-  parseQaTarget,
+  parseQaDeliveryTarget,
   runOpenClawCrablineProviderProbe,
+  correlateOpenClawCrablineOutboundObservation,
   type OpenClawCrablineChannelDriverSelection,
   type OpenClawCrablineCorrelatedAgentDelivery,
   type OpenClawCrablineProviderReadinessResult,
@@ -35,6 +36,7 @@ import {
   type OpenClawCrablineInbound,
   type OpenClawCrablineInboundInput,
   type OpenClawCrablineOutboundMessage,
+  type OpenClawCrablineOutboundObservation,
   type OpenClawCrablineProviderAdapter,
   type OpenClawCrablineProviderBridge,
   type OpenClawCrablineProviderBridgeRegistry,
@@ -73,6 +75,7 @@ export type {
   OpenClawCrablineInbound,
   OpenClawCrablineInboundInput,
   OpenClawCrablineOutboundMessage,
+  OpenClawCrablineOutboundObservation,
   StartedOpenClawCrablineAdapter,
   StartedOpenClawCrablineCorrelatedAdapter,
   StartOpenClawCrablineAdapterParams,
@@ -388,12 +391,12 @@ function createOpenClawCrablineProviderAdapter(
     const adapter = bridge.createAdapterFromManifest(manifest);
     return {
       ...adapter,
-      createOutboundFromRecorderEvent: (params) =>
+      createOutboundObservation: (params) =>
         isAcceptedOpenClawCrablineOutbound({
           event: params.event,
           manifest,
         })
-          ? adapter.createOutboundFromRecorderEvent(params)
+          ? adapter.createOutboundObservation(params)
           : null,
       probe: () =>
         runOpenClawCrablineProviderProbe(manifest.provider, (signal) => adapter.probe(signal)),
@@ -443,9 +446,10 @@ export function createOpenClawCrablineProviderBinding(
 export function createOpenClawCrablineAgentDelivery(params: {
   manifest: CrablineServerManifest;
   target: string;
+  threadId?: string | undefined;
 }): OpenClawCrablineCorrelatedAgentDelivery {
   return createOpenClawCrablineProviderAdapter(params.manifest).createAgentDelivery(
-    parseQaTarget(params.target),
+    parseQaDeliveryTarget(params),
   );
 }
 
@@ -456,14 +460,30 @@ export function createOpenClawCrablineInbound(params: {
   return createOpenClawCrablineProviderAdapter(params.manifest).createInbound(params.input);
 }
 
+/** @deprecated Use createOpenClawCrablineOutboundObservation and correlate in the consumer. */
 export function createOpenClawCrablineOutboundFromRecorderEvent(params: {
   event: unknown;
   manifest: CrablineServerManifest;
   targetByProviderTarget: ReadonlyMap<string, string>;
 }): OpenClawCrablineOutboundMessage | null {
-  return createOpenClawCrablineProviderAdapter(params.manifest).createOutboundFromRecorderEvent({
+  const observation = createOpenClawCrablineOutboundObservation({
     event: params.event,
-    targetByProviderTarget: params.targetByProviderTarget,
+    manifest: params.manifest,
+  });
+  return observation
+    ? correlateOpenClawCrablineOutboundObservation({
+        observation,
+        targetByProviderTarget: params.targetByProviderTarget,
+      })
+    : null;
+}
+
+export function createOpenClawCrablineOutboundObservation(params: {
+  event: unknown;
+  manifest: CrablineServerManifest;
+}): OpenClawCrablineOutboundObservation | null {
+  return createOpenClawCrablineProviderAdapter(params.manifest).createOutboundObservation({
+    event: params.event,
   });
 }
 
@@ -489,14 +509,20 @@ export async function startOpenClawCrablineAdapter(
       close: server.close,
       createGatewayConfig: (openclawConfig = params.openclawConfig ?? {}) =>
         binding.createGatewayConfig(openclawConfig),
-      createAgentDelivery: ({ target }) =>
-        providerAdapter.createAgentDelivery(parseQaTarget(target)),
+      createAgentDelivery: ({ target, threadId }) =>
+        providerAdapter.createAgentDelivery(parseQaDeliveryTarget({ target, threadId })),
       createInbound: ({ input }) => providerAdapter.createInbound(input),
-      createOutboundFromRecorderEvent: ({ event, targetByProviderTarget }) =>
-        providerAdapter.createOutboundFromRecorderEvent({
-          event,
-          targetByProviderTarget,
-        }),
+      createOutboundObservation: ({ event }) =>
+        providerAdapter.createOutboundObservation({ event }),
+      createOutboundFromRecorderEvent: ({ event, targetByProviderTarget }) => {
+        const observation = providerAdapter.createOutboundObservation({ event });
+        return observation
+          ? correlateOpenClawCrablineOutboundObservation({
+              observation,
+              targetByProviderTarget,
+            })
+          : null;
+      },
       manifest: server.manifest,
       probe: () => providerAdapter.probe(),
       resolveInboundProviderTargetKey: ({ inbound, response }) =>

@@ -288,7 +288,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           ...(threadId !== undefined ? { threadId: String(threadId) } : {}),
         };
       },
-      createOutboundFromRecorderEvent({ event, targetByProviderTarget }) {
+      createOutboundObservation({ event }) {
         if (!isRecord(event) || event.type !== "api" || typeof event.path !== "string") {
           return null;
         }
@@ -320,12 +320,11 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           senderId: "openclaw",
           senderName: "OpenClaw QA",
           text,
-          to:
-            (requestedProviderTargetKey
-              ? targetByProviderTarget.get(requestedProviderTargetKey)
-              : undefined) ??
-            targetByProviderTarget.get(providerTargetKey) ??
-            (threadId === undefined ? chatId : providerTargetKey),
+          providerTargetKeys:
+            requestedProviderTargetKey && requestedProviderTargetKey !== providerTargetKey
+              ? [requestedProviderTargetKey, providerTargetKey]
+              : [providerTargetKey],
+          fallbackTarget: threadId === undefined ? chatId : providerTargetKey,
         };
       },
       resolveInboundProviderTargetKey({ response }) {

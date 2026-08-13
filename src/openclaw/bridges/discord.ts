@@ -153,7 +153,7 @@ export const DISCORD_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineP
           ...(threadId ? { threadId } : {}),
         };
       },
-      createOutboundFromRecorderEvent({ event, targetByProviderTarget }) {
+      createOutboundObservation({ event }) {
         if (
           !isRecord(event) ||
           event.type !== "api" ||
@@ -174,7 +174,8 @@ export const DISCORD_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineP
           senderId: discord.botUserId,
           senderName: "OpenClaw QA",
           text,
-          to: targetByProviderTarget.get(providerTargetKey(channelId)) ?? channelId,
+          providerTargetKeys: [providerTargetKey(channelId)],
+          fallbackTarget: channelId,
         };
       },
     };

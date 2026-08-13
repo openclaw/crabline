@@ -12,6 +12,7 @@ import type {
   OpenClawCrablineInbound,
   OpenClawCrablineInboundInput,
   OpenClawCrablineOutboundMessage,
+  OpenClawCrablineOutboundObservation,
   StartedOpenClawCrablineAdapter,
 } from "../src/index.js";
 
@@ -21,6 +22,7 @@ type ReleasedStartedOpenClawCrablineAdapter = OpenClawCrablineGatewayBinding & {
   close(): Promise<void>;
   createAgentDelivery(params: { target: string }): OpenClawCrablineAgentDelivery;
   createInbound(params: { input: OpenClawCrablineInboundInput }): OpenClawCrablineInbound;
+  createOutboundObservation(params: { event: unknown }): OpenClawCrablineOutboundObservation | null;
   createOutboundFromRecorderEvent(params: {
     event: unknown;
     targetByProviderTarget: ReadonlyMap<string, string>;
@@ -49,6 +51,7 @@ const PUBLIC_RUNTIME_EXPORTS = [
   "createOpenClawCrablineChannelReportNotes",
   "createOpenClawCrablineInbound",
   "createOpenClawCrablineOutboundFromRecorderEvent",
+  "createOpenClawCrablineOutboundObservation",
   "createOpenClawCrablineProviderBinding",
   "createRegistry",
   "isCrablineServerChannel",
@@ -90,6 +93,7 @@ const PUBLIC_TYPE_EXPORTS = [
   "OpenClawCrablineInbound",
   "OpenClawCrablineInboundInput",
   "OpenClawCrablineOutboundMessage",
+  "OpenClawCrablineOutboundObservation",
   "OpenClawCrablineProviderReadinessResult",
   "ProbeResult",
   "ProviderAdapter",

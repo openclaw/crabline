@@ -165,7 +165,7 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           stateConversation: { id: conversationId, kind },
         };
       },
-      createOutboundFromRecorderEvent({ event, targetByProviderTarget }) {
+      createOutboundObservation({ event }) {
         if (
           !isRecord(event) ||
           event.type !== "api" ||
@@ -187,7 +187,8 @@ export const SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           senderId: "openclaw",
           senderName: "OpenClaw QA",
           text,
-          to: targetByProviderTarget.get(target) ?? target,
+          providerTargetKeys: [target],
+          fallbackTarget: target,
         };
       },
     };

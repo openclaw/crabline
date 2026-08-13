@@ -11,6 +11,7 @@ import {
   createOpenClawCrablineProviderBinding,
   createOpenClawCrablineInbound,
   createOpenClawCrablineOutboundFromRecorderEvent as translateOpenClawCrablineOutbound,
+  createOpenClawCrablineOutboundObservation,
   isCrablineServerChannel,
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
   OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
@@ -309,6 +310,91 @@ const zaloManifest: CrablineServerManifest = {
 };
 
 describe("OpenClaw local provider bridge", () => {
+  it("exposes provider correlation facts without consumer target strings", () => {
+    expect(
+      createOpenClawCrablineAgentDelivery({
+        manifest,
+        target: "dm:42424242",
+        threadId: "7",
+      }),
+    ).toMatchObject({
+      providerTargetKey: "42424242:topic:7",
+      to: "42424242:topic:7",
+    });
+
+    expect(
+      createOpenClawCrablineOutboundObservation({
+        manifest,
+        event: {
+          accepted: true,
+          body: {
+            chat_id: "00042424242",
+            message_thread_id: 7,
+            text: "topic reply",
+          },
+          method: "POST",
+          path: "/bot<redacted>/sendMessage",
+          type: "api",
+        },
+      }),
+    ).toMatchObject({
+      fallbackTarget: "42424242:topic:7",
+      providerTargetKeys: ["00042424242:topic:7", "42424242:topic:7"],
+      text: "topic reply",
+    });
+
+    expect(
+      createOpenClawCrablineOutboundObservation({
+        manifest: mattermostManifest,
+        event: {
+          accepted: true,
+          body: {
+            channel_id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+            message: "direct reply",
+            root_id: "cccccccccccccccccccccccccc",
+          },
+          channel: {
+            name: "aaaaaaaaaaaaaaaaaaaaaaaaaa__dddddddddddddddddddddddddd",
+            type: "D",
+          },
+          method: "POST",
+          path: "/api/v4/posts",
+          type: "api",
+        },
+      }),
+    ).toMatchObject({
+      providerTargetKeys: [
+        "bbbbbbbbbbbbbbbbbbbbbbbbbb:thread:cccccccccccccccccccccccccc",
+        "user:dddddddddddddddddddddddddd:thread:cccccccccccccccccccccccccc",
+      ],
+      text: "direct reply",
+    });
+
+    const roomId = "!qa:matrix.test";
+    expect(
+      createOpenClawCrablineOutboundObservation({
+        manifest: matrixManifest,
+        event: {
+          accepted: true,
+          body: {
+            body: "matrix reply",
+            msgtype: "m.text",
+            "m.relates_to": {
+              event_id: "$root:matrix.test",
+              rel_type: "m.thread",
+            },
+          },
+          method: "PUT",
+          path: `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/observation`,
+          type: "api",
+        },
+      }),
+    ).toMatchObject({
+      providerTargetKeys: [`${roomId}:thread:$root:matrix.test`],
+      text: "matrix reply",
+    });
+  });
+
   it("preserves prototype methods and receivers on class-based adapters", async () => {
     class ClassAdapter implements OpenClawCrablineProviderAdapter {
       readonly label = "class-adapter";
@@ -344,7 +430,7 @@ describe("OpenClaw local provider bridge", () => {
         };
       }
 
-      createOutboundFromRecorderEvent() {
+      createOutboundObservation() {
         return null;
       }
 
@@ -2996,28 +3082,25 @@ describe("OpenClaw local provider bridge", () => {
       type: "api",
     };
     expect(
-      matrixAdapter.createOutboundFromRecorderEvent({
+      matrixAdapter.createOutboundObservation({
         event: transactionEvent,
-        targetByProviderTarget: new Map([[roomId, `group:${roomId}`]]),
       }),
-    ).toMatchObject({ text: "first delivery", to: `group:${roomId}` });
+    ).toMatchObject({ text: "first delivery", providerTargetKeys: [roomId] });
     expect(
-      matrixAdapter.createOutboundFromRecorderEvent({
+      matrixAdapter.createOutboundObservation({
         event: {
           ...transactionEvent,
           body: { body: "replayed body must not deliver", msgtype: "m.text" },
         },
-        targetByProviderTarget: new Map([[roomId, `group:${roomId}`]]),
       }),
     ).toBeNull();
     expect(
-      matrixAdapter.createOutboundFromRecorderEvent({
+      matrixAdapter.createOutboundObservation({
         event: {
           ...transactionEvent,
           path: `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/replayed-marker`,
           replayed: true,
         },
-        targetByProviderTarget: new Map([[roomId, `group:${roomId}`]]),
       }),
     ).toBeNull();
 
