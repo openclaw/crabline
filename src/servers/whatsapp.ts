@@ -455,7 +455,8 @@ function createWhatsAppAudioFixture(params: {
   const mac = createHmac("sha256", macKey).update(iv).update(ciphertext).digest().subarray(0, 10);
   const encrypted = Buffer.concat([ciphertext, mac]);
   const mediaCapability = randomBytes(32).toString("base64url");
-  const mediaPath = `/_crabline/media/whatsapp/${encodeURIComponent(params.messageId)}/${mediaCapability}`;
+  const encodedMessageId = Buffer.from(params.messageId, "utf8").toString("base64url");
+  const mediaPath = `/_crabline/media/whatsapp/${encodedMessageId}/${mediaCapability}`;
   return {
     audioMessage: {
       fileEncSha256: createHash("sha256").update(encrypted).digest(),

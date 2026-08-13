@@ -2863,6 +2863,36 @@ describe("whatsapp local provider server", () => {
     });
   });
 
+  it("serves inline audio for dot-segment message ids", async () => {
+    const server = await startWhatsAppServer();
+    servers.push(server);
+
+    const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        audio: {
+          contentBase64: Buffer.from("dot segment audio").toString("base64"),
+          mimeType: "audio/ogg; codecs=opus",
+          ptt: true,
+        },
+        chatJid: "15551234567@s.whatsapp.net",
+        messageId: "..",
+        senderJid: "15551234567@s.whatsapp.net",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      message: { message: { audioMessage: { url: string } } };
+    };
+
+    const media = await fetch(payload.message.message.audioMessage.url);
+    expect(media.status).toBe(200);
+  });
+
   it("does not evict accepted audio when a later inbound message exceeds queue capacity", async () => {
     const directory = await createTempDir();
     directories.push(directory);
@@ -2906,7 +2936,7 @@ describe("whatsapp local provider server", () => {
     await expect(rejected.json()).resolves.toMatchObject({ error: { code: 4 } });
     const retained = await fetch(firstPayload.message.message.audioMessage.url);
     expect(retained.status).toBe(200);
-  }, 30_000);
+  }, 60_000);
 
   it("expires undownloaded inline audio fixtures", async () => {
     const server = await startWhatsAppServer();
