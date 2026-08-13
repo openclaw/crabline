@@ -104,7 +104,7 @@ export const ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProv
           stateConversation: { id: chatId, kind },
         };
       },
-      createOutboundFromRecorderEvent({ event, targetByProviderTarget }) {
+      createOutboundObservation({ event }) {
         if (
           !isRecord(event) ||
           event.type !== "api" ||
@@ -127,7 +127,8 @@ export const ZALO_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProv
           senderId: zalo.botId,
           senderName: "OpenClaw QA",
           text,
-          to: targetByProviderTarget.get(chatId) ?? chatId,
+          providerTargetKeys: [chatId],
+          fallbackTarget: chatId,
         };
       },
     };

@@ -97,6 +97,13 @@ export type OpenClawCrablineOutboundMessage = {
   to: string;
 };
 
+export type OpenClawCrablineOutboundObservation = Omit<OpenClawCrablineOutboundMessage, "to"> & {
+  /** Provider-authoritative keys, in lookup priority order, for consumer correlation. */
+  providerTargetKeys: readonly [string, ...string[]];
+  /** Provider-native target used only when no consumer correlation exists. */
+  fallbackTarget?: string | undefined;
+};
+
 export type StartOpenClawCrablineAdapterParams = {
   channel: CrablineServerChannel;
   onEvent?: ServerEventObserver | undefined;
@@ -106,8 +113,13 @@ export type StartOpenClawCrablineAdapterParams = {
 
 export type StartedOpenClawCrablineAdapter = OpenClawCrablineGatewayBinding & {
   close(): Promise<void>;
-  createAgentDelivery(params: { target: string }): OpenClawCrablineAgentDelivery;
+  createAgentDelivery(params: {
+    target: string;
+    threadId?: string | undefined;
+  }): OpenClawCrablineAgentDelivery;
   createInbound(params: { input: OpenClawCrablineInboundInput }): OpenClawCrablineInbound;
+  createOutboundObservation(params: { event: unknown }): OpenClawCrablineOutboundObservation | null;
+  /** @deprecated Use createOutboundObservation and correlate providerTargetKeys in the consumer. */
   createOutboundFromRecorderEvent(params: {
     event: unknown;
     targetByProviderTarget: ReadonlyMap<string, string>;
@@ -120,7 +132,10 @@ export type StartedOpenClawCrablineCorrelatedAdapter = Omit<
   StartedOpenClawCrablineAdapter,
   "createAgentDelivery"
 > & {
-  createAgentDelivery(params: { target: string }): OpenClawCrablineCorrelatedAgentDelivery;
+  createAgentDelivery(params: {
+    target: string;
+    threadId?: string | undefined;
+  }): OpenClawCrablineCorrelatedAgentDelivery;
   /** Resolves the provider-authoritative key from a successful inbound response. */
   resolveInboundProviderTargetKey(params: {
     inbound: OpenClawCrablineInbound;
@@ -134,6 +149,18 @@ export type ParsedQaTarget = {
   native: boolean;
   threadId?: string;
 };
+
+export function parseQaDeliveryTarget(params: {
+  target: string;
+  threadId?: string | undefined;
+}): ParsedQaTarget {
+  const parsed = parseQaTarget(params.target);
+  const threadId = params.threadId?.trim();
+  if (parsed.threadId && threadId && parsed.threadId !== threadId) {
+    throw new Error("OpenClaw Crabline delivery received conflicting thread targets.");
+  }
+  return threadId ? { ...parsed, threadId } : parsed;
+}
 
 export function createProviderIdRegistry(params: {
   candidate(logicalKey: string): string;
@@ -171,10 +198,7 @@ export type OpenClawCrablineProviderAdapter = {
   createAgentDelivery(parsed: ParsedQaTarget): OpenClawCrablineCorrelatedAgentDelivery;
   createBinding(): OpenClawCrablineGatewayBinding;
   createInbound(input: OpenClawCrablineInboundInput): OpenClawCrablineInbound;
-  createOutboundFromRecorderEvent(params: {
-    event: unknown;
-    targetByProviderTarget: ReadonlyMap<string, string>;
-  }): OpenClawCrablineOutboundMessage | null;
+  createOutboundObservation(params: { event: unknown }): OpenClawCrablineOutboundObservation | null;
   probe(signal?: AbortSignal): Promise<unknown>;
   resolveInboundProviderTargetKey?(params: {
     inbound: OpenClawCrablineInbound;
@@ -223,8 +247,8 @@ export function createOpenClawCrablineProviderBridge<
         }
         return adapter.createInbound(input);
       },
-      createOutboundFromRecorderEvent(outboundParams) {
-        return adapter.createOutboundFromRecorderEvent(outboundParams);
+      createOutboundObservation(outboundParams) {
+        return adapter.createOutboundObservation(outboundParams);
       },
       probe(signal) {
         return adapter.probe(signal);
@@ -249,6 +273,25 @@ export function createOpenClawCrablineProviderBridge<
     provider: params.provider as ProviderManifest["provider"],
   };
   return bridge;
+}
+
+export function correlateOpenClawCrablineOutboundObservation(params: {
+  observation: OpenClawCrablineOutboundObservation;
+  targetByProviderTarget: ReadonlyMap<string, string>;
+}): OpenClawCrablineOutboundMessage | null {
+  const to =
+    params.observation.providerTargetKeys
+      .map((key) => params.targetByProviderTarget.get(key))
+      .find((target) => target !== undefined) ?? params.observation.fallbackTarget;
+  if (!to) {
+    return null;
+  }
+  const {
+    fallbackTarget: _fallbackTarget,
+    providerTargetKeys: _providerTargetKeys,
+    ...message
+  } = params.observation;
+  return { ...message, to };
 }
 
 export async function runOpenClawCrablineProviderProbe<T>(

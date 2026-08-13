@@ -165,7 +165,7 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           },
         };
       },
-      createOutboundFromRecorderEvent({ event, targetByProviderTarget }) {
+      createOutboundObservation({ event }) {
         if (
           !isRecord(event) ||
           event.type !== "api" ||
@@ -214,7 +214,8 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
           senderId: "openclaw",
           senderName: "OpenClaw QA",
           text,
-          to: targetByProviderTarget.get(providerTarget) ?? providerTarget,
+          providerTargetKeys: [providerTarget],
+          fallbackTarget: providerTarget,
         };
       },
     };

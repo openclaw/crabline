@@ -207,7 +207,7 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           ...(threadId ? { threadId } : {}),
         };
       },
-      createOutboundFromRecorderEvent({ event, targetByProviderTarget }) {
+      createOutboundObservation({ event }) {
         if (
           !isRecord(event) ||
           event.type !== "api" ||
@@ -258,8 +258,8 @@ export const MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePr
           senderId: matrix.botUserId,
           senderName: "OpenClaw QA",
           text,
-          to:
-            targetByProviderTarget.get(targetKey(roomId, threadId)) ?? targetKey(roomId, threadId),
+          providerTargetKeys: [targetKey(roomId, threadId)],
+          fallbackTarget: targetKey(roomId, threadId),
         };
       },
     };

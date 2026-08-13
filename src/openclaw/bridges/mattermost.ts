@@ -177,7 +177,7 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
           ...(rootId ? { threadId: rootId } : {}),
         };
       },
-      createOutboundFromRecorderEvent({ event, targetByProviderTarget }) {
+      createOutboundObservation({ event }) {
         if (
           !isRecord(event) ||
           event.type !== "api" ||
@@ -201,20 +201,15 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
                 ?.split("__")
                 .find((participant) => participant !== mattermost.botUserId)
             : undefined;
-        const target =
-          targetByProviderTarget.get(providerTargetKey) ??
-          (directUserId
-            ? targetByProviderTarget.get(targetKey(directTargetKey(directUserId), rootId))
-            : undefined);
-        if (!target) {
-          return null;
-        }
         return {
           accountId: DEFAULT_ACCOUNT_ID,
           senderId: mattermost.botUserId,
           senderName: "OpenClaw QA",
           text,
-          to: target,
+          providerTargetKeys: [
+            providerTargetKey,
+            ...(directUserId ? [targetKey(directTargetKey(directUserId), rootId)] : []),
+          ],
         };
       },
       resolveInboundProviderTargetKey({ response }) {
