@@ -59,8 +59,8 @@ importers:
         specifier: 7.0.0-rc14
         version: 7.0.0-rc14(sharp@0.35.2)(supports-color@7.2.0)
       matrix-js-sdk:
-        specifier: 41.9.0
-        version: 41.9.0
+        specifier: 42.1.0
+        version: 42.1.0
       oxfmt:
         specifier: ^0.62.0
         version: 0.62.0
@@ -474,8 +474,8 @@ packages:
   '@keyv/serialize@1.1.1':
     resolution: {integrity: sha512-dXn3FZhPv0US+7dtJsIi2R+c7qWYiReoEh5zUntWCf4oSpMNib8FDhSoed6m3QyZdx5hK7iLFkYk3rNxwt8vTA==}
 
-  '@matrix-org/matrix-sdk-crypto-wasm@18.4.0':
-    resolution: {integrity: sha512-osxkU1DQ+05+anGHapjWyvZqdHUb94Id37gy54mCKn1Cq/D7iGT5oEUEhjp4oTnCLo4TOtI6ULJ/LHsapaIptQ==}
+  '@matrix-org/matrix-sdk-crypto-wasm@18.5.0':
+    resolution: {integrity: sha512-E826Hy1rG26LanPjtSsOiVRcVoHfSgPgj2r2Xsb5RPScpaKi9XJADQ0u3dNjRCitZPX4oyLNl1FDd5AfDlmIwQ==}
     engines: {node: '>= 18'}
 
   '@napi-rs/wasm-runtime@1.1.6':
@@ -1246,10 +1246,6 @@ packages:
   js-tokens@10.0.0:
     resolution: {integrity: sha512-lM/UBzQmfJRo9ABXbPWemivdCW8V2G8FHaHdypQaIy523snUjog0W71ayWXTjiR+ixeMyVHN2XcpnTd/liPg/Q==}
 
-  jwt-decode@4.0.0:
-    resolution: {integrity: sha512-+KJGIyHgkGuIq3IEBNftfhW/LfWhXUIY6OmyVWjliu5KH1y0fw7VQ8YndE2O4qZdMSd9SqbnC8GOcZEy0Om7sA==}
-    engines: {node: '>=18'}
-
   keyv@5.6.0:
     resolution: {integrity: sha512-CYDD3SOtsHtyXeEORYRx2qBtpDJFjRTGXUtmNEMGyzYOKj1TE3tycdlho7kA1Ufx9OYWZzg52QFBGALTirzDSw==}
 
@@ -1354,12 +1350,12 @@ packages:
   matrix-events-sdk@0.0.1:
     resolution: {integrity: sha512-1QEOsXO+bhyCroIe2/A5OwaxHvBm7EsSQ46DEDn8RBIfQwN5HWBpFvyWWR4QY0KHPPnnJdI99wgRiAl7Ad5qaA==}
 
-  matrix-js-sdk@41.9.0:
-    resolution: {integrity: sha512-xRoaIxu8e7ECV8ctT+gxXvOA+KqPJdellihIeM7rZ5LPl9ZWMct+ltN/Z4f76PJtAazjIXd8A3edPu6OSKk9/g==}
+  matrix-js-sdk@42.1.0:
+    resolution: {integrity: sha512-/lK6XKRyYapgMUpFp0NyFQDnIt303yMNumk/1qBXRhzb43yV9fDPQZDcw++Yp5JcFiYLdFTZh8gS+AI7gxlghg==}
     engines: {node: '>=22.0.0'}
 
-  matrix-widget-api@1.17.0:
-    resolution: {integrity: sha512-5FHoo3iEP3Bdlv5jsYPWOqj+pGdFQNLWnJLiB0V7Ygne7bb+Gsj3ibyFyHWC6BVw+Z+tSW4ljHpO17I9TwStwQ==}
+  matrix-widget-api@1.18.0:
+    resolution: {integrity: sha512-4T2f2koWmx05p1BLcT/9YGGGPSXpPT+PA4Oap/5fjhXsWPxMGJiGL97YpANMYLKsnE1sScYFeuyxIgdc1Qo+Ew==}
 
   media-typer@2.0.0:
     resolution: {integrity: sha512-kOy3OxT2HH39N70UnKgu4NWDZjLOz8W/mfyvniHjRH/DrL3f2pOfvWQ4p60offbbtDAnXWp0v9LfMIqMec269Q==}
@@ -1380,10 +1376,6 @@ packages:
   obug@2.1.3:
     resolution: {integrity: sha512-9miFgM2OFba7hB+pRgvtV84pYTBaoTHohvmIgiRt6dRIzbwEOIaNaP+dIlGs2fNFoB0SeISs0Jz5WFVRid6Xyg==}
     engines: {node: '>=12.20.0'}
-
-  oidc-client-ts@3.5.0:
-    resolution: {integrity: sha512-l2q8l9CTCTOlbX+AnK4p3M+4CEpKpyQhle6blQkdFhm0IsBqsxm15bYaSa11G7pWdsYr6epdsRZxJpCyCRbT8A==}
-    engines: {node: '>=18'}
 
   on-exit-leak-free@2.1.2:
     resolution: {integrity: sha512-0eJJY6hXLGf1udHwfNftBqH+g73EU4B504nZeKpz1sYRKafAghwxEJunB2O7rDZkL4PGfsMVnTXZ2EjibbqcsA==}
@@ -1976,7 +1968,7 @@ snapshots:
 
   '@keyv/serialize@1.1.1': {}
 
-  '@matrix-org/matrix-sdk-crypto-wasm@18.4.0': {}
+  '@matrix-org/matrix-sdk-crypto-wasm@18.5.0': {}
 
   '@napi-rs/wasm-runtime@1.1.6(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)':
     dependencies:
@@ -2513,8 +2505,6 @@ snapshots:
 
   js-tokens@10.0.0: {}
 
-  jwt-decode@4.0.0: {}
-
   keyv@5.6.0:
     dependencies:
       '@keyv/serialize': 1.1.1
@@ -2595,23 +2585,21 @@ snapshots:
 
   matrix-events-sdk@0.0.1: {}
 
-  matrix-js-sdk@41.9.0:
+  matrix-js-sdk@42.1.0:
     dependencies:
       '@babel/runtime': 8.0.0
-      '@matrix-org/matrix-sdk-crypto-wasm': 18.4.0
+      '@matrix-org/matrix-sdk-crypto-wasm': 18.5.0
       another-json: 0.2.0
       bs58: 6.0.0
       content-type: 2.0.0
-      jwt-decode: 4.0.0
       loglevel: 1.9.2
       matrix-events-sdk: 0.0.1
-      matrix-widget-api: 1.17.0
-      oidc-client-ts: 3.5.0
+      matrix-widget-api: 1.18.0
       p-retry: 8.0.0
       sdp-transform: 3.0.0
       unhomoglyph: 1.0.6
 
-  matrix-widget-api@1.17.0:
+  matrix-widget-api@1.18.0:
     dependencies:
       '@types/events': 3.0.3
       events: 3.3.0
@@ -2638,10 +2626,6 @@ snapshots:
   nanoid@3.3.15: {}
 
   obug@2.1.3: {}
-
-  oidc-client-ts@3.5.0:
-    dependencies:
-      jwt-decode: 4.0.0
 
   on-exit-leak-free@2.1.2: {}
 
