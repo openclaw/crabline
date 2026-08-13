@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.15 - 2026-08-13
+
+- Normalize portable Telegram and Mattermost QA targets inside the OpenClaw
+  bridges, correlate accepted provider identities authoritatively, and reuse
+  admin-injected Mattermost direct channels.
+- Wait boundedly for active private-file publication claims so concurrent
+  Windows provider-readiness runs serialize only their atomic publications.
+
 ## 0.1.14 - 2026-08-07
 
 - Keep normal Baileys WhatsApp sessions connected through startup, presence,
