@@ -100,11 +100,29 @@ export type WhatsAppBaileysInboundMessage = {
     participant?: string | undefined;
     remoteJid: string;
   };
-  message: {
-    conversation: string;
-  };
+  message:
+    | {
+        audioMessage?: never;
+        conversation: string;
+      }
+    | {
+        audioMessage: WhatsAppBaileysAudioMessage;
+        conversation?: never;
+      };
   messageTimestamp: number;
   pushName?: string | undefined;
+};
+
+export type WhatsAppBaileysAudioMessage = {
+  fileEncSha256: Buffer;
+  fileLength: number;
+  fileSha256: Buffer;
+  mediaKey: Buffer;
+  mediaKeyTimestamp: number;
+  mimetype: string;
+  ptt: boolean;
+  seconds?: number | undefined;
+  url: string;
 };
 
 export function resolveMaxPendingWhatsAppInboundMessages(value: number | undefined): number {
@@ -2188,7 +2206,7 @@ function createInboundMessageNode(message: WhatsAppBaileysInboundMessage): Binar
     content: [
       {
         attrs: {},
-        content: encodePlaintextConversationMessage(message.message.conversation),
+        content: encodePlaintextInboundMessage(message.message),
         tag: "plaintext",
       },
     ],
@@ -2218,6 +2236,42 @@ function firstChild(node: BinaryNode): BinaryNode | undefined {
 function encodePlaintextConversationMessage(text: string): NodeBuffer {
   const textBytes = Buffer.from(text, "utf8");
   return Buffer.from([0x0a, ...encodeVarint(textBytes.byteLength), ...textBytes]);
+}
+
+function encodePlaintextInboundMessage(
+  message: WhatsAppBaileysInboundMessage["message"],
+): NodeBuffer {
+  if (message.audioMessage) {
+    return encodePlaintextAudioMessage(message.audioMessage);
+  }
+  return encodePlaintextConversationMessage(message.conversation);
+}
+
+function encodePlaintextAudioMessage(audio: WhatsAppBaileysAudioMessage): NodeBuffer {
+  const fields = [
+    encodeLengthDelimitedProtobufField(1, Buffer.from(audio.url, "utf8")),
+    encodeLengthDelimitedProtobufField(2, Buffer.from(audio.mimetype, "utf8")),
+    encodeLengthDelimitedProtobufField(3, audio.fileSha256),
+    encodeVarintProtobufField(4, audio.fileLength),
+    ...(audio.seconds === undefined ? [] : [encodeVarintProtobufField(5, audio.seconds)]),
+    encodeVarintProtobufField(6, audio.ptt ? 1 : 0),
+    encodeLengthDelimitedProtobufField(7, audio.mediaKey),
+    encodeLengthDelimitedProtobufField(8, audio.fileEncSha256),
+    encodeVarintProtobufField(10, audio.mediaKeyTimestamp),
+  ];
+  return encodeLengthDelimitedProtobufField(8, Buffer.concat(fields));
+}
+
+function encodeLengthDelimitedProtobufField(fieldNumber: number, value: Uint8Array): NodeBuffer {
+  return Buffer.concat([
+    Buffer.from(encodeVarint((fieldNumber << 3) | 2)),
+    Buffer.from(encodeVarint(value.byteLength)),
+    Buffer.from(value),
+  ]);
+}
+
+function encodeVarintProtobufField(fieldNumber: number, value: number): NodeBuffer {
+  return Buffer.from([...encodeVarint(fieldNumber << 3), ...encodeVarint(value)]);
 }
 
 function encodeVarint(value: number): number[] {

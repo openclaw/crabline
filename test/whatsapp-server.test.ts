@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
+import { createHash, createHmac, hkdfSync } from "node:crypto";
 import { Agent } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import path from "node:path";
 import {
+  downloadMediaMessage,
   initAuthCreds,
   jidEncode,
   makeCacheableSignalKeyStore,
@@ -25,6 +27,7 @@ import {
   startWhatsAppServer,
   type StartedWhatsAppServer,
 } from "../src/index.js";
+import { WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/whatsapp.js";
 import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
 import {
   MAX_WHATSAPP_WEBSOCKET_FRAGMENTS,
@@ -48,10 +51,20 @@ const silentLogger = createSilentLogger();
 type BaileysUpsertMessage = {
   key?: {
     fromMe?: boolean | null | undefined;
+    id?: string | null | undefined;
     participant?: string | null | undefined;
     remoteJid?: string | null | undefined;
   };
   message?: {
+    audioMessage?: {
+      fileEncSha256?: Uint8Array | null | undefined;
+      fileLength?: unknown;
+      fileSha256?: Uint8Array | null | undefined;
+      mediaKey?: Uint8Array | null | undefined;
+      mimetype?: string | null | undefined;
+      ptt?: boolean | null | undefined;
+      url?: string | null | undefined;
+    } | null;
     conversation?: string | null | undefined;
   } | null;
   pushName?: string | null | undefined;
@@ -2684,6 +2697,279 @@ describe("whatsapp local provider server", () => {
     }
 
     await expect(closed).resolves.toBeUndefined();
+  });
+
+  it("delivers OpenClaw bridge OGG audio through the real Baileys media path", async () => {
+    const server = await startWhatsAppServer({
+      selfJid: "15550000001:0@s.whatsapp.net",
+    });
+    servers.push(server);
+    const socket = createBaileysTestSocket(server);
+    const connectionUpdates: unknown[] = [];
+    const messageUpserts: BaileysMessagesUpsertEvent[] = [];
+    socket.ev.on("connection.update", (update) => {
+      connectionUpdates.push(update);
+    });
+    socket.ev.on("messages.upsert", (event) => {
+      messageUpserts.push(event);
+    });
+
+    try {
+      await waitForCondition(
+        () =>
+          connectionUpdates.some(
+            (update) =>
+              !!update &&
+              typeof update === "object" &&
+              (update as { connection?: unknown }).connection === "open",
+          ),
+        "Baileys connection open",
+      );
+
+      const audio = Buffer.from("OggS\u0000crabline-whatsapp-audio-fixture", "utf8");
+      const bridge = WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE.createAdapterFromManifest(
+        server.manifest,
+      );
+      const bridgedInbound = bridge.createInbound({
+        attachments: [
+          {
+            contentBase64: audio.toString("base64"),
+            id: "voice-note",
+            kind: "audio",
+            mimeType: "audio/ogg; codecs=opus",
+          },
+        ],
+        conversation: { id: "15551234567@s.whatsapp.net", kind: "direct" },
+        senderId: "15551234567@s.whatsapp.net",
+        senderName: "Audio Sender",
+        text: "",
+      });
+      const inbound = await fetch(bridgedInbound.providerUrl, {
+        body: JSON.stringify(bridgedInbound.providerBody),
+        headers: bridgedInbound.providerHeaders,
+        method: "POST",
+      });
+      expect(inbound.status).toBe(200);
+      await expect(inbound.json()).resolves.toMatchObject({
+        delivery: "delivered",
+        message: {
+          message: {
+            audioMessage: {
+              fileLength: audio.byteLength,
+              mimetype: "audio/ogg; codecs=opus",
+              ptt: true,
+            },
+          },
+        },
+        ok: true,
+      });
+
+      await waitForCondition(
+        () =>
+          messageUpserts
+            .flatMap((event) => event.messages)
+            .some(
+              (message) => message.message?.audioMessage?.mimetype === "audio/ogg; codecs=opus",
+            ),
+        "Baileys audio messages.upsert",
+      );
+      const received = messageUpserts
+        .flatMap((event) => event.messages)
+        .find((message) => message.message?.audioMessage?.mimetype === "audio/ogg; codecs=opus");
+      expect(received).toBeDefined();
+      expect(received?.message?.audioMessage?.url).toMatch(/^http:\/\/127\.0\.0\.1:/u);
+
+      const audioMessage = received!.message!.audioMessage!;
+      const predictableUrl = new URL(audioMessage.url!);
+      predictableUrl.pathname = `/_crabline/media/whatsapp/${encodeURIComponent(received!.key!.id!)}`;
+      const predictableResponse = await fetch(predictableUrl);
+      expect(predictableResponse.status).toBe(404);
+
+      const tamperedUrl = new URL(audioMessage.url!);
+      tamperedUrl.pathname = `${tamperedUrl.pathname}-tampered`;
+      const tamperedResponse = await fetch(tamperedUrl);
+      expect(tamperedResponse.status).toBe(404);
+
+      const encryptedResponse = await fetch(audioMessage.url!);
+      expect(encryptedResponse.status).toBe(200);
+      const encrypted = Buffer.from(await encryptedResponse.arrayBuffer());
+      const ciphertext = encrypted.subarray(0, -10);
+      const trailingMac = encrypted.subarray(-10);
+      const expandedKey = Buffer.from(
+        hkdfSync(
+          "sha256",
+          Buffer.from(audioMessage.mediaKey!),
+          Buffer.alloc(32),
+          Buffer.from("WhatsApp Audio Keys", "utf8"),
+          112,
+        ),
+      );
+      const expectedMac = createHmac("sha256", expandedKey.subarray(48, 80))
+        .update(expandedKey.subarray(0, 16))
+        .update(ciphertext)
+        .digest()
+        .subarray(0, 10);
+      expect(trailingMac).toEqual(expectedMac);
+      expect(Buffer.from(audioMessage.fileEncSha256!)).toEqual(
+        createHash("sha256").update(encrypted).digest(),
+      );
+      expect(Buffer.from(audioMessage.fileSha256!)).toEqual(
+        createHash("sha256").update(audio).digest(),
+      );
+
+      const downloaded = await downloadMediaMessage(
+        received as Parameters<typeof downloadMediaMessage>[0],
+        "buffer",
+        {},
+        {
+          logger: silentLogger,
+          reuploadRequest: socket.updateMediaMessage,
+        },
+      );
+      expect(Buffer.from(downloaded as Buffer)).toEqual(audio);
+    } finally {
+      socket.end(undefined);
+    }
+  });
+
+  it.each([
+    ["non-zero padding bits", "AB=="],
+    ["surrounding whitespace", " YQ== "],
+    ["a non-string value", 1111],
+  ])("rejects inline audio base64 with %s", async (_description, contentBase64) => {
+    const server = await startWhatsAppServer();
+    servers.push(server);
+
+    const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        audio: {
+          contentBase64,
+          mimeType: "audio/ogg; codecs=opus",
+          ptt: true,
+        },
+        chatJid: "15551234567@s.whatsapp.net",
+        senderJid: "15551234567@s.whatsapp.net",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { message: "(#100) Invalid parameter: audio.contentBase64" },
+    });
+  });
+
+  it("serves inline audio for dot-segment message ids", async () => {
+    const server = await startWhatsAppServer();
+    servers.push(server);
+
+    const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        audio: {
+          contentBase64: Buffer.from("dot segment audio").toString("base64"),
+          mimeType: "audio/ogg; codecs=opus",
+          ptt: true,
+        },
+        chatJid: "15551234567@s.whatsapp.net",
+        messageId: "..",
+        senderJid: "15551234567@s.whatsapp.net",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      message: { message: { audioMessage: { url: string } } };
+    };
+
+    const media = await fetch(payload.message.message.audioMessage.url);
+    expect(media.status).toBe(200);
+  });
+
+  it("does not evict accepted audio when a later inbound message exceeds queue capacity", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const server = await startWhatsAppServer({
+      maxPendingInboundMessages: 1_000,
+      recorderPath: path.join(directory, "whatsapp-audio-capacity.jsonl"),
+    });
+    servers.push(server);
+    const sendAudio = (messageId: string) =>
+      fetch(server.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify({
+          audio: {
+            contentBase64: Buffer.from(messageId).toString("base64"),
+            mimeType: "audio/ogg; codecs=opus",
+            ptt: true,
+          },
+          chatJid: "15551234567@s.whatsapp.net",
+          messageId,
+          senderJid: "15551234567@s.whatsapp.net",
+        }),
+        headers: {
+          "content-type": "application/json",
+          [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+        },
+        method: "POST",
+      });
+
+    const first = await sendAudio("wamid.audio-capacity-0000");
+    expect(first.status).toBe(200);
+    const firstPayload = (await first.json()) as {
+      message: { message: { audioMessage: { url: string } } };
+    };
+    for (let index = 1; index < 1_000; index += 1) {
+      const accepted = await sendAudio(`wamid.audio-capacity-${String(index).padStart(4, "0")}`);
+      expect(accepted.status).toBe(200);
+      await accepted.body?.cancel();
+    }
+
+    const rejected = await sendAudio("wamid.audio-capacity-overflow");
+    expect(rejected.status).toBe(503);
+    await expect(rejected.json()).resolves.toMatchObject({ error: { code: 4 } });
+    const retained = await fetch(firstPayload.message.message.audioMessage.url);
+    expect(retained.status).toBe(200);
+  }, 60_000);
+
+  it("expires undownloaded inline audio fixtures", async () => {
+    const server = await startWhatsAppServer();
+    servers.push(server);
+    const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        audio: {
+          contentBase64: Buffer.from("expiring audio").toString("base64"),
+          mimeType: "audio/ogg; codecs=opus",
+          ptt: true,
+        },
+        chatJid: "15551234567@s.whatsapp.net",
+        senderJid: "15551234567@s.whatsapp.net",
+      }),
+      headers: {
+        "content-type": "application/json",
+        [ADMIN_TOKEN_HEADER]: server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      message: { message: { audioMessage: { url: string } } };
+    };
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now");
+    clock.mockReturnValue(now + (4 * 60 + 50) * 1_000);
+    const firstDownload = await fetch(payload.message.message.audioMessage.url);
+    expect(firstDownload.status).toBe(200);
+    clock.mockReturnValue(now + (5 * 60 + 10) * 1_000);
+
+    const expired = await fetch(payload.message.message.audioMessage.url);
+    expect(expired.status).toBe(404);
   });
 
   it("accepts a real Baileys socket over waWebSocketUrl and records outbound stanzas", async () => {

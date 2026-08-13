@@ -47,6 +47,14 @@ export type OpenClawCrablineConversation = {
   kind: "direct" | "group";
 };
 
+export type OpenClawCrablineInboundAttachment = {
+  contentBase64?: string | undefined;
+  fileName?: string | undefined;
+  id: string;
+  kind: "image" | "video" | "audio" | "file";
+  mimeType: string;
+};
+
 export type OpenClawCrablineGatewayBinding = {
   accountId: string;
   channel: string;
@@ -68,6 +76,7 @@ export type OpenClawCrablineCorrelatedAgentDelivery = OpenClawCrablineAgentDeliv
 };
 
 export type OpenClawCrablineInboundInput = {
+  attachments?: OpenClawCrablineInboundAttachment[] | undefined;
   conversation: {
     id: string;
     kind: "direct" | "group";
@@ -223,6 +232,7 @@ export type OpenClawCrablineProviderBridgeRegistry = {
 export function createOpenClawCrablineProviderBridge<
   TProvider extends CrablineServerManifest["provider"],
 >(params: {
+  allowAttachmentOnlyInbound?: boolean;
   createAdapter(
     manifest: Extract<CrablineServerManifest, { provider: TProvider }>,
   ): OpenClawCrablineProviderAdapter;
@@ -239,7 +249,10 @@ export function createOpenClawCrablineProviderBridge<
         return adapter.createBinding();
       },
       createInbound(input) {
-        if (!readNonBlankString(input.text)) {
+        if (
+          !readNonBlankString(input.text) &&
+          !(params.allowAttachmentOnlyInbound && input.attachments?.length)
+        ) {
           throw new Error("OpenClaw Crabline inbound message text is required.");
         }
         if (input.conversation.kind !== "direct" && input.conversation.kind !== "group") {

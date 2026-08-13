@@ -45,7 +45,36 @@ function requireWhatsAppConversationKind(kind: "direct" | "group", targetId: str
   }
 }
 
+function whatsappInboundAudio(input: {
+  attachments?:
+    | Array<{
+        contentBase64?: string | undefined;
+        fileName?: string | undefined;
+        kind: string;
+        mimeType: string;
+      }>
+    | undefined;
+}) {
+  if (!input.attachments?.length) {
+    return undefined;
+  }
+  if (input.attachments.length !== 1 || input.attachments[0]?.kind !== "audio") {
+    throw new Error("WhatsApp Crabline inbound supports exactly one inline audio attachment.");
+  }
+  const attachment = input.attachments[0];
+  if (!attachment.contentBase64) {
+    throw new Error("WhatsApp Crabline inbound audio requires inline contentBase64.");
+  }
+  return {
+    contentBase64: attachment.contentBase64,
+    ...(attachment.fileName ? { fileName: attachment.fileName } : {}),
+    mimeType: attachment.mimeType,
+    ptt: true,
+  };
+}
+
 export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
+  allowAttachmentOnlyInbound: true,
   provider: "whatsapp",
   createAdapter(whatsapp) {
     const messagesPath = new URL(whatsapp.endpoints.messagesUrl).pathname;
@@ -137,6 +166,7 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         requireWhatsAppConversationKind(input.conversation.kind, nativeChatJid);
         const nativeSenderJid = requireWhatsAppJid(input.senderId, "WhatsApp sender", true);
         const providerTargetKey = canonicalizeWhatsAppChatCorrelationJid(nativeChatJid)!;
+        const audio = whatsappInboundAudio(input);
         if (
           input.conversation.kind === "direct" &&
           canonicalizeWhatsAppUserCorrelationJid(nativeChatJid) !==
@@ -152,7 +182,7 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
             chatJid: nativeChatJid,
             senderJid: nativeSenderJid,
             ...(input.senderName ? { pushName: input.senderName } : {}),
-            text: input.text,
+            ...(audio ? { audio } : { text: input.text }),
           },
           providerTargetKey,
           qaTarget: qaTargetForInbound({

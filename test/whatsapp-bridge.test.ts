@@ -37,6 +37,41 @@ describe("WhatsApp OpenClaw bridge", () => {
     }
   });
 
+  it("maps one inline audio attachment to native WhatsApp admin ingress", async () => {
+    const adapter = await startOpenClawCrablineAdapter({ channel: "whatsapp" });
+    try {
+      const inbound = adapter.createInbound({
+        input: {
+          attachments: [
+            {
+              contentBase64: "T2dnUwBh",
+              fileName: "voice-note.ogg",
+              id: "voice-note",
+              kind: "audio",
+              mimeType: "audio/ogg; codecs=opus",
+            },
+          ],
+          conversation: { id: "15551234567@s.whatsapp.net", kind: "direct" },
+          senderId: "15551234567@s.whatsapp.net",
+          text: "",
+        },
+      });
+
+      expect(inbound.providerBody).toEqual({
+        audio: {
+          contentBase64: "T2dnUwBh",
+          fileName: "voice-note.ogg",
+          mimeType: "audio/ogg; codecs=opus",
+          ptt: true,
+        },
+        chatJid: "15551234567@s.whatsapp.net",
+        senderJid: "15551234567@s.whatsapp.net",
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("normalizes only accepted exact-shape sends as outbound evidence", async () => {
     const adapter = await startOpenClawCrablineAdapter({ channel: "whatsapp" });
     try {
