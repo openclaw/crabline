@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.16 - 2026-08-14
+
+- Expose structured OpenClaw recorder observations and delivery targets so
+  provider correlation and thread identity no longer require serialized QA
+  target strings, while retaining the existing outbound compatibility API.
+
 ## 0.1.15 - 2026-08-13
 
 - Normalize portable Telegram and Mattermost QA targets inside the OpenClaw
