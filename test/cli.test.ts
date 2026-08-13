@@ -529,30 +529,28 @@ describe("cli", () => {
     await writeText(credentialsPath, document);
     const credentialsFd = openSync(credentialsPath, "r");
     const credentialsIdentity = fstatSync(credentialsFd);
-    const startServer = vi.fn(
-      async (): Promise<StartedCrablineServer> => ({
-        async close() {},
-        manifest: {
-          adminToken: "fake",
-          baseUrl: "http://127.0.0.1:12345",
-          botToken,
-          endpoints: {
-            adminInboundUrl: "http://127.0.0.1:12345/crabline/slack/inbound",
-            apiRoot: "http://127.0.0.1:12345/api/",
-            eventsUrl: "http://127.0.0.1:12345/slack/events",
-          },
-          env: {
-            SLACK_API_URL: "http://127.0.0.1:12345/api/",
-            SLACK_BOT_TOKEN: botToken,
-            SLACK_SIGNING_SECRET: "fake",
-          },
-          provider: "slack" as const,
-          recorderPath: "/tmp/slack.jsonl",
-          signingSecret: "fake",
-          version: 1 as const,
+    const startServer = vi.fn(async (): Promise<StartedCrablineServer> => ({
+      async close() {},
+      manifest: {
+        adminToken: "fake",
+        baseUrl: "http://127.0.0.1:12345",
+        botToken,
+        endpoints: {
+          adminInboundUrl: "http://127.0.0.1:12345/crabline/slack/inbound",
+          apiRoot: "http://127.0.0.1:12345/api/",
+          eventsUrl: "http://127.0.0.1:12345/slack/events",
         },
-      }),
-    );
+        env: {
+          SLACK_API_URL: "http://127.0.0.1:12345/api/",
+          SLACK_BOT_TOKEN: botToken,
+          SLACK_SIGNING_SECRET: "fake",
+        },
+        provider: "slack" as const,
+        recorderPath: "/tmp/slack.jsonl",
+        signingSecret: "fake",
+        version: 1 as const,
+      },
+    }));
     const program = createProgram(() => undefined, { startServer });
 
     try {

@@ -69,7 +69,7 @@
     "@vitest/coverage-v8": "^4.1.10",
     "baileys": "7.0.0-rc13",
     "matrix-js-sdk": "41.9.0",
-    "oxfmt": "^0.60.0",
+    "oxfmt": "^0.62.0",
     "oxlint": "^1.75.0",
     "oxlint-tsgolint": "^7.0.2001",
     "tsx": "^4.23.1",
