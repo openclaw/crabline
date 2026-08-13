@@ -117,6 +117,7 @@ export type {
 export type {
   OpenClawCrablineAgentDelivery,
   OpenClawCrablineChannelDriverSelection,
+  OpenClawCrablineCorrelatedAgentDelivery,
   OpenClawCrablineProviderReadinessResult,
   OpenClawCrablineConversation,
   OpenClawCrablineGatewayBinding,
@@ -124,5 +125,6 @@ export type {
   OpenClawCrablineInboundInput,
   OpenClawCrablineOutboundMessage,
   StartedOpenClawCrablineAdapter,
+  StartedOpenClawCrablineCorrelatedAdapter,
   StartOpenClawCrablineAdapterParams,
 } from "./openclaw.js";

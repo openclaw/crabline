@@ -27,7 +27,7 @@ function requireSlackTargetKind(
   parsed: { kind: "direct" | "group"; native: boolean; threadId?: string },
   targetId: string,
 ): void {
-  if (parsed.native || parsed.threadId !== undefined) {
+  if ((parsed.native && parsed.kind === "direct") || parsed.threadId !== undefined) {
     return;
   }
   const nativeKind = /^[DUW]/u.test(targetId) ? "direct" : "group";
@@ -299,6 +299,7 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
         requireSlackTargetKind(parsed, to);
         return {
           channel: "slack",
+          providerTargetKey: slackTargetKey(to, threadTs),
           to,
           replyChannel: "slack",
           replyTo: slackTargetKey(to, threadTs),

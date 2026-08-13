@@ -1,6 +1,7 @@
 import {
   canonicalConversationIdForInbound,
   createAdminInboundRequest,
+  createProviderIdRegistry,
   createOpenClawCrablineProviderBridge,
   DEFAULT_ACCOUNT_ID,
   isRecord,
@@ -11,29 +12,49 @@ import {
 import { mattermostId } from "../../servers/mattermost.js";
 import { throwProbeHttpError } from "./probe-response.js";
 
+const MATTERMOST_ID_PATTERN = /^[a-z0-9]{26}$/u;
+
 function nativeId(value: string, label = "Mattermost target"): string {
   const trimmed = value.trim();
-  if (!/^[a-z0-9]{26}$/u.test(trimmed)) {
+  if (!MATTERMOST_ID_PATTERN.test(trimmed)) {
     throw new Error(`${label} must be exactly 26 lowercase alphanumeric characters.`);
   }
   return trimmed;
 }
 
-function directChannelId(botUserId: string, userId: string): string {
-  return mattermostId(`dm:${[botUserId, userId].sort().join(":")}`);
+function providerId(
+  value: string,
+  label: string,
+  registry: ReturnType<typeof createProviderIdRegistry>,
+): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`${label} is required.`);
+  }
+  return MATTERMOST_ID_PATTERN.test(trimmed)
+    ? registry.reserveNative(trimmed)
+    : registry.resolveLogical(trimmed);
+}
+
+function directTargetKey(userId: string): string {
+  return `user:${userId}`;
 }
 
 function targetKey(channelId: string, rootId?: string): string {
   return rootId ? `${channelId}:thread:${rootId}` : channelId;
 }
 
-function threadRootId(channelId: string, value: string): string {
-  return nativeId(value, `Mattermost root post for channel ${channelId}`);
-}
-
 export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineProviderBridge({
   provider: "mattermost",
   createAdapter(mattermost) {
+    const createRegistry = (label: string) =>
+      createProviderIdRegistry({
+        candidate: mattermostId,
+        conflictLabel: label,
+      });
+    const userIds = createRegistry("Mattermost user target");
+    const channelIds = createRegistry("Mattermost channel target");
+    const postIds = createRegistry("Mattermost post target");
     return {
       async probe(signal) {
         const response = await fetch(`${mattermost.endpoints.apiRoot}/users/me`, {
@@ -94,9 +115,20 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
         if (parsed.threadId) {
           throw new Error("Mattermost thread targets require OpenClaw QA thread forwarding.");
         }
-        const id = nativeId(parsed.id);
+        const registry = parsed.kind === "direct" ? userIds : channelIds;
+        const targetId = parsed.id.trim();
+        const id =
+          parsed.native || MATTERMOST_ID_PATTERN.test(targetId)
+            ? registry.reserveNative(nativeId(targetId))
+            : registry.resolveLogical(targetId);
         const to = parsed.kind === "direct" ? `user:${id}` : `channel:${id}`;
-        return { channel: "mattermost", replyChannel: "mattermost", replyTo: to, to };
+        return {
+          channel: "mattermost",
+          providerTargetKey: parsed.kind === "direct" ? directTargetKey(id) : id,
+          replyChannel: "mattermost",
+          replyTo: to,
+          to,
+        };
       },
       createInbound(input) {
         const kind = input.conversation.kind === "direct" ? "direct" : "group";
@@ -104,30 +136,42 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
         if (!conversationId) {
           throw new Error("Mattermost conversation id is required.");
         }
-        const senderId = nativeId(input.senderId);
-        const recipientId = kind === "direct" ? nativeId(conversationId) : undefined;
+        const senderId = providerId(input.senderId, "Mattermost sender", userIds);
+        const recipientId =
+          kind === "direct"
+            ? providerId(conversationId, "Mattermost conversation", userIds)
+            : undefined;
         if (recipientId !== undefined && recipientId !== senderId) {
           throw new Error(
             "Mattermost direct conversation and sender must identify the same recipient.",
           );
         }
         const channelId =
-          kind === "direct"
-            ? directChannelId(mattermost.botUserId, senderId)
-            : nativeId(conversationId);
+          kind === "group"
+            ? providerId(conversationId, "Mattermost conversation", channelIds)
+            : undefined;
         const threadId = input.threadId?.trim();
-        const rootId = threadId ? threadRootId(channelId, threadId) : undefined;
+        const rootId = threadId
+          ? MATTERMOST_ID_PATTERN.test(threadId)
+            ? postIds.reserveNative(threadId)
+            : postIds.resolveLogical(
+                `thread:${kind === "group" ? channelId : senderId}:${threadId}`,
+              )
+          : undefined;
         return {
           ...createAdminInboundRequest(mattermost),
           providerBody: {
-            channelId,
+            ...(channelId ? { channelId } : {}),
             channelType: kind === "direct" ? "D" : "O",
             ...(rootId ? { rootId } : {}),
             senderId,
             ...(input.senderName ? { senderName: input.senderName } : {}),
             text: input.text,
           },
-          providerTargetKey: targetKey(channelId, rootId),
+          providerTargetKey:
+            kind === "direct"
+              ? targetKey(directTargetKey(senderId), rootId)
+              : targetKey(channelId!, rootId),
           qaTarget: qaTargetForInbound(input),
           stateConversation: { id: conversationId, kind },
           ...(rootId ? { threadId: rootId } : {}),
@@ -149,7 +193,19 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
         if (!channelId || !text) {
           return null;
         }
-        const target = targetByProviderTarget.get(targetKey(channelId, rootId));
+        const providerTargetKey = targetKey(channelId, rootId);
+        const channel = isRecord(event.channel) ? event.channel : undefined;
+        const directUserId =
+          channel?.type === "D"
+            ? readString(channel.name)
+                ?.split("__")
+                .find((participant) => participant !== mattermost.botUserId)
+            : undefined;
+        const target =
+          targetByProviderTarget.get(providerTargetKey) ??
+          (directUserId
+            ? targetByProviderTarget.get(targetKey(directTargetKey(directUserId), rootId))
+            : undefined);
         if (!target) {
           return null;
         }
@@ -160,6 +216,17 @@ export const MATTERMOST_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabli
           text,
           to: target,
         };
+      },
+      resolveInboundProviderTargetKey({ response }) {
+        const post = isRecord(response) && isRecord(response.post) ? response.post : undefined;
+        const channelId = post ? readString(post.channel_id) : undefined;
+        const rootId = post ? readString(post.root_id) : undefined;
+        if (!channelId) {
+          throw new Error(
+            "Crabline Mattermost inbound response did not identify its provider channel.",
+          );
+        }
+        return targetKey(channelId, rootId);
       },
     };
   },

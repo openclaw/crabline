@@ -103,10 +103,24 @@ export const DISCORD_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablineP
         if (parsed.threadId) {
           const threadId = discordId(parsed.threadId, "Discord thread");
           const to = `channel:${threadId}`;
-          return { channel: "discord", replyChannel: "discord", replyTo: to, to };
+          return {
+            channel: "discord",
+            providerTargetKey: providerTargetKey(threadId),
+            replyChannel: "discord",
+            replyTo: to,
+            to,
+          };
         }
         const to = `${parsed.kind === "direct" ? "user" : "channel"}:${id}`;
-        return { channel: "discord", replyChannel: "discord", replyTo: to, to };
+        return {
+          channel: "discord",
+          providerTargetKey: providerTargetKey(
+            parsed.kind === "direct" ? discordDirectChannelId(discord.botUserId, id) : id,
+          ),
+          replyChannel: "discord",
+          replyTo: to,
+          to,
+        };
       },
       createInbound(input) {
         const conversationId = discordId(input.conversation.id, "Discord conversation");

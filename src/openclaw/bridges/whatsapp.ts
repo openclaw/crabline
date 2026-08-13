@@ -29,7 +29,7 @@ function requireWhatsAppTargetKind(
   parsed: { kind: "direct" | "group"; native: boolean },
   targetId: string,
 ): void {
-  if (parsed.native) {
+  if (parsed.native && parsed.kind === "direct") {
     return;
   }
   const nativeKind = targetId.endsWith("@g.us") ? "group" : "direct";
@@ -123,6 +123,7 @@ export const WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
         const to = canonicalizeWhatsAppUserCorrelationJid(nativeTo)!;
         return {
           channel: "whatsapp",
+          providerTargetKey: to,
           to,
           replyChannel: "whatsapp",
           replyTo: to,
