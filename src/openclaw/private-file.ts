@@ -1533,23 +1533,34 @@ function parsePrivateMutationClaimOwner(contents: string): PrivateMutationClaimO
   return owner as PrivateMutationClaimOwner;
 }
 
+async function claimPathHasIdentity(
+  claimPath: string,
+  expected: FileIdentity,
+  expectedLinkCount?: bigint,
+): Promise<boolean> {
+  try {
+    const stats = await fs.lstat(claimPath, { bigint: true });
+    return (
+      stats.isFile() &&
+      (expectedLinkCount === undefined ? stats.nlink >= 1n : stats.nlink === expectedLinkCount) &&
+      stats.dev === expected.device &&
+      stats.ino === expected.inode
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw new Error("Private path mutation claim identity changed.", { cause: error });
+  }
+}
+
 async function assertClaimPathIdentity(
   claimPath: string,
   expected: FileIdentity,
   expectedLinkCount?: bigint,
 ): Promise<void> {
-  try {
-    const stats = await fs.lstat(claimPath, { bigint: true });
-    if (
-      stats.isFile() &&
-      (expectedLinkCount === undefined ? stats.nlink >= 1n : stats.nlink === expectedLinkCount) &&
-      stats.dev === expected.device &&
-      stats.ino === expected.inode
-    ) {
-      return;
-    }
-  } catch (error) {
-    throw new Error("Private path mutation claim identity changed.", { cause: error });
+  if (await claimPathHasIdentity(claimPath, expected, expectedLinkCount)) {
+    return;
   }
   throw new Error("Private path mutation claim identity changed.");
 }
@@ -1621,7 +1632,11 @@ async function readPrivateMutationClaim(
     }
     const contents = buffer.toString("utf8");
     const owner = parsePrivateMutationClaimOwner(contents);
-    await assertClaimPathIdentity(claimPath, identity);
+    // A live owner may release or replace this pathname after our handle opens.
+    // The open handle is safe, but its metadata is no longer the active claim.
+    if (!(await claimPathHasIdentity(claimPath, identity))) {
+      return null;
+    }
     return { contents, identity, owner };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
