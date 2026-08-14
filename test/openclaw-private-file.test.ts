@@ -1731,6 +1731,73 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
+  it("retries when an active claim is released after its metadata is opened", async () => {
+    const directory = await createTempDir();
+    let releaseCommit!: () => void;
+    const commitReleased = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    let commitReached!: () => void;
+    const reachedCommit = new Promise<void>((resolve) => {
+      commitReached = resolve;
+    });
+    let firstPublication: Promise<void> | undefined;
+    let claimOpened = false;
+    let releasedAfterOpen = false;
+    const claimPath = path.join(directory, ".crabline-private-mutation.claim");
+    const actualOpen = fs.open.bind(fs);
+    const actualLstat = fs.lstat.bind(fs);
+    try {
+      const filePath = path.join(directory, "manifest.json");
+      firstPublication = publishPrivateFileAtomically(filePath, "first\n", {
+        beforeCommitRename: async () => {
+          commitReached();
+          await commitReleased;
+        },
+      });
+      await reachedCommit;
+
+      const openSpy = vi.spyOn(fs, "open").mockImplementation(async (openedPath, flags, mode) => {
+        const handle =
+          mode === undefined
+            ? await actualOpen(openedPath, flags)
+            : await actualOpen(openedPath, flags, mode);
+        if (openedPath === claimPath && (flags === "r" || typeof flags === "number")) {
+          claimOpened = true;
+        }
+        return handle;
+      });
+      const lstatSpy = vi.spyOn(fs, "lstat").mockImplementation(async (openedPath, options) => {
+        if (!releasedAfterOpen && claimOpened && openedPath === claimPath) {
+          releasedAfterOpen = true;
+          releaseCommit();
+          await firstPublication;
+        }
+        return options === undefined
+          ? await actualLstat(openedPath)
+          : await actualLstat(openedPath, options);
+      });
+      try {
+        await publishPrivateFileAtomically(filePath, "second\n");
+      } finally {
+        openSpy.mockRestore();
+        lstatSpy.mockRestore();
+      }
+
+      expect(releasedAfterOpen).toBe(true);
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe("second\n");
+      expect(
+        (await fs.readdir(directory)).filter((entry) =>
+          entry.startsWith(".crabline-private-mutation"),
+        ),
+      ).toEqual([]);
+    } finally {
+      releaseCommit();
+      await firstPublication?.catch(() => undefined);
+      await disposeTempDir(directory);
+    }
+  });
+
   it("retries the root claim when its owner releases after stale classification", async () => {
     const directory = await createTempDir();
     let releaseCommit!: () => void;
