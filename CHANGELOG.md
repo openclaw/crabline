@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.17 - 2026-08-14
+
+- Retry mutation-claim acquisition when a live owner releases or replaces the
+  claim pathname after a waiter has safely opened its metadata handle.
+
 ## 0.1.16 - 2026-08-14
 
 - Expose structured OpenClaw recorder observations and delivery targets so
