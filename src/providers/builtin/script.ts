@@ -526,6 +526,73 @@ function windowsShellCommand(
   };
 }
 
+const UNIX_SHELL_BUILTINS = new Set([
+  ".",
+  ":",
+  "alias",
+  "bg",
+  "bind",
+  "break",
+  "builtin",
+  "caller",
+  "cd",
+  "command",
+  "compgen",
+  "complete",
+  "continue",
+  "declare",
+  "dirs",
+  "disown",
+  "enable",
+  "eval",
+  "exec",
+  "exit",
+  "export",
+  "fc",
+  "fg",
+  "getopts",
+  "hash",
+  "help",
+  "history",
+  "jobs",
+  "let",
+  "local",
+  "logout",
+  "mapfile",
+  "popd",
+  "pushd",
+  "read",
+  "readarray",
+  "readonly",
+  "return",
+  "set",
+  "shift",
+  "shopt",
+  "source",
+  "suspend",
+  "times",
+  "trap",
+  "type",
+  "typeset",
+  "ulimit",
+  "umask",
+  "unalias",
+  "unset",
+  "wait",
+]);
+
+function unixDirectSpawn(command: string): { args: string[]; file: string } | undefined {
+  const tokens = tokenizeLiteralCommand(command);
+  if (!tokens || tokens.length === 0) {
+    return undefined;
+  }
+  const file = tokens[0];
+  if (!file || /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(file) || UNIX_SHELL_BUILTINS.has(file)) {
+    return undefined;
+  }
+  return { args: tokens.slice(1), file };
+}
+
 async function spawnScriptChild(
   params: {
     command: string;
@@ -557,13 +624,24 @@ async function spawnScriptChild(
     });
   } else {
     startedAtMs = Date.now();
-    child = spawn(params.command, {
-      cwd,
-      env: process.env,
-      shell: params.shell ?? true,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const direct = params.shell === undefined ? unixDirectSpawn(params.command) : undefined;
+    if (direct) {
+      child = spawn(direct.file, direct.args, {
+        cwd,
+        env: process.env,
+        shell: false,
+        detached: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } else {
+      child = spawn(params.command, {
+        cwd,
+        env: process.env,
+        shell: params.shell ?? true,
+        detached: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    }
   }
   const observedAtMs = Date.now();
   if (signal?.aborted) {
