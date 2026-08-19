@@ -1463,6 +1463,29 @@ describe("script provider", () => {
   );
 
   it.skipIf(process.platform === "win32")(
+    "preserves non-shell Unicode whitespace in direct Unix argv",
+    async () => {
+      const context = await createContext();
+      const probeScript = path.join(path.dirname(context.manifestPath), "probe-nbsp.mjs");
+      await writeText(
+        probeScript,
+        [
+          "process.stdin.resume();",
+          'process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true,details:[JSON.stringify(process.argv.slice(2)),String(process.env.SHLVL??"")]})));',
+        ].join(""),
+      );
+      context.config.script!.commands.probe = `node ${JSON.stringify(probeScript)} a\u00a0b c\u000bd d\u000ce`;
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(JSON.parse(result.details[0]!)).toEqual(["a\u00a0b", "c\u000bd", "d\u000ce"]);
+      expect(result.details[1]).toBe(String(process.env.SHLVL ?? ""));
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
     "keeps the implicit Unix shell for hash comments",
     async () => {
       const context = await createContext();

@@ -1026,7 +1026,7 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
       quote = character;
       continue;
     }
-    if (/\s/u.test(character)) {
+    if (character === " " || character === "\t") {
       if (current || quoted) {
         tokens.push(current);
         current = "";
