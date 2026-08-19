@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { chmod, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -1416,6 +1416,35 @@ describe("script provider", () => {
       expect(result.healthy).toBe(true);
     },
   );
+
+  it.skipIf(process.platform === "win32")("keeps the implicit Unix shell for echo", async () => {
+    const context = await createContext();
+    const fakeBin = path.join(path.dirname(context.manifestPath), "fake-bin");
+    const fakeEcho = path.join(fakeBin, "echo");
+    await mkdir(fakeBin);
+    await writeText(
+      fakeEcho,
+      '#!/bin/sh\nprintf \'%s\\n\' \'{"healthy":true,"details":["path-echo"]}\'\n',
+    );
+    await chmod(fakeEcho, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}${path.delimiter}${originalPath ?? ""}`;
+    try {
+      context.config.script!.commands.probe = 'echo \'{"healthy":true,"details":["shell-echo"]}\'';
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(result.details[0]).toBe("shell-echo");
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+    }
+  });
 
   it.skipIf(process.platform === "win32")(
     "keeps the implicit Unix shell when the command needs expansion",
