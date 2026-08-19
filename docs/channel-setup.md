@@ -220,9 +220,10 @@ Blank lines are ignored. Non-watch stdout plus stderr is limited to 1 MiB.
 Watch stderr, each JSONL line, and any unterminated buffered line are each
 limited to 1 MiB. Commands inherit the process environment and the configured
 `cwd`. On Unix, a command with no `script.shell` and no shell metacharacters
-runs as a direct executable plus arguments. Pipes, globs, redirects, env
-assignments, shell builtins such as `exec`, and other shell syntax still use
-`/bin/sh`. Set `script.shell` to a shell path when you want that shell for
+runs as a direct executable plus arguments. Quoted empty arguments stay in
+argv. Pipes, globs, redirects, comments, env assignments, shell builtins such
+as `exec`, and other shell syntax still use `/bin/sh`. Set `script.shell` to a
+shell path when you want that shell for
 every command, including literal argv. Non-watch commands are terminated at their operation timeout;
 watch commands are terminated when cancellation fires.
 

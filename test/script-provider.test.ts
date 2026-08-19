@@ -1440,6 +1440,52 @@ describe("script provider", () => {
   );
 
   it.skipIf(process.platform === "win32")(
+    "preserves quoted empty Unix arguments without an implicit shell",
+    async () => {
+      const context = await createContext();
+      const probeScript = path.join(path.dirname(context.manifestPath), "probe-empty-arg.mjs");
+      await writeText(
+        probeScript,
+        [
+          "process.stdin.resume();",
+          'process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true,details:[JSON.stringify(process.argv.slice(2)),String(process.env.SHLVL??"")]})));',
+        ].join(""),
+      );
+      context.config.script!.commands.probe = `node ${JSON.stringify(probeScript)} ""`;
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(JSON.parse(result.details[0]!)).toEqual([""]);
+      expect(result.details[1]).toBe(String(process.env.SHLVL ?? ""));
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps the implicit Unix shell for hash comments",
+    async () => {
+      const context = await createContext();
+      const probeScript = path.join(path.dirname(context.manifestPath), "probe-comment.mjs");
+      await writeText(
+        probeScript,
+        [
+          "process.stdin.resume();",
+          'process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true,details:[JSON.stringify(process.argv.slice(2)),String(process.env.SHLVL??"")]})));',
+        ].join(""),
+      );
+      context.config.script!.commands.probe = `node ${JSON.stringify(probeScript)} # not-an-arg`;
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(JSON.parse(result.details[0]!)).toEqual([]);
+      expect(Number(result.details[1])).toBe(Number(process.env.SHLVL ?? "0") + 1);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
     "uses the configured Unix shell path for literal commands",
     async () => {
       const context = await createContext();

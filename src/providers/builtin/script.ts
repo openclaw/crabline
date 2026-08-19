@@ -995,6 +995,7 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
   const tokens: string[] = [];
   let current = "";
   let quote: '"' | "'" | undefined;
+  let quoted = false;
   for (let index = 0; index < command.length; index += 1) {
     const character = command[index]!;
     if (character === "\n" || character === "\r") {
@@ -1009,6 +1010,7 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
     if (quote) {
       if (character === quote) {
         quote = undefined;
+        quoted = true;
         continue;
       }
       if (quote === '"' && /[$`%!]/u.test(character)) {
@@ -1025,14 +1027,16 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
       continue;
     }
     if (/\s/u.test(character)) {
-      if (current) {
+      if (current || quoted) {
         tokens.push(current);
         current = "";
+        quoted = false;
       }
       continue;
     }
     if (
       /[;&|<>(){}$`%!*?[\]~]/u.test(character) ||
+      (process.platform !== "win32" && character === "#") ||
       (process.platform === "win32" && character === "^")
     ) {
       return undefined;
@@ -1047,7 +1051,7 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
   if (quote) {
     return undefined;
   }
-  if (current) {
+  if (current || quoted) {
     tokens.push(current);
   }
   return tokens;
