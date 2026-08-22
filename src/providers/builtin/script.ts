@@ -526,10 +526,88 @@ function windowsShellCommand(
   };
 }
 
+const UNIX_SHELL_BUILTINS = new Set([
+  ".",
+  ":",
+  "[",
+  "alias",
+  "bg",
+  "bind",
+  "break",
+  "builtin",
+  "caller",
+  "cd",
+  "command",
+  "compgen",
+  "complete",
+  "continue",
+  "declare",
+  "dirs",
+  "disown",
+  "echo",
+  "enable",
+  "eval",
+  "exec",
+  "exit",
+  "export",
+  "false",
+  "fc",
+  "fg",
+  "getopts",
+  "hash",
+  "help",
+  "history",
+  "jobs",
+  "kill",
+  "let",
+  "local",
+  "logout",
+  "mapfile",
+  "newgrp",
+  "popd",
+  "printf",
+  "pushd",
+  "pwd",
+  "read",
+  "readarray",
+  "readonly",
+  "return",
+  "set",
+  "shift",
+  "shopt",
+  "source",
+  "suspend",
+  "test",
+  "time",
+  "times",
+  "trap",
+  "true",
+  "type",
+  "typeset",
+  "ulimit",
+  "umask",
+  "unalias",
+  "unset",
+  "wait",
+]);
+
+function unixDirectSpawn(command: string): { args: string[]; file: string } | undefined {
+  const tokens = tokenizeLiteralCommand(command);
+  if (!tokens || tokens.length === 0) {
+    return undefined;
+  }
+  const file = tokens[0];
+  if (!file || /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(file) || UNIX_SHELL_BUILTINS.has(file)) {
+    return undefined;
+  }
+  return { args: tokens.slice(1), file };
+}
+
 async function spawnScriptChild(
   params: {
     command: string;
     cwd?: string | undefined;
+    direct?: boolean | undefined;
     shell?: string | undefined;
   },
   signal?: AbortSignal,
@@ -557,13 +635,27 @@ async function spawnScriptChild(
     });
   } else {
     startedAtMs = Date.now();
-    child = spawn(params.command, {
-      cwd,
-      env: process.env,
-      shell: params.shell ?? true,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const direct =
+      params.direct === true && params.shell === undefined
+        ? unixDirectSpawn(params.command)
+        : undefined;
+    if (direct) {
+      child = spawn(direct.file, direct.args, {
+        cwd,
+        env: process.env,
+        shell: false,
+        detached: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } else {
+      child = spawn(params.command, {
+        cwd,
+        env: process.env,
+        shell: params.shell ?? true,
+        detached: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    }
   }
   const observedAtMs = Date.now();
   if (signal?.aborted) {
@@ -917,6 +1009,7 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
   const tokens: string[] = [];
   let current = "";
   let quote: '"' | "'" | undefined;
+  let quoted = false;
   for (let index = 0; index < command.length; index += 1) {
     const character = command[index]!;
     if (character === "\n" || character === "\r") {
@@ -931,6 +1024,7 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
     if (quote) {
       if (character === quote) {
         quote = undefined;
+        quoted = true;
         continue;
       }
       if (quote === '"' && /[$`%!]/u.test(character)) {
@@ -946,15 +1040,17 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
       quote = character;
       continue;
     }
-    if (/\s/u.test(character)) {
-      if (current) {
+    if (character === " " || character === "\t") {
+      if (current || quoted) {
         tokens.push(current);
         current = "";
+        quoted = false;
       }
       continue;
     }
     if (
       /[;&|<>(){}$`%!*?[\]~]/u.test(character) ||
+      (process.platform !== "win32" && character === "#") ||
       (process.platform === "win32" && character === "^")
     ) {
       return undefined;
@@ -969,7 +1065,7 @@ function tokenizeLiteralCommand(command: string): string[] | undefined {
   if (quote) {
     return undefined;
   }
-  if (current) {
+  if (current || quoted) {
     tokens.push(current);
   }
   return tokens;
@@ -1325,6 +1421,7 @@ function runScript<T>(params: {
   acceptResultDuringTimeoutGrace?: ((result: T) => boolean) | undefined;
   command: string;
   cwd?: string | undefined;
+  direct?: boolean | undefined;
   payload: unknown;
   schema: z.ZodType<T>;
   shell?: string | undefined;
@@ -1541,6 +1638,7 @@ function watchScript(params: {
   command: string;
   context: WatchContext;
   cwd?: string | undefined;
+  direct?: boolean | undefined;
   id: string;
   normalizeTarget: ProviderAdapter["normalizeTarget"];
   shell?: string | undefined;
@@ -1831,6 +1929,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
     const result = await runScript({
       command,
       cwd: this.#config.cwd,
+      direct: this.#config.direct,
       payload: createPayload(context),
       schema: ScriptProbeResultSchema,
       shell: this.#config.shell,
@@ -1854,6 +1953,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
     return runScript({
       command,
       cwd: this.#config.cwd,
+      direct: this.#config.direct,
       payload: {
         ...createPayload(context),
         outbound: {
@@ -1880,6 +1980,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       acceptResultDuringTimeoutGrace: (candidate) => candidate.timeout === true,
       command,
       cwd: this.#config.cwd,
+      direct: this.#config.direct,
       payload: {
         ...createPayload(context),
         wait: {
@@ -1924,6 +2025,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       command,
       context,
       cwd: this.#config.cwd,
+      direct: this.#config.direct,
       id: this.id,
       normalizeTarget: (target) => this.normalizeTarget(target),
       shell: this.#config.shell,

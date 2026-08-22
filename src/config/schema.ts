@@ -247,6 +247,7 @@ const LoopbackConfigSchema = z.strictObject({
 const ScriptConfigSchema = z.strictObject({
   commands: ScriptCommandsSchema,
   cwd: z.string().min(1).optional(),
+  direct: z.boolean().optional(),
   shell: z.string().min(1).optional(),
 });
 

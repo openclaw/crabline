@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { chmod, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -1376,4 +1376,232 @@ describe("script provider", () => {
     ).rejects.toThrow(/missing send command/);
     await expect(provider.watch?.({ ...context })?.next()).rejects.toThrow(/missing watch command/);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "runs literal Unix commands without an implicit shell",
+    async () => {
+      const context = await createContext();
+      const probeScript = path.join(path.dirname(context.manifestPath), "probe-shlvl.mjs");
+      await writeText(
+        probeScript,
+        [
+          "process.stdin.resume();",
+          'process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true,details:[String(process.env.SHLVL??"")]})));',
+        ].join(""),
+      );
+      context.config.script!.commands.probe = `node ${JSON.stringify(probeScript)}`;
+      context.config.script!.direct = true;
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(result.details[0]).toBe(String(process.env.SHLVL ?? ""));
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps the implicit Unix shell for shell builtins",
+    async () => {
+      const context = await createContext();
+      const probeScript = path.join(path.dirname(context.manifestPath), "probe-exec.mjs");
+      await writeText(
+        probeScript,
+        'process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true})));',
+      );
+      context.config.script!.commands.probe = `exec node ${JSON.stringify(probeScript)}`;
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("keeps the implicit Unix shell for echo", async () => {
+    const context = await createContext();
+    const fakeBin = path.join(path.dirname(context.manifestPath), "fake-bin");
+    const fakeEcho = path.join(fakeBin, "echo");
+    await mkdir(fakeBin);
+    await writeText(
+      fakeEcho,
+      '#!/bin/sh\nprintf \'%s\\n\' \'{"healthy":true,"details":["path-echo"]}\'\n',
+    );
+    await chmod(fakeEcho, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}${path.delimiter}${originalPath ?? ""}`;
+    try {
+      context.config.script!.commands.probe = 'echo \'{"healthy":true,"details":["shell-echo"]}\'';
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(result.details[0]).toBe("shell-echo");
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "keeps the implicit Unix shell when the command needs expansion",
+    async () => {
+      const context = await createContext();
+      const probeScript = path.join(path.dirname(context.manifestPath), "probe-shlvl-expand.mjs");
+      await writeText(
+        probeScript,
+        [
+          "process.stdin.resume();",
+          'process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true,details:[String(process.env.SHLVL??"")]})));',
+        ].join(""),
+      );
+      context.config.script!.commands.probe = `node ${JSON.stringify(probeScript)} unused-*`;
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(Number(result.details[0])).toBe(Number(process.env.SHLVL ?? "0") + 1);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps the implicit Unix shell when script.direct is unset",
+    async () => {
+      const context = await createContext();
+      const probeScript = path.join(path.dirname(context.manifestPath), "probe-shlvl-default.mjs");
+      await writeText(
+        probeScript,
+        [
+          "process.stdin.resume();",
+          'process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true,details:[String(process.env.SHLVL??"")]})));',
+        ].join(""),
+      );
+      context.config.script!.commands.probe = `node ${JSON.stringify(probeScript)}`;
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(Number(result.details[0])).toBe(Number(process.env.SHLVL ?? "0") + 1);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("keeps the implicit Unix shell for time", async () => {
+    const context = await createContext();
+    const probeScript = path.join(path.dirname(context.manifestPath), "probe-time.mjs");
+    await writeText(
+      probeScript,
+      [
+        "process.stdin.resume();",
+        'process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true,details:[String(process.env.SHLVL??"")]})));',
+      ].join(""),
+    );
+    context.config.script!.commands.probe = `time node ${JSON.stringify(probeScript)}`;
+    context.config.script!.direct = true;
+    const provider = new ScriptProviderAdapter(context);
+
+    const result = await provider.probe(context);
+
+    expect(result.healthy).toBe(true);
+    expect(Number(result.details[0])).toBe(Number(process.env.SHLVL ?? "0") + 1);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "preserves quoted empty Unix arguments without an implicit shell",
+    async () => {
+      const context = await createContext();
+      const probeScript = path.join(path.dirname(context.manifestPath), "probe-empty-arg.mjs");
+      await writeText(
+        probeScript,
+        [
+          "process.stdin.resume();",
+          'process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true,details:[JSON.stringify(process.argv.slice(2)),String(process.env.SHLVL??"")]})));',
+        ].join(""),
+      );
+      context.config.script!.commands.probe = `node ${JSON.stringify(probeScript)} ""`;
+      context.config.script!.direct = true;
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(JSON.parse(result.details[0]!)).toEqual([""]);
+      expect(result.details[1]).toBe(String(process.env.SHLVL ?? ""));
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "preserves non-shell Unicode whitespace in direct Unix argv",
+    async () => {
+      const context = await createContext();
+      const probeScript = path.join(path.dirname(context.manifestPath), "probe-nbsp.mjs");
+      await writeText(
+        probeScript,
+        [
+          "process.stdin.resume();",
+          'process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true,details:[JSON.stringify(process.argv.slice(2)),String(process.env.SHLVL??"")]})));',
+        ].join(""),
+      );
+      context.config.script!.commands.probe = `node ${JSON.stringify(probeScript)} a\u00a0b c\u000bd d\u000ce`;
+      context.config.script!.direct = true;
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(JSON.parse(result.details[0]!)).toEqual(["a\u00a0b", "c\u000bd", "d\u000ce"]);
+      expect(result.details[1]).toBe(String(process.env.SHLVL ?? ""));
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps the implicit Unix shell for hash comments",
+    async () => {
+      const context = await createContext();
+      const probeScript = path.join(path.dirname(context.manifestPath), "probe-comment.mjs");
+      await writeText(
+        probeScript,
+        [
+          "process.stdin.resume();",
+          'process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true,details:[JSON.stringify(process.argv.slice(2)),String(process.env.SHLVL??"")]})));',
+        ].join(""),
+      );
+      context.config.script!.commands.probe = `node ${JSON.stringify(probeScript)} # not-an-arg`;
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(JSON.parse(result.details[0]!)).toEqual([]);
+      expect(Number(result.details[1])).toBe(Number(process.env.SHLVL ?? "0") + 1);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "uses the configured Unix shell path for literal commands",
+    async () => {
+      const context = await createContext();
+      const probeScript = path.join(path.dirname(context.manifestPath), "probe-shlvl-shell.mjs");
+      await writeText(
+        probeScript,
+        [
+          "process.stdin.resume();",
+          'process.stdin.on("end",()=>process.stdout.write(JSON.stringify({healthy:true,details:[String(process.env.SHLVL??"")]})));',
+        ].join(""),
+      );
+      context.config.script!.commands.probe = `node ${JSON.stringify(probeScript)}`;
+      context.config.script!.shell = "/bin/sh";
+      const provider = new ScriptProviderAdapter(context);
+
+      const result = await provider.probe(context);
+
+      expect(result.healthy).toBe(true);
+      expect(Number(result.details[0])).toBe(Number(process.env.SHLVL ?? "0") + 1);
+    },
+  );
 });
