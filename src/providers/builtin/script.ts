@@ -578,6 +578,7 @@ const UNIX_SHELL_BUILTINS = new Set([
   "source",
   "suspend",
   "test",
+  "time",
   "times",
   "trap",
   "true",
@@ -606,6 +607,7 @@ async function spawnScriptChild(
   params: {
     command: string;
     cwd?: string | undefined;
+    direct?: boolean | undefined;
     shell?: string | undefined;
   },
   signal?: AbortSignal,
@@ -633,7 +635,10 @@ async function spawnScriptChild(
     });
   } else {
     startedAtMs = Date.now();
-    const direct = params.shell === undefined ? unixDirectSpawn(params.command) : undefined;
+    const direct =
+      params.direct === true && params.shell === undefined
+        ? unixDirectSpawn(params.command)
+        : undefined;
     if (direct) {
       child = spawn(direct.file, direct.args, {
         cwd,
@@ -1416,6 +1421,7 @@ function runScript<T>(params: {
   acceptResultDuringTimeoutGrace?: ((result: T) => boolean) | undefined;
   command: string;
   cwd?: string | undefined;
+  direct?: boolean | undefined;
   payload: unknown;
   schema: z.ZodType<T>;
   shell?: string | undefined;
@@ -1632,6 +1638,7 @@ function watchScript(params: {
   command: string;
   context: WatchContext;
   cwd?: string | undefined;
+  direct?: boolean | undefined;
   id: string;
   normalizeTarget: ProviderAdapter["normalizeTarget"];
   shell?: string | undefined;
@@ -1922,6 +1929,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
     const result = await runScript({
       command,
       cwd: this.#config.cwd,
+      direct: this.#config.direct,
       payload: createPayload(context),
       schema: ScriptProbeResultSchema,
       shell: this.#config.shell,
@@ -1945,6 +1953,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
     return runScript({
       command,
       cwd: this.#config.cwd,
+      direct: this.#config.direct,
       payload: {
         ...createPayload(context),
         outbound: {
@@ -1971,6 +1980,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       acceptResultDuringTimeoutGrace: (candidate) => candidate.timeout === true,
       command,
       cwd: this.#config.cwd,
+      direct: this.#config.direct,
       payload: {
         ...createPayload(context),
         wait: {
@@ -2015,6 +2025,7 @@ export class ScriptProviderAdapter implements ProviderAdapter {
       command,
       context,
       cwd: this.#config.cwd,
+      direct: this.#config.direct,
       id: this.id,
       normalizeTarget: (target) => this.normalizeTarget(target),
       shell: this.#config.shell,
