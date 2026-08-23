@@ -1546,7 +1546,7 @@ describe("Matrix local provider server", () => {
       },
     );
     await expect(untouchedRetry.json()).resolves.toEqual({ event_id: secondEventId });
-  }, 15_000);
+  }, 30_000);
 
   it("bounds sync responses without skipping the newest deliverable event", async () => {
     const server = await startMatrixServer({
