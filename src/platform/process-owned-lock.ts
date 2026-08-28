@@ -965,36 +965,14 @@ function isRecoverableUnknownOwner(
   );
 }
 
-export function createProcessOwnedLockFileSystem(
-  options: {
-    beforeDirectoryRemoval?: (directoryPath: string) => void;
-    machineIdentityReader?: () => string | null;
-    onDirectoryOwned?: (directoryPath: string, identity: { dev: bigint; ino: bigint }) => void;
-    processIdentityReader?: (pid: number) => string | null;
-  } = {},
-): typeof fs {
-  if (
-    process.platform !== "linux" &&
-    process.platform !== "darwin" &&
-    process.platform !== "win32"
-  ) {
-    return fs;
-  }
-  const token = randomUUID();
-  const removeLockDirectorySync = (
-    directoryPath: fs.PathLike,
-    expectedIdentity: DirectoryIdentity,
-    expectedMtimeMs?: bigint,
-    afterClaim?: (directoryPath: string) => void,
-  ): void => {
-    removeVerifiedLockDirectorySync(
-      directoryPath,
-      expectedIdentity,
-      expectedMtimeMs,
-      options.beforeDirectoryRemoval,
-      afterClaim,
-    );
-  };
+type ProcessOwnedLockOptions = {
+  beforeDirectoryRemoval?: (directoryPath: string) => void;
+  machineIdentityReader?: () => string | null;
+  onDirectoryOwned?: (directoryPath: string, identity: { dev: bigint; ino: bigint }) => void;
+  processIdentityReader?: (pid: number) => string | null;
+};
+
+function readCurrentLockOwner(options: ProcessOwnedLockOptions) {
   const identityReader = options.processIdentityReader ?? readProcessIdentity;
   let currentProcessIdentity: string | null;
   if (options.processIdentityReader) {
@@ -1034,6 +1012,41 @@ export function createProcessOwnedLockFileSystem(
   if (process.platform === "linux" && currentProcessNamespace === null) {
     throw new Error("Recorder lock process namespace is unavailable.");
   }
+  return { currentProcessIdentity, currentMachineIdentity, currentProcessNamespace };
+}
+
+export function initializeProcessOwnedLockIdentity(): void {
+  if (["linux", "darwin", "win32"].includes(process.platform)) {
+    readCurrentLockOwner({});
+  }
+}
+
+export function createProcessOwnedLockFileSystem(options: ProcessOwnedLockOptions = {}): typeof fs {
+  if (
+    process.platform !== "linux" &&
+    process.platform !== "darwin" &&
+    process.platform !== "win32"
+  ) {
+    return fs;
+  }
+  const { currentProcessIdentity, currentMachineIdentity, currentProcessNamespace } =
+    readCurrentLockOwner(options);
+  const identityReader = options.processIdentityReader ?? readProcessIdentity;
+  const token = randomUUID();
+  const removeLockDirectorySync = (
+    directoryPath: fs.PathLike,
+    expectedIdentity: DirectoryIdentity,
+    expectedMtimeMs?: bigint,
+    afterClaim?: (directoryPath: string) => void,
+  ): void => {
+    removeVerifiedLockDirectorySync(
+      directoryPath,
+      expectedIdentity,
+      expectedMtimeMs,
+      options.beforeDirectoryRemoval,
+      afterClaim,
+    );
+  };
   const ownedDirectories = new Map<string, DirectoryIdentity>();
   const interruptedPublicationIdentities = new Map<string, DirectoryIdentity>();
   let cachedForeignIdentity:

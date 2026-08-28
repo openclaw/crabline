@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Initialize provider recorder ownership before readiness and drain admitted persistence on shutdown without waiting for event observers (#283).
 - Refresh WebSocket and Matrix client dependencies, pnpm/npm, lint/test tooling, Go workflow tooling dependencies, and CodeQL pins; retain Node 22 typings for compatibility.
 
 ## 0.1.17 - 2026-08-14

@@ -23,11 +23,7 @@ import {
   SLACK_TS_RULE,
   SLACK_USER_ID_RULE,
 } from "../providers/slack-ids.js";
-import {
-  recordCommittedServerEvent,
-  recordServerEvent,
-  type ServerEventObserver,
-} from "./recorder.js";
+import { createServerRecorder, type ServerRecorder, type ServerEventObserver } from "./recorder.js";
 import {
   postWebhookRequestWithResponse,
   validateWebhookTarget,
@@ -76,7 +72,7 @@ type SlackServerState = {
   nextDmIndex: number;
   nextMpimIndex: number;
   nextTsIndex: number;
-  onEvent: ServerEventObserver | undefined;
+  recorder: ServerRecorder;
   recorderPath: string;
   restrictEventTargets: boolean;
   signingSecret: string;
@@ -565,8 +561,7 @@ function slackConversationType(conversation: Record<string, unknown>): string {
 }
 
 async function appendEvent(state: SlackServerState, event: ServerRequestEvent, committed = false) {
-  const params = { event, onEvent: state.onEvent, recorderPath: state.recorderPath };
-  await (committed ? recordCommittedServerEvent(params) : recordServerEvent(params));
+  await (committed ? state.recorder.recordCommitted(event) : state.recorder.record(event));
 }
 
 function redactSlackAuthFields(value: Record<string, unknown>): Record<string, unknown> {
@@ -1360,6 +1355,7 @@ export async function startSlackServer(
 ): Promise<StartedSlackServer> {
   const host = params.host ?? "127.0.0.1";
   const externallyBound = !isLoopbackHost(host);
+  const recorderPath = params.recorderPath ?? path.resolve(".crabline", "servers", "slack.jsonl");
   const state: SlackServerState = {
     activeEventDeliveries: new Set(),
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
@@ -1374,8 +1370,8 @@ export async function startSlackServer(
     nextDmIndex: 1,
     nextMpimIndex: 1,
     nextTsIndex: 100,
-    onEvent: params.onEvent,
-    recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "slack.jsonl"),
+    recorder: createServerRecorder({ recorderPath, onEvent: params.onEvent }),
+    recorderPath,
     restrictEventTargets: true,
     signingSecret: params.signingSecret ?? "crabline-slack-signing-secret",
     userDmChannels: new Map(),
@@ -1413,6 +1409,7 @@ export async function startSlackServer(
       state.deliveryAbortController.abort();
       await Promise.allSettled(state.activeEventDeliveries);
       await httpServer.close();
+      await state.recorder.close();
     },
     manifest: {
       adminToken: state.adminToken,

@@ -20,8 +20,8 @@ import {
   writeResponse,
 } from "./http.js";
 import {
-  recordCommittedServerEvent,
-  recordServerEvent,
+  createServerRecorder,
+  type ServerRecorder,
   ServerRecorderCommittedError,
   type ServerEventObserver,
 } from "./recorder.js";
@@ -37,7 +37,7 @@ type SignalServerState = {
   lastCommittedTimestamp: number | undefined;
   nextEventSequence: number;
   nextTimestamp: number;
-  onEvent: ServerEventObserver | undefined;
+  recorder: ServerRecorder;
   pendingEventBytes: number;
   pendingEvents: SignalSseChunk[];
   pendingTimestampCommits: Promise<void>;
@@ -116,8 +116,7 @@ async function appendEvent(
   event: SignalRecorderEvent,
   committed = false,
 ): Promise<void> {
-  const params = { event, onEvent: state.onEvent, recorderPath: state.recorderPath };
-  await (committed ? recordCommittedServerEvent(params) : recordServerEvent(params));
+  await (committed ? state.recorder.recordCommitted(event) : state.recorder.record(event));
 }
 
 function rpcResponse(id: unknown, result: unknown): Response {
@@ -980,6 +979,7 @@ export async function startSignalServer(
   if (!account) {
     throw new Error("account must be an E.164 telephone number.");
   }
+  const recorderPath = params.recorderPath ?? path.resolve(".crabline", "servers", "signal.jsonl");
   const state: SignalServerState = {
     account,
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
@@ -993,12 +993,12 @@ export async function startSignalServer(
         : DEFAULT_MAX_SIGNAL_SSE_CLIENTS,
     nextEventSequence: 1,
     nextTimestamp: Date.now(),
-    onEvent: params.onEvent,
+    recorder: createServerRecorder({ recorderPath, onEvent: params.onEvent }),
     pendingEventBytes: 0,
     pendingEvents: [],
     pendingTimestampCommits: Promise.resolve(),
     pendingSseClients: 0,
-    recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "signal.jsonl"),
+    recorderPath,
   };
   const host = params.host ?? "127.0.0.1";
   const normalizedHost = normalizeSignalHost(host);
@@ -1071,6 +1071,7 @@ export async function startSignalServer(
         client.end();
       }
       await closeServer(server);
+      await state.recorder.close();
     },
     manifest: {
       account: state.account,

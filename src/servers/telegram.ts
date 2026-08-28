@@ -19,7 +19,7 @@ import {
   RequestBodyTooLargeError,
   writeResponse,
 } from "./http.js";
-import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import { createServerRecorder, type ServerEventObserver, type ServerRecorder } from "./recorder.js";
 import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 import {
   postWebhookRequest,
@@ -149,7 +149,7 @@ type TelegramServerState = {
   maxPendingInboundEvents: number;
   nextMessageIds: Map<string, number>;
   nextUpdateId: number;
-  onEvent: ServerEventObserver | undefined;
+  recorder: ServerRecorder;
   recorderPath: string;
   restrictWebhookTargets: boolean;
   updates: TelegramUpdate[];
@@ -869,7 +869,7 @@ function telegramStoredChatId(value: unknown): number | undefined {
 }
 
 async function appendEvent(state: TelegramServerState, event: TelegramServerEvent) {
-  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
+  await state.recorder.record(event);
 }
 
 function isTelegramMultipartFile(value: unknown): value is TelegramMultipartFile {
@@ -2651,6 +2651,8 @@ export async function startTelegramServer(
   if (!TELEGRAM_BOT_USERNAME_PATTERN.test(`@${botUsername}`)) {
     throw new Error("botUsername must be a valid 5-32 character Telegram username.");
   }
+  const recorderPath =
+    params.recorderPath ?? path.resolve(".crabline", "servers", "telegram.jsonl");
   const state: TelegramServerState = {
     activeUpdatePoll: undefined,
     activeWebhookDeliveries: new Set(),
@@ -2671,8 +2673,8 @@ export async function startTelegramServer(
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessageIds: new Map(),
     nextUpdateId: 1,
-    onEvent: params.onEvent,
-    recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "telegram.jsonl"),
+    recorder: createServerRecorder({ recorderPath, onEvent: params.onEvent }),
+    recorderPath,
     restrictWebhookTargets: true,
     closing: false,
     updates: [],
@@ -2716,6 +2718,7 @@ export async function startTelegramServer(
       await state.webhookAdmission;
       await state.inboundAdmission;
       await closeServer(server);
+      await state.recorder.close();
     },
     manifest: {
       adminToken: state.adminToken,

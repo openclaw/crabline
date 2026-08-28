@@ -23,11 +23,7 @@ import {
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
-import {
-  recordCommittedServerEvent,
-  recordServerEvent,
-  type ServerEventObserver,
-} from "./recorder.js";
+import { createServerRecorder, type ServerRecorder, type ServerEventObserver } from "./recorder.js";
 
 type MatrixEvent = {
   content: Record<string, unknown>;
@@ -78,7 +74,7 @@ type MatrixServerState = {
   nextEvent: number;
   nextFilter: number;
   nextSequence: number;
-  onEvent: ServerEventObserver | undefined;
+  recorder: ServerRecorder;
   profiles: Map<string, { avatar_url?: string; display_name?: string }>;
   recorderPath: string;
   rooms: Map<string, MatrixRoom>;
@@ -160,8 +156,7 @@ async function appendEvent(
   event: ServerRequestEvent,
   committed = false,
 ): Promise<void> {
-  const params = { event, onEvent: state.onEvent, recorderPath: state.recorderPath };
-  await (committed ? recordCommittedServerEvent(params) : recordServerEvent(params));
+  await (committed ? state.recorder.recordCommitted(event) : state.recorder.record(event));
 }
 
 function authorized(request: IncomingMessage, token: string): boolean {
@@ -1084,6 +1079,7 @@ export async function startMatrixServer(
   if (!isMatrixUserId(botUserId)) {
     throw new Error("botUserId must be a canonical Matrix user ID.");
   }
+  const recorderPath = params.recorderPath ?? path.resolve("artifacts/crabline/matrix.jsonl");
   const state: MatrixServerState = {
     accessToken: params.accessToken ?? `syt_crabline_${randomBytes(12).toString("hex")}`,
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
@@ -1111,9 +1107,9 @@ export async function startMatrixServer(
     nextEvent: 1,
     nextFilter: 1,
     nextSequence: 1,
-    onEvent: params.onEvent,
+    recorder: createServerRecorder({ recorderPath, onEvent: params.onEvent }),
     profiles: new Map([[botUserId, { display_name: "OpenClaw QA" }]]),
-    recorderPath: params.recorderPath ?? path.resolve("artifacts/crabline/matrix.jsonl"),
+    recorderPath,
     rooms: new Map(),
     serverName,
     syncWaiters: new Set(),
@@ -1230,6 +1226,7 @@ export async function startMatrixServer(
         room.typingTimeouts.clear();
       }
       await server.close();
+      await state.recorder.close();
     },
     manifest: {
       accessToken: state.accessToken,
