@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   adminAuthError,
   closeServer,
+  createServerClose,
   drainRequestBody,
   formatUrlHost,
   hasAdminToken,
@@ -1065,14 +1066,13 @@ export async function startSignalServer(
     normalizedHost === "0.0.0.0" ? "127.0.0.1" : normalizedHost === "::" ? "::1" : host;
   const baseUrl = `http://${formatUrlHost(advertisedHost)}:${address.port}`;
   return {
-    async close() {
+    close: createServerClose(state.recorder, async () => {
       clearInterval(keepalive);
       for (const client of state.clients) {
         client.end();
       }
       await closeServer(server);
-      await state.recorder.close();
-    },
+    }),
     manifest: {
       account: state.account,
       adminToken: state.adminToken,

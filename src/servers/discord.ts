@@ -5,6 +5,7 @@ import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import {
   adminAuthError,
+  createServerClose,
   constantTimeTokenEqual,
   hasAdminToken,
   InvalidJsonBodyError,
@@ -1057,12 +1058,17 @@ export async function startDiscordServer(
   state.gatewayUrl = `${httpServer.baseUrl.replace(/^http/u, "ws")}/gateway`;
   const closeGateway = attachGatewayServer({ server: httpServer.server, state });
   return {
-    async close() {
-      await closeGateway();
-      await httpServer.close();
-      await state.recorder.close();
-      state.sessions.clear();
-    },
+    close: createServerClose(
+      state.recorder,
+      async () => {
+        try {
+          await closeGateway();
+        } finally {
+          state.sessions.clear();
+        }
+      },
+      () => httpServer.close(),
+    ),
     manifest: {
       adminToken: state.adminToken,
       applicationId: state.applicationId,

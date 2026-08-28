@@ -6,6 +6,7 @@ import { CrablineError } from "../core/errors.js";
 import {
   adminAuthError,
   closeServer,
+  createServerClose,
   drainRequestBody,
   formatUrlHost,
   hasAdminToken,
@@ -2704,7 +2705,7 @@ export async function startTelegramServer(
   }
   const baseUrl = `http://${formatUrlHost(host)}:${address.port}`;
   return {
-    async close() {
+    close: createServerClose(state.recorder, async () => {
       state.closing = true;
       finishTelegramUpdatePoll(state, "shutdown");
       clearTelegramWebhookRetry(state);
@@ -2716,10 +2717,8 @@ export async function startTelegramServer(
       }
       await state.webhookDelivery;
       await state.webhookAdmission;
-      await state.inboundAdmission;
       await closeServer(server);
-      await state.recorder.close();
-    },
+    }),
     manifest: {
       adminToken: state.adminToken,
       baseUrl,

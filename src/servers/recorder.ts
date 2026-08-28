@@ -1,4 +1,4 @@
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, type PathLike } from "node:fs";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, open, readlink, realpath, stat as statPath } from "node:fs/promises";
 import { userInfo } from "node:os";
@@ -934,10 +934,25 @@ async function acquireSingleRecorderLock(filePath: string): Promise<AcquiredReco
       }
     },
   });
+  // proper-lockfile reports a failed initial mtime probe before its rmdir settles.
+  const trackedFileSystem = Object.create(lockFileSystem) as typeof lockFileSystem;
+  const removeDirectory = lockFileSystem.rmdir.bind(lockFileSystem);
+  let pendingRemoval: Promise<void> | undefined;
+  trackedFileSystem.rmdir = ((
+    directory: PathLike,
+    callback: (error: NodeJS.ErrnoException | null) => void,
+  ) => {
+    pendingRemoval = new Promise<void>((resolve) => {
+      removeDirectory(directory, (error) => {
+        callback(error);
+        resolve();
+      });
+    });
+  }) as typeof lockFileSystem.rmdir;
   for (;;) {
     try {
       const release = await lock(filePath, {
-        fs: lockFileSystem,
+        fs: trackedFileSystem,
         realpath: false,
         retries: 0,
         stale: RECORDER_LOCK_STALE_MS,
@@ -945,6 +960,7 @@ async function acquireSingleRecorderLock(filePath: string): Promise<AcquiredReco
       });
       return { artifactIdentity, release };
     } catch (error) {
+      await pendingRemoval;
       if (!isRecorderLockContention(error)) {
         throw error;
       }

@@ -1261,7 +1261,7 @@ class WhatsAppBaileysWebSocketSession {
   }
 
   async #handleNode(node: BinaryNode): Promise<void> {
-    await this.#recordNode(node);
+    await awaitWithAbort(this.#recordNode(node), this.#acceptanceAbort.signal);
     if (node.tag === "iq") {
       await this.#sendNode(this.#createIqResult(node));
       return;

@@ -9,6 +9,7 @@ import {
 } from "../matrix-ids.js";
 import {
   adminAuthError,
+  createServerClose,
   constantTimeTokenEqual,
   DEFAULT_MAX_RESPONSE_BODY_BYTES,
   hasAdminToken,
@@ -1218,7 +1219,7 @@ export async function startMatrixServer(
 
   const clientApiRoot = `${server.baseUrl}/_matrix/client/v3`;
   return {
-    async close() {
+    close: createServerClose(state.recorder, async () => {
       for (const room of state.rooms.values()) {
         for (const timer of room.typingTimeouts.values()) {
           clearTimeout(timer);
@@ -1226,8 +1227,7 @@ export async function startMatrixServer(
         room.typingTimeouts.clear();
       }
       await server.close();
-      await state.recorder.close();
-    },
+    }),
     manifest: {
       accessToken: state.accessToken,
       adminToken: state.adminToken,

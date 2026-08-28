@@ -8,6 +8,7 @@ import {
 import path from "node:path";
 import {
   adminAuthError,
+  createServerClose,
   drainRequestBody,
   hasAdminToken,
   InvalidJsonBodyError,
@@ -1049,7 +1050,7 @@ export async function startZaloServer(
     version: 1,
   };
   return {
-    async close() {
+    close: createServerClose(state.recorder, async () => {
       state.closing = true;
       for (const request of state.activeWebhookRequests) {
         request.destroy(new Error("Zalo server is shutting down."));
@@ -1061,8 +1062,7 @@ export async function startZaloServer(
         settlePendingUpdate(state, state.pendingRequest, { kind: "shutdown" });
       }
       await httpServer.close();
-      await state.recorder.close();
-    },
+    }),
     manifest,
   };
 }

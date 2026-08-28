@@ -407,6 +407,28 @@ export async function writeResponse(
   }
 }
 
+export function createServerClose(
+  recorder: { close(): Promise<void> },
+  ...closeResources: Array<() => void | Promise<void>>
+): () => Promise<void> {
+  let closing: Promise<void> | undefined;
+  return () =>
+    (closing ??= (async () => {
+      const results = await Promise.allSettled(closeResources.map(async (close) => await close()));
+      // Let native polling responses finish during transport grace, then fence late writes.
+      results.push(...(await Promise.allSettled([recorder.close()])));
+      const errors = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (errors.length === 1) {
+        throw errors[0];
+      }
+      if (errors.length > 1) {
+        throw new AggregateError(errors, "Server shutdown failed.");
+      }
+    })());
+}
+
 export function closeServer(
   server: Server,
   graceMs = DEFAULT_SERVER_SHUTDOWN_GRACE_MS,

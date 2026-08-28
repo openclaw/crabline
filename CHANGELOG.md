@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.18 - 2026-08-28
 
+- Complete recorder shutdown for Telegram/Baileys observer self-close, repeated close calls, failed WebSocket teardown, and asynchronous lock-acquisition cleanup (#285).
+- Fix private artifact creation under restrictive macOS ACLs (#280).
 - Initialize provider recorder ownership before readiness and drain admitted persistence on shutdown without waiting for event observers (#283).
 - Refresh WebSocket and Matrix client dependencies, pnpm/npm, lint/test tooling, Go workflow tooling dependencies, and CodeQL pins; retain Node 22 typings for compatibility.
 

@@ -3,6 +3,7 @@ import { createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto
 import path from "node:path";
 import {
   adminAuthError,
+  createServerClose,
   hasAdminToken,
   InvalidJsonBodyError,
   isJsonObject,
@@ -1404,13 +1405,12 @@ export async function startSlackServer(
   const baseUrl = httpServer.baseUrl;
   const apiRoot = `${baseUrl}/api/`;
   return {
-    async close() {
+    close: createServerClose(state.recorder, async () => {
       state.closing = true;
       state.deliveryAbortController.abort();
       await Promise.allSettled(state.activeEventDeliveries);
       await httpServer.close();
-      await state.recorder.close();
-    },
+    }),
     manifest: {
       adminToken: state.adminToken,
       baseUrl,
