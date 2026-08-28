@@ -184,10 +184,9 @@ async function awaitWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): P
   if (!signal) {
     return await operation;
   }
-  signal.throwIfAborted();
   return await new Promise<T>((resolve, reject) => {
     const abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
+    // The operation already started; even pre-aborted waits must observe its rejection.
     void operation.then(
       (value) => {
         signal.removeEventListener("abort", abort);
@@ -198,6 +197,8 @@ async function awaitWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): P
         reject(error);
       },
     );
+    signal.throwIfAborted();
+    signal.addEventListener("abort", abort, { once: true });
   });
 }
 

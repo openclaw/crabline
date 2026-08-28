@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
 import { createHash, createHmac, hkdfSync } from "node:crypto";
-import { Agent } from "node:http";
+import { Agent, createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { deflateSync } from "node:zlib";
 import {
   downloadMediaMessage,
   initAuthCreds,
@@ -28,8 +30,9 @@ import {
   type StartedWhatsAppServer,
 } from "../src/index.js";
 import { WHATSAPP_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/whatsapp.js";
-import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
+import { ADMIN_TOKEN_HEADER, closeServer } from "../src/servers/http.js";
 import {
+  attachWhatsAppBaileysWebSocketServer,
   MAX_WHATSAPP_WEBSOCKET_FRAGMENTS,
   persistAcceptedBaileysMessage,
   signalBundleIdentityKey,
@@ -40,9 +43,9 @@ import {
   canonicalizeWhatsAppUserJid,
 } from "../src/servers/whatsapp-jid.js";
 import { isWhatsAppMessageIdInUse } from "../src/servers/whatsapp.js";
-import type { BinaryNode } from "../src/servers/whatsapp-wire/binary-node.js";
+import { encodeBinaryNode, type BinaryNode } from "../src/servers/whatsapp-wire/binary-node.js";
 import { Curve, ensureSignalPublicKey, type KeyPair } from "../src/servers/whatsapp-wire/crypto.js";
-import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
+import { createTempDir, disposeTempDir, requestHttp, settleCleanup } from "./test-helpers.js";
 
 const servers: StartedWhatsAppServer[] = [];
 const directories: string[] = [];
@@ -59,6 +62,30 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         await recorderIo.blocked;
       }
       return await actual.realpath(...args);
+    },
+  };
+});
+
+const compressedFrameIo = vi.hoisted(() => ({
+  input: undefined as Buffer | undefined,
+  entered: () => {},
+  blocked: Promise.resolve(),
+}));
+vi.mock("node:zlib", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:zlib")>();
+  return {
+    ...actual,
+    inflate: (...args: Parameters<typeof actual.inflate>) => {
+      if (
+        compressedFrameIo.input &&
+        Buffer.isBuffer(args[0]) &&
+        args[0].equals(compressedFrameIo.input)
+      ) {
+        compressedFrameIo.entered();
+        void compressedFrameIo.blocked.then(() => actual.inflate(...args));
+        return;
+      }
+      actual.inflate(...args);
     },
   };
 });
@@ -198,7 +225,7 @@ function padSignalMessage(message: Buffer): Buffer {
 }
 
 function createBaileysTestSocket(
-  server: StartedWhatsAppServer,
+  server: { manifest: { endpoints: { baileysWebSocketUrl: string } } },
   options: { fireInitQueries?: boolean } = {},
 ) {
   const creds: AuthenticationCreds = {
@@ -457,6 +484,90 @@ describe("whatsapp local provider server", () => {
       await server.close().catch(() => {});
     }
   }, 20_000);
+
+  it("contains late recorder rejection when shutdown interrupts compressed decoding", async () => {
+    const gate = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    };
+    const decodeEntered = gate();
+    const releaseDecode = gate();
+    const releaseAppend = gate();
+    const node: BinaryNode = { attrs: { id: "cancelled-compressed" }, tag: "presence" };
+    const compressed = deflateSync(encodeBinaryNode(node).subarray(1));
+    const recorderError = new Error("late recorder failure after compressed decode");
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    const httpServer = createServer();
+    const server = attachWhatsAppBaileysWebSocketServer({
+      accessToken: "recorder-cancellation",
+      async appendEvent(event) {
+        if (isDeepStrictEqual(event.body, node)) {
+          await releaseAppend.promise;
+          throw recorderError;
+        }
+      },
+      httpServer,
+      path: "/ws/chat",
+      selfJid: "15550000001:0@s.whatsapp.net",
+    });
+    let socket: ReturnType<typeof createBaileysTestSocket> | undefined;
+    let closing: Promise<void> | undefined;
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        httpServer.once("error", reject);
+        httpServer.listen(0, "127.0.0.1", () => {
+          httpServer.off("error", reject);
+          resolve();
+        });
+      });
+      const address = httpServer.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Missing loopback WhatsApp test address.");
+      }
+      socket = createBaileysTestSocket({
+        manifest: {
+          endpoints: {
+            baileysWebSocketUrl: `ws://127.0.0.1:${address.port}/ws/chat?access_token=recorder-cancellation`,
+          },
+        },
+      });
+      await socket.waitForConnectionUpdate(async ({ connection }) => connection === "open");
+      compressedFrameIo.input = compressed;
+      compressedFrameIo.entered = decodeEntered.resolve;
+      compressedFrameIo.blocked = releaseDecode.promise;
+      await socket.sendRawMessage(Buffer.concat([Buffer.from([2]), compressed]));
+      await decodeEntered.promise;
+
+      // Cancellation must win without abandoning recorder work started when decode resumes.
+      closing = server.close();
+      releaseDecode.resolve();
+      await closing;
+      releaseAppend.resolve();
+      // Node reports orphaned rejections at the turn boundary, not during promise settlement.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      releaseDecode.resolve();
+      releaseAppend.resolve();
+      try {
+        await settleCleanup([
+          socket?.end(undefined) ?? Promise.resolve(),
+          closing ?? server.close(),
+          httpServer.listening ? closeServer(httpServer) : Promise.resolve(),
+        ]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+        compressedFrameIo.input = undefined;
+        compressedFrameIo.entered = () => {};
+        compressedFrameIo.blocked = Promise.resolve();
+      }
+    }
+  });
 
   it("closes the owning socket and bounds shutdown when acceptance never settles", async () => {
     let markAcceptanceStarted!: () => void;
