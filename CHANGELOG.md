@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.20 - Unreleased
+
 ## 0.1.19 - 2026-08-28
 
 - Observe late recorder rejections when WhatsApp shutdown interrupts compressed-frame decoding, preserving prompt cancellation and observer-safe shutdown.
