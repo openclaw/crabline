@@ -17,11 +17,7 @@ import {
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
-import {
-  recordCommittedServerEvent,
-  recordServerEvent,
-  type ServerEventObserver,
-} from "./recorder.js";
+import { createServerRecorder, type ServerRecorder, type ServerEventObserver } from "./recorder.js";
 import { closeWebSocketServer } from "./websocket.js";
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 45_000;
@@ -109,8 +105,7 @@ type DiscordServerState = {
   maxGatewayPayloadBytes: number;
   messages: Map<string, DiscordMessage[]>;
   nextSequence: number;
-  onEvent: ServerEventObserver | undefined;
-  pendingRecorderEvents: Set<Promise<void>>;
+  recorder: ServerRecorder;
   recorderPath: string;
   sessions: Map<string, GatewaySession>;
 };
@@ -471,24 +466,15 @@ function dispatchGatewayEvent(state: DiscordServerState, type: string, data: unk
 }
 
 function recordGatewayEvent(state: DiscordServerState, body: unknown, accepted: boolean): void {
-  const pending = recordCommittedServerEvent({
-    event: {
-      accepted,
-      at: new Date().toISOString(),
-      body,
-      method: "WS",
-      path: "/gateway",
-      query: {},
-      type: "api",
-    } as DiscordRecorderEvent,
-    onEvent: state.onEvent,
-    recorderPath: state.recorderPath,
-  });
-  state.pendingRecorderEvents.add(pending);
-  void pending.then(
-    () => state.pendingRecorderEvents.delete(pending),
-    () => state.pendingRecorderEvents.delete(pending),
-  );
+  void state.recorder.recordCommitted({
+    accepted,
+    at: new Date().toISOString(),
+    body,
+    method: "WS",
+    path: "/gateway",
+    query: {},
+    type: "api",
+  } as DiscordRecorderEvent);
 }
 
 function readyPayload(state: DiscordServerState, sessionId: string) {
@@ -970,11 +956,7 @@ async function handleRequest(params: {
     };
     const response = await handleAdminInbound({ body, state: params.state });
     event.accepted = response.ok;
-    await recordCommittedServerEvent({
-      event,
-      onEvent: params.state.onEvent,
-      recorderPath: params.state.recorderPath,
-    });
+    await params.state.recorder.recordCommitted(event);
     return response;
   }
   const authError =
@@ -1002,11 +984,9 @@ async function handleRequest(params: {
     state: params.state,
   });
   event.accepted = response.ok;
-  await (response.ok ? recordCommittedServerEvent : recordServerEvent)({
-    event,
-    onEvent: params.state.onEvent,
-    recorderPath: params.state.recorderPath,
-  });
+  await (response.ok
+    ? params.state.recorder.recordCommitted(event)
+    : params.state.recorder.record(event));
   return response;
 }
 
@@ -1020,6 +1000,7 @@ export async function startDiscordServer(
   requireSnowflake(botUserId, "botUserId");
   const encodedApplicationId = Buffer.from(applicationId, "utf8").toString("base64url");
   const externallyBound = !isLoopbackHost(host);
+  const recorderPath = params.recorderPath ?? path.resolve(".crabline", "servers", "discord.jsonl");
   const state: DiscordServerState = {
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     applicationId,
@@ -1051,9 +1032,8 @@ export async function startDiscordServer(
     ),
     messages: new Map(),
     nextSequence: 1,
-    onEvent: params.onEvent,
-    pendingRecorderEvents: new Set(),
-    recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "discord.jsonl"),
+    recorder: createServerRecorder({ recorderPath, onEvent: params.onEvent }),
+    recorderPath,
     sessions: new Map(),
   };
   const httpServer = await startHttpJsonServer({
@@ -1080,7 +1060,7 @@ export async function startDiscordServer(
     async close() {
       await closeGateway();
       await httpServer.close();
-      await Promise.all([...state.pendingRecorderEvents]);
+      await state.recorder.close();
       state.sessions.clear();
     },
     manifest: {

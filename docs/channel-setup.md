@@ -231,6 +231,12 @@ credentials unless the corresponding credential is supplied.
 WhatsApp is loopback-only because its HTTP and WebSocket endpoints carry bearer
 credentials over cleartext and the built-in server does not terminate TLS.
 
+Every public server starter initializes recorder ownership before reporting
+readiness, without creating recorder artifacts or invoking `onEvent`.
+Server `close()` stops new recorder admissions and drains admitted persistence
+before it succeeds. Event observers are not part of this drain, so an observer
+may call `close()`; stalled handlers still use the bounded transport shutdown.
+
 Commands in this section use the installed-package form. In a source checkout,
 replace `crabline` with `pnpm dev`; `pnpm exec crabline` is not available.
 

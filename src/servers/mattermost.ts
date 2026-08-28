@@ -18,11 +18,7 @@ import {
   startHttpJsonServer,
   type ServerRequestEvent,
 } from "./http.js";
-import {
-  recordCommittedServerEvent,
-  recordServerEvent,
-  type ServerEventObserver,
-} from "./recorder.js";
+import { createServerRecorder, type ServerRecorder, type ServerEventObserver } from "./recorder.js";
 import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 import { closeWebSocketServer } from "./websocket.js";
 
@@ -106,7 +102,7 @@ type MattermostServerState = {
   maxPendingInboundEvents: number;
   maxWebSocketBufferedBytes: number;
   nextPost: number;
-  onEvent: ServerEventObserver | undefined;
+  recorder: ServerRecorder;
   pendingEventBytes: number;
   pendingEvents: MattermostWebSocketEvent[];
   posts: Map<string, MattermostPost>;
@@ -174,8 +170,7 @@ async function appendEvent(
   event: ServerRequestEvent,
   committed = false,
 ): Promise<void> {
-  const params = { event, onEvent: state.onEvent, recorderPath: state.recorderPath };
-  await (committed ? recordCommittedServerEvent(params) : recordServerEvent(params));
+  await (committed ? state.recorder.recordCommitted(event) : state.recorder.record(event));
 }
 
 function authorized(request: IncomingMessage, token: string): boolean {
@@ -1185,6 +1180,8 @@ export async function startMattermostServer(
   if (initialCommittedStateBytes > maxCommittedStateBytes) {
     throw new Error("maxCommittedStateBytes cannot retain the configured bot user.");
   }
+  const recorderPath =
+    params.recorderPath ?? path.resolve(".crabline", "servers", "mattermost.jsonl");
   const state: MattermostServerState = {
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     botToken:
@@ -1222,11 +1219,11 @@ export async function startMattermostServer(
       DEFAULT_MAX_WEBSOCKET_BUFFERED_BYTES,
     ),
     nextPost: 1,
-    onEvent: params.onEvent,
+    recorder: createServerRecorder({ recorderPath, onEvent: params.onEvent }),
     pendingEventBytes: 0,
     pendingEvents: [],
     posts: new Map(),
-    recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "mattermost.jsonl"),
+    recorderPath,
     userIdsByUsername: new Map([[botUsername, botUserId]]),
     users: new Map([[botUserId, botUser]]),
     websocketClients: new Map(),
@@ -1258,6 +1255,7 @@ export async function startMattermostServer(
     async close() {
       await closeMattermostWebSocketServer();
       await httpServer.close();
+      await state.recorder.close();
     },
     manifest: {
       adminToken: state.adminToken,

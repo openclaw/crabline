@@ -187,6 +187,11 @@ provider server, or `startOpenClawCrablineAdapter`. Crabline awaits the callback
 after appending each API/admin event to `recorderPath`, so callers can react in
 process while retaining the JSONL artifact as durable evidence.
 
+Provider servers initialize recorder ownership before reporting readiness,
+without creating recorder files or emitting synthetic events. Closing a server
+stops new recorder admissions and waits for admitted persistence to finish.
+Shutdown does not wait for event observers, which may themselves call `close()`.
+
 Recorder files should normally have one filesystem name. If multiple processes
 cannot share the same OS account home, the home is read-only, or they write
 through hardlinks to the same recorder inode, set

@@ -22,7 +22,7 @@ import {
   type HttpJsonHandlerResult,
   type ServerRequestEvent,
 } from "./http.js";
-import { recordServerEvent, type ServerEventObserver } from "./recorder.js";
+import { createServerRecorder, type ServerEventObserver, type ServerRecorder } from "./recorder.js";
 import { resolveMaxPendingInboundEvents } from "./pending-events.js";
 import {
   postWebhookRequest,
@@ -88,7 +88,7 @@ type ZaloServerState = {
   maxPendingInboundEvents: number;
   nextMessage: number;
   nextUpdateOrder: number;
-  onEvent: ServerEventObserver | undefined;
+  recorder: ServerRecorder;
   pendingInboundAdmissions: number;
   pendingRequest: PendingUpdateRequest | undefined;
   recorderPath: string;
@@ -142,7 +142,7 @@ export type StartZaloServerParams = {
 };
 
 async function appendEvent(state: ZaloServerState, event: ZaloServerEvent): Promise<void> {
-  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
+  await state.recorder.record(event);
 }
 
 function zaloOk(result?: unknown): Response {
@@ -970,6 +970,7 @@ export async function startZaloServer(
   params: StartZaloServerParams = {},
 ): Promise<StartedZaloServer> {
   const host = params.host ?? "127.0.0.1";
+  const recorderPath = params.recorderPath ?? path.resolve(".crabline", "servers", "zalo.jsonl");
   const state: ZaloServerState = {
     activeWebhookRequests: new Set(),
     activeWebhookValidations: new Set(),
@@ -986,10 +987,10 @@ export async function startZaloServer(
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
     nextMessage: 1,
     nextUpdateOrder: 1,
-    onEvent: params.onEvent,
+    recorder: createServerRecorder({ recorderPath, onEvent: params.onEvent }),
     pendingInboundAdmissions: 0,
     pendingRequest: undefined,
-    recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "zalo.jsonl"),
+    recorderPath,
     retainedUpdateBytes: 0,
     retainedUpdateCount: 0,
     reservedUpdateOrders: new Set(),
@@ -1060,6 +1061,7 @@ export async function startZaloServer(
         settlePendingUpdate(state, state.pendingRequest, { kind: "shutdown" });
       }
       await httpServer.close();
+      await state.recorder.close();
     },
     manifest,
   };

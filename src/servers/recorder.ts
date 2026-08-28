@@ -4,7 +4,10 @@ import { chmod, lstat, mkdir, open, readlink, realpath, stat as statPath } from 
 import { userInfo } from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
-import { createProcessOwnedLockFileSystem } from "../platform/process-owned-lock.js";
+import {
+  createProcessOwnedLockFileSystem,
+  initializeProcessOwnedLockIdentity,
+} from "../platform/process-owned-lock.js";
 import {
   createOwnerOnlyWindowsDirectory,
   readWindowsDirectoryNamespaceSecuritySnapshot,
@@ -1531,7 +1534,7 @@ async function appendJsonLine(params: {
   line: string;
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
-}): Promise<void> {
+}): Promise<RecorderAppendResult> {
   const logicalPath = path.resolve(params.recorderPath);
   const previous = pendingAdmissions.get(logicalPath) ?? Promise.resolve();
   const current = previous
@@ -1566,7 +1569,7 @@ async function appendJsonLine(params: {
       pendingAdmissions.delete(logicalPath);
     }
   }
-  await result.observation;
+  return result;
 }
 
 function snapshotServerEvent(event: ServerRequestEvent): {
@@ -1583,32 +1586,75 @@ function snapshotServerEvent(event: ServerRequestEvent): {
   };
 }
 
-export async function recordServerEvent(params: {
+type ServerRecorderWrite = {
   event: ServerRequestEvent;
   onEvent: ServerEventObserver | undefined;
   recorderPath: string;
-}): Promise<void> {
+};
+
+export async function recordServerEvent(
+  params: ServerRecorderWrite,
+  pending?: Set<Promise<RecorderAppendResult>>,
+): Promise<void> {
   const snapshot = snapshotServerEvent(params.event);
-  await appendJsonLine({
+  const persistence = appendJsonLine({
     ...snapshot,
     onEvent: params.onEvent,
     recorderPath: params.recorderPath,
   });
+  pending?.add(persistence);
+  let result: RecorderAppendResult;
+  try {
+    result = await persistence;
+  } finally {
+    pending?.delete(persistence);
+  }
+  await result.observation;
 }
 
-export async function recordCommittedServerEvent(params: {
-  event: ServerRequestEvent;
-  onEvent: ServerEventObserver | undefined;
-  recorderPath: string;
-}): Promise<void> {
+export async function recordCommittedServerEvent(
+  params: ServerRecorderWrite,
+  pending?: Set<Promise<RecorderAppendResult>>,
+): Promise<void> {
   try {
-    const snapshot = snapshotServerEvent(params.event);
-    await appendJsonLine({
-      ...snapshot,
-      onEvent: params.onEvent,
-      recorderPath: params.recorderPath,
-    });
+    await recordServerEvent(params, pending);
   } catch {
     // The provider mutation already committed, so telemetry failure cannot change its response.
   }
+}
+
+export type ServerRecorder = {
+  record(event: ServerRequestEvent): Promise<void>;
+  recordCommitted(event: ServerRequestEvent): Promise<void>;
+  close(): Promise<void>;
+};
+
+export function createServerRecorder(params: {
+  recorderPath: string;
+  onEvent: ServerEventObserver | undefined;
+}): ServerRecorder {
+  initializeProcessOwnedLockIdentity();
+  const pending = new Set<Promise<RecorderAppendResult>>();
+  let closing = false;
+  const record = async (event: ServerRequestEvent, committed: boolean) => {
+    if (closing) {
+      if (committed) {
+        return;
+      }
+      throw new Error("Server recorder is closed.");
+    }
+    await (committed ? recordCommittedServerEvent : recordServerEvent)(
+      { ...params, event },
+      pending,
+    );
+  };
+  return {
+    record: (event) => record(event, false),
+    recordCommitted: (event) => record(event, true),
+    async close() {
+      closing = true;
+      // Observers can call close themselves; only persistence owns recorder artifacts.
+      await Promise.allSettled(pending);
+    },
+  };
 }

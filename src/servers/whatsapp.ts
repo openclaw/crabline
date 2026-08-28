@@ -18,7 +18,8 @@ import {
   type ServerRequestEvent,
 } from "./http.js";
 import {
-  recordServerEvent,
+  createServerRecorder,
+  type ServerRecorder,
   ServerRecorderCommittedError,
   type ServerEventObserver,
 } from "./recorder.js";
@@ -67,7 +68,7 @@ type WhatsAppServerState = {
   pendingMessageIds: Set<string>;
   recentMessageIds: Map<string, true>;
   nextMessageId: bigint;
-  onEvent: ServerEventObserver | undefined;
+  recorder: ServerRecorder;
   phoneNumberId: string;
   recorderPath: string;
   selfJid: string;
@@ -178,7 +179,7 @@ function graphAuthError(): Response {
 }
 
 async function appendEvent(state: WhatsAppServerState, event: WhatsAppRecorderEvent) {
-  await recordServerEvent({ event, onEvent: state.onEvent, recorderPath: state.recorderPath });
+  await state.recorder.record(event);
 }
 
 function requireWhatsAppChatJid(value: unknown): string | Response {
@@ -955,6 +956,8 @@ export async function startWhatsAppServer(
   if (!selfJid) {
     throw new Error("WhatsApp selfJid must be a WhatsApp user JID.");
   }
+  const recorderPath =
+    params.recorderPath ?? path.resolve(".crabline", "servers", "whatsapp.jsonl");
   const state: WhatsAppServerState = {
     accessToken: params.accessToken ?? createDefaultAccessToken(),
     adminToken: params.adminToken ?? randomBytes(24).toString("hex"),
@@ -968,9 +971,9 @@ export async function startWhatsAppServer(
     pendingMessageIds: new Set(),
     recentMessageIds: new Map(),
     nextMessageId: 1n,
-    onEvent: params.onEvent,
+    recorder: createServerRecorder({ recorderPath, onEvent: params.onEvent }),
     phoneNumberId,
-    recorderPath: params.recorderPath ?? path.resolve(".crabline", "servers", "whatsapp.jsonl"),
+    recorderPath,
     selfJid,
   };
   const httpServer = await startHttpJsonServer({
@@ -1037,6 +1040,7 @@ export async function startWhatsAppServer(
         baileysWebSocketServer.close(),
         httpServer.close(),
       ]);
+      await state.recorder.close();
       const errors = results.flatMap((result) =>
         result.status === "rejected" ? [result.reason] : [],
       );
