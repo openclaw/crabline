@@ -191,6 +191,8 @@ Provider servers initialize recorder ownership before reporting readiness,
 without creating recorder files or emitting synthetic events. Closing a server
 stops new recorder admissions and waits for admitted persistence to finish.
 Shutdown does not wait for event observers, which may themselves call `close()`.
+Baileys recorder rejections remain handled when shutdown interrupts compressed
+frame decoding and an event observer subsequently fails.
 Concurrent and repeated close calls share the same shutdown. All transports are
 closed even if one fails, and the persistence drain includes asynchronous cleanup
 after a failed recorder lock acquisition.
