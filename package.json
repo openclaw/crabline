@@ -58,7 +58,7 @@
     "picocolors": "^1.1.1",
     "proper-lockfile": "4.1.2",
     "re2js": "2.8.6",
-    "ws": "^8.21.1",
+    "ws": "^8.21.3",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
@@ -66,25 +66,25 @@
     "@types/proper-lockfile": "4.1.4",
     "@types/ws": "^8.18.1",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "baileys": "7.0.0-rc14",
-    "matrix-js-sdk": "41.9.0",
-    "oxfmt": "^0.63.0",
-    "oxlint": "^1.78.0",
+    "matrix-js-sdk": "42.2.0",
+    "oxfmt": "^0.65.0",
+    "oxlint": "^1.80.0",
     "oxlint-tsgolint": "^7.0.2001",
     "tsx": "^4.23.12",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "devEngines": {
     "runtime": {
       "name": "node",
-      "onFail": "error",
-      "version": ">=22.13.0"
+      "version": ">=22.13.0",
+      "onFail": "error"
     }
   },
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@11.17.0"
+  "packageManager": "pnpm@11.24.0"
 }

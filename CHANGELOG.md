@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Refresh WebSocket and Matrix client dependencies, pnpm/npm, lint/test tooling, Go workflow tooling dependencies, and CodeQL pins; retain Node 22 typings for compatibility.
+
 ## 0.1.17 - 2026-08-14
 
 - Retry mutation-claim acquisition when a live owner releases or replaces the

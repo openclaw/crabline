@@ -182,13 +182,13 @@ describe("release workflow", () => {
     ).toBe(22);
     expect(
       verifySteps.find((step) => step.uses?.startsWith("pnpm/action-setup@"))?.with?.version,
-    ).toBe("11.17.0");
-    expect(commands).toContain("npm install -g npm@12.0.1");
+    ).toBe("11.24.0");
+    expect(commands).toContain("npm install -g npm@12.0.2");
     for (const jobName of ["verify", "publish"]) {
       const jobCommands = jobSteps(workflow, jobName)
         .map((step) => step.run)
         .filter((run): run is string => Boolean(run));
-      expect(jobCommands).toContain("npm install -g npm@12.0.1");
+      expect(jobCommands).toContain("npm install -g npm@12.0.2");
     }
     expect(commands.some((command) => command.includes("npm@latest"))).toBe(false);
     const verifyCommands = verifySteps
@@ -346,7 +346,7 @@ describe("release workflow", () => {
     expect(verifyCommands).toContain("pnpm verify");
     expect(
       publishCommands
-        .filter((command) => command !== "npm install -g npm@12.0.1")
+        .filter((command) => command !== "npm install -g npm@12.0.2")
         .some((command) => /\b(?:pnpm|build|test|pack)\b/u.test(command)),
     ).toBe(false);
   });
