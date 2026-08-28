@@ -1,7 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -43,6 +42,7 @@ import {
   runOpenClawCrablineProviderProbe,
   type OpenClawCrablineProviderAdapter,
 } from "../src/openclaw/shared.js";
+import { createTempDir } from "./test-helpers.js";
 
 type ProviderReadinessTestDependencies = {
   acquireLock?: () => Promise<{
@@ -1541,7 +1541,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("keeps Telegram username identity consistent across the bridge and provider server", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-telegram-identity-"));
+    const outputDir = await createTempDir();
     const adapter = await startOpenClawCrablineAdapter({
       channel: "telegram",
       recorderPath: path.join(outputDir, "telegram.jsonl"),
@@ -3563,7 +3563,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("accepts exact provider API route evidence without claiming OpenClaw execution", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-provider-readiness-"));
+    const outputDir = await createTempDir();
     try {
       const unmanagedManifestPath = path.join(outputDir, OPENCLAW_CRABLINE_MANIFEST_PATH);
       await fs.writeFile(unmanagedManifestPath, "permissive unmanaged manifest\n", { mode: 0o666 });
@@ -3737,7 +3737,7 @@ describe("OpenClaw local provider bridge", () => {
   it.each(["committed", "failed"] as const)(
     "syncs the recorder directory after the final %s temporary unlink",
     async (outcome) => {
-      const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-unlink-"));
+      const outputDir = await createTempDir();
       const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
       const probeFailure = new Error("probe failed");
       let recorderPath: string | undefined;
@@ -3782,7 +3782,7 @@ describe("OpenClaw local provider bridge", () => {
   );
 
   it("closes readiness adapters before returning an unsettled probe failure", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-probe-drain-"));
+    const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const controller = new AbortController();
     const timeoutMock = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
@@ -3845,7 +3845,7 @@ describe("OpenClaw local provider bridge", () => {
   }, 5_000);
 
   it("fails closed when a successful probe produces no recorder evidence", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-missing-"));
+    const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const close = vi.fn(async () => undefined);
     const publishGeneration = vi.fn<typeof publishOpenClawCrablineArtifactGeneration>();
@@ -3897,7 +3897,7 @@ describe("OpenClaw local provider bridge", () => {
     ["wrong API route", recorderProbeLine({ path: "/bot<redacted>/sendMessage" })],
     ["valid event followed by malformed JSON", `${recorderProbeLine()}not-json\n`],
   ])("fails closed on %s readiness recorder evidence", async (_label, recorderContents) => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-invalid-"));
+    const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const close = vi.fn(async () => undefined);
     const publishGeneration = vi.fn<typeof publishOpenClawCrablineArtifactGeneration>();
@@ -3938,7 +3938,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("keeps readiness recorder snapshots immutable across later generations", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-snapshots-"));
+    const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     let run = 0;
     const startAdapter = async (params: Parameters<typeof startOpenClawCrablineAdapter>[0]) => {
@@ -3989,10 +3989,8 @@ describe("OpenClaw local provider bridge", () => {
       if (process.platform === "win32") {
         return;
       }
-      const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-symlink-"));
-      const externalDirectory = await fs.mkdtemp(
-        path.join(os.tmpdir(), "crabline-recorder-external-"),
-      );
+      const outputDir = await createTempDir();
+      const externalDirectory = await createTempDir();
       const staleName = ".telegram-provider-server.11111111-1111-4111-8111-111111111111.jsonl.tmp";
       const sentinelPath = path.join(externalDirectory, staleName);
       const startAdapter = vi.fn<typeof startOpenClawCrablineAdapter>();
@@ -4026,7 +4024,7 @@ describe("OpenClaw local provider bridge", () => {
   );
 
   it("reclaims only exact stale readiness recorder temporaries", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-recovery-"));
+    const outputDir = await createTempDir();
     const recorderDirectory = path.join(outputDir, "artifacts", "crabline");
     const staleTelegram =
       ".telegram-provider-server.11111111-1111-4111-8111-111111111111.jsonl.tmp";
@@ -4099,7 +4097,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("reclaims recorder lock tombstones after interrupted removal", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-lock-retry-"));
+    const outputDir = await createTempDir();
     const recorderDirectory = path.join(outputDir, "artifacts", "crabline");
     const lockName =
       ".telegram-provider-server.55555555-5555-4555-8555-555555555555.jsonl.tmp.lock";
@@ -4158,7 +4156,7 @@ describe("OpenClaw local provider bridge", () => {
   it.skipIf(process.platform === "win32")(
     "preserves exact recorder temporary lock symlinks without following them",
     async () => {
-      const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-recorder-lock-symlink-"));
+      const outputDir = await createTempDir();
       const recorderDirectory = path.join(outputDir, "artifacts", "crabline");
       const targetDirectory = path.join(outputDir, "external-lock-target");
       const lockName =
@@ -4199,7 +4197,7 @@ describe("OpenClaw local provider bridge", () => {
   );
 
   it("owns complete artifact publication and releases only after the generation is installed", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-artifacts-"));
+    const outputDir = await createTempDir();
     const telegram = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const slack = resolveOpenClawCrablineChannelDriverSelection({ channel: "slack" });
     let resumePublication: (() => void) | undefined;
@@ -4264,7 +4262,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("returns the committed generation when post-commit lock cleanup fails", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-release-"));
+    const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const cleanupFailure = new Error("lock release retries exhausted");
     let pointerAtCleanup: Awaited<ReturnType<typeof readOpenClawCrablineArtifactPointer>> = null;
@@ -4308,7 +4306,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("preserves the primary readiness failure when lock cleanup also fails", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-errors-"));
+    const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const primaryFailure = new Error("probe failed");
     const cleanupFailure = new Error("lock release retries exhausted");
@@ -4339,9 +4337,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("preserves a frozen readiness failure when lock cleanup also fails", async () => {
-    const outputDir = await fs.mkdtemp(
-      path.join(os.tmpdir(), "crabline-openclaw-frozen-readiness-"),
-    );
+    const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const primaryFailure = Object.freeze(new Error("frozen readiness failure"));
     try {
@@ -4370,7 +4366,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("preserves the primary provider probe failure when adapter cleanup also fails", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-probe-errors-"));
+    const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const primaryFailure = new Error("probe failed");
     const cleanupFailure = new Error("adapter close failed");
@@ -4402,7 +4398,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("preserves a frozen provider probe failure when adapter cleanup also fails", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-frozen-error-"));
+    const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const primaryFailure = Object.freeze(new Error("frozen probe failure"));
     try {
@@ -4434,7 +4430,7 @@ describe("OpenClaw local provider bridge", () => {
   it.each(["setup", "probe", "cleanup"] as const)(
     "preserves the complete prior artifact generation on %s failure",
     async (failureStage) => {
-      const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-failure-"));
+      const outputDir = await createTempDir();
       const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
       try {
         const prior = await runOpenClawCrablineProviderReadiness({ outputDir, selection });
@@ -4481,7 +4477,7 @@ describe("OpenClaw local provider bridge", () => {
   );
 
   it("rolls back the complete artifact generation when publication fails", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-rollback-"));
+    const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     try {
       const prior = await runOpenClawCrablineProviderReadiness({ outputDir, selection });
@@ -4512,7 +4508,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("rolls back publication when heartbeat ownership cannot be sealed", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-heartbeat-"));
+    const outputDir = await createTempDir();
     const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
     const failure = new Error("heartbeat renewal failed");
     const release = vi.fn<() => Promise<void>>(async () => undefined);
@@ -4546,7 +4542,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("rejects concurrent provider-readiness runs that share an output artifact set", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-overlap-"));
+    const outputDir = await createTempDir();
     const holder = startProviderReadinessLockHolder(outputDir, "telegram");
     try {
       await waitForProviderReadinessLock(holder);
@@ -4582,7 +4578,7 @@ describe("OpenClaw local provider bridge", () => {
   });
 
   it("recovers a provider readiness lock abandoned by a terminated process", async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-openclaw-stale-lock-"));
+    const outputDir = await createTempDir();
     const holder = startProviderReadinessLockHolder(outputDir, "telegram");
     try {
       await waitForProviderReadinessLock(holder);

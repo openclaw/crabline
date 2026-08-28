@@ -849,28 +849,94 @@ async function syncPathAncestry(
   }
 }
 
-async function darwinDirectoryHasExtendedAcl(directoryPath: string): Promise<boolean> {
+type DarwinDirectoryAcl = "none" | "nonpropagating-deny" | "unsafe";
+
+// Directory rights from chmod(1); inheritance flags are deliberately not rights.
+const DARWIN_DIRECTORY_ACL_RIGHTS = new Set([
+  "list",
+  "add_file",
+  "search",
+  "delete",
+  "add_subdirectory",
+  "delete_child",
+  "readattr",
+  "writeattr",
+  "readextattr",
+  "writeextattr",
+  "readsecurity",
+  "writesecurity",
+  "chown",
+]);
+
+async function readDarwinDirectoryAcl(directoryPath: string): Promise<DarwinDirectoryAcl> {
   if (process.platform !== "darwin") {
-    return false;
+    return "none";
   }
+  const directory = await captureDirectoryIdentity(directoryPath);
   let output: string;
   try {
-    const result = await execFileAsync("/bin/ls", ["-lde", directoryPath], {
+    // A literal basename prevents newline-containing paths from impersonating ACEs.
+    const result = await execFileAsync("/bin/ls", ["-lde", "."], {
+      cwd: directoryPath,
       encoding: "utf8",
       env: { ...process.env, LC_ALL: "C" },
       maxBuffer: 64 * 1024,
     });
+    if (result.stderr.length > 0) {
+      throw new Error("macOS ACL inspection reported a diagnostic.");
+    }
     output = result.stdout;
   } catch (error) {
     throw new Error("Could not verify the private directory macOS ACL.", { cause: error });
   }
-  const mode = output.trimStart().split(/\s+/u, 1)[0] ?? "";
-  return mode.includes("+");
+  await directory.assertIdentityAt();
+  for (const character of output) {
+    const code = character.charCodeAt(0);
+    if ((code < 32 && character !== "\n") || (code >= 127 && code <= 159)) {
+      return "unsafe";
+    }
+  }
+  const [header, ...entries] = output.slice(0, -1).split("\n");
+  const mode = header?.match(
+    /^d[r-][w-][xsS-][r-][w-][xsS-][r-][w-][xtT-]([+@]?) +[1-9]\d* +\S+ +\S+ +\d+ +[A-Z][a-z]{2} +\d{1,2} +(?:\d{2}:\d{2}|\d{4}) +\.$/u,
+  );
+  if (!output.endsWith("\n") || !mode) {
+    return "unsafe";
+  }
+  // Extended attributes take precedence over '+' in ls, even when an ACL exists.
+  if (entries.length === 0) {
+    return mode[1] === "+" ? "unsafe" : "none";
+  }
+  if (mode[1] === "") {
+    return "unsafe";
+  }
+  for (const [index, entry] of entries.entries()) {
+    // 'inherited' records origin; unlike *_inherit flags it does not propagate.
+    const ace = entry.match(
+      /^ +(\d+): (?:user|group):\S+ (?:inherited )?deny ([a-z_]+(?:,[a-z_]+)*)$/u,
+    );
+    if (
+      !ace ||
+      ace[1] !== String(index) ||
+      !ace[2]!.split(",").every((right) => DARWIN_DIRECTORY_ACL_RIGHTS.has(right))
+    ) {
+      return "unsafe";
+    }
+  }
+  return "nonpropagating-deny";
 }
 
-async function assertDarwinDirectoryHasNoExtendedAcl(directoryPath: string): Promise<void> {
-  if (await darwinDirectoryHasExtendedAcl(directoryPath)) {
-    throw new Error("Private directory must not have a macOS extended ACL.");
+async function assertDarwinDirectoryAcl(
+  directoryPath: string,
+  scope: "private" | "ancestor",
+): Promise<void> {
+  const acl = await readDarwinDirectoryAcl(directoryPath);
+  if (acl === "unsafe" || (scope === "private" && acl !== "none")) {
+    throw new Error(
+      scope === "private"
+        ? "Private directory must not have a macOS extended ACL."
+        : "Private mutation ancestry has an unsafe or unverifiable macOS ACL.",
+    );
   }
 }
 
@@ -935,7 +1001,7 @@ async function assertDarwinCreatedAncestryHasNoExtendedAcl(
     currentPath = parentPath;
   }
   for (const createdPath of createdPaths.reverse()) {
-    await assertDarwinDirectoryHasNoExtendedAcl(createdPath);
+    await assertDarwinDirectoryAcl(createdPath, "private");
   }
 }
 
@@ -953,6 +1019,7 @@ async function captureSingleSafePrivateMutationBoundary(
   if (currentUserId === undefined || !Number.isSafeInteger(currentUserId) || currentUserId < 0) {
     throw new Error("Could not resolve the current POSIX user for private mutation.");
   }
+  const boundary = await captureDirectoryIdentity(directoryPath);
   const stats = await fs.lstat(directoryPath, { bigint: true });
   if (!stats.isDirectory()) {
     throw new Error("Private mutation boundary is not a directory.");
@@ -967,8 +1034,9 @@ async function captureSingleSafePrivateMutationBoundary(
   if (writableByAnotherPrincipal && !protectedByStickyOwnership) {
     throw new Error("Private mutation boundary is writable by another POSIX principal.");
   }
-  await assertDarwinDirectoryHasNoExtendedAcl(directoryPath);
-  return await captureDirectoryIdentity(directoryPath);
+  await assertDarwinDirectoryAcl(directoryPath, "ancestor");
+  await boundary.assertIdentityAt();
+  return boundary;
 }
 
 async function captureSafePrivateMutationBoundary(
@@ -1182,7 +1250,7 @@ export async function securePrivateDirectory(
       }
     }
     if (!existed) {
-      await assertDarwinDirectoryHasNoExtendedAcl(path.dirname(directoryPath));
+      await assertDarwinDirectoryAcl(path.dirname(directoryPath), "ancestor");
     }
     try {
       await fs.mkdir(directoryPath, { mode: 0o700 });
@@ -1251,7 +1319,7 @@ export async function securePrivateDirectory(
       const mutationRootMode =
         options.markMutationRoot === false ? currentStats.mode & 0o1000n : 0o1000n;
       await handle.chmod(Number(0o700n | mutationRootMode));
-      await assertDarwinDirectoryHasNoExtendedAcl(directoryPath);
+      await assertDarwinDirectoryAcl(directoryPath, "private");
       await (options.syncDirectory ?? (() => handle.sync()))();
     }
     await secured.assertIdentityAt();
@@ -1711,17 +1779,6 @@ async function acquireHardLinkPrivateMutationClaim(
 ): Promise<PrivateMutationClaim> {
   const platform = options.platform ?? process.platform;
   const runtime = options.runtime ?? defaultPrivateMutationClaimRuntime();
-  if (
-    !Number.isSafeInteger(runtime.pid) ||
-    runtime.pid <= 0 ||
-    !PRIVATE_MUTATION_CLAIM_OWNER_ID_PATTERN.test(runtime.ownerId) ||
-    !Number.isSafeInteger(runtime.processStartedAtMs) ||
-    runtime.processStartedAtMs <= 0 ||
-    (runtime.processIdentity !== undefined &&
-      (runtime.processIdentity.length === 0 || runtime.processIdentity.length > 256))
-  ) {
-    throw new Error("Private path mutation claim runtime is invalid.");
-  }
   if (
     !Number.isSafeInteger(runtime.pid) ||
     runtime.pid <= 0 ||
@@ -2561,6 +2618,7 @@ async function captureOwnerOnlyPrivateClaimAncestor(
   if (currentUserId === undefined || !Number.isSafeInteger(currentUserId) || currentUserId < 0) {
     throw new Error("Could not resolve the current POSIX user for private mutation claims.");
   }
+  const directory = await captureDirectoryIdentity(directoryPath);
   const stats = await fs.lstat(directoryPath, { bigint: true });
   if (!stats.isDirectory()) {
     throw new Error("Private mutation claim ancestry contains a non-directory entry.");
@@ -2568,12 +2626,13 @@ async function captureOwnerOnlyPrivateClaimAncestor(
   if (
     stats.uid !== BigInt(currentUserId) ||
     (stats.mode & 0o022n) !== 0n ||
-    (await darwinDirectoryHasExtendedAcl(directoryPath))
+    (await readDarwinDirectoryAcl(directoryPath)) === "unsafe"
   ) {
     return null;
   }
+  await directory.assertIdentityAt();
   return {
-    directory: await captureDirectoryIdentity(directoryPath),
+    directory,
     mutationRoot: (stats.mode & 0o1000n) !== 0n,
   };
 }
