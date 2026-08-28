@@ -11,8 +11,8 @@ minimumReleaseAgeExclude:
 nodeLinker: hoisted
 blockExoticSubdeps: true
 overrides:
-  postcss: 8.5.18
-  vite: 8.0.16
+  postcss: 8.5.26
+  vite: 8.2.2
 allowBuilds:
   baileys: false
   esbuild: true

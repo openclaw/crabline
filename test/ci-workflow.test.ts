@@ -74,7 +74,7 @@ describe("CI workflow hardening", () => {
       .flatMap((job) => job.steps ?? [])
       .find((step) => step.uses?.startsWith("pnpm/action-setup@"));
 
-    expect(setupStep?.with?.version).toBe("11.17.0");
+    expect(setupStep?.with?.version).toBe("11.24.0");
   });
 
   it("pins every external workflow action and image to immutable revisions", async () => {
