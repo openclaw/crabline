@@ -71,7 +71,8 @@ describe("provider server shutdown", () => {
     expect(Date.now() - startedAt).toBeLessThan(1_000);
     expect(mattermostSocket.destroyed).toBe(true);
     expect(whatsappSocket.destroyed).toBe(true);
-  });
+    // Native recorder identity is initialized during startup; the shutdown bound above stays 1 s.
+  }, 20_000);
 });
 
 async function openRawWebSocket(websocketUrl: string): Promise<Socket> {

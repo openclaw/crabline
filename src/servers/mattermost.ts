@@ -4,6 +4,7 @@ import path from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import {
   adminAuthError,
+  createServerClose,
   constantTimeTokenEqual,
   drainRequestBody,
   hasAdminToken,
@@ -1252,11 +1253,9 @@ export async function startMattermostServer(
     state,
   });
   return {
-    async close() {
-      await closeMattermostWebSocketServer();
-      await httpServer.close();
-      await state.recorder.close();
-    },
+    close: createServerClose(state.recorder, closeMattermostWebSocketServer, () =>
+      httpServer.close(),
+    ),
     manifest: {
       adminToken: state.adminToken,
       baseUrl: httpServer.baseUrl,

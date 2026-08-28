@@ -48,6 +48,21 @@ const servers: StartedWhatsAppServer[] = [];
 const directories: string[] = [];
 const silentLogger = createSilentLogger();
 
+const recorderIo = vi.hoisted(() => ({ path: "", entered: () => {}, blocked: Promise.resolve() }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    realpath: async (...args: Parameters<typeof actual.realpath>) => {
+      if (args[0] === recorderIo.path) {
+        recorderIo.entered();
+        await recorderIo.blocked;
+      }
+      return await actual.realpath(...args);
+    },
+  };
+});
+
 type BaileysUpsertMessage = {
   key?: {
     fromMe?: boolean | null | undefined;
@@ -374,16 +389,12 @@ describe("whatsapp local provider server", () => {
     const recorderStarted = new Promise<void>((resolve) => {
       markRecorderStarted = resolve;
     });
-    let blockNextWebSocketEvent = true;
+    const recorderPath = path.join(directory, "whatsapp-shutdown.jsonl");
+    recorderIo.path = recorderPath;
+    recorderIo.entered = markRecorderStarted;
+    recorderIo.blocked = recorderBlocked;
     const server = await startWhatsAppServer({
-      onEvent: async (event) => {
-        if (blockNextWebSocketEvent && event.method === "WEBSOCKET") {
-          blockNextWebSocketEvent = false;
-          markRecorderStarted();
-          await recorderBlocked;
-        }
-      },
-      recorderPath: path.join(directory, "whatsapp-shutdown.jsonl"),
+      recorderPath,
     });
     const socket = createBaileysTestSocket(server);
     let closePromise: Promise<void> | undefined;
@@ -396,6 +407,7 @@ describe("whatsapp local provider server", () => {
       });
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(closeSettled).toBe(false);
+      await expect(fs.stat(recorderPath)).rejects.toMatchObject({ code: "ENOENT" });
 
       releaseRecorder();
       await closePromise;
@@ -403,8 +415,48 @@ describe("whatsapp local provider server", () => {
       releaseRecorder();
       socket.end(undefined);
       await closePromise?.catch(() => undefined);
+      recorderIo.path = "";
     }
-  });
+    // This real-I/O case includes cold identity setup, separate from the blocked-write assertion.
+  }, 20_000);
+
+  it("allows a Baileys observer to close its own server", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    let releaseObserver!: () => void;
+    const released = new Promise<void>((resolve) => {
+      releaseObserver = resolve;
+    });
+    let closing: Promise<void> | undefined;
+    let closed = false;
+    const server = await startWhatsAppServer({
+      recorderPath: path.join(directory, "observer-close.jsonl"),
+      async onEvent(event) {
+        if (event.method === "WEBSOCKET") {
+          closing = server.close().then(() => {
+            closed = true;
+          });
+          markEntered();
+          await Promise.race([closing, released]);
+        }
+      },
+    });
+    const socket = createBaileysTestSocket(server);
+    try {
+      await entered;
+      await expect.poll(() => closed, { timeout: 1000 }).toBe(true);
+      await server.close();
+    } finally {
+      releaseObserver();
+      socket.end(undefined);
+      await closing?.catch(() => {});
+      await server.close().catch(() => {});
+    }
+  }, 20_000);
 
   it("closes the owning socket and bounds shutdown when acceptance never settles", async () => {
     let markAcceptanceStarted!: () => void;

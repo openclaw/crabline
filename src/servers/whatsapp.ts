@@ -3,6 +3,7 @@ import { createCipheriv, createHash, createHmac, hkdfSync, randomBytes } from "n
 import path from "node:path";
 import {
   adminAuthError,
+  createServerClose,
   constantTimeTokenEqual,
   drainRequestBody,
   hasAdminToken,
@@ -1035,24 +1036,18 @@ export async function startWhatsAppServer(
   }
   state.prepareInboundMessage = (message) => baileysWebSocketServer.prepareInboundMessage(message);
   return {
-    async close() {
-      const results = await Promise.allSettled([
-        baileysWebSocketServer.close(),
-        httpServer.close(),
-      ]);
-      await state.recorder.close();
-      const errors = results.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : [],
-      );
-      state.mediaByPath.clear();
-      state.mediaBytes = 0;
-      if (errors.length === 1) {
-        throw errors[0];
-      }
-      if (errors.length > 1) {
-        throw new AggregateError(errors, "WhatsApp server shutdown failed.");
-      }
-    },
+    close: createServerClose(
+      state.recorder,
+      async () => {
+        try {
+          await baileysWebSocketServer.close();
+        } finally {
+          state.mediaByPath.clear();
+          state.mediaBytes = 0;
+        }
+      },
+      () => httpServer.close(),
+    ),
     manifest: {
       accessToken: state.accessToken,
       adminToken: state.adminToken,

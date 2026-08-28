@@ -236,6 +236,8 @@ readiness, without creating recorder artifacts or invoking `onEvent`.
 Server `close()` stops new recorder admissions and drains admitted persistence
 before it succeeds. Event observers are not part of this drain, so an observer
 may call `close()`; stalled handlers still use the bounded transport shutdown.
+Repeated close calls share that shutdown, including failed-transport cleanup and
+any pending recorder lock removal.
 
 Commands in this section use the installed-package form. In a source checkout,
 replace `crabline` with `pnpm dev`; `pnpm exec crabline` is not available.
