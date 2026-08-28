@@ -128,27 +128,36 @@ class AutoreviewHardeningTests(unittest.TestCase):
     def test_harness_main_fails_when_cleanup_retains_temp_repo(self) -> None:
         harness = SCRIPT.with_name("test-review-harness.py")
         namespace = runpy.run_path(str(harness))
+        create_fixture_repo = mock.Mock()
+        run_reviews = mock.Mock()
         with tempfile.TemporaryDirectory() as tempdir:
             repo = Path(tempdir) / "repo"
             repo.mkdir()
             stderr = io.StringIO()
 
             with (
+                # runpy returns a copy; main still reads its original globals.
                 mock.patch.dict(
-                    namespace,
+                    namespace["main"].__globals__,
                     {
-                        "create_fixture_repo": mock.Mock(),
-                        "run_reviews": mock.Mock(),
+                        "create_fixture_repo": create_fixture_repo,
+                        "run_reviews": run_reviews,
                     },
                 ),
                 mock.patch.object(namespace["tempfile"], "mkdtemp", return_value=str(repo)),
                 mock.patch.object(namespace["shutil"], "rmtree", return_value=None),
+                mock.patch.object(
+                    namespace["subprocess"], "run",
+                    side_effect=AssertionError("cleanup test must not start subprocesses"),
+                ),
                 contextlib.redirect_stderr(stderr),
             ):
                 status = namespace["main"]([])
 
             self.assertEqual(status, 1)
             self.assertIn("path was retained", stderr.getvalue())
+            create_fixture_repo.assert_called_once()
+            run_reviews.assert_called_once()
 
     def test_powershell_wrappers_launch_only_verified_python_runtimes(self) -> None:
         scripts = SCRIPT.parent
