@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.19 - Unreleased
+
 ## 0.1.18 - 2026-08-28
 
 - Complete recorder shutdown for Telegram/Baileys observer self-close, repeated close calls, failed WebSocket teardown, and asynchronous lock-acquisition cleanup (#285).
