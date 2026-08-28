@@ -1,10 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-export const createTempDir = async (): Promise<string> => mkdtemp(path.join(tmpdir(), "crabline-"));
+// macOS temp roots can be aliases; boundary tests need the physical directory ancestry.
+export const createTempDir = async (): Promise<string> =>
+  realpath(await mkdtemp(path.join(tmpdir(), "crabline-")));
 
 export const disposeTempDir = async (directory: string): Promise<void> => {
   await rm(directory, { force: true, recursive: true });

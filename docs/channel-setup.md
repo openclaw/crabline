@@ -773,7 +773,12 @@ Publication rollback removes them when possible, and the next lock-owning
 publisher prunes any leftovers before staging a new generation. Post-commit
 cleanup retains only the current and previous pointer generations.
 
-POSIX generation directories use mode `0700` and files use mode `0600`. Windows
+POSIX generation directories use mode `0700` and files use mode `0600`. On macOS,
+private directories must be ACL-free. Ancestors may retain fully understood,
+deny-only ACLs that do not propagate to children, including entries marked as
+inherited. Allowing, mixed, propagating, or unverifiable ancestor ACLs abort
+publication. Crabline never removes external ancestor ACLs; their denials can
+still cause filesystem operations to fail. Windows
 hosts require `powershell.exe` with `Set-Acl`; Crabline resolves it from the
 absolute local `SystemRoot` and applies a protected, inheritable DACL containing
 only the current user SID to an empty generation directory before creating

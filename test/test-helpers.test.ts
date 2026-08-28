@@ -1,9 +1,25 @@
 import { EventEmitter } from "node:events";
+import { realpath } from "node:fs/promises";
 import type { ClientRequest, IncomingMessage, request as httpRequest } from "node:http";
 import { describe, expect, it, vi } from "vitest";
-import { captureWrites, requestHttp, settleCleanup } from "./test-helpers.js";
+import {
+  captureWrites,
+  createTempDir,
+  disposeTempDir,
+  requestHttp,
+  settleCleanup,
+} from "./test-helpers.js";
 
 describe("test helpers", () => {
+  it("creates canonical temporary directories for filesystem boundary tests", async () => {
+    const directory = await createTempDir();
+    try {
+      expect(directory).toBe(await realpath(directory));
+    } finally {
+      await disposeTempDir(directory);
+    }
+  });
+
   it("rejects incomplete HTTP responses", async () => {
     const response = Object.assign(new EventEmitter(), {
       complete: false,

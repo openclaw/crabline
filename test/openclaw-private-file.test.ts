@@ -19,6 +19,15 @@ import {
 import { createTempDir, disposeTempDir } from "./test-helpers.js";
 
 const currentEffectiveUserId = process.geteuid?.();
+const claimAclCases = [
+  { acl: false, fallback: false },
+  ...(process.platform === "darwin"
+    ? [
+        { acl: true, fallback: false },
+        { acl: true, fallback: true },
+      ]
+    : []),
+];
 
 function expectedAncestrySyncPaths(filePath: string, syncThroughPath?: string): string[] {
   const paths: string[] = [];
@@ -654,57 +663,97 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
-  it("holds publication ancestry claims through temporary-file failure cleanup", async () => {
-    const directory = await createTempDir();
-    const securedAncestor = await securePrivateDirectory(directory);
-    const outputDirectory = path.join(directory, "telegram");
-    await fs.mkdir(outputDirectory);
-    const publicationError = new Error("publication failed after removal attempt");
-    let removalRenameReached = false;
-    let removalRecursiveReached = false;
-    let temporaryPath: string | undefined;
-    try {
-      await expect(
-        publishPrivateFileAtomically(
-          path.join(outputDirectory, "manifest.json"),
-          "private credential\n",
-          {
-            beforeRename: async (candidatePath) => {
-              temporaryPath = candidatePath;
-              await expect(
-                removeSecuredPrivateDirectory(securedAncestor, undefined, "suite-root", {
-                  beforeRecursiveRemove: async () => {
-                    removalRecursiveReached = true;
-                    throw new Error("removal aborted after quarantine rename");
-                  },
-                  beforeRename: async () => {
-                    removalRenameReached = true;
-                  },
-                }),
-              ).rejects.toThrow("Private path mutation is already claimed.");
-              throw publicationError;
+  it.each(claimAclCases)(
+    "holds publication ancestry claims through temporary-file failure cleanup (ACL=$acl, fallback=$fallback)",
+    async ({ acl, fallback }) => {
+      const fixture = await createTempDir();
+      const directory = path.join(fixture, "root");
+      await fs.mkdir(directory);
+      const securedAncestor = await securePrivateDirectory(directory);
+      const outputDirectory = path.join(directory, "telegram");
+      await fs.mkdir(outputDirectory);
+      const legacyPath = path.join(directory, "legacy");
+      if (acl) {
+        await fs.mkdir(legacyPath, { mode: 0o755 });
+        await fs.chmod(legacyPath, 0o755);
+        execFileSync("/bin/chmod", ["+a", "everyone deny chown", legacyPath]);
+        await fs.rename(outputDirectory, path.join(legacyPath, "telegram"));
+      }
+      const publicationDirectory = acl ? path.join(legacyPath, "telegram") : outputDirectory;
+      const linkSpy = fallback
+        ? vi
+            .spyOn(fs, "link")
+            .mockRejectedValue(Object.assign(new Error("unsupported"), { code: "ENOTSUP" }))
+        : undefined;
+      let cleanupChecked = false;
+      const publicationError = new Error("publication failed after removal attempt");
+      let removalRenameReached = false;
+      let removalRecursiveReached = false;
+      let temporaryPath: string | undefined;
+      try {
+        await expect(
+          publishPrivateFileAtomically(
+            path.join(publicationDirectory, "manifest.json"),
+            "private credential\n",
+            {
+              removeTemporaryFile: async (candidate) => {
+                cleanupChecked = true;
+                await expect(removeSecuredPrivateDirectory(securedAncestor)).rejects.toThrow(
+                  "Private path mutation is already claimed.",
+                );
+                await fs.rm(candidate, { force: true });
+              },
+              beforeRename: async (candidatePath) => {
+                temporaryPath = candidatePath;
+                await expect(
+                  removeSecuredPrivateDirectory(securedAncestor, undefined, "suite-root", {
+                    beforeRecursiveRemove: async () => {
+                      removalRecursiveReached = true;
+                      throw new Error("removal aborted after quarantine rename");
+                    },
+                    beforeRename: async () => {
+                      removalRenameReached = true;
+                    },
+                  }),
+                ).rejects.toThrow("Private path mutation is already claimed.");
+                throw publicationError;
+              },
             },
-          },
-        ),
-      ).rejects.toBe(publicationError);
+          ),
+        ).rejects.toBe(publicationError);
 
-      expect(removalRenameReached).toBe(false);
-      expect(removalRecursiveReached).toBe(false);
-      expect(temporaryPath).toBeDefined();
-      await expect(fs.stat(temporaryPath!)).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(fs.stat(outputDirectory)).resolves.toBeDefined();
-      await expect(fs.stat(path.join(outputDirectory, "manifest.json"))).rejects.toMatchObject({
-        code: "ENOENT",
-      });
-      expect(
-        (await fs.readdir(directory, { recursive: true })).filter(
-          (entry) => entry.includes(".tmp") || entry.includes(".remove"),
-        ),
-      ).toEqual([]);
-    } finally {
-      await disposeTempDir(directory);
-    }
-  });
+        expect(cleanupChecked).toBe(true);
+        expect(removalRenameReached).toBe(false);
+        expect(removalRecursiveReached).toBe(false);
+        expect(temporaryPath).toBeDefined();
+        await expect(fs.stat(temporaryPath!)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.stat(publicationDirectory)).resolves.toBeDefined();
+        await expect(
+          fs.stat(path.join(publicationDirectory, "manifest.json")),
+        ).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+        expect(
+          (await fs.readdir(directory, { recursive: true })).filter(
+            (entry) => entry.includes(".tmp") || entry.includes(".remove"),
+          ),
+        ).toEqual([]);
+        const remainingAcl = acl
+          ? execFileSync("/bin/ls", ["-lde", "."], { cwd: legacyPath, encoding: "utf8" })
+              .split("\n")
+              .slice(1)
+              .filter(Boolean)
+          : [];
+        expect(remainingAcl).toEqual(acl ? [" 0: group:everyone deny chown"] : []);
+        await removeSecuredPrivateDirectory(securedAncestor);
+        await expect(fs.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        linkSpy?.mockRestore();
+        // Includes any quarantine relocated beside the mutation root.
+        await disposeTempDir(fixture);
+      }
+    },
+  );
 
   it("preserves undefined and null publication rejection reasons", async () => {
     const directory = await createTempDir();
@@ -1636,9 +1685,9 @@ describe("OpenClaw private file publication", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")(
-    "serializes recursive removal across an owned legacy 0755 descendant",
-    async () => {
+  it.skipIf(process.platform === "win32").each(claimAclCases)(
+    "serializes recursive removal across an owned legacy 0755 descendant (ACL=$acl, fallback=$fallback)",
+    async ({ acl, fallback }) => {
       const directory = await createTempDir();
       let releaseCommit!: () => void;
       const commitReleased = new Promise<void>((resolve) => {
@@ -1649,12 +1698,21 @@ describe("OpenClaw private file publication", () => {
         commitReached = resolve;
       });
       let publication: Promise<void> | undefined;
+      const linkSpy = fallback
+        ? vi
+            .spyOn(fs, "link")
+            .mockRejectedValue(Object.assign(new Error("unsupported"), { code: "ENOTSUP" }))
+        : undefined;
       try {
         const generationPath = path.join(directory, "generation");
         const secured = await securePrivateDirectory(generationPath, { platform: "linux" });
         const legacyPath = path.join(generationPath, "legacy");
         await fs.mkdir(legacyPath, { mode: 0o755 });
         await fs.chmod(legacyPath, 0o755);
+        if (acl) {
+          execFileSync("/bin/chmod", ["+a", "everyone deny chown", legacyPath]);
+        }
+        await fs.mkdir(path.join(legacyPath, "nested"), { mode: 0o700 });
         const filePath = path.join(legacyPath, "nested", "manifest.json");
         publication = publishPrivateFileAtomically(filePath, "private\n", {
           beforeCommitRename: async () => {
@@ -1662,7 +1720,7 @@ describe("OpenClaw private file publication", () => {
             await commitReleased;
           },
         });
-        await reachedCommit;
+        await Promise.race([reachedCommit, publication]);
 
         await expect(
           removeSecuredPrivateDirectory(secured, undefined, undefined, {
@@ -1673,9 +1731,17 @@ describe("OpenClaw private file publication", () => {
         releaseCommit();
         await publication;
         await expect(fs.readFile(filePath, "utf8")).resolves.toBe("private\n");
+        expect(
+          (await fs.readdir(generationPath, { recursive: true })).filter((entry) =>
+            entry.includes(".crabline-private-mutation"),
+          ),
+        ).toEqual([]);
+        await removeSecuredPrivateDirectory(secured);
+        await expect(fs.stat(generationPath)).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
         releaseCommit();
         await publication?.catch(() => undefined);
+        linkSpy?.mockRestore();
         await disposeTempDir(directory);
       }
     },
@@ -2309,34 +2375,41 @@ describe("OpenClaw private file publication", () => {
     },
   );
 
-  it.skipIf(process.platform !== "darwin")(
-    "rejects inherited macOS ACL risk without mutating the existing ancestor",
-    async () => {
-      const directory = await createTempDir();
-      try {
-        execFileSync(
-          "/bin/chmod",
-          ["+a", "everyone allow add_file,delete_child,file_inherit,directory_inherit", directory],
-          { stdio: "ignore" },
-        );
-        const filePath = path.join(directory, "nested", "manifest.json");
-
-        await expect(publishPrivateFileAtomically(filePath, "private\n")).rejects.toThrow(
-          "Private directory must not have a macOS extended ACL.",
-        );
-
-        expect(
-          execFileSync("/bin/ls", ["-lde", directory], { encoding: "utf8" })
-            .trimStart()
-            .split(/\s+/u, 1)[0],
-        ).toContain("+");
-        await expect(fs.stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
-      } finally {
-        execFileSync("/bin/chmod", ["-RN", directory], { stdio: "ignore" });
-        await disposeTempDir(directory);
+  it
+    .skipIf(process.platform !== "darwin")
+    .each([
+      ["everyone allow add_file,delete_child,file_inherit,directory_inherit"],
+      ["everyone allow add_file"],
+      ["everyone deny delete", "group:staff allow add_file"],
+      ...["file_inherit", "directory_inherit", "limit_inherit", "only_inherit"].map((flag) => [
+        `everyone deny delete,${flag}`,
+      ]),
+    ])("rejects unsafe macOS ACL %j without mutating the existing ancestor", async (...entries) => {
+    const directory = await createTempDir();
+    try {
+      for (const entry of entries) {
+        execFileSync("/bin/chmod", ["+a", entry, directory]);
       }
-    },
-  );
+      const aclBefore = execFileSync("/bin/ls", ["-lde", "."], { cwd: directory, encoding: "utf8" })
+        .split("\n")
+        .slice(1);
+      const filePath = path.join(directory, "nested", "manifest.json");
+
+      await expect(publishPrivateFileAtomically(filePath, "private\n")).rejects.toThrow(
+        /macOS.*ACL/u,
+      );
+
+      expect(
+        execFileSync("/bin/ls", ["-lde", "."], { cwd: directory, encoding: "utf8" })
+          .split("\n")
+          .slice(1),
+      ).toEqual(aclBefore);
+      await expect(fs.stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      execFileSync("/bin/chmod", ["-RN", directory], { stdio: "ignore" });
+      await disposeTempDir(directory);
+    }
+  });
 
   it.skipIf(process.platform !== "darwin")(
     "migrates an existing macOS publication parent with a legacy ACL",

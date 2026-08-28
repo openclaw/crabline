@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -67,7 +68,10 @@ function createLock(): OpenClawCrablineProviderReadinessLock & {
   };
 }
 
-function publishParams(outputDir: string, lock = createLock()) {
+function publishParams(
+  outputDir: string,
+  lock: OpenClawCrablineProviderReadinessLock = createLock(),
+) {
   return {
     capabilityReport: { result: { selectedChannel: "telegram" } },
     lock,
@@ -1295,6 +1299,61 @@ describe("OpenClaw artifact generation publication", () => {
       await disposeTempDir(outputDir);
     }
   });
+
+  it.skipIf(process.platform !== "darwin")(
+    "publishes and rolls back beneath a deny-only macOS ancestor with a real lock",
+    async () => {
+      const ancestor = await createTempDir();
+      const outputDir = path.join(ancestor, "output");
+      await fs.mkdir(outputDir, { mode: 0o700 });
+      execFileSync("/bin/chmod", ["+a", "everyone deny delete", ancestor]);
+      const aclBefore = execFileSync("/bin/ls", ["-lde", "."], { cwd: ancestor, encoding: "utf8" });
+      const { dev, ino, mode } = await fs.lstat(ancestor);
+      const publish = async (
+        dependencies: Parameters<typeof publishOpenClawCrablineArtifactGeneration>[1],
+      ) => {
+        const lock = await acquireOpenClawCrablineProviderReadinessLock({
+          channel: "telegram",
+          outputDir,
+        });
+        try {
+          return await publishOpenClawCrablineArtifactGeneration(
+            publishParams(outputDir, lock),
+            dependencies,
+          );
+        } finally {
+          await lock.release();
+        }
+      };
+      try {
+        const publicationFailure = new Error("crash before pointer switch");
+        await expect(
+          publish({
+            beforePointerSwitch: async () => {
+              throw publicationFailure;
+            },
+          }),
+        ).rejects.toBe(publicationFailure);
+        const storePath = path.join(outputDir, OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY);
+        await expect(fs.readdir(storePath)).resolves.toEqual([]);
+        await expect(readOpenClawCrablineArtifactPointer(outputDir)).resolves.toBeNull();
+        const result = await publish({});
+        expect((await readOpenClawCrablineArtifactPointer(outputDir))?.generation).toBe(
+          result.generation,
+        );
+        expect((await fs.readdir(storePath)).sort()).toEqual(
+          ["current.json", result.generation].sort(),
+        );
+        expect(execFileSync("/bin/ls", ["-lde", "."], { cwd: ancestor, encoding: "utf8" })).toBe(
+          aclBefore,
+        );
+        expect(await fs.lstat(ancestor)).toMatchObject({ dev, ino, mode });
+      } finally {
+        execFileSync("/bin/chmod", ["-N", ancestor]);
+        await disposeTempDir(ancestor);
+      }
+    },
+  );
 
   it("reclaims interrupted artifact removal tombstones", async () => {
     const outputDir = await createTempDir();
