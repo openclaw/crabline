@@ -60,7 +60,7 @@
     "re2js": "2.8.6",
     "ws": "^8.21.3",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.2"
   },
   "devDependencies": {
     "@types/proper-lockfile": "4.1.4",
