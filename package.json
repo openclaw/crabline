@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/crabline",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "description": "Standalone CLI for deterministic messaging provider E2E tests",
   "homepage": "https://github.com/openclaw/crabline#readme",
   "bugs": {
@@ -72,6 +72,7 @@
     "oxfmt": "^0.65.0",
     "oxlint": "^1.80.0",
     "oxlint-tsgolint": "^7.0.2001",
+    "rolldown": "1.2.5",
     "tsx": "^4.23.12",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vitest": "^4.1.11"

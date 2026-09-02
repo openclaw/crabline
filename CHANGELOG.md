@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.1.20 - Unreleased
+## 0.1.20 - 2026-09-02
+
+- Fix bundled consumers failing to load the WhatsApp crypto dependency under isolated dependency layouts; preserve native and JavaScript crypto behavior.
+- Refresh compatible dependencies and expand WhatsApp recorder cancellation coverage.
 
 ## 0.1.19 - 2026-08-28
 
