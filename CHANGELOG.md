@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.21 - 2026-09-02
+
+- Restore compatibility with Zod 4.4.3 so consumers can retain their seven-day dependency cooldown without a Zod exception; align the source checkout's release-age policy to seven days.
+
 ## 0.1.20 - 2026-09-02
 
 - Fix bundled consumers failing to load the WhatsApp crypto dependency under isolated dependency layouts; preserve native and JavaScript crypto behavior.

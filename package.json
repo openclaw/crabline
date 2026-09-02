@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/crabline",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "Standalone CLI for deterministic messaging provider E2E tests",
   "homepage": "https://github.com/openclaw/crabline#readme",
   "bugs": {
@@ -60,7 +60,7 @@
     "re2js": "2.8.6",
     "ws": "^8.21.3",
     "yaml": "^2.9.0",
-    "zod": "^4.5.2"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/proper-lockfile": "4.1.4",

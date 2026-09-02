@@ -37,6 +37,9 @@ pnpm build
 pnpm verify
 ```
 
+Dependency updates observe a seven-day release-age policy. Runtime dependency
+minimums must remain compatible with consumers using the same cooldown.
+
 Run locally:
 
 ```bash
