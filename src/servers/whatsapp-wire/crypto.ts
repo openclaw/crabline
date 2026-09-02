@@ -10,17 +10,7 @@ import {
   hkdfSync,
   randomBytes,
 } from "node:crypto";
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
-
-type Curve25519Module = {
-  generateKeyPair(seed: Uint8Array): { private: Uint8Array; public: Uint8Array };
-  sharedKey(privateKey: Uint8Array, publicKey: Uint8Array): Uint8Array;
-  sign(privateKey: Uint8Array, message: Uint8Array, random: Uint8Array): Uint8Array;
-};
-
-const curve25519 = require("curve25519-js") as Curve25519Module;
+import * as curve25519 from "curve25519-js";
 
 const AES_GCM_TAG_LENGTH = 16;
 const PRIVATE_KEY_DER_PREFIX = Buffer.from([

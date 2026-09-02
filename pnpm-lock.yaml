@@ -70,6 +70,9 @@ importers:
       oxlint-tsgolint:
         specifier: ^7.0.2001
         version: 7.0.2001
+      rolldown:
+        specifier: 1.2.5
+        version: 1.2.5
       tsx:
         specifier: ^4.23.12
         version: 4.23.12

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { build } from "rolldown";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { parse } from "yaml";
 import type {
@@ -408,6 +409,69 @@ describe("production package", () => {
     );
   }, 120_000);
 
+  it("runs relocated bundles from a packed isolated-pnpm install", async () => {
+    const root = process.cwd();
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-bundled-consumer-"));
+    const consumerDirectory = path.join(tempRoot, "consumer");
+    const outputDirectory = path.join(tempRoot, "relocated");
+    try {
+      await fs.mkdir(consumerDirectory);
+      const packed = await npmPack(root, tempRoot);
+      await fs.writeFile(
+        path.join(consumerDirectory, "package.json"),
+        JSON.stringify({ name: "crabline-bundled-consumer", private: true, type: "module" }),
+      );
+      await fs.writeFile(
+        path.join(consumerDirectory, "pnpm-workspace.yaml"),
+        "packages: ['.']\nnodeLinker: isolated\nhoist: false\n",
+      );
+      await execPackageManager(
+        "pnpm",
+        ["add", "--ignore-scripts", "--prod", path.join(tempRoot, packed.filename)],
+        { cwd: consumerDirectory, maxBuffer: 10 * 1024 * 1024 },
+      );
+      await expect(
+        fs.stat(path.join(consumerDirectory, "node_modules", "curve25519-js")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      const installedRoot = path.join(consumerDirectory, "node_modules", "@openclaw", "crabline");
+      await build({
+        input: {
+          index: path.join(installedRoot, "dist/src/index.js"),
+          crypto: path.join(installedRoot, "dist/src/servers/whatsapp-wire/crypto.js"),
+        },
+        platform: "node",
+        output: { dir: outputDirectory, format: "esm", entryFileNames: "[name].mjs" },
+      });
+      await fs.rm(consumerDirectory, { recursive: true, force: true });
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          [
+            'import assert from "node:assert/strict";',
+            'import * as pkg from "./index.mjs";',
+            'import { Curve, createCurve } from "./crypto.mjs";',
+            'const privateKey = Buffer.from("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", "hex");',
+            'const publicKey = Buffer.from("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f", "hex");',
+            'const unsupported = () => { throw Object.assign(new Error("unsupported"), { code: "ERR_OSSL_EVP_UNSUPPORTED" }); };',
+            "const fallback = createCurve({ generateKeyPair: unsupported, sharedKey: unsupported });",
+            "for (const curve of [Curve, fallback]) {",
+            '  assert.equal(curve.sharedKey(privateKey, publicKey).toString("hex"), "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742");',
+            "  assert.equal(curve.generateKeyPair().public.length, 32);",
+            '  assert.equal(curve.sign(privateKey, Buffer.from("bundled consumer")).length, 64);',
+            "}",
+            "console.log(JSON.stringify(Object.keys(pkg).sort()));",
+          ].join("\n"),
+        ],
+        { cwd: outputDirectory, env: { ...process.env, NODE_PATH: "" } },
+      );
+      expect(JSON.parse(stdout) as string[]).toEqual(PUBLIC_RUNTIME_EXPORTS);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it("uses portable cleanup scripts", async () => {
     const root = process.cwd();
     const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as {
@@ -576,22 +640,30 @@ async function execNpm(
   args: string[],
   options: Parameters<typeof execFileAsync>[2],
 ): Promise<{ stderr: string; stdout: string }> {
+  return execPackageManager("npm", args, options);
+}
+
+async function execPackageManager(
+  command: "npm" | "pnpm",
+  args: string[],
+  options: Parameters<typeof execFileAsync>[2],
+): Promise<{ stderr: string; stdout: string }> {
   const result =
     process.platform === "win32"
       ? await execFileAsync(
           process.env.ComSpec ?? "cmd.exe",
-          ["/d", "/s", "/c", buildWindowsNpmCommand(args)],
+          ["/d", "/s", "/c", buildWindowsNpmCommand(args, command)],
           { ...options, windowsVerbatimArguments: true },
         )
-      : await execFileAsync("npm", args, options);
+      : await execFileAsync(command, args, options);
   return {
     stderr: String(result.stderr),
     stdout: String(result.stdout),
   };
 }
 
-function buildWindowsNpmCommand(args: string[]): string {
-  return `"${["npm.cmd", ...args].map(quoteCmdArgument).join(" ")}"`;
+function buildWindowsNpmCommand(args: string[], command = "npm"): string {
+  return `"${[`${command}.cmd`, ...args].map(quoteCmdArgument).join(" ")}"`;
 }
 
 function quoteCmdArgument(value: string): string {
