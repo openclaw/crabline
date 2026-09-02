@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -409,7 +410,7 @@ describe("production package", () => {
     );
   }, 120_000);
 
-  it("runs relocated bundles from a packed isolated-pnpm install", async () => {
+  it("runs relocated isolated-pnpm bundles with the supported Zod floor and seven-day cooldown", async () => {
     const root = process.cwd();
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-bundled-consumer-"));
     const consumerDirectory = path.join(tempRoot, "consumer");
@@ -419,11 +420,16 @@ describe("production package", () => {
       const packed = await npmPack(root, tempRoot);
       await fs.writeFile(
         path.join(consumerDirectory, "package.json"),
-        JSON.stringify({ name: "crabline-bundled-consumer", private: true, type: "module" }),
+        JSON.stringify({
+          name: "crabline-bundled-consumer",
+          private: true,
+          type: "module",
+          dependencies: { zod: "4.4.3" },
+        }),
       );
       await fs.writeFile(
         path.join(consumerDirectory, "pnpm-workspace.yaml"),
-        "packages: ['.']\nnodeLinker: isolated\nhoist: false\n",
+        "packages: ['.']\nnodeLinker: isolated\nhoist: false\nminimumReleaseAge: 10080\n",
       );
       await execPackageManager(
         "pnpm",
@@ -434,6 +440,14 @@ describe("production package", () => {
         fs.stat(path.join(consumerDirectory, "node_modules", "curve25519-js")),
       ).rejects.toMatchObject({ code: "ENOENT" });
       const installedRoot = path.join(consumerDirectory, "node_modules", "@openclaw", "crabline");
+      const requireCrabline = createRequire(path.join(installedRoot, "package.json"));
+      const installedZod = JSON.parse(
+        await fs.readFile(requireCrabline.resolve("zod/package.json"), "utf8"),
+      ) as { version: string };
+      expect(installedZod.version).toBe("4.4.3");
+      const exampleManifest = parse(
+        await fs.readFile(path.join(root, "fixtures/examples/crabline.example.yaml"), "utf8"),
+      );
       await build({
         input: {
           index: path.join(installedRoot, "dist/src/index.js"),
@@ -452,6 +466,7 @@ describe("production package", () => {
             'import assert from "node:assert/strict";',
             'import * as pkg from "./index.mjs";',
             'import { Curve, createCurve } from "./crypto.mjs";',
+            `pkg.ManifestSchema.parse(${JSON.stringify(exampleManifest)});`,
             'const privateKey = Buffer.from("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", "hex");',
             'const publicKey = Buffer.from("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f", "hex");',
             'const unsupported = () => { throw Object.assign(new Error("unsupported"), { code: "ERR_OSSL_EVP_UNSUPPORTED" }); };',
