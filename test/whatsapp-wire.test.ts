@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert";
 import { deflateSync } from "node:zlib";
 import { Curve as BaileysCurve, encodeBinaryNode as encodeBaileysNode, proto } from "baileys";
 import { describe, expect, it, vi } from "vitest";
@@ -700,7 +701,10 @@ describe("WhatsApp binary nodes", () => {
     const encoded = encodeBinaryNode(largest);
 
     expect(encoded).toHaveLength(WHATSAPP_BINARY_NODE_MAX_FRAME_BYTES);
-    await expect(decodeBinaryNode(encoded)).resolves.toEqual(largest);
+    const { content, ...decoded } = await decodeBinaryNode(encoded);
+    expect(decoded).toEqual({ attrs: largest.attrs, tag: largest.tag });
+    // Compare every byte without enumerating millions of buffer properties in the matcher.
+    deepStrictEqual(content, largest.content, "largest frame payload must round trip exactly");
     expect(() => encodeBinaryNode({ ...largest, content: Buffer.alloc(payloadBytes + 1) })).toThrow(
       `exceeds ${WHATSAPP_BINARY_NODE_MAX_FRAME_BYTES} bytes`,
     );

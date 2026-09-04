@@ -1,8 +1,9 @@
 import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ProviderConfig } from "../src/config/schema.js";
+import { initializeProcessOwnedLockIdentity } from "../src/platform/process-owned-lock.js";
 import {
   handleSlackWebhookPayload,
   normalizeSlackEventsPayload,
@@ -114,6 +115,11 @@ function slackSignature(signingSecret: string, timestamp: string, body: string):
 }
 
 describe("slack provider", () => {
+  beforeAll(() => {
+    // Native recorder identity discovery is startup work, outside individual test budgets.
+    initializeProcessOwnedLockIdentity();
+  });
+
   it("requires request signatures for externally reachable event endpoints", async () => {
     const config = await createSlackConfig(0);
     config.slack!.webhook.host = "0.0.0.0";
@@ -304,17 +310,8 @@ describe("slack provider", () => {
       context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
       const endpoint = endpointFromDetails((await provider.probe(context)).details);
       const nonce = `direct-${userId}`;
-      const waiting = provider.waitForInbound({
-        ...context,
-        nonce,
-        since: new Date(Date.now() - 1000).toISOString(),
-        timeoutMs: 500,
-      });
-
-      for (const [channel, eventUser] of [
-        ["D9999999999", "U9999999999"],
-        ["D1234567890", userId],
-      ]) {
+      const since = new Date(Date.now() - 1000).toISOString();
+      const postEvent = async (channel: string, eventUser: string) => {
         const response = await fetch(endpoint, {
           body: JSON.stringify({
             event: {
@@ -330,7 +327,17 @@ describe("slack provider", () => {
           method: "POST",
         });
         expect(response.status).toBe(200);
-      }
+      };
+
+      // Persist the distractor and initialize the recorder before the live-arrival budget.
+      await postEvent("D9999999999", "U9999999999");
+      const waiting = provider.waitForInbound({
+        ...context,
+        nonce,
+        since,
+        timeoutMs: 500,
+      });
+      await postEvent("D1234567890", userId);
 
       await expect(waiting).resolves.toMatchObject({
         author: "user",
@@ -355,17 +362,8 @@ describe("slack provider", () => {
       context.fixture.inboundMatch = { author: "user", nonce: "contains", strategy: "contains" };
       const endpoint = endpointFromDetails((await provider.probe(context)).details);
       const nonce = `threaded-direct-${userId}`;
-      const waiting = provider.waitForInbound({
-        ...context,
-        nonce,
-        since: new Date(Date.now() - 1000).toISOString(),
-        timeoutMs: 500,
-      });
-
-      for (const [eventId, candidateThreadTs] of [
-        ["EvWRONGTHREAD1", "1700000000.000101"],
-        ["EvRIGHTTHREAD1", threadTs],
-      ]) {
+      const since = new Date(Date.now() - 1000).toISOString();
+      const postEvent = async (eventId: string, candidateThreadTs: string) => {
         const response = await fetch(endpoint, {
           body: JSON.stringify({
             event: {
@@ -383,7 +381,17 @@ describe("slack provider", () => {
           method: "POST",
         });
         expect(response.status).toBe(200);
-      }
+      };
+
+      // The wrong-thread setup must finish before the matching event's arrival budget.
+      await postEvent("EvWRONGTHREAD1", "1700000000.000101");
+      const waiting = provider.waitForInbound({
+        ...context,
+        nonce,
+        since,
+        timeoutMs: 500,
+      });
+      await postEvent("EvRIGHTTHREAD1", threadTs);
 
       await expect(waiting).resolves.toMatchObject({
         author: "user",
