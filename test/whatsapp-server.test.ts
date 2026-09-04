@@ -3166,9 +3166,11 @@ describe("whatsapp local provider server", () => {
       ok: true,
     });
     const socket = createBaileysTestSocket(server, { fireInitQueries: true });
-    const connectionUpdates: unknown[] = [];
-    socket.ev.on("connection.update", (update) => {
-      connectionUpdates.push(update);
+    const connections: string[] = [];
+    socket.ev.on("connection.update", ({ connection }) => {
+      if (connection) {
+        connections.push(connection);
+      }
     });
     const messageUpserts: BaileysMessagesUpsertEvent[] = [];
     socket.ev.on("messages.upsert", (event) => {
@@ -3176,16 +3178,7 @@ describe("whatsapp local provider server", () => {
     });
 
     try {
-      await waitForCondition(
-        () =>
-          connectionUpdates.some(
-            (update) =>
-              !!update &&
-              typeof update === "object" &&
-              (update as { connection?: unknown }).connection === "open",
-          ),
-        "Baileys connection open",
-      );
+      await waitForCondition(() => connections.includes("open"), "Baileys connection open");
       await expect(socket.groupFetchAllParticipating()).resolves.toEqual({});
       await socket.sendPresenceUpdate("available");
       await socket.sendPresenceUpdate("composing", "15551234567@s.whatsapp.net");
@@ -3232,9 +3225,20 @@ describe("whatsapp local provider server", () => {
         delivery: "delivered",
         ok: true,
       });
-      await socket.sendMessage("15551234567@s.whatsapp.net", {
+      const firstMessage = await socket.sendMessage("15551234567@s.whatsapp.net", {
         text: "hello through real baileys",
       });
+      if (!firstMessage?.key.id) {
+        throw new Error("Baileys did not return the first message key");
+      }
+      const reaction = await socket.sendMessage("15551234567@s.whatsapp.net", {
+        react: { key: firstMessage.key, text: "🦞" },
+      });
+      const followup = await socket.sendMessage("15551234567@s.whatsapp.net", {
+        text: "hello after reaction",
+      });
+      expect(reaction?.key.id).toEqual(expect.any(String));
+      expect(followup?.key.id).toEqual(expect.any(String));
       await waitForCondition(
         () =>
           fs
@@ -3257,12 +3261,12 @@ describe("whatsapp local provider server", () => {
                     !!event.body.message &&
                     typeof event.body.message === "object" &&
                     "conversation" in event.body.message &&
-                    event.body.message.conversation === "hello through real baileys"
+                    event.body.message.conversation === "hello after reaction"
                   );
                 }),
             )
             .catch(() => false),
-        "accepted WhatsApp Baileys recorder event",
+        "accepted WhatsApp message after reaction",
       );
       const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
       expect(recorder).toContain('"method":"WEBSOCKET"');
@@ -3272,7 +3276,7 @@ describe("whatsapp local provider server", () => {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as unknown);
-      const acceptedEvent = recorderEvents.find(
+      const acceptedEvents = recorderEvents.filter(
         (event) =>
           !!event &&
           typeof event === "object" &&
@@ -3281,6 +3285,34 @@ describe("whatsapp local provider server", () => {
           "method" in event &&
           event.method === "WEBSOCKET",
       );
+      expect(acceptedEvents).toMatchObject([
+        {
+          body: {
+            key: { id: firstMessage.key.id },
+            message: { conversation: "hello through real baileys" },
+          },
+        },
+        {
+          body: {
+            attrs: {
+              id: reaction?.key.id,
+              to: "15551234567@s.whatsapp.net",
+              type: "reaction",
+            },
+            tag: "message",
+          },
+        },
+        {
+          body: {
+            key: { id: followup?.key.id },
+            message: { conversation: "hello after reaction" },
+          },
+        },
+      ]);
+      expect(connections.filter((connection) => connection === "open")).toEqual(["open"]);
+      expect(connections).not.toContain("close");
+      expect(socket.ws.isOpen).toBe(true);
+      const acceptedEvent = acceptedEvents[0];
       expect(acceptedEvent).toMatchObject({
         accepted: true,
         body: {

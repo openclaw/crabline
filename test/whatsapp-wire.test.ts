@@ -183,6 +183,22 @@ describe("WhatsApp X25519 agreement", () => {
 });
 
 describe("WhatsApp Baileys token compatibility", () => {
+  it("decodes reaction stanzas emitted by Baileys", async () => {
+    const node: BinaryNode = {
+      tag: "message",
+      attrs: { id: "reaction-1", to: "15550000001@s.whatsapp.net", type: "reaction" },
+      content: [
+        {
+          tag: "enc",
+          attrs: { v: "2", type: "msg", "decrypt-fail": "hide" },
+          content: Buffer.from([1, 2, 3]),
+        },
+      ],
+    };
+
+    await expect(decodeBinaryNode(encodeBaileysNode(node))).resolves.toEqual(node);
+  });
+
   it("decodes lifecycle nodes emitted by the installed Baileys dictionary", async () => {
     const node: BinaryNode = {
       attrs: { type: "read", value: "1", xmlns: "abt" },
