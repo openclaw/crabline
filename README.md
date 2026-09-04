@@ -39,6 +39,9 @@ pnpm verify
 
 Dependency updates observe a seven-day release-age policy. Runtime dependency
 minimums must remain compatible with consumers using the same cooldown.
+Dependabot applies the same cooldown to version updates, preserving the
+TypeScript exceptions in `pnpm-workspace.yaml`. Node declarations stay on
+Node 22 while that runtime remains supported.
 
 Run locally:
 

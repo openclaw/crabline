@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Refresh the Rolldown bundler used by package compatibility checks and the Go workflow-validation toolchain, align Dependabot version updates with the seven-day cooldown, and retain Node 22 declarations for supported runtimes.
+- Initialize native recorder ownership before timed loopback integration checks so macOS process discovery does not consume the fixture's one-second message budget.
+
 ## 0.1.21 - 2026-09-02
 
 - Restore compatibility with Zod 4.4.3 so consumers can retain their seven-day dependency cooldown without a Zod exception; align the source checkout's release-age policy to seven days.

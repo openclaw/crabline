@@ -2,6 +2,8 @@ module github.com/openclaw/crabline/tools
 
 go 1.25.0
 
+toolchain go1.25.14
+
 require github.com/rhysd/actionlint v1.7.12
 
 require (
