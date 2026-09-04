@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { runFixtureCommand } from "../src/core/run.js";
 import { createRegistry } from "../src/providers/registry.js";
 import type { ManifestDefinition } from "../src/config/schema.js";
+import { initializeProcessOwnedLockIdentity } from "../src/platform/process-owned-lock.js";
 
 const manifest: ManifestDefinition = {
   configVersion: 1,
@@ -48,6 +49,11 @@ const manifest: ManifestDefinition = {
 };
 
 describe("loopback e2e", () => {
+  beforeAll(() => {
+    // Native identity discovery is startup work outside the one-second fixture budget.
+    initializeProcessOwnedLockIdentity();
+  });
+
   it("completes a roundtrip", async () => {
     const result = await runFixtureCommand({
       fixtureId: "loopback-roundtrip",
@@ -56,7 +62,7 @@ describe("loopback e2e", () => {
       registry: createRegistry(manifest, "/tmp/crabline.yaml"),
     });
 
-    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({ ok: true });
   });
 
   it("completes an agent flow", async () => {
@@ -67,6 +73,6 @@ describe("loopback e2e", () => {
       registry: createRegistry(manifest, "/tmp/crabline.yaml"),
     });
 
-    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({ ok: true });
   });
 });
