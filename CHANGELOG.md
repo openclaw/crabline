@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.1.22 - 2026-09-07
 
 **Highlights:** WhatsApp sessions stay connected through reactions and follow-up encrypted messages.
