@@ -2,10 +2,12 @@
 
 ## Unreleased
 
+**Highlights:** WhatsApp sessions stay connected through reactions and follow-up encrypted messages.
+
 - Keep WhatsApp sessions connected when Baileys sends reactions or established-session encrypted messages by recognizing their standard wire tokens.
-- Separate Slack correlation-test setup from live-arrival deadlines and compare full-size WhatsApp frames without per-byte matcher overhead, retaining product waits and boundary coverage.
+- Refresh Zod to 4.5.4 and the development runner to tsx 4.23.13 while preserving the Zod 4.4.3 consumer minimum and seven-day dependency cooldown.
 - Refresh the Rolldown bundler used by package compatibility checks and the Go workflow-validation toolchain, align Dependabot version updates with the seven-day cooldown, and retain Node 22 declarations for supported runtimes.
-- Initialize native recorder ownership before timed loopback integration checks so macOS process discovery does not consume the fixture's one-second message budget.
+- Stabilize Slack arrival, WhatsApp frame-boundary, and macOS recorder tests without changing product waits or boundary coverage.
 
 ## 0.1.21 - 2026-09-02
 
