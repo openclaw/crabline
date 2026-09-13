@@ -22,19 +22,6 @@ import {
 } from "./native-local-mock.js";
 import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
-export function resolveMsTeamsAdapterConfig(
-  config: ProviderConfig,
-  env: NodeJS.ProcessEnv = process.env,
-) {
-  return {
-    appId: config.msteams?.appId ?? env.TEAMS_APP_ID ?? "local-mock-teams-app",
-    appPassword: config.msteams?.appPassword ?? env.TEAMS_APP_PASSWORD ?? "local-mock-secret",
-    appTenantId: config.msteams?.appTenantId,
-    appType: config.msteams?.appType,
-    userName: config.msteams?.userName,
-  };
-}
-
 const BOT_CONNECTOR_ISSUER = "https://api.botframework.com";
 const BOT_CONNECTOR_OPENID_URL =
   "https://login.botframework.com/v1/.well-known/openidconfiguration";
