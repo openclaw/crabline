@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Start Feishu event ACK deadlines after all fragment writes complete, preserving early ACKs and releasing capacity on failed or closed writes.
+
 - Reject malformed Feishu WebSocket upgrade targets with HTTP 400 instead of allowing URL parsing errors to terminate the server.
 
 - Add a programmatic Feishu native server with optional TLS, SDK-compatible protobuf WebSocket events and acknowledgements, single-client cluster delivery with one ACK slot per event, bounded admin ingress, and text, post, and static-card REST messages.

@@ -1,4 +1,4 @@
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { connect as connectTcp } from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -39,6 +39,7 @@ async function start(params: Parameters<typeof startFeishuServer>[0] = {}) {
     recorderPath: path.join(directory, "events.jsonl"),
     onEvent: (event) => {
       events.push(event);
+      return params.onEvent?.(event);
     },
   });
   cleanups.push(async () => {
@@ -454,10 +455,92 @@ describe("Feishu native wire", () => {
     expect(stages(events, "sdk.ack")).toHaveLength(0);
   });
 
+  it.each(["after delivery", "before final callback"] as const)(
+    "keeps the ACK window separate from fragment writes (%s)",
+    async (ackOrder) => {
+      const observed = new EventEmitter();
+      const { server, events } = await start({
+        ackTimeoutMs: 100,
+        maxOutstandingAcks: 1,
+        onEvent: (event) => {
+          observed.emit((event.body as { stage: string }).stage);
+        },
+      });
+      const { socket, frames } = await connect(server);
+      await expect.poll(() => stages(events, "websocket.connected").length).toBe(1);
+      const original = WebSocket.prototype.send;
+      const send = vi.spyOn(WebSocket.prototype, "send");
+      const writes = Array.from(
+        { length: 2 },
+        () =>
+          new Promise<() => void>((resolve) => {
+            send.mockImplementationOnce(function (this: WebSocket, data, options, callback) {
+              original.call(this, data, options, (error) => {
+                resolve(() => callback?.(error));
+              });
+            });
+          }),
+      );
+      const admin = server.manifest.endpoints.adminInboundUrl;
+      const token = server.manifest.adminToken;
+      const input = { chatId: "oc_deadline", senderId: "ou_deadline", text: "分片" };
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const firstFrame = once(socket, "message");
+        const delivered = once(observed, "websocket.delivery");
+        const response = json(admin, { ...input, fragments: 2 }, token);
+        const releaseFirst = await writes[0]!;
+        await firstFrame;
+        const lastFrame = once(socket, "message");
+        await vi.advanceTimersByTimeAsync(60);
+        releaseFirst();
+        const releaseLast = await writes[1]!;
+        await lastFrame;
+        if (ackOrder === "after delivery") {
+          // Each write consumes 60% of its own deadline; total delivery exceeds one window.
+          await vi.advanceTimersByTimeAsync(60);
+          releaseLast();
+          await delivered;
+        }
+        const ack = once(observed, "sdk.ack").then(() => "ack");
+        const closed = once(socket, "close").then(([code]) => `close:${String(code)}`);
+        socket.send(
+          encodeFeishuFrame({
+            ...frames.at(-1)!,
+            payload: Buffer.from(JSON.stringify({ code: 200 })),
+          }),
+        );
+        expect(await Promise.race([ack, closed])).toBe("ack");
+        if (ackOrder === "before final callback") {
+          releaseLast();
+          await delivered;
+        }
+        expect((await response).status).toBe(200);
+        // An early ACK must not acquire a new timer when the final write callback arrives.
+        await vi.advanceTimersByTimeAsync(101);
+        const nextDelivered = once(observed, "websocket.delivery");
+        expect((await json(admin, input, token)).status).toBe(200);
+        await nextDelivered;
+        expect((await json(admin, input, token)).status).toBe(503);
+        expect(stages(events, "sdk.ack")).toHaveLength(1);
+        expect(stages(events, "sdk.ack.expired")).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each(["callback", "throw", "close", "deadline"] as const)(
     "records a failed write on %s without claiming an SDK ACK",
     async (failure) => {
-      const { server, events } = await start({ ackTimeoutMs: 100 });
+      const observed = new EventEmitter();
+      const { server, events } = await start({
+        ackTimeoutMs: 100,
+        maxOutstandingAcks: 1,
+        onEvent: (event) => {
+          observed.emit((event.body as { stage: string }).stage);
+        },
+      });
       await connect(server);
       vi.spyOn(WebSocket.prototype, "send").mockImplementationOnce(
         function (this: WebSocket, _data, _options, callback) {
@@ -482,6 +565,19 @@ describe("Feishu native wire", () => {
       await expect.poll(() => stages(events, "websocket.delivery").length).toBe(1);
       expect(stages(events, "websocket.delivery")[0]!.body).toMatchObject({ delivered: false });
       expect(stages(events, "sdk.ack")).toHaveLength(0);
+      await connect(server);
+      const nextDelivered = once(observed, "websocket.delivery");
+      const input = { chatId: "oc_capacity", senderId: "ou_capacity", text: "恢复" };
+      expect(
+        (await json(server.manifest.endpoints.adminInboundUrl, input, server.manifest.adminToken))
+          .status,
+      ).toBe(200);
+      await nextDelivered;
+      expect(
+        (await json(server.manifest.endpoints.adminInboundUrl, input, server.manifest.adminToken))
+          .status,
+      ).toBe(503);
+      expect(stages(events, "sdk.ack.expired")).toHaveLength(0);
       await server.close();
     },
   );

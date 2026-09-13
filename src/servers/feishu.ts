@@ -71,7 +71,7 @@ type NativeMessage = {
   parent_id?: string;
 };
 type Delivery = { eventId: string; messageId: string; frames: FeishuFrame[] };
-type PendingAck = { delivery: Delivery; completing: FeishuFrame; timer: NodeJS.Timeout };
+type PendingAck = { delivery: Delivery; completing: FeishuFrame; timer?: NodeJS.Timeout };
 
 function positive(value: number | undefined, fallback: number, name: string): number {
   const resolved = value ?? fallback;
@@ -198,7 +198,7 @@ export async function startFeishuServer(
       return false;
     }
     // ws.send's return only means queued. Its callback observes write completion,
-    // which remains distinct from the SDK's later acknowledgement.
+    // which remains distinct from the SDK's acknowledgement.
     const written = new Promise<boolean>((resolve) => {
       let settled = false;
       const finish = (success: boolean) => {
@@ -254,17 +254,8 @@ export async function startFeishuServer(
         const [socket, acks] = targets[randomInt(targets.length)]!;
         const delivery = pending.shift()!;
         const completing = delivery.frames.at(-1)!;
-        const timer = setTimeout(() => {
-          clearAck(acks, delivery.eventId);
-          void record(
-            "sdk.ack.expired",
-            { messageId: delivery.messageId, eventId: delivery.eventId },
-            "/callback/ws",
-          );
-          void flush();
-        }, ackTimeoutMs);
-        timer.unref();
-        acks.set(delivery.eventId, { delivery, completing, timer });
+        const reservation: PendingAck = { delivery, completing };
+        acks.set(delivery.eventId, reservation);
         outstanding += 1;
         let delivered = true;
         for (const frame of delivery.frames) {
@@ -275,6 +266,19 @@ export async function startFeishuServer(
         }
         if (!delivered) {
           clearAck(acks, delivery.eventId);
+        } else if (acks.get(delivery.eventId) === reservation) {
+          // An ACK can arrive before the final write callback. Do not revive
+          // a reservation already released by an ACK or a closed connection.
+          reservation.timer = setTimeout(() => {
+            clearAck(acks, delivery.eventId);
+            void record(
+              "sdk.ack.expired",
+              { messageId: delivery.messageId, eventId: delivery.eventId },
+              "/callback/ws",
+            );
+            void flush();
+          }, ackTimeoutMs);
+          reservation.timer.unref();
         }
         await record(
           "websocket.delivery",
@@ -563,9 +567,8 @@ export async function startFeishuServer(
       const timeout = setTimeout(() => socket.destroy(), 250);
       timeout.unref();
       socket.once("close", () => clearTimeout(timeout));
-      socket.end(
-        "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-        () => socket.destroy(),
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", () =>
+        socket.destroy(),
       );
       return;
     }

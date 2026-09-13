@@ -321,7 +321,7 @@ should set `renderMode: "raw"` and `typingIndicator: false` explicitly.
 
 Recorder bodies name separate facts: `inbound.admitted`, `websocket.delivery`,
 `sdk.ack`, and `outbound.accepted`. `websocket.delivery` records socket write
-completion, independently of the SDK's later acknowledgement. Admission does not promise delivery, an ACK
+completion, independently of the SDK's acknowledgement. Admission does not promise delivery, an ACK
 does not promise an outbound reply, and local REST acceptance does not establish
 durable acceptance by Feishu. A dispatcher failure produces ACK code 500; an
 expired ACK produces `sdk.ack.expired`. Observer errors do not undo committed
@@ -330,7 +330,9 @@ clear pending events and ACK timers, and drain recorder persistence.
 
 Default limits are 1,000 retained messages, 16 MiB of retained message/event bytes, 100 pending
 events, 256 KiB per event/request/frame, 64 fragments, eight sockets, and 100
-outstanding ACKs with a 30-second deadline. The corresponding `maxMessages`,
+outstanding ACKs. Each socket write has a 30-second deadline; the event's
+30-second ACK deadline starts after all fragment writes complete. An ACK received
+before the final write callback still releases its reserved slot. The corresponding `maxMessages`,
 `maxStateBytes`, `maxPendingEvents`, `maxEventBytes`, `maxFragments`, `maxSockets`,
 `maxOutstandingAcks`, and `ackTimeoutMs` options adjust these synthetic fixture
 limits. Capacity errors are explicit; this fixture does not reproduce Feishu's
