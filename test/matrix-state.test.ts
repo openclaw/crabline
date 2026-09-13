@@ -41,6 +41,13 @@ describe("Matrix state queries", () => {
         errcode: "M_NOT_FOUND",
         httpStatus: 404,
       });
+      await expect(
+        client.getStateEvent(roomId, "m.room.member", "@missing:matrix.test"),
+      ).rejects.toMatchObject({
+        errcode: "M_NOT_FOUND",
+        error: "Unknown room member",
+        httpStatus: 404,
+      });
     } finally {
       await server.close();
       await disposeTempDir(directory);
