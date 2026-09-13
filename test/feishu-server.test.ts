@@ -11,12 +11,14 @@ import {
   type FeishuFrame,
 } from "../src/servers/feishu-wire.js";
 import type { ServerRequestEvent } from "../src/servers/http.js";
-import { createTempDir, disposeTempDir } from "./test-helpers.js";
+import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 type DiscoveryResponse = { code: number; data: { URL: string } };
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
+  // A timed-out test body may never reach its local finally.
+  vi.useRealTimers();
   vi.restoreAllMocks();
   const errors: unknown[] = [];
   for (const cleanup of cleanups.splice(0).reverse()) {
@@ -554,44 +556,58 @@ describe("Feishu native wire", () => {
       const admin = server.manifest.endpoints.adminInboundUrl;
       const token = server.manifest.adminToken;
       const input = { chatId: "oc_deadline", senderId: "ou_deadline", text: "分片" };
+      // Fetch can defer reused-socket dispatch through the clock held by this test.
+      const post = (body: unknown) =>
+        requestHttp({
+          url: admin,
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        });
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       try {
         const firstFrame = once(socket, "message");
         const delivered = once(observed, "websocket.delivery");
-        const response = json(admin, { ...input, fragments: 2 }, token);
-        const releaseFirst = await writes[0]!;
-        await firstFrame;
-        const lastFrame = once(socket, "message");
-        await vi.advanceTimersByTimeAsync(60);
-        releaseFirst();
-        const releaseLast = await writes[1]!;
-        await lastFrame;
-        if (ackOrder === "after delivery") {
-          // Each write consumes 60% of its own deadline; total delivery exceeds one window.
-          await vi.advanceTimersByTimeAsync(60);
-          releaseLast();
-          await delivered;
-        }
-        const ack = once(observed, "sdk.ack").then(() => "ack");
-        const closed = once(socket, "close").then(([code]) => `close:${String(code)}`);
-        socket.send(
-          encodeFeishuFrame({
-            ...frames.at(-1)!,
-            payload: Buffer.from(JSON.stringify({ code: 200 })),
+        const response = post({ ...input, fragments: 2 });
+        await Promise.all([
+          response.then(({ status }) => {
+            expect(status).toBe(200);
           }),
-        );
-        expect(await Promise.race([ack, closed])).toBe("ack");
-        if (ackOrder === "before final callback") {
-          releaseLast();
-          await delivered;
-        }
-        expect((await response).status).toBe(200);
+          (async () => {
+            const releaseFirst = await writes[0]!;
+            await firstFrame;
+            const lastFrame = once(socket, "message");
+            await vi.advanceTimersByTimeAsync(60);
+            releaseFirst();
+            const releaseLast = await writes[1]!;
+            await lastFrame;
+            if (ackOrder === "after delivery") {
+              // Each write consumes 60% of its own deadline; total delivery exceeds one window.
+              await vi.advanceTimersByTimeAsync(60);
+              releaseLast();
+              await delivered;
+            }
+            const ack = once(observed, "sdk.ack").then(() => "ack");
+            const closed = once(socket, "close").then(([code]) => `close:${String(code)}`);
+            socket.send(
+              encodeFeishuFrame({
+                ...frames.at(-1)!,
+                payload: Buffer.from(JSON.stringify({ code: 200 })),
+              }),
+            );
+            expect(await Promise.race([ack, closed])).toBe("ack");
+            if (ackOrder === "before final callback") {
+              releaseLast();
+              await delivered;
+            }
+          })(),
+        ]);
         // An early ACK must not acquire a new timer when the final write callback arrives.
         await vi.advanceTimersByTimeAsync(101);
         const nextDelivered = once(observed, "websocket.delivery");
-        expect((await json(admin, input, token)).status).toBe(200);
+        expect((await post(input)).status).toBe(200);
         await nextDelivered;
-        expect((await json(admin, input, token)).status).toBe(503);
+        expect((await post(input)).status).toBe(503);
         expect(stages(events, "sdk.ack")).toHaveLength(1);
         expect(stages(events, "sdk.ack.expired")).toHaveLength(0);
       } finally {
@@ -640,16 +656,20 @@ describe("Feishu native wire", () => {
       try {
         const nextDelivered = once(observed, "websocket.delivery");
         const input = { chatId: "oc_capacity", senderId: "ou_capacity", text: "恢复" };
-        expect(
-          (await json(server.manifest.endpoints.adminInboundUrl, input, server.manifest.adminToken))
-            .status,
-        ).toBe(200);
+        const recover = () =>
+          requestHttp({
+            url: server.manifest.endpoints.adminInboundUrl,
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${server.manifest.adminToken}`,
+            },
+            body: JSON.stringify(input),
+          });
+        expect((await recover()).status).toBe(200);
         await nextDelivered;
         expect(stages(events, "websocket.delivery")[1]!.body).toMatchObject({ delivered: true });
-        expect(
-          (await json(server.manifest.endpoints.adminInboundUrl, input, server.manifest.adminToken))
-            .status,
-        ).toBe(503);
+        expect((await recover()).status).toBe(503);
         expect(stages(events, "sdk.ack")).toHaveLength(0);
         expect(stages(events, "sdk.ack.expired")).toHaveLength(0);
       } finally {
