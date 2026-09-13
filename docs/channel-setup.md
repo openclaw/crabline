@@ -280,6 +280,8 @@ The default remains HTTP on `127.0.0.1` with an ephemeral port. Each server has
 its own generated `appId`, `appSecret`, `adminToken`, bot identity, tenant token,
 WebSocket ticket, retained messages, and receipts. Callers can set the first
 four identities through `appId`, `appSecret`, `adminToken`, and `botOpenId`.
+Custom `appId` values must use `cli_` followed by exactly 16 hexadecimal
+characters, matching the official SDK's connection requirement.
 Keep the returned manifest private because it includes application credentials.
 
 The manifest exposes `baseUrl`, `endpoints.apiRoot`, `endpoints.discoveryUrl`,

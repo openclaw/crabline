@@ -137,6 +137,10 @@ export async function startFeishuServer(
       throw new Error(`${name} must be a nonempty identifier of at most 256 bytes.`);
     }
   }
+  // The SDK refuses to connect when a custom app ID does not match this format.
+  if (!/^cli_[0-9a-fA-F]{16}$/.test(appId)) {
+    throw new Error("appId must be cli_ followed by 16 hexadecimal characters.");
+  }
   const maxMessages = positive(params.maxMessages, 1_000, "maxMessages");
   const maxStateBytes = positive(params.maxStateBytes, 16 * 1024 * 1024, "maxStateBytes");
   const maxPendingEvents = positive(params.maxPendingEvents, 100, "maxPendingEvents");

@@ -8,7 +8,7 @@ import { startFeishuServer, type ServerRequestEvent } from "../src/index.js";
 import { FEISHU_TEST_CERTIFICATE, FEISHU_TEST_KEY } from "./fixtures/feishu-tls.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
-it("uses the official SDK for TLS auth, REST, fragmented events and dispatcher-barrier ACKs", async ({
+it("uses a custom app ID with the official SDK for TLS auth, REST, fragmented events and dispatcher-barrier ACKs", async ({
   onTestFinished,
   signal,
 }) => {
@@ -17,6 +17,7 @@ it("uses the official SDK for TLS auth, REST, fragmented events and dispatcher-b
   await writeFile(caPath, FEISHU_TEST_CERTIFICATE);
   const events: ServerRequestEvent[] = [];
   const server = await startFeishuServer({
+    appId: "cli_0123456789aBcDeF",
     tls: { key: FEISHU_TEST_KEY, cert: FEISHU_TEST_CERTIFICATE },
     recorderPath: path.join(directory, "events.jsonl"),
     onEvent: (event) => {

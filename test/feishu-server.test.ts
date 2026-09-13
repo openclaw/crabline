@@ -88,6 +88,29 @@ function stages(events: ServerRequestEvent[], stage: string) {
 }
 
 describe("Feishu native wire", () => {
+  it.each(["cli_same", "cli_0123456789abcdeG", "cli_0123456789abcdef0", "app_0123456789abcdef"])(
+    "rejects SDK-incompatible custom app ID %s before startup",
+    async (appId) => {
+      const directory = await createTempDir();
+      const owner: { server?: StartedFeishuServer } = {};
+      cleanups.push(async () => {
+        try {
+          await owner.server?.close();
+        } finally {
+          await disposeTempDir(directory);
+        }
+      });
+      await expect(
+        startFeishuServer({
+          appId,
+          recorderPath: path.join(directory, "events.jsonl"),
+        }).then((server) => {
+          owner.server = server;
+        }),
+      ).rejects.toThrow("appId must be cli_ followed by 16 hexadecimal characters.");
+    },
+  );
+
   it("preserves full uint64 IDs and rejects absent required proto2 fields", () => {
     const frame: FeishuFrame = {
       SeqID: "18446744073709551615",
@@ -371,8 +394,8 @@ describe("Feishu native wire", () => {
   });
 
   it("keeps credentials, same native IDs, receipts and replies isolated across servers", async () => {
-    const first = await start({ appId: "cli_same", appSecret: "secret-first" });
-    const second = await start({ appId: "cli_same", appSecret: "secret-second" });
+    const first = await start({ appId: "cli_0123456789abcdef", appSecret: "secret-first" });
+    const second = await start({ appId: "cli_0123456789abcdef", appSecret: "secret-second" });
     const input = {
       messageId: "om_same",
       eventId: "event-same",
@@ -393,7 +416,7 @@ describe("Feishu native wire", () => {
     }
     const tokenResponse = await json(
       `${first.server.manifest.baseUrl}/open-apis/auth/v3/tenant_access_token/internal`,
-      { app_id: "cli_same", app_secret: "secret-first" },
+      { app_id: "cli_0123456789abcdef", app_secret: "secret-first" },
     );
     const { tenant_access_token: token } = (await tokenResponse.json()) as {
       tenant_access_token: string;
@@ -445,7 +468,7 @@ describe("Feishu native wire", () => {
       server.manifest.adminToken,
     );
     await expect.poll(() => Boolean(releaseWrite)).toBe(true);
-    expect(stages(events, "inbound.admitted")).toHaveLength(1);
+    await expect.poll(() => stages(events, "inbound.admitted").length).toBe(1);
     expect(stages(events, "websocket.delivery")).toHaveLength(0);
     releaseWrite!();
     expect((await response).status).toBe(200);

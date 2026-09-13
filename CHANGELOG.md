@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject custom Feishu app IDs outside the official SDK's `cli_` plus 16 hexadecimal character format before starting server resources.
+
 - Start Feishu event ACK deadlines after all fragment writes complete, preserving early ACKs and releasing capacity on failed or closed writes.
 
 - Reject malformed Feishu WebSocket upgrade targets with HTTP 400 instead of allowing URL parsing errors to terminate the server.
