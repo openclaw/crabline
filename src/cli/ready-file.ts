@@ -45,6 +45,10 @@ function sameReadyFileObject(left: ReadyFileIdentity, right: ReadyFileIdentity):
   );
 }
 
+function readyFileRecoveryError(errors: [unknown, ...unknown[]], message: string): AggregateError {
+  return new AggregateError(errors, message, { cause: errors[0] });
+}
+
 async function withReadyFileLock<T>(filePath: string, action: () => Promise<T>): Promise<T> {
   const release = await acquireReadyFileLease(filePath);
   let actionFailed = false;
@@ -60,10 +64,9 @@ async function withReadyFileLock<T>(filePath: string, action: () => Promise<T>):
     await release();
   } catch (releaseError) {
     if (actionFailed) {
-      throw new AggregateError(
+      throw readyFileRecoveryError(
         [actionError, releaseError],
         `Ready-file action and lock release both failed for "${filePath}".`,
-        { cause: actionError },
       );
     }
     throw releaseError;
@@ -104,12 +107,10 @@ export async function publishReadyFile(
       try {
         await removeReadyFileIfOwned(filePath, contents, publishedIdentity);
       } catch (cleanupError) {
-        const aggregateError = new AggregateError(
+        throw readyFileRecoveryError(
           [error, cleanupError],
           `Ready-file publication and compensation both failed for "${filePath}".`,
         );
-        aggregateError.cause = error;
-        throw aggregateError;
       }
     }
     throw error;
@@ -156,12 +157,10 @@ export async function publishReadyFileUnlocked(
       });
     }
     if (recoveryErrors.length > 0) {
-      const aggregateError = new AggregateError(
+      throw readyFileRecoveryError(
         [error, ...recoveryErrors],
         `Ready-file replacement and recovery both failed for "${filePath}".`,
       );
-      aggregateError.cause = error;
-      throw aggregateError;
     }
     throw error;
   } finally {
