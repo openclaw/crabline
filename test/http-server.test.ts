@@ -1,6 +1,9 @@
 import { get, type IncomingMessage, type ServerResponse } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
+import { FEISHU_TEST_CERTIFICATE, FEISHU_TEST_KEY } from "./fixtures/feishu-tls.js";
+import { requestHttp } from "./test-helpers.js";
 import {
   adminAuthError,
   ADMIN_TOKEN_HEADER,
@@ -23,6 +26,34 @@ import {
 } from "../src/servers/http.js";
 
 type TestRequest = IncomingMessage & PassThrough;
+
+it("serves optional TLS with the existing response and close owners", async () => {
+  const server = await startHttpJsonServer({
+    host: "127.0.0.1",
+    port: 0,
+    serverName: "TLS fixture",
+    tls: { key: FEISHU_TEST_KEY, cert: FEISHU_TEST_CERTIFICATE },
+    handle: async () => Response.json({ encrypted: true }),
+  });
+  const agent = new HttpsAgent({ ca: FEISHU_TEST_CERTIFICATE });
+  try {
+    expect(server.baseUrl).toMatch(/^https:/u);
+    const response = await requestHttp({
+      url: server.baseUrl,
+      method: "GET",
+      requestImpl: httpsRequest,
+      agent,
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ encrypted: true });
+    await expect(
+      requestHttp({ url: server.baseUrl, method: "GET", requestImpl: httpsRequest }),
+    ).rejects.toThrow();
+  } finally {
+    agent.destroy();
+    await server.close();
+  }
+});
 
 function createRequest(headers: IncomingMessage["headers"] = {}): TestRequest {
   return Object.assign(new PassThrough(), { headers }) as unknown as TestRequest;

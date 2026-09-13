@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { CrablineError } from "../core/errors.js";
@@ -460,6 +461,7 @@ export async function startHttpJsonServer(params: {
   maxResponseBodyBytes?: number | undefined;
   port: number;
   serverName: string;
+  tls?: { key: string | Buffer; cert: string | Buffer } | undefined;
 }): Promise<{ baseUrl: string; close(): Promise<void>; server: Server }> {
   const maxResponseBodyBytes = requirePositiveSafeInteger(
     params.maxResponseBodyBytes ?? DEFAULT_MAX_RESPONSE_BODY_BYTES,
@@ -507,9 +509,10 @@ export async function startHttpJsonServer(params: {
       }
     }
   };
-  const server = createServer((request, response) => {
+  const listener = (request: IncomingMessage, response: ServerResponse) => {
     void handleRequest(request, response);
-  });
+  };
+  const server = params.tls ? createHttpsServer(params.tls, listener) : createServer(listener);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(params.port, params.host, () => {
@@ -531,7 +534,7 @@ export async function startHttpJsonServer(params: {
   }
   const advertisedHost = advertisedHostForBindAddress(params.host, address.address);
   return {
-    baseUrl: `http://${formatUrlHost(advertisedHost)}:${address.port}`,
+    baseUrl: `${params.tls ? "https" : "http"}://${formatUrlHost(advertisedHost)}:${address.port}`,
     async close() {
       await closeServer(server);
     },

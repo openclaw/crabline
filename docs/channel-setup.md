@@ -272,6 +272,71 @@ to be private. Exclude ready files from version control and CI artifact
 collection, and delete them after use. On non-POSIX or shared filesystems,
 verify the effective ACLs before publishing one.
 
+### Feishu (programmatic)
+
+Import `startFeishuServer` from `@openclaw/crabline`. Supply `tls: { key, cert }`
+for HTTPS and WSS, and trust the fixture CA in the client before process startup.
+The default remains HTTP on `127.0.0.1` with an ephemeral port. Each server has
+its own generated `appId`, `appSecret`, `adminToken`, bot identity, tenant token,
+WebSocket ticket, retained messages, and receipts. Callers can set the first
+four identities through `appId`, `appSecret`, `adminToken`, and `botOpenId`.
+Keep the returned manifest private because it includes application credentials.
+
+The manifest exposes `baseUrl`, `endpoints.apiRoot`, `endpoints.discoveryUrl`,
+`endpoints.adminInboundUrl`, and `recorderPath`. Configure the SDK's HTTP origin
+to use this server while preserving its native route expansion. The discovered
+WebSocket URL carries a server-specific ticket; the admin token only controls
+injection. Post JSON to `endpoints.adminInboundUrl` with the
+`X-Crabline-Admin-Token` header:
+
+```json
+{
+  "messageId": "om_example",
+  "eventId": "event-example",
+  "chatId": "oc_example",
+  "senderId": "ou_example",
+  "chatType": "p2p",
+  "text": "你好，Crabline",
+  "fragments": 3,
+  "fragmentOrder": [2, 0, 1]
+}
+```
+
+`messageId` and `eventId` are optional; omitted values are generated. IDs are
+nonempty strings of at most 256 UTF-8 bytes without spaces or control characters.
+`chatType` defaults to `p2p` and also accepts `group`. Fragment options default to
+one fragment and natural order. An explicit order must be a full permutation.
+Fragments split bytes, so clients must assemble all fragments before UTF-8
+decoding. Each event and all its fragments go to one randomly selected connected
+client and reserve one outstanding ACK slot. Only that client can acknowledge
+the event, echoing the completing fragment's identity and headers.
+
+Supported native routes cover tenant-token issuance, bot info, WebSocket
+discovery and authentication, protobuf ping/pong, `im.message.receive_v1`,
+message lookup, and message create/reply for `text`, localized `post`, and static
+`interactive` cards with an `elements` array. CardKit entities, streaming cards,
+media, webhook delivery, and live-provider behavior are outside this subset.
+The ordinary OpenClaw text reply uses a native `post`; text-only qualification
+should set `renderMode: "raw"` and `typingIndicator: false` explicitly.
+
+Recorder bodies name separate facts: `inbound.admitted`, `websocket.delivery`,
+`sdk.ack`, and `outbound.accepted`. `websocket.delivery` records socket write
+completion, independently of the SDK's later acknowledgement. Admission does not promise delivery, an ACK
+does not promise an outbound reply, and local REST acceptance does not establish
+durable acceptance by Feishu. A dispatcher failure produces ACK code 500; an
+expired ACK produces `sdk.ack.expired`. Observer errors do not undo committed
+native state. Close the client and call `server.close()` to close transports,
+clear pending events and ACK timers, and drain recorder persistence.
+
+Default limits are 1,000 retained messages, 16 MiB of retained message/event bytes, 100 pending
+events, 256 KiB per event/request/frame, 64 fragments, eight sockets, and 100
+outstanding ACKs with a 30-second deadline. The corresponding `maxMessages`,
+`maxStateBytes`, `maxPendingEvents`, `maxEventBytes`, `maxFragments`, `maxSockets`,
+`maxOutstandingAcks`, and `ackTimeoutMs` options adjust these synthetic fixture
+limits. Capacity errors are explicit; this fixture does not reproduce Feishu's
+distributed quotas or retry policy. The CLI catalog and OpenClaw bridge remain
+separate from this programmatic starter.
+
 ### Discord
 
 ```bash

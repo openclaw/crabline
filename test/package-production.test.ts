@@ -19,7 +19,7 @@ import type {
 } from "../src/index.js";
 
 const execFileAsync = promisify(execFile);
-const DEV_ONLY_RUNTIME_PACKAGES = ["baileys"] as const;
+const DEV_ONLY_RUNTIME_PACKAGES = ["@larksuiteoapi/node-sdk", "baileys"] as const;
 type ReleasedStartedOpenClawCrablineAdapter = OpenClawCrablineGatewayBinding & {
   close(): Promise<void>;
   createAgentDelivery(params: { target: string }): OpenClawCrablineAgentDelivery;
@@ -65,6 +65,7 @@ const PUBLIC_RUNTIME_EXPORTS = [
   "runOpenClawCrablineProviderReadiness",
   "startCrablineServer",
   "startDiscordServer",
+  "startFeishuServer",
   "startMatrixServer",
   "startMattermostServer",
   "startOpenClawCrablineAdapter",
@@ -80,6 +81,7 @@ const PUBLIC_TYPE_EXPORTS = [
   "CrablineServerChannel",
   "CrablineServerManifest",
   "DiscordServerManifest",
+  "FeishuServerManifest",
   "FixtureDefinition",
   "FixtureMode",
   "InboundEnvelope",
@@ -112,6 +114,7 @@ const PUBLIC_TYPE_EXPORTS = [
   "SlackServerManifest",
   "StartedCrablineServer",
   "StartedDiscordServer",
+  "StartedFeishuServer",
   "StartedMattermostServer",
   "StartedMatrixServer",
   "StartedOpenClawCrablineAdapter",
@@ -119,6 +122,7 @@ const PUBLIC_TYPE_EXPORTS = [
   "StartedSignalServer",
   "StartedSlackServer",
   "StartDiscordServerParams",
+  "StartFeishuServerParams",
   "StartedTelegramServer",
   "StartedWhatsAppServer",
   "StartedZaloServer",
@@ -412,6 +416,9 @@ describe("production package", () => {
 
   it("runs relocated isolated-pnpm bundles with the supported Zod floor and seven-day cooldown", async () => {
     const root = process.cwd();
+    const { packageManager } = JSON.parse(
+      await fs.readFile(path.join(root, "package.json"), "utf8"),
+    ) as { packageManager: string };
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-bundled-consumer-"));
     const consumerDirectory = path.join(tempRoot, "consumer");
     const outputDirectory = path.join(tempRoot, "relocated");
@@ -424,6 +431,8 @@ describe("production package", () => {
           name: "crabline-bundled-consumer",
           private: true,
           type: "module",
+          // Outside the repo, Corepack otherwise selects its default pnpm version.
+          packageManager,
           dependencies: { zod: "4.4.3" },
         }),
       );

@@ -1,6 +1,12 @@
 export { resolveTelegramAdapterConfig } from "./providers/builtin/telegram.js";
 export { resolveWhatsAppAdapterConfig } from "./providers/builtin/whatsapp.js";
 export { startDiscordServer } from "./servers/discord.js";
+export { startFeishuServer } from "./servers/feishu.js";
+export type {
+  FeishuServerManifest,
+  StartedFeishuServer,
+  StartFeishuServerParams,
+} from "./servers/feishu.js";
 export { startMattermostServer } from "./servers/mattermost.js";
 export { startMatrixServer } from "./servers/matrix.js";
 export { startSignalServer } from "./servers/signal.js";

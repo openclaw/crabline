@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a programmatic Feishu native server with optional TLS, SDK-compatible protobuf WebSocket events and acknowledgements, single-client cluster delivery with one ACK slot per event, bounded admin ingress, and text, post, and static-card REST messages.
+
 ## 0.1.22 - 2026-09-07
 
 **Highlights:** WhatsApp sessions stay connected through reactions and follow-up encrypted messages.

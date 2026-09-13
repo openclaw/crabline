@@ -219,6 +219,34 @@ lock identities omit device numbers so containers that mount the same inode
 under different device IDs still coordinate. Otherwise, Unix writers coordinate
 through the OS account's `~/.cache/crabline/locks/server-recorder` namespace.
 
+Feishu (programmatic):
+
+```ts
+import { readFile } from "node:fs/promises";
+import { startFeishuServer } from "@openclaw/crabline";
+
+const server = await startFeishuServer({
+  tls: {
+    key: await readFile("fixtures/server-key.pem"),
+    cert: await readFile("fixtures/server-cert.pem"),
+  },
+  recorderPath: ".crabline/feishu-events.jsonl",
+});
+// Configure the client with server.manifest and its fixture CA before startup.
+// Close the client first, then await server.close().
+```
+
+The native subset supports tenant tokens, bot identity, authenticated WebSocket
+discovery, protobuf events and ping/pong, fragmented UTF-8 events, SDK ACKs,
+and REST message creation/replies for text, localized posts, and static cards.
+Each event and all its fragments go to one randomly selected connected client,
+reserving one ACK slot on that client.
+Credentials are generated per server unless supplied. The manifest contains
+credentials; keep it private. TLS is opt-in and the default bind is loopback.
+See [Feishu setup](docs/channel-setup.md#feishu-programmatic) for admin ingress,
+resource limits, and receipt semantics. This starter is a library API; the CLI
+server catalog and OpenClaw bridge do not register Feishu.
+
 Discord:
 
 ```bash
