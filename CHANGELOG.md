@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject Feishu message IDs that cannot round-trip through native lookup and reply URLs before admission changes retained messages, event IDs, or frame sequences.
+
 - Reject custom Feishu app IDs outside the official SDK's `cli_` plus 16 hexadecimal character format before starting server resources.
 
 - Start Feishu event ACK deadlines after all fragment writes complete, preserving early ACKs and releasing capacity on failed or closed writes.

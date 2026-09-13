@@ -36,7 +36,13 @@ it("uses a custom app ID with the official SDK for TLS auth, REST, fragmented ev
     stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
   const exit = once(child, "exit");
-  const messages: Array<{ type: string; event?: unknown; message?: string }> = [];
+  const messages: Array<{
+    type: string;
+    event?: unknown;
+    message?: string;
+    lookup?: unknown;
+    reply?: unknown;
+  }> = [];
   let output = "";
   for (const stream of [child.stdout, child.stderr]) {
     stream?.on("data", (chunk: Buffer) => {
@@ -77,7 +83,12 @@ it("uses a custom app ID with the official SDK for TLS auth, REST, fragmented ev
   await wait(() => stage("websocket.connected").length === 1);
   expect(stage("outbound.accepted")).toHaveLength(6);
   expect(stage("tenant.token.issued")).toHaveLength(1);
-  for (const [index, text] of ["中文跨片🦊".repeat(21), "SDK_THROW"].entries()) {
+  const inboundMessages = [
+    ["custom-id", "中文跨片🦊".repeat(21)],
+    ["custom.dotted.id", "SDK dotted ID"],
+    ["消息🦊", "SDK_THROW"],
+  ] as const;
+  for (const [index, [messageId, text]] of inboundMessages.entries()) {
     const result = await requestHttp({
       requestImpl: request,
       agent,
@@ -88,7 +99,7 @@ it("uses a custom app ID with the official SDK for TLS auth, REST, fragmented ev
         "x-crabline-admin-token": server.manifest.adminToken,
       },
       body: JSON.stringify({
-        messageId: `om_sdk_${index}`,
+        messageId,
         eventId: `event-sdk-${index}`,
         chatId: "oc_sdk",
         senderId: "ou_sdk",
@@ -99,14 +110,18 @@ it("uses a custom app ID with the official SDK for TLS auth, REST, fragmented ev
     });
     expect(result.status).toBe(200);
     await wait(() => messages.filter((message) => message.type === "event").length === index + 1);
+    expect(messages.filter((message) => message.type === "event")[index]).toMatchObject({
+      lookup: { code: 0, data: { items: [{ message_id: messageId }] } },
+      reply: { code: 0, data: { parent_id: messageId, root_id: messageId } },
+    });
     expect(stage("sdk.ack")).toHaveLength(index);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(stage("sdk.ack")).toHaveLength(index);
     child.send({ type: "release" });
     await wait(() => stage("sdk.ack").length === index + 1);
     expect(stage("sdk.ack")[index]!.body).toMatchObject({
-      messageId: `om_sdk_${index}`,
-      code: index === 0 ? 200 : 500,
+      messageId,
+      code: text === "SDK_THROW" ? 500 : 200,
     });
     expect(stage("sdk.ack")[index]!.body).toHaveProperty(
       "headers",
@@ -117,6 +132,7 @@ it("uses a custom app ID with the official SDK for TLS auth, REST, fragmented ev
     "data",
     Buffer.from(JSON.stringify({ handled: true })).toString("base64"),
   );
+  expect(stage("outbound.accepted")).toHaveLength(9);
   await wait(() => stage("websocket.pong").length > 0);
   expect(messages.filter((message) => message.type === "event")[0]!.event).toMatchObject({
     message: { content: JSON.stringify({ text: "中文跨片🦊".repeat(21) }) },

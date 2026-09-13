@@ -73,6 +73,8 @@ type NativeMessage = {
 type Delivery = { eventId: string; messageId: string; frames: FeishuFrame[] };
 type PendingAck = { delivery: Delivery; completing: FeishuFrame; timer?: NodeJS.Timeout };
 
+const messageRoute = /^\/open-apis\/im\/v1\/messages\/([^/]+)(\/reply)?$/u;
+
 function positive(value: number | undefined, fallback: number, name: string): number {
   const resolved = value ?? fallback;
   if (!Number.isSafeInteger(resolved) || resolved < 1) {
@@ -92,6 +94,28 @@ function identifier(value: unknown): value is string {
     }
   }
   return true;
+}
+
+function messageIdentifier(value: unknown): value is string {
+  if (!identifier(value)) {
+    return false;
+  }
+  // The SDK substitutes IDs without encoding; both REST routes must preserve the exact identity.
+  try {
+    return ["", "/reply"].every((suffix) => {
+      const url = new URL(`http://localhost/open-apis/im/v1/messages/${value}${suffix}`);
+      const match = messageRoute.exec(url.pathname);
+      return (
+        !url.search &&
+        !url.hash &&
+        match !== null &&
+        (match[2] ?? "") === suffix &&
+        decodeURIComponent(match[1]!) === value
+      );
+    });
+  } catch {
+    return false;
+  }
 }
 
 function failure(msg: string, status = 400): Response {
@@ -330,7 +354,7 @@ export async function startFeishuServer(
     const messageId = body.messageId ?? `om_${randomBytes(16).toString("hex")}`;
     const eventId = body.eventId ?? randomUUID();
     if (
-      !identifier(messageId) ||
+      !messageIdentifier(messageId) ||
       !identifier(eventId) ||
       !identifier(body.chatId) ||
       !identifier(body.senderId) ||
@@ -489,7 +513,7 @@ export async function startFeishuServer(
         bot: { app_name: "Crabline", open_id: botOpenId },
       });
     }
-    const match = /^\/open-apis\/im\/v1\/messages\/([^/]+)(\/reply)?$/u.exec(url.pathname);
+    const match = messageRoute.exec(url.pathname);
     const prior = match?.[1] ? messages.get(decodeURIComponent(match[1])) : undefined;
     if (match && !match[2] && method === "GET") {
       return prior

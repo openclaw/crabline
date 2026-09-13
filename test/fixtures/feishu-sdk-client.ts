@@ -54,10 +54,17 @@ process.on(
       }
       const dispatcher = new Lark.EventDispatcher({}).register({
         "im.message.receive_v1": async (event) => {
+          const lookup = await client.im.message.get({
+            path: { message_id: event.message.message_id },
+          });
+          const reply = await client.im.message.reply({
+            path: { message_id: event.message.message_id },
+            data: { msg_type: "text", content: JSON.stringify({ text: "SDK 自定义 ID 回复" }) },
+          });
           const barrier = new Promise<void>((resolve) => {
             release = resolve;
           });
-          process.send?.({ type: "event", event });
+          process.send?.({ type: "event", event, lookup, reply });
           await barrier;
           release = undefined;
           if (event.message.content.includes("SDK_THROW")) {

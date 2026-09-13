@@ -306,6 +306,11 @@ injection. Post JSON to `endpoints.adminInboundUrl` with the
 
 `messageId` and `eventId` are optional; omitted values are generated. IDs are
 nonempty strings of at most 256 UTF-8 bytes without spaces or control characters.
+Message IDs must also round-trip unchanged through native lookup and reply URLs
+as one decoded path segment. Dot segments, path separators, query/fragment
+delimiters, percent escapes, and unpaired UTF-16 surrogates are rejected before
+admission. Custom prefixes, dotted IDs, and Unicode message IDs remain supported.
+Other IDs keep the rules above.
 `chatType` defaults to `p2p` and also accepts `group`. Fragment options default to
 one fragment and natural order. An explicit order must be a full permutation.
 Fragments split bytes, so clients must assemble all fragments before UTF-8

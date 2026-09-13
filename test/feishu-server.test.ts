@@ -393,6 +393,53 @@ describe("Feishu native wire", () => {
     expect(stages(events, "inbound.admitted")).toHaveLength(1);
   });
 
+  it.each([
+    ".",
+    "..",
+    "bad/id",
+    "bad\\id",
+    "bad?id",
+    "bad#id",
+    "%2e",
+    "%2e%2e",
+    "%2f",
+    "%41",
+    "%",
+    "\ud800",
+    "\udc00",
+  ])("rejects unaddressable message ID %j without consuming admission state", async (messageId) => {
+    const { server, events } = await start({
+      maxMessages: 1,
+      maxPendingEvents: 1,
+      maxOutstandingAcks: 1,
+    });
+    const input = {
+      eventId: "event/reused?#%",
+      chatId: "chat/body?#%",
+      senderId: "sender/body?#%",
+      text: "地址",
+    };
+    const admin = server.manifest.endpoints.adminInboundUrl;
+    const token = server.manifest.adminToken;
+    const invalid = await json(admin, { ...input, messageId }, token);
+    const validId = "custom.valid.消息🦊";
+    const valid = await json(admin, { ...input, messageId: validId }, token);
+    expect([invalid.status, valid.status]).toEqual([400, 200]);
+    expect(stages(events, "inbound.admitted")).toHaveLength(1);
+    const { frames } = await connect(server);
+    await expect.poll(() => frames.length).toBe(1);
+    expect(frames[0]).toMatchObject({ SeqID: "1", LogID: "2" });
+    expect(JSON.parse(Buffer.from(frames[0]!.payload!).toString("utf8"))).toMatchObject({
+      header: { event_id: input.eventId },
+      event: {
+        sender: { sender_id: { open_id: input.senderId } },
+        message: { message_id: validId, chat_id: input.chatId },
+      },
+    });
+    await expect.poll(() => stages(events, "websocket.delivery").length).toBe(1);
+    expect(stages(events, "websocket.delivery")[0]!.body).toMatchObject({ messageId: validId });
+  });
+
   it("keeps credentials, same native IDs, receipts and replies isolated across servers", async () => {
     const first = await start({ appId: "cli_0123456789abcdef", appSecret: "secret-first" });
     const second = await start({ appId: "cli_0123456789abcdef", appSecret: "secret-second" });
@@ -589,19 +636,26 @@ describe("Feishu native wire", () => {
       expect(stages(events, "websocket.delivery")[0]!.body).toMatchObject({ delivered: false });
       expect(stages(events, "sdk.ack")).toHaveLength(0);
       await connect(server);
-      const nextDelivered = once(observed, "websocket.delivery");
-      const input = { chatId: "oc_capacity", senderId: "ou_capacity", text: "恢复" };
-      expect(
-        (await json(server.manifest.endpoints.adminInboundUrl, input, server.manifest.adminToken))
-          .status,
-      ).toBe(200);
-      await nextDelivered;
-      expect(
-        (await json(server.manifest.endpoints.adminInboundUrl, input, server.manifest.adminToken))
-          .status,
-      ).toBe(503);
-      expect(stages(events, "sdk.ack.expired")).toHaveLength(0);
-      await server.close();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const nextDelivered = once(observed, "websocket.delivery");
+        const input = { chatId: "oc_capacity", senderId: "ou_capacity", text: "恢复" };
+        expect(
+          (await json(server.manifest.endpoints.adminInboundUrl, input, server.manifest.adminToken))
+            .status,
+        ).toBe(200);
+        await nextDelivered;
+        expect(stages(events, "websocket.delivery")[1]!.body).toMatchObject({ delivered: true });
+        expect(
+          (await json(server.manifest.endpoints.adminInboundUrl, input, server.manifest.adminToken))
+            .status,
+        ).toBe(503);
+        expect(stages(events, "sdk.ack")).toHaveLength(0);
+        expect(stages(events, "sdk.ack.expired")).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+        await server.close();
+      }
     },
   );
 
