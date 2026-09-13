@@ -1,15 +1,10 @@
+import { publishReadyFile, removeReadyFile } from "../src/cli/ready-file.js";
 import { EventEmitter } from "node:events";
 import { closeSync, fstatSync, openSync, type Stats } from "node:fs";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  createProgram,
-  publishReadyFile,
-  removeReadyFile,
-  runCli,
-  waitForShutdown,
-} from "../src/cli/program.js";
+import { createProgram, runCli, waitForShutdown } from "../src/cli/program.js";
 import type { StartCrablineServerParams, StartedCrablineServer } from "../src/servers/index.js";
 import {
   captureWrites,
