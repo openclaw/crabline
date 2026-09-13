@@ -742,6 +742,10 @@ components, and inbound thread IDs are trimmed before the matching QA target is
 emitted. Numeric Telegram DM IDs must be positive; group, channel, and thread
 chat IDs must be negative. Zero is invalid for every Telegram target kind.
 
+Scoped Matrix room, event, and historical user IDs must contain well-formed
+Unicode. Unpaired UTF-16 surrogates are rejected; valid astral characters are
+preserved.
+
 ## Smoke CI Guidance
 
 For deterministic CI, use the Crabline channel driver:

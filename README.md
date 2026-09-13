@@ -511,6 +511,10 @@ Examples:
 - Zalo users, OAs, and chats: non-whitespace provider IDs such as `user-1` or
   `group-1`
 
+Scoped Matrix room, event, and historical user IDs must contain well-formed
+Unicode. Unpaired UTF-16 surrogates are rejected; valid astral characters are
+preserved.
+
 ## Webhooks
 
 Each built-in provider starts a local webhook during `probe`, `waitForInbound`,
