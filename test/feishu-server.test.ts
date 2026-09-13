@@ -26,7 +26,9 @@ afterEach(async () => {
       errors.push(error);
     }
   }
-  if (errors.length) throw new AggregateError(errors, "Feishu cleanup failed");
+  if (errors.length) {
+    throw new AggregateError(errors, "Feishu cleanup failed");
+  }
 });
 
 async function start(params: Parameters<typeof startFeishuServer>[0] = {}) {
@@ -94,7 +96,7 @@ describe("Feishu native wire", () => {
       headers: [{ key: "type", value: "ping" }],
     };
     expect(decodeFeishuFrame(encodeFeishuFrame(frame))).toEqual(frame);
-    expect(() => decodeFeishuFrame(new Uint8Array())).toThrow();
+    expect(() => decodeFeishuFrame(new Uint8Array())).toThrow("missing required 'SeqID'");
     expect(() => encodeFeishuFrame({ ...frame, SeqID: "18446744073709551616" })).toThrow("uint64");
   });
 
@@ -284,9 +286,9 @@ describe("Feishu native wire", () => {
         senderId: input.senderId,
         text: "正确确认后才释放容量🦊。",
       };
-      if (maxOutstandingAcks === 1) {
-        expect((await json(admin, nextInput, token)).status).toBe(503);
-      }
+      const preAckStatus =
+        maxOutstandingAcks === 1 ? (await json(admin, nextInput, token)).status : undefined;
+      expect(preAckStatus).toBe(maxOutstandingAcks === 1 ? 503 : undefined);
       recipient.socket.send(ack);
       await expect.poll(() => stages(events, "sdk.ack").length).toBe(1);
       expect(stages(events, "sdk.ack")[0]!.body).toMatchObject({
@@ -459,9 +461,13 @@ describe("Feishu native wire", () => {
       await connect(server);
       vi.spyOn(WebSocket.prototype, "send").mockImplementationOnce(
         function (this: WebSocket, _data, _options, callback) {
-          if (failure === "callback") callback?.(new Error("Fixture write failure"));
-          else if (failure === "throw") throw new Error("Fixture send failure");
-          else if (failure === "close") this.terminate();
+          if (failure === "callback") {
+            callback?.(new Error("Fixture write failure"));
+          } else if (failure === "throw") {
+            throw new Error("Fixture send failure");
+          } else if (failure === "close") {
+            this.terminate();
+          }
         },
       );
       expect(
@@ -543,7 +549,9 @@ describe("Feishu native wire", () => {
     server = await startFeishuServer({
       recorderPath: path.join(directory, "events.jsonl"),
       onEvent: async (event) => {
-        if ((event.body as { stage?: string }).stage === "inbound.admitted") await server!.close();
+        if ((event.body as { stage?: string }).stage === "inbound.admitted") {
+          await server!.close();
+        }
       },
     });
     cleanups.push(async () => {
@@ -558,6 +566,6 @@ describe("Feishu native wire", () => {
     await server.close();
     await expect(
       fetch(server.manifest.baseUrl, { signal: AbortSignal.timeout(500) }),
-    ).rejects.toThrow();
+    ).rejects.toThrow("fetch failed");
   });
 });

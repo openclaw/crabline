@@ -48,7 +48,7 @@ it("serves optional TLS with the existing response and close owners", async () =
     expect(JSON.parse(response.body)).toEqual({ encrypted: true });
     await expect(
       requestHttp({ url: server.baseUrl, method: "GET", requestImpl: httpsRequest }),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ code: "DEPTH_ZERO_SELF_SIGNED_CERT" });
   } finally {
     agent.destroy();
     await server.close();

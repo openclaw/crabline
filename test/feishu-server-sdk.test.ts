@@ -37,13 +37,16 @@ it("uses the official SDK for TLS auth, REST, fragmented events and dispatcher-b
   const exit = once(child, "exit");
   const messages: Array<{ type: string; event?: unknown; message?: string }> = [];
   let output = "";
-  for (const stream of [child.stdout, child.stderr])
+  for (const stream of [child.stdout, child.stderr]) {
     stream?.on("data", (chunk: Buffer) => {
       output = (output + chunk.toString()).slice(-16_384);
     });
+  }
   child.on("message", (message) => messages.push(message as (typeof messages)[number]));
   const stop = async () => {
-    if (child.connected) child.send({ type: "stop" });
+    if (child.connected) {
+      child.send({ type: "stop" });
+    }
     const timer = setTimeout(() => child.kill("SIGKILL"), 2_000);
     try {
       const [code, exitSignal] = await exit;
@@ -61,8 +64,9 @@ it("uses the official SDK for TLS auth, REST, fragmented events and dispatcher-b
     while (!predicate()) {
       signal.throwIfAborted();
       const failure = messages.find((message) => message.type === "failure");
-      if (failure || child.exitCode !== null || Date.now() >= deadline)
+      if (failure || child.exitCode !== null || Date.now() >= deadline) {
         throw new Error(failure?.message ?? `SDK fixture did not progress: ${output}`);
+      }
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
   };
@@ -107,13 +111,11 @@ it("uses the official SDK for TLS auth, REST, fragmented events and dispatcher-b
       "headers",
       expect.arrayContaining([{ key: "seq", value: "6" }]),
     );
-    if (index === 0) {
-      expect(stage("sdk.ack")[index]!.body).toHaveProperty(
-        "data",
-        Buffer.from(JSON.stringify({ handled: true })).toString("base64"),
-      );
-    }
   }
+  expect(stage("sdk.ack")[0]!.body).toHaveProperty(
+    "data",
+    Buffer.from(JSON.stringify({ handled: true })).toString("base64"),
+  );
   await wait(() => stage("websocket.pong").length > 0);
   expect(messages.filter((message) => message.type === "event")[0]!.event).toMatchObject({
     message: { content: JSON.stringify({ text: "中文跨片🦊".repeat(21) }) },

@@ -82,12 +82,16 @@ function positive(value: number | undefined, fallback: number, name: string): nu
 }
 
 function identifier(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    Buffer.byteLength(value) <= 256 &&
-    !/[\u0000-\u0020\u007f]/u.test(value)
-  );
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value) > 256) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x20 || code === 0x7f) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function failure(msg: string, status = 400): Response {
@@ -198,7 +202,9 @@ export async function startFeishuServer(
     const written = new Promise<boolean>((resolve) => {
       let settled = false;
       const finish = (success: boolean) => {
-        if (settled) return;
+        if (settled) {
+          return;
+        }
         settled = true;
         clearTimeout(timer);
         socket.off("close", onClose);
@@ -213,7 +219,9 @@ export async function startFeishuServer(
       socket.once("close", onClose);
       try {
         socket.send(bytes, { binary: true }, (error) => {
-          if (error) socket.terminate();
+          if (error) {
+            socket.terminate();
+          }
           finish(!error);
         });
       } catch {
@@ -231,7 +239,10 @@ export async function startFeishuServer(
     }
     flushing = true;
     try {
-      while (!closed && pending.length > 0) {
+      while (pending.length > 0) {
+        if (closed) {
+          return;
+        }
         const targets = [...sockets.entries()].filter(
           ([socket]) => socket.readyState === WebSocket.OPEN,
         );
