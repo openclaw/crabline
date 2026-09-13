@@ -433,7 +433,7 @@ describe("production package", () => {
       );
       await execPackageManager(
         "pnpm",
-        ["add", "--ignore-scripts", "--prod", path.join(tempRoot, packed.filename)],
+        ["add", "--ignore-scripts", "--save-prod", path.join(tempRoot, packed.filename)],
         { cwd: consumerDirectory, maxBuffer: 10 * 1024 * 1024 },
       );
       await expect(
@@ -546,7 +546,7 @@ describe("production package", () => {
     };
 
     expect(pkg.engines?.node).toBe(">=22");
-    expect(pkg.packageManager).toBe("pnpm@11.24.0");
+    expect(pkg.packageManager).toBe("pnpm@11.25.0");
     expect(pkg.devEngines?.runtime).toEqual({
       name: "node",
       onFail: "error",

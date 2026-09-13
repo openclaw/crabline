@@ -42,6 +42,8 @@ minimums must remain compatible with consumers using the same cooldown.
 Dependabot applies the same cooldown to version updates, preserving the
 TypeScript exceptions in `pnpm-workspace.yaml`. Node declarations stay on
 Node 22 while that runtime remains supported.
+The project retains pnpm 11 so its single-document lockfile remains readable
+by GitHub dependency graph and Dependabot tooling.
 
 Run locally:
 
@@ -66,6 +68,8 @@ pnpm verify
 ```
 
 That enforces formatting, typecheck, type-aware lint, and Vitest coverage.
+CI runs the full gate on Node 22 and the runtime tests on Node 24. Workflow
+validation uses Go 1.26 or newer, with Go 1.27.1 pinned in `tools/go.mod`.
 
 ## Config
 

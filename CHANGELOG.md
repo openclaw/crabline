@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Pin patched Sharp 0.35.4 in the development dependency graph and refresh Vitest, Matrix client, lint/format tooling, pnpm, and eligible transitive dependencies under the seven-day cooldown.
+- Add Node 24 runtime CI alongside the Node 22 full gate, cancel superseded PR runs, and update the pinned pnpm setup action; workflow validation now requires Go 1.26 with toolchain 1.27.1 so it can use maintained Go dependencies.
+
 ## 0.1.22 - 2026-09-07
 
 **Highlights:** WhatsApp sessions stay connected through reactions and follow-up encrypted messages.
