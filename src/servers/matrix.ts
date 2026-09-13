@@ -920,21 +920,16 @@ async function handleMatrixApi(params: {
     }
     const eventType = decodeMatrixPathSegment(match[2]!);
     const stateKey = decodeMatrixPathSegment(match[3] ?? "");
-    if (eventType === "m.room.name" && stateKey === "") {
-      return jsonResponse({ name: room.name });
-    }
-    if (eventType === "m.room.canonical_alias" && stateKey === "") {
-      return matrixError("M_NOT_FOUND", "Unknown state event", 404);
-    }
-    if (eventType === "m.room.member") {
-      const membership = [...room.state]
-        .reverse()
-        .find((event) => event.type === "m.room.member" && event.state_key === stateKey);
-      return membership
-        ? jsonResponse(membership.content)
-        : matrixError("M_NOT_FOUND", "Unknown room member", 404);
-    }
-    return matrixError("M_NOT_FOUND", "Unknown state event", 404);
+    const event = room.state.findLast(
+      (candidate) => candidate.type === eventType && candidate.state_key === stateKey,
+    );
+    return event
+      ? jsonResponse(event.content)
+      : matrixError(
+          "M_NOT_FOUND",
+          eventType === "m.room.member" ? "Unknown room member" : "Unknown state event",
+          404,
+        );
   }
 
   match = /^\/rooms\/([^/]+)\/send\/([^/]+)\/([^/]+)$/u.exec(relativePath);

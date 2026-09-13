@@ -298,6 +298,8 @@ control plane; injected messages are delivered to clients as native
 `m.room.message` events through `/sync`. Optional `roomName` sets newly created
 room state, `direct: true` publishes `m.direct` account data, and `threadId`
 accepts the raw Matrix root event ID used in the native thread relation.
+State-event reads return the same stored content advertised through `/sync`,
+including `m.room.create`, room names, and membership.
 
 Slack:
 

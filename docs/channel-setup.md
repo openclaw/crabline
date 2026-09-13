@@ -383,6 +383,10 @@ and members, room state, `/sync`, room sends, typing, and read receipts. The
 the Matrix API. OpenClaw configuration and QA target mapping remain in the
 separate OpenClaw bridge.
 
+`GET /_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey` reads the
+same stored state events advertised through `/sync`, including `m.room.create`,
+room names, and membership. Missing state events return `M_NOT_FOUND` with HTTP 404.
+
 Local provider servers sit below OpenClaw's normal channel adapters. QA starts
 the server, writes the emitted runtime manifest into OpenClaw config/env, and
 then OpenClaw talks to the local provider instead of the public provider.

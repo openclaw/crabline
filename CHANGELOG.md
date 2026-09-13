@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Return stored Matrix state through native state-event queries, including creation events advertised by sync, instead of rejecting valid state types.
+
 - Reject malformed Unicode in scoped Matrix room, event, and historical user IDs while preserving valid astral characters across fixtures, provider APIs, and OpenClaw bridges.
 
 - Pin patched Sharp 0.35.4 in the development dependency graph and refresh Vitest, Matrix client, lint/format tooling, pnpm, and eligible transitive dependencies under the seven-day cooldown.
