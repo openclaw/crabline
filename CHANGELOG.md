@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh protobufjs, Matrix crypto WASM, retry and source-map dependencies, and deduplicate Rolldown under the seven-day dependency cooldown.
+
 - Return stored Matrix state through native state-event queries, including creation events advertised by sync, instead of rejecting valid state types.
 
 - Reject malformed Unicode in scoped Matrix room, event, and historical user IDs while preserving valid astral characters across fixtures, provider APIs, and OpenClaw bridges.
