@@ -556,7 +556,19 @@ export async function startFeishuServer(
   ) => {
     rawSockets.add(socket);
     socket.once("close", () => rawSockets.delete(socket));
-    const url = new URL(request.url ?? "/", baseUrl);
+    let url: URL;
+    try {
+      url = new URL(request.url ?? "/", baseUrl);
+    } catch {
+      const timeout = setTimeout(() => socket.destroy(), 250);
+      timeout.unref();
+      socket.once("close", () => clearTimeout(timeout));
+      socket.end(
+        "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        () => socket.destroy(),
+      );
+      return;
+    }
     if (
       closed ||
       url.pathname !== "/callback/ws" ||

@@ -504,6 +504,49 @@ describe("Feishu native wire", () => {
     expect(stages(events, "sdk.ack")).toHaveLength(0);
   });
 
+  it("rejects malformed native upgrade targets without terminating the server", async () => {
+    const { server, events } = await start();
+    const url = new URL(server.manifest.baseUrl);
+    const raw = connectTcp({ host: url.hostname, port: Number(url.port) });
+    raw.on("error", () => {});
+    const closed = once(raw, "close");
+    cleanups.push(async () => {
+      raw.destroy();
+      await closed;
+    });
+    await once(raw, "connect");
+    let received = "";
+    raw.on("data", (chunk: Buffer) => {
+      received += chunk.toString("latin1");
+    });
+    let timedOut = false;
+    raw.setTimeout(1_000, () => {
+      timedOut = true;
+      raw.destroy();
+    });
+    raw.write(
+      `GET //[ HTTP/1.1\r\nHost: ${url.host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`,
+    );
+    await closed;
+    expect(timedOut).toBe(false);
+    expect(received).toBe(
+      "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+    );
+    const { socket, frames } = await connect(server);
+    socket.send(
+      encodeFeishuFrame({
+        SeqID: "0",
+        LogID: "0",
+        service: 1,
+        method: 0,
+        headers: [{ key: "type", value: "ping" }],
+      }),
+    );
+    await expect.poll(() => frames.length).toBe(1);
+    expect(feishuHeader(frames[0]!, "type")).toBe("pong");
+    await expect.poll(() => stages(events, "websocket.pong").length).toBe(1);
+  });
+
   it("closes a held native socket and outstanding ACK without waiting for the peer", async () => {
     const { server, events } = await start();
     const discovery = await json(server.manifest.endpoints.discoveryUrl, {
