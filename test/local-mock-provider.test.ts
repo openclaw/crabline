@@ -1086,7 +1086,7 @@ describe("local mock provider", () => {
         async handleWebhookPayload(_payload, request) {
           observedSignal = request.signal;
           reportAdmission();
-          await new Promise<void>((resolve, reject) => {
+          await new Promise<void>((_resolve, reject) => {
             const abort = () => reject(request.signal.reason);
             if (request.signal.aborted) {
               abort();

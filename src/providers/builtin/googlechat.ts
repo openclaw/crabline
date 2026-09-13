@@ -26,19 +26,6 @@ import {
 } from "./native-local-mock.js";
 import { requireExternalWebhookAuthentication } from "./external-webhook-auth.js";
 
-export function resolveGoogleChatAdapterConfig(
-  config: ProviderConfig,
-  _env: NodeJS.ProcessEnv = process.env,
-) {
-  return {
-    endpointUrl: config.googlechat?.endpointUrl,
-    projectNumber: config.googlechat?.googleChatProjectNumber ?? "local-mock-googlechat",
-    pubsubServiceAccountEmail:
-      config.googlechat?.pubsubServiceAccountEmail ?? config.googlechat?.credentials?.client_email,
-    userName: config.googlechat?.userName,
-  };
-}
-
 const GOOGLE_CHAT_SERVICE_ACCOUNT = "chat@system.gserviceaccount.com";
 const GOOGLE_OAUTH_CERTS_URL = "https://www.googleapis.com/oauth2/v1/certs";
 const GOOGLE_CHAT_CERTS_URL =

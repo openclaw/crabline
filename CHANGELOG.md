@@ -4,6 +4,15 @@
 
 - Add a programmatic Feishu native server with optional TLS, SDK-compatible protobuf WebSocket events and acknowledgements, single-client cluster delivery with one ACK slot per event, bounded admin ingress, and text, post, and static-card REST messages.
 
+- Refresh protobufjs, Matrix crypto WASM, retry and source-map dependencies, and deduplicate Rolldown under the seven-day dependency cooldown.
+
+- Return stored Matrix state through native state-event queries, including creation events advertised by sync, instead of rejecting valid state types.
+
+- Reject malformed Unicode in scoped Matrix room, event, and historical user IDs while preserving valid astral characters across fixtures, provider APIs, and OpenClaw bridges.
+
+- Pin patched Sharp 0.35.4 in the development dependency graph and refresh Vitest, Matrix client, lint/format tooling, pnpm, and eligible transitive dependencies under the seven-day cooldown.
+- Add Node 24 runtime CI alongside the Node 22 full gate, cancel superseded PR runs, and update the pinned pnpm setup action; workflow validation now requires Go 1.26 with toolchain 1.27.1 so it can use maintained Go dependencies.
+
 ## 0.1.22 - 2026-09-07
 
 **Highlights:** WhatsApp sessions stay connected through reactions and follow-up encrypted messages.

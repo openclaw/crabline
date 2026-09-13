@@ -238,7 +238,7 @@ export class FeishuProviderAdapter extends LocalMockProviderAdapter implements P
       id,
       options: {
         ...(authenticateWebhookRequest ? { authenticateWebhookRequest } : {}),
-        createWebhookSuccessResponse(payload, responseId) {
+        createWebhookSuccessResponse(_payload, responseId) {
           return new Response(JSON.stringify({ id: responseId, ok: true }), {
             headers: { "content-type": "application/json" },
             status: 200,

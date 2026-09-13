@@ -182,7 +182,7 @@ describe("release workflow", () => {
     ).toBe(22);
     expect(
       verifySteps.find((step) => step.uses?.startsWith("pnpm/action-setup@"))?.with?.version,
-    ).toBe("11.24.0");
+    ).toBe("11.25.0");
     expect(commands).toContain("npm install -g npm@12.0.2");
     for (const jobName of ["verify", "publish"]) {
       const jobCommands = jobSteps(workflow, jobName)

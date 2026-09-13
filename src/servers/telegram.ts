@@ -508,7 +508,7 @@ class TelegramMultipartReader {
   #totalBytes = 0;
 
   constructor(
-    private readonly request: IncomingMessage,
+    request: IncomingMessage,
     private readonly maxBytes: number,
   ) {
     this.#iterator = request[Symbol.asyncIterator]() as AsyncIterator<Buffer | string>;

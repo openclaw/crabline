@@ -74,7 +74,27 @@ describe("CI workflow hardening", () => {
       .flatMap((job) => job.steps ?? [])
       .find((step) => step.uses?.startsWith("pnpm/action-setup@"));
 
-    expect(setupStep?.with?.version).toBe("11.24.0");
+    expect(setupStep?.with?.version).toBe("11.25.0");
+  });
+
+  it("keeps the dependency graph readable by single-document scanners", async () => {
+    const [lockfileText, packageText] = await Promise.all([
+      fs.readFile("pnpm-lock.yaml", "utf8"),
+      fs.readFile("package.json", "utf8"),
+    ]);
+    const lockfile = parse(lockfileText) as {
+      importers: Record<string, { dependencies?: Record<string, unknown> }>;
+      packages: Record<string, unknown>;
+    };
+    const packageJson = JSON.parse(packageText) as { dependencies: Record<string, unknown> };
+    const dependencies = lockfile.importers["."]?.dependencies ?? {};
+
+    for (const name of Object.keys(packageJson.dependencies)) {
+      expect(Object.hasOwn(dependencies, name), `missing dependency graph entry: ${name}`).toBe(
+        true,
+      );
+    }
+    expect(Object.keys(lockfile.packages)).not.toEqual([]);
   });
 
   it("pins every external workflow action and image to immutable revisions", async () => {

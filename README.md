@@ -42,6 +42,8 @@ minimums must remain compatible with consumers using the same cooldown.
 Dependabot applies the same cooldown to version updates, preserving the
 TypeScript exceptions in `pnpm-workspace.yaml`. Node declarations stay on
 Node 22 while that runtime remains supported.
+The project retains pnpm 11 so its single-document lockfile remains readable
+by GitHub dependency graph and Dependabot tooling.
 
 Run locally:
 
@@ -66,6 +68,8 @@ pnpm verify
 ```
 
 That enforces formatting, typecheck, type-aware lint, and Vitest coverage.
+CI runs the full gate on Node 22 and the runtime tests on Node 24. Workflow
+validation uses Go 1.26 or newer, with Go 1.27.1 pinned in `tools/go.mod`.
 
 ## Config
 
@@ -322,6 +326,8 @@ control plane; injected messages are delivered to clients as native
 `m.room.message` events through `/sync`. Optional `roomName` sets newly created
 room state, `direct: true` publishes `m.direct` account data, and `threadId`
 accepts the raw Matrix root event ID used in the native thread relation.
+State-event reads return the same stored content advertised through `/sync`,
+including `m.room.create`, room names, and membership.
 
 Slack:
 
@@ -534,6 +540,10 @@ Examples:
   as `a:opaque-conversation-id` or `19:conversation@thread.v2`
 - Zalo users, OAs, and chats: non-whitespace provider IDs such as `user-1` or
   `group-1`
+
+Scoped Matrix room, event, and historical user IDs must contain well-formed
+Unicode. Unpaired UTF-16 surrogates are rejected; valid astral characters are
+preserved.
 
 ## Webhooks
 

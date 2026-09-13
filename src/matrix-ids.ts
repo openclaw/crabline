@@ -1,6 +1,8 @@
 import { isIP } from "node:net";
 
 const MAX_MATRIX_IDENTIFIER_BYTES = 255;
+// Unicode mode treats valid surrogate pairs as single code points outside this range.
+const MATRIX_LONE_SURROGATE_PATTERN = /[\uD800-\uDFFF]/u;
 
 function isMatrixIpv4Address(value: string): boolean {
   const octets = value.split(".");
@@ -28,22 +30,6 @@ export function isMatrixServerName(value: string): boolean {
   return hostname.length <= 255 && /^[A-Za-z0-9.-]+$/u.test(hostname);
 }
 
-function hasLoneSurrogate(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (next < 0xdc00 || next > 0xdfff) {
-        return true;
-      }
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function isMatrixScopedIdentifier(
   value: string,
   sigil: "!" | "$" | "@",
@@ -56,7 +42,7 @@ function isMatrixScopedIdentifier(
     Buffer.byteLength(value, "utf8") <= MAX_MATRIX_IDENTIFIER_BYTES &&
     separator >= (allowEmptyLocalpart ? 1 : 2) &&
     !localpart.includes("\0") &&
-    !hasLoneSurrogate(localpart) &&
+    !MATRIX_LONE_SURROGATE_PATTERN.test(localpart) &&
     isMatrixServerName(value.slice(separator + 1))
   );
 }
