@@ -8,6 +8,98 @@ import { startFeishuServer, type ServerRequestEvent } from "../src/index.js";
 import { FEISHU_TEST_CERTIFICATE, FEISHU_TEST_KEY } from "./fixtures/feishu-tls.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
+it.for(["admission-first", "send-first"] as const)(
+  "preserves native DM chat identity through official SDK routes (%s)",
+  async (order, { onTestFinished, signal }) => {
+    const directory = await createTempDir();
+    const events: ServerRequestEvent[] = [];
+    const server = await startFeishuServer({
+      recorderPath: path.join(directory, "events.jsonl"),
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+    const child = fork(path.resolve("test/fixtures/feishu-sdk-client.ts"), [], {
+      execArgv: ["--import", "tsx"],
+      env: { PATH: process.env.PATH, HOME: directory, TMPDIR: directory },
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    const exit = once(child, "exit");
+    let output = "";
+    for (const stream of [child.stdout, child.stderr]) {
+      stream?.on("data", (chunk: Buffer) => {
+        output = (output + chunk.toString()).slice(-16_384);
+      });
+    }
+    onTestFinished(async () => {
+      if (child.connected) {
+        child.send({ type: "stop" });
+      }
+      const timer = setTimeout(() => child.kill("SIGKILL"), 2_000);
+      try {
+        const [code, exitSignal] = await exit;
+        expect({ code, exitSignal, output }).toMatchObject({ code: 0, exitSignal: null });
+      } finally {
+        clearTimeout(timer);
+        await server.close();
+        await disposeTempDir(directory);
+      }
+    });
+    const admit = (chatId: string) =>
+      requestHttp({
+        method: "POST",
+        url: server.manifest.endpoints.adminInboundUrl,
+        headers: {
+          "content-type": "application/json",
+          "x-crabline-admin-token": server.manifest.adminToken,
+        },
+        body: JSON.stringify({
+          messageId: "om_dm_inbound",
+          eventId: "event-dm-inbound",
+          chatId,
+          senderId: "ou_dm_peer",
+          text: "SDK DM input",
+        }),
+      });
+    let chatId = "oc_existing_dm";
+    let admitted: Awaited<ReturnType<typeof admit>> | undefined;
+    if (order === "admission-first") {
+      admitted = await admit(chatId);
+    }
+    expect(admitted?.status).toBe(order === "admission-first" ? 200 : undefined);
+    const outcome = once(child, "message", { signal });
+    child.send({ type: "start", ...server.manifest, chatIdentity: order });
+    let [result] = await outcome;
+    const firstSend = {
+      type: "first-dm",
+      first: { code: 0, data: { chat_id: expect.any(String) } },
+    };
+    expect({ result, output }).toMatchObject({
+      result: order === "send-first" ? firstSend : { type: "chat-identity" },
+    });
+    if (order === "send-first") {
+      chatId = result.first.data.chat_id;
+      admitted = await admit(chatId);
+    }
+    expect(admitted?.status).toBe(200);
+    if (order === "send-first") {
+      const completed = once(child, "message", { signal });
+      child.send({ type: "release" });
+      [result] = await completed;
+    }
+    expect({ result, output }).toMatchObject({ result: { type: "chat-identity" } });
+    for (const response of [result.direct, result.explicit, result.reply]) {
+      expect(response).toMatchObject({ code: 0, data: { chat_id: chatId } });
+    }
+    expect(result.direct.data.parent_id).toBeUndefined();
+    expect(result.explicit.data.parent_id).toBeUndefined();
+    expect(result.reply.data.parent_id).toBe("om_dm_inbound");
+    expect(
+      events.filter((event) => (event.body as { stage?: string }).stage === "outbound.accepted"),
+    ).toHaveLength(order === "send-first" ? 4 : 3);
+  },
+);
+
 it.for(["secret", "app ID"])(
   "reports an invalid discovery %s as terminal through the reconnect-enabled SDK",
   async (credential, { onTestFinished, signal }) => {

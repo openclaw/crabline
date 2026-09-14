@@ -89,6 +89,237 @@ function stages(events: ServerRequestEvent[], stage: string) {
   return events.filter((event) => (event.body as { stage?: string } | undefined)?.stage === stage);
 }
 
+describe("Feishu DM chat identity", () => {
+  const fixture = async (params: Parameters<typeof start>[0] = {}) => {
+    const result = await start(params);
+    const { manifest } = result.server;
+    const auth = await json(`${manifest.baseUrl}/open-apis/auth/v3/tenant_access_token/internal`, {
+      app_id: manifest.appId,
+      app_secret: manifest.appSecret,
+    });
+    expect(auth.status).toBe(200);
+    const { tenant_access_token: token } = (await auth.json()) as { tenant_access_token: string };
+    const root = `${manifest.baseUrl}/open-apis/im/v1/messages`;
+    return {
+      ...result,
+      admit: (input: Record<string, unknown>) =>
+        json(
+          manifest.endpoints.adminInboundUrl,
+          { text: "DM input", ...input },
+          manifest.adminToken,
+        ),
+      send: (type: "open_id" | "chat_id", id: string, text = "DM response") =>
+        json(
+          `${root}?receive_id_type=${type}`,
+          { receive_id: id, msg_type: "text", content: JSON.stringify({ text }) },
+          token,
+        ),
+      reply: (id: string) =>
+        json(
+          `${root}/${id}/reply`,
+          { msg_type: "text", content: JSON.stringify({ text: "DM reply" }) },
+          token,
+        ),
+    };
+  };
+
+  it("does not infer peers from groups, bot self events, chat_id sends or replies", async () => {
+    const f = await fixture({ botOpenId: "ou_bot" });
+    expect(
+      (
+        await f.admit({
+          messageId: "om_group",
+          chatId: "oc_group",
+          senderId: "ou_member",
+          chatType: "group",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await f.reply("om_group")).status).toBe(200);
+    const unbound = await f.send("chat_id", "oc_unbound");
+    expect(unbound.status).toBe(200);
+    const unboundBody = (await unbound.json()) as { data: { message_id: string } };
+    expect((await f.reply(unboundBody.data.message_id)).status).toBe(200);
+    expect((await f.admit({ chatId: "oc_self", senderId: "ou_bot" })).status).toBe(200);
+    for (const peer of ["ou_member", "ou_bot"]) {
+      const sent = await f.send("open_id", peer);
+      expect(sent.status).toBe(200);
+      const body = (await sent.json()) as { data: { chat_id: string } };
+      expect(["oc_group", "oc_unbound", "oc_self"]).not.toContain(body.data.chat_id);
+    }
+    expect((await f.admit({ chatId: "oc_unbound", senderId: "ou_later" })).status).toBe(200);
+    const later = await f.send("open_id", "ou_later");
+    expect(later.status).toBe(200);
+    expect(await later.json()).toMatchObject({ data: { chat_id: "oc_unbound" } });
+  });
+
+  it.each(["self-first", "peer-first"] as const)(
+    "preserves a p2p peer across bot self events (%s)",
+    async (order) => {
+      const f = await fixture({ botOpenId: "ou_bot" });
+      const peers = order === "self-first" ? ["ou_bot", "ou_peer"] : ["ou_peer", "ou_bot"];
+      const statuses: number[] = [];
+      for (const senderId of peers) {
+        statuses.push((await f.admit({ chatId: "oc_shared", senderId })).status);
+      }
+      expect(statuses).toEqual([200, 200]);
+      const sent = await f.send("open_id", "ou_peer");
+      expect(sent.status).toBe(200);
+      expect(await sent.json()).toMatchObject({ data: { chat_id: "oc_shared" } });
+    },
+  );
+
+  it("keeps self-addressed sends unbound and preserves a subsequently admitted peer", async () => {
+    const f = await fixture({ botOpenId: "ou_bot" });
+    const first = await f.send("open_id", "ou_bot");
+    expect(first.status).toBe(200);
+    const { data } = (await first.json()) as { data: { chat_id: string } };
+    expect((await f.admit({ chatId: data.chat_id, senderId: "ou_peer" })).status).toBe(200);
+    for (const recipient of ["ou_bot", "ou_peer"]) {
+      const sent = await f.send("open_id", recipient);
+      expect(sent.status).toBe(200);
+      expect(await sent.json()).toMatchObject({ data: { chat_id: data.chat_id } });
+    }
+    expect((await f.admit({ chatId: "oc_other", senderId: "ou_peer" })).status).toBe(409);
+  });
+
+  it("rejects bot self p2p admission and self-addressed sends into a known group", async () => {
+    const probe = await fixture({ botOpenId: "ou_bot" });
+    const sent = await probe.send("open_id", "ou_bot");
+    expect(sent.status).toBe(200);
+    const { data } = (await sent.json()) as { data: { chat_id: string } };
+    const f = await fixture({ botOpenId: "ou_bot" });
+    expect(
+      (await f.admit({ chatId: data.chat_id, senderId: "ou_member", chatType: "group" })).status,
+    ).toBe(200);
+    expect((await f.admit({ chatId: data.chat_id, senderId: "ou_bot" })).status).toBe(409);
+    expect((await f.send("open_id", "ou_bot")).status).toBe(409);
+    expect(stages(f.events, "inbound.admitted")).toHaveLength(1);
+    expect(stages(f.events, "outbound.accepted")).toHaveLength(0);
+  });
+
+  it("rejects conflicting peers and chats without overwriting or consuming admission IDs", async () => {
+    const f = await fixture();
+    expect((await f.admit({ chatId: "oc_left", senderId: "ou_left" })).status).toBe(200);
+    expect(
+      (await f.admit({ chatId: "oc_group", senderId: "ou_member", chatType: "group" })).status,
+    ).toBe(200);
+    const ids = { messageId: "om_reused", eventId: "event-reused" };
+    for (const input of [
+      { chatId: "oc_right", senderId: "ou_left" },
+      { chatId: "oc_left", senderId: "ou_right" },
+      { chatId: "oc_left", senderId: "ou_member", chatType: "group" },
+      { chatId: "oc_group", senderId: "ou_right" },
+    ]) {
+      expect((await f.admit({ ...ids, ...input })).status).toBe(409);
+    }
+    expect((await f.admit({ ...ids, chatId: "oc_right", senderId: "ou_right" })).status).toBe(200);
+    for (const side of ["left", "right"]) {
+      const sent = await f.send("open_id", `ou_${side}`);
+      expect(sent.status).toBe(200);
+      expect(await sent.json()).toMatchObject({ data: { chat_id: `oc_${side}` } });
+    }
+    expect(stages(f.events, "inbound.admitted")).toHaveLength(3);
+    const { frames } = await connect(f.server);
+    await expect.poll(() => frames.length).toBe(3);
+    expect(frames[2]).toMatchObject({ SeqID: "5", LogID: "6" });
+  });
+
+  it("preserves outbound-first associations and rejects synthetic chat collisions", async () => {
+    const f = await fixture();
+    const first = await f.send("open_id", "ou_first");
+    expect(first.status).toBe(200);
+    const { data } = (await first.json()) as { data: { chat_id: string } };
+    const input = { messageId: "om_first", eventId: "event-first", senderId: "ou_first" };
+    expect((await f.admit({ ...input, chatId: "oc_other" })).status).toBe(409);
+    expect((await f.admit({ ...input, chatId: data.chat_id })).status).toBe(200);
+    expect(
+      (await f.admit({ chatId: data.chat_id, senderId: "ou_member", chatType: "group" })).status,
+    ).toBe(409);
+    const collision = await fixture();
+    expect(
+      (
+        await collision.admit({
+          chatId: data.chat_id,
+          senderId: "ou_member",
+          chatType: "group",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await collision.send("open_id", "ou_first")).status).toBe(409);
+    expect(stages(collision.events, "outbound.accepted")).toHaveLength(0);
+  });
+
+  it.each(["admission", "create"] as const)(
+    "does not reserve identity on failed %s validation or byte retention",
+    async (route) => {
+      const f = await fixture({ maxStateBytes: 2048, maxMessages: 2 });
+      const input = {
+        messageId: "om_reused",
+        eventId: "event-reused",
+        chatId: "oc_rejected",
+        senderId: "ou_peer",
+      };
+      for (const [text, status] of [
+        ["", 400],
+        ["x".repeat(4096), 503],
+      ] as const) {
+        const rejected =
+          route === "admission"
+            ? await f.admit({ ...input, text })
+            : await f.send("open_id", input.senderId, text);
+        expect(rejected.status).toBe(status);
+      }
+      expect((await f.admit({ ...input, chatId: "oc_accepted" })).status).toBe(200);
+      const sent = await f.send("open_id", input.senderId);
+      expect(sent.status).toBe(200);
+      expect(await sent.json()).toMatchObject({ data: { chat_id: "oc_accepted" } });
+      expect((await f.send("open_id", "ou_overflow")).status).toBe(503);
+      expect(stages(f.events, "inbound.admitted")).toHaveLength(1);
+      expect(stages(f.events, "outbound.accepted")).toHaveLength(1);
+    },
+  );
+
+  it("does not reserve a peer when pending admission capacity is exhausted", async () => {
+    const f = await fixture({ maxPendingEvents: 1 });
+    expect((await f.admit({ chatId: "oc_occupied", senderId: "ou_occupied" })).status).toBe(200);
+    const input = { messageId: "om_reused", eventId: "event-reused", senderId: "ou_peer" };
+    expect((await f.admit({ ...input, chatId: "oc_rejected" })).status).toBe(503);
+    await connect(f.server);
+    await expect.poll(() => stages(f.events, "websocket.delivery").length).toBe(1);
+    expect((await f.admit({ ...input, chatId: "oc_accepted" })).status).toBe(200);
+    const sent = await f.send("open_id", input.senderId);
+    expect(sent.status).toBe(200);
+    expect(await sent.json()).toMatchObject({ data: { chat_id: "oc_accepted" } });
+    expect(stages(f.events, "inbound.admitted")).toHaveLength(2);
+  });
+
+  it("keeps peer associations and message-count limits isolated per server", async () => {
+    for (const [index, f] of [
+      await fixture({ maxMessages: 2 }),
+      await fixture({ maxMessages: 2 }),
+    ].entries()) {
+      const chatId = `oc_server_${index}`;
+      expect(
+        (
+          await f.admit({
+            messageId: "om_same",
+            eventId: "event-same",
+            chatId,
+            senderId: "ou_same",
+          })
+        ).status,
+      ).toBe(200);
+      const sent = await f.send("open_id", "ou_same");
+      expect(sent.status).toBe(200);
+      expect(await sent.json()).toMatchObject({ data: { chat_id: chatId } });
+      expect((await f.send("open_id", "ou_overflow")).status).toBe(503);
+      expect(stages(f.events, "inbound.admitted")).toHaveLength(1);
+      expect(stages(f.events, "outbound.accepted")).toHaveLength(1);
+    }
+  });
+});
+
 describe("Feishu native wire", () => {
   it.each(["cli_same", "cli_0123456789abcdeG", "cli_0123456789abcdef0", "app_0123456789abcdef"])(
     "rejects SDK-incompatible custom app ID %s before startup",

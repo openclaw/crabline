@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve Feishu p2p peer/chat identity across admission, user-addressed sends, chat-addressed sends, and replies, with bounded retention and explicit conflict rejection.
+
 - Return HTTP 400 for malformed Feishu message-route encoding while preserving authentication and valid message IDs.
 
 - Return Feishu discovery code 514 for invalid application credentials so SDK clients report a terminal authentication failure instead of reconnecting.

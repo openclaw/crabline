@@ -188,6 +188,9 @@ export async function startFeishuServer(
     ReconnectNonce: 0,
   };
   const messages = new Map<string, NativeMessage>();
+  // Only admitted p2p senders or explicit recipients establish peer identity.
+  // Null marks known groups; self events and bot-authored messages cannot invent a peer.
+  const chatPeers = new Map<string, string | null>();
   const eventIds = new Set<string>();
   const pending: Delivery[] = [];
   const sockets = new Map<WebSocket, Map<string, PendingAck>>();
@@ -323,12 +326,34 @@ export async function startFeishuServer(
       flushing = false;
     }
   };
-  const retain = (message: NativeMessage, extraBytes = 0): boolean => {
-    const bytes = Buffer.byteLength(JSON.stringify(message)) + extraBytes;
+  const chatForPeer = (peer: string) =>
+    [...chatPeers].find(([, knownPeer]) => knownPeer === peer)?.[0];
+  const chatConflict = (chatId: string, peer: string | null | undefined) => {
+    const knownPeer = chatPeers.get(chatId);
+    const knownChat = typeof peer === "string" ? chatForPeer(peer) : undefined;
+    return (
+      (knownPeer !== undefined &&
+        (peer === null
+          ? knownPeer !== null
+          : knownPeer === null || (peer !== undefined && knownPeer !== peer))) ||
+      (knownChat !== undefined && knownChat !== chatId)
+    );
+  };
+  const retain = (message: NativeMessage, extraBytes = 0, peer?: string | null): boolean => {
+    const newChat = peer !== undefined && !chatPeers.has(message.chat_id);
+    const bytes =
+      Buffer.byteLength(JSON.stringify(message)) +
+      extraBytes +
+      (newChat ? Buffer.byteLength(JSON.stringify([message.chat_id, peer])) : 0);
     if (messages.size >= maxMessages || stateBytes + bytes > maxStateBytes) {
       return false;
     }
     messages.set(message.message_id, message);
+    // Each association requires a retained message and shares its byte/count bounds.
+    // Commit before telemetry so reentrant sends observe the established identity.
+    if (newChat) {
+      chatPeers.set(message.chat_id, peer);
+    }
     stateBytes += bytes;
     return true;
   };
@@ -420,6 +445,11 @@ export async function startFeishuServer(
     if (pending.length >= maxPendingEvents || outstanding >= maxOutstandingAcks) {
       return failure("pending event or acknowledgement limit reached", 503);
     }
+    const peer =
+      body.chatType === "group" ? null : body.senderId === botOpenId ? undefined : body.senderId;
+    if (chatConflict(body.chatId, peer)) {
+      return failure("Chat identity conflicts with retained state", 409);
+    }
     const frames = order.map((index: number): FeishuFrame => ({
       SeqID: String(sequence++),
       LogID: String(sequence++),
@@ -439,7 +469,7 @@ export async function startFeishuServer(
         Math.floor(((index + 1) * bytes.length) / fragments),
       ),
     }));
-    if (!retain(native, bytes.length + Buffer.byteLength(eventId))) {
+    if (!retain(native, bytes.length + Buffer.byteLength(eventId), peer)) {
       return failure("retained message state limit reached", 503);
     }
     eventIds.add(eventId);
@@ -550,10 +580,15 @@ export async function startFeishuServer(
         return failure("receive_id and supported receive_id_type are required");
       }
       const target = create ? String(body.receive_id) : prior!.chat_id;
+      const peer = create && receiveType === "open_id" && target !== botOpenId ? target : undefined;
       const chatId =
         create && receiveType === "open_id"
-          ? `oc_${createHash("sha256").update(target).digest("hex").slice(0, 32)}`
+          ? (chatForPeer(target) ??
+            `oc_${createHash("sha256").update(target).digest("hex").slice(0, 32)}`)
           : target;
+      if (create && receiveType === "open_id" && chatConflict(chatId, peer)) {
+        return failure("Chat identity conflicts with retained state", 409);
+      }
       const message = nativeMessage(
         `om_${randomBytes(16).toString("hex")}`,
         chatId,
@@ -566,7 +601,7 @@ export async function startFeishuServer(
         message.root_id = prior.root_id ?? prior.message_id;
         message.parent_id = prior.message_id;
       }
-      if (!retain(message)) {
+      if (!retain(message, 0, peer)) {
         return failure("retained message state limit reached", 503);
       }
       await record(

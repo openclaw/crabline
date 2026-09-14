@@ -12,6 +12,7 @@ process.on(
     appSecret?: string;
     baseUrl?: string;
     rejectCredentials?: boolean;
+    chatIdentity?: "admission-first" | "send-first";
   }) => {
     if (message.type === "release") {
       release?.();
@@ -71,6 +72,46 @@ process.on(
         return;
       }
       const client = new Lark.Client({ appId, appSecret, loggerLevel: Lark.LoggerLevel.error });
+      if (message.chatIdentity) {
+        const sendDirect = () =>
+          client.im.message.create({
+            params: { receive_id_type: "open_id" },
+            data: {
+              receive_id: "ou_dm_peer",
+              msg_type: "text",
+              content: JSON.stringify({ text: "SDK direct response" }),
+            },
+          });
+        const first = await sendDirect();
+        if (message.chatIdentity === "send-first") {
+          const barrier = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          process.send?.({ type: "first-dm", first });
+          await barrier;
+          release = undefined;
+        }
+        const chatId =
+          message.chatIdentity === "send-first" ? first.data?.chat_id : "oc_existing_dm";
+        if (!chatId) {
+          throw new Error("SDK direct send did not return a chat ID");
+        }
+        const direct = message.chatIdentity === "send-first" ? await sendDirect() : first;
+        const explicit = await client.im.message.create({
+          params: { receive_id_type: "chat_id" },
+          data: {
+            receive_id: chatId,
+            msg_type: "text",
+            content: JSON.stringify({ text: "SDK chat response" }),
+          },
+        });
+        const reply = await client.im.message.reply({
+          path: { message_id: "om_dm_inbound" },
+          data: { msg_type: "text", content: JSON.stringify({ text: "SDK reply" }) },
+        });
+        process.send?.({ type: "chat-identity", direct, explicit, reply });
+        return;
+      }
       for (const [msg_type, content] of [
         ["text", { text: "SDK 文本" }],
         ["post", { zh_cn: { title: "", content: [[{ tag: "text", text: "SDK 富文本" }]] } }],

@@ -323,6 +323,19 @@ decoding. Each event and all its fragments go to one randomly selected connected
 client and reserve one outstanding ACK slot. Only that client can acknowledge
 the event, echoing the completing fragment's identity and headers.
 
+Each server retains one p2p chat per non-bot peer and one peer per p2p chat.
+Successful p2p admission establishes the supplied sender/chat pair; later
+`open_id` sends reuse that chat. A successful `open_id` send to an unknown peer
+first establishes a deterministic synthetic chat, which later admission must
+use. Conflicting peer/chat identities return HTTP 409 without replacing the pair.
+Group admissions mark known group chats. Bot-self p2p events leave unknown chats
+unbound and preserve an established peer; they cannot change a known group into
+a p2p chat. Bot-self `open_id` sends likewise never assign or replace a peer and
+reject a synthetic target already known as a group. `chat_id` sends and replies
+preserve their target chat but never infer a peer from the bot sender.
+Associations commit only with successful message retention; invalid requests
+and capacity failures do not reserve them.
+
 Supported native routes cover tenant-token issuance, bot info, WebSocket
 discovery and authentication, protobuf ping/pong, `im.message.receive_v1`,
 message lookup, and message create/reply for `text`, localized `post`, and static
@@ -340,7 +353,7 @@ expired ACK produces `sdk.ack.expired`. Observer errors do not undo committed
 native state. Close the client and call `server.close()` to close transports,
 clear pending events and ACK timers, and drain recorder persistence.
 
-Default limits are 1,000 retained messages, 16 MiB of retained message/event bytes, 100 pending
+Default limits are 1,000 retained messages, 16 MiB of retained message/event/association bytes, 100 pending
 events, 256 KiB per event/request/frame, 64 fragments, eight sockets, and 100
 outstanding ACKs. Each socket write has a 30-second deadline; the event's
 30-second ACK deadline starts after all fragment writes complete. An ACK received
