@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.1.23 - 2026-09-13
 
 **Highlights:** Native Matrix state-event queries return stored state, and malformed Unicode IDs are rejected.
