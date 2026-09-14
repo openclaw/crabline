@@ -314,6 +314,8 @@ as one decoded path segment. Dot segments, path separators, query/fragment
 delimiters, percent escapes, and unpaired UTF-16 surrogates are rejected before
 admission. Custom prefixes, dotted IDs, and Unicode message IDs remain supported.
 Other IDs keep the rules above.
+Malformed percent encoding in lookup or reply route parameters returns HTTP 400
+after Bearer authentication.
 `chatType` defaults to `p2p` and also accepts `group`. Fragment options default to
 one fragment and natural order. An explicit order must be a full permutation.
 Fragments split bytes, so clients must assemble all fragments before UTF-8

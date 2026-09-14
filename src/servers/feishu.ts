@@ -522,7 +522,13 @@ export async function startFeishuServer(
       });
     }
     const match = messageRoute.exec(url.pathname);
-    const prior = match?.[1] ? messages.get(decodeURIComponent(match[1])) : undefined;
+    let messageId: string | undefined;
+    try {
+      messageId = match?.[1] ? decodeURIComponent(match[1]) : undefined;
+    } catch {
+      return failure("Invalid message ID encoding");
+    }
+    const prior = messageId ? messages.get(messageId) : undefined;
     if (match && !match[2] && method === "GET") {
       return prior
         ? jsonResponse({ code: 0, msg: "ok", data: { items: [prior] } })

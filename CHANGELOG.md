@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Return HTTP 400 for malformed Feishu message-route encoding while preserving authentication and valid message IDs.
+
 - Return Feishu discovery code 514 for invalid application credentials so SDK clients report a terminal authentication failure instead of reconnecting.
 
 - Reject Feishu message IDs that cannot round-trip through native lookup and reply URLs before admission changes retained messages, event IDs, or frame sequences.

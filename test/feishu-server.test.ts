@@ -466,6 +466,86 @@ describe("Feishu native wire", () => {
     expect(stages(events, "websocket.delivery")[0]!.body).toMatchObject({ messageId: validId });
   });
 
+  it.each(["%", "%FF"])(
+    "rejects malformed message path %s before retained state mutation",
+    async (encodedId) => {
+      const { server, events } = await start({ maxMessages: 2, maxPendingEvents: 1 });
+      const { manifest } = server;
+      const tokenResponse = await json(
+        `${manifest.baseUrl}/open-apis/auth/v3/tenant_access_token/internal`,
+        { app_id: manifest.appId, app_secret: manifest.appSecret },
+      );
+      expect(tokenResponse.status).toBe(200);
+      const { tenant_access_token: token } = (await tokenResponse.json()) as {
+        tenant_access_token: string;
+      };
+      const root = `${manifest.baseUrl}/open-apis/im/v1/messages`;
+      const headers = { "content-type": "application/json", authorization: `Bearer ${token}` };
+      const replyBody = JSON.stringify({
+        msg_type: "text",
+        content: JSON.stringify({ text: "valid reply" }),
+      });
+      const statuses: number[][] = [];
+      const invalidBodies: unknown[] = [];
+      for (const [method, suffix] of [
+        ["GET", ""],
+        ["POST", "/reply"],
+      ] as const) {
+        const request = {
+          url: `${root}/${encodedId}${suffix}`,
+          method,
+          headers,
+          ...(method === "POST" ? { body: replyBody } : {}),
+        };
+        const unauthorized = await requestHttp({
+          ...request,
+          headers: { "content-type": "application/json" },
+        });
+        const invalid = await requestHttp(request);
+        const missing = await requestHttp({ ...request, url: `${root}/missing${suffix}` });
+        statuses.push([unauthorized.status, invalid.status, missing.status]);
+        invalidBodies.push(JSON.parse(invalid.body));
+      }
+      expect(statuses).toEqual([
+        [401, 400, 404],
+        [401, 400, 404],
+      ]);
+      expect(invalidBodies).toEqual([
+        { code: 400, msg: "Invalid message ID encoding" },
+        { code: 400, msg: "Invalid message ID encoding" },
+      ]);
+      expect(stages(events, "inbound.admitted")).toHaveLength(0);
+      expect(stages(events, "outbound.accepted")).toHaveLength(0);
+      const messageId = "custom.valid.消息🦊";
+      const admitted = await json(
+        manifest.endpoints.adminInboundUrl,
+        { messageId, chatId: "oc_chat", senderId: "ou_sender", text: "valid message" },
+        manifest.adminToken,
+      );
+      expect(admitted.status).toBe(200);
+      const url = `${root}/${encodeURIComponent(messageId)}`;
+      const lookup = await requestHttp({ url, method: "GET", headers });
+      expect(lookup.status).toBe(200);
+      expect(JSON.parse(lookup.body)).toMatchObject({
+        code: 0,
+        data: { items: [{ message_id: messageId }] },
+      });
+      const reply = await requestHttp({
+        url: `${url}/reply`,
+        method: "POST",
+        headers,
+        body: replyBody,
+      });
+      expect(reply.status).toBe(200);
+      expect(JSON.parse(reply.body)).toMatchObject({
+        code: 0,
+        data: { parent_id: messageId, root_id: messageId },
+      });
+      expect(stages(events, "inbound.admitted")).toHaveLength(1);
+      expect(stages(events, "outbound.accepted")).toHaveLength(1);
+    },
+  );
+
   it("keeps credentials, same native IDs, receipts and replies isolated across servers", async () => {
     const first = await start({ appId: "cli_0123456789abcdef", appSecret: "secret-first" });
     const second = await start({ appId: "cli_0123456789abcdef", appSecret: "secret-second" });
