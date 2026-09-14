@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.24 - 2026-09-14
+
+**Highlights:** Discord-compatible clients can exercise the full local QA contract, including messages, reactions, threads, attachments, commands, and voice, without live credentials.
 
 - Expand the Discord local provider contract for full OpenClaw QA coverage with driver identity,
   message edits/deletes, reactions, threads, attachments, fixture channels, voice state, and a
