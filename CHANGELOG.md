@@ -4,8 +4,10 @@
 
 ## 0.1.23 - 2026-09-13
 
-**Highlights:** Native Matrix state-event queries return stored state, and malformed Unicode IDs are rejected.
+**Highlights:** A standalone native Feishu server for testing compatible clients without live credentials (thanks @vincentkoc), native Matrix state-event queries that return stored state, and rejection of malformed Unicode IDs.
 
+- Add a standalone native Feishu server with optional TLS, SDK-compatible protobuf WebSocket events and acknowledgements, bounded admin ingress, and text, post, and static-card REST messages, so compatible clients can be tested without live credentials. Thanks @vincentkoc! #306
+- Harden the Feishu server: preserve p2p peer/chat identity across admission, sends, and replies; reject malformed message routes, message IDs, app IDs, and WebSocket upgrade targets with HTTP 400; report discovery code 514 for invalid credentials; and start event ACK deadlines only after all fragment writes complete. #306
 - Return stored Matrix state through native state-event queries, including creation events advertised by sync, instead of rejecting valid state types.
 - Reject malformed Unicode in scoped Matrix room, event, and historical user IDs while preserving valid astral characters across fixtures, provider APIs, and OpenClaw bridges.
 - Refresh protobufjs, Matrix crypto WASM, retry and source-map dependencies, and deduplicate Rolldown under the seven-day dependency cooldown.
