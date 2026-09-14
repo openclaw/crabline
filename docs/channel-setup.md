@@ -370,9 +370,11 @@ separate from this programmatic starter.
 crabline --json serve discord --ready-file .crabline/discord-server.json
 ```
 
-The ready manifest exposes `applicationId`, `botUserId`, `botToken`,
+The ready manifest exposes `applicationId`, both bot identities and tokens,
 `endpoints.apiRoot`, `endpoints.gatewayBotUrl`, `endpoints.gatewayUrl`,
-`endpoints.adminInboundUrl`, `adminToken`, and `recorderPath`. OpenClaw-specific
+`endpoints.voiceEndpoint`, `endpoints.voiceCaCertificate`, fixture guild/text/voice
+IDs, `endpoints.adminInboundUrl`, `adminToken`, and `recorderPath`. Trust the
+test-only voice CA only in the isolated client process. OpenClaw-specific
 endpoint injection and target translation belong to the Crabline OpenClaw
 bridge and the OpenClaw Discord plugin; the provider server itself implements
 Discord's public protocol subset and contains no OpenClaw behavior.
@@ -394,15 +396,17 @@ The control plane creates provider state and emits a normal Discord
 `MESSAGE_CREATE` dispatch on an identified Gateway session. `parentChannelId`
 turns `channelId` into a public thread channel. Supported client boundaries are
 REST v10 bot/application identity, Gateway metadata, guild/channel/member
-lookups, DM creation, text message create/read/reply, typing, application
-command registration, and a v10 JSON Gateway with HELLO, IDENTIFY, READY,
-heartbeat acknowledgement, resume, and deterministic shutdown.
+lookups, DM creation, text message lifecycle and replies, reactions, message-backed
+threads and membership, retrievable multipart attachments, typing, application
+command registration, voice-state dispatch plus an authenticated TLS WebSocket/UDP
+voice handshake, and a v10 JSON Gateway with HELLO, IDENTIFY, READY, heartbeat
+acknowledgement, resume, and deterministic shutdown.
 
-Current fidelity limits are one Gateway shard, no transport compression, and no
-missed-dispatch replay: resume succeeds only from the retained session's latest
-sequence. The server also omits voice, interaction dispatch,
-attachment/multipart upload, and Discord's distributed permission or
-bucket-allocation systems.
+Current fidelity limits are one Gateway shard, no transport compression or voice
+media encryption/streaming, and no missed-dispatch replay: resume succeeds only
+from the retained session's latest sequence. Interaction dispatch, audit logs,
+and Discord's distributed permission and bucket-allocation systems remain outside
+the supported subset.
 The server still returns provider-native authentication, JSON error, and basic
 rate-limit headers for its supported routes.
 

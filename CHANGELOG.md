@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Expand the Discord local provider contract for full OpenClaw QA coverage with driver identity,
+  message edits/deletes, reactions, threads, attachments, fixture channels, voice state, and a
+  recorded local TLS WebSocket/UDP voice handshake.
+
 ## 0.1.23 - 2026-09-13
 
 **Highlights:** A standalone native Feishu server for testing compatible clients without live credentials (thanks @vincentkoc), native Matrix state-event queries that return stored state, and rejection of malformed Unicode IDs.

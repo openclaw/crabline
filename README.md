@@ -257,23 +257,26 @@ Discord:
 crabline --json serve discord --ready-file .crabline/discord-server.json
 ```
 
-The manifest contains the bot/application identity, bot token, REST API root,
-Gateway metadata endpoint, Gateway WebSocket URL, authenticated admin ingress,
-and recorder path. The server implements the Discord REST v10 and Gateway
-subset used by the real OpenClaw Discord plugin: bot identity, `/gateway/bot`,
-JSON Gateway HELLO/IDENTIFY/READY/heartbeat/resume, DM and guild text channels,
-message sends and replies, typing, basic guild/member lookups, and application
-command registration. Admin ingress turns an injected user message into a
-normal `MESSAGE_CREATE` Gateway dispatch.
+The manifest contains both bot identities and tokens, fixture guild/text/voice
+IDs, the REST API root, Gateway metadata and WebSocket endpoints, the voice
+endpoint and test-only CA, authenticated admin ingress, and recorder path. The
+server implements the Discord REST v10 and Gateway subset used by the real
+OpenClaw Discord plugin: bot identity, `/gateway/bot`, JSON Gateway
+HELLO/IDENTIFY/READY/heartbeat/resume, DM and guild channels, message lifecycle
+and replies, reactions, threads, retrievable multipart attachments, typing,
+basic guild/member lookups, application command registration, and authenticated
+voice-state plus TLS WebSocket/UDP voice negotiation. Admin ingress turns an
+injected user message into a normal `MESSAGE_CREATE` Gateway dispatch. Trust the
+voice CA only in the isolated test client process.
 
 This local provider server is separate from the fixture-level Discord local
 mock provider listed under Built-In Mock Channels. The fixture adapter models
 Discord interactions directly for Crabline commands; the server lets a real
 Discord client exercise provider-native REST and Gateway boundaries.
 
-The supported Gateway is v10 JSON with one shard. Transport compression,
-voice, interactions, attachments/multipart uploads, audit logs, and Discord's
-distributed permission and rate-limit systems are outside the current subset.
+The supported Gateway is v10 JSON with one shard. Transport compression, voice
+media encryption/streaming, interactions, audit logs, and Discord's distributed
+permission and rate-limit systems are outside the current subset.
 
 Mattermost:
 
