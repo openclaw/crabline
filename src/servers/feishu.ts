@@ -492,7 +492,15 @@ export async function startFeishuServer(
         typeof secret !== "string" ||
         !constantTimeTokenEqual(secret, appSecret)
       ) {
-        return failure("Invalid application credentials", 401);
+        // The SDK destructures data before classifying discovery code 514 as terminal.
+        // HTTP errors instead enter its reconnect path.
+        return discovery
+          ? jsonResponse({
+              code: 514,
+              msg: "Invalid application credentials",
+              data: { URL: "", ClientConfig: {} },
+            })
+          : failure("Invalid application credentials", 401);
       }
       await record(token ? "tenant.token.issued" : "websocket.discovered", { appId }, url.pathname);
       return token

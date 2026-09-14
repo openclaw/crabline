@@ -8,6 +8,74 @@ import { startFeishuServer, type ServerRequestEvent } from "../src/index.js";
 import { FEISHU_TEST_CERTIFICATE, FEISHU_TEST_KEY } from "./fixtures/feishu-tls.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
+it.for(["secret", "app ID"])(
+  "reports an invalid discovery %s as terminal through the reconnect-enabled SDK",
+  async (credential, { onTestFinished, signal }) => {
+    const directory = await createTempDir();
+    const events: ServerRequestEvent[] = [];
+    const server = await startFeishuServer({
+      appId: "cli_0123456789abcdef",
+      recorderPath: path.join(directory, "events.jsonl"),
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+    const child = fork(path.resolve("test/fixtures/feishu-sdk-client.ts"), [], {
+      execArgv: ["--import", "tsx"],
+      env: { PATH: process.env.PATH, HOME: directory, TMPDIR: directory },
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    const exit = once(child, "exit");
+    let output = "";
+    for (const stream of [child.stdout, child.stderr]) {
+      stream?.on("data", (chunk: Buffer) => {
+        output = (output + chunk.toString()).slice(-16_384);
+      });
+    }
+    onTestFinished(async () => {
+      if (child.connected) {
+        child.send({ type: "stop" });
+      }
+      const timer = setTimeout(() => child.kill("SIGKILL"), 2_000);
+      try {
+        const [code, exitSignal] = await exit;
+        expect({ code, exitSignal, output }).toMatchObject({ code: 0, exitSignal: null });
+      } finally {
+        clearTimeout(timer);
+        await server.close();
+        await disposeTempDir(directory);
+      }
+    });
+    const outcome = once(child, "message", { signal });
+    child.send({
+      type: "start",
+      ...server.manifest,
+      appId: credential === "app ID" ? "cli_ffffffffffffffff" : server.manifest.appId,
+      appSecret: credential === "secret" ? "wrong" : server.manifest.appSecret,
+      rejectCredentials: true,
+    });
+    const [result] = await outcome;
+    expect({ result, output }).toMatchObject({
+      result: {
+        type: "auth-error",
+        message: "pullConnectConfig failed: code=514, msg=Invalid application credentials",
+        status: { state: "failed", reconnectAttempts: 0 },
+        discoveryRequests: 1,
+      },
+    });
+    expect(result.status).not.toHaveProperty("nextConnectTime");
+    expect(
+      events.filter((event) => (event.body as { stage?: string }).stage === "websocket.discovered"),
+    ).toHaveLength(0);
+    expect(
+      events.filter((event) => (event.body as { stage?: string }).stage === "websocket.connected"),
+    ).toHaveLength(0);
+    expect(
+      events.filter((event) => (event.body as { stage?: string }).stage === "inbound.admitted"),
+    ).toHaveLength(0);
+  },
+);
+
 it("uses a custom app ID with the official SDK for TLS auth, REST, fragmented events and dispatcher-barrier ACKs", async ({
   onTestFinished,
   signal,

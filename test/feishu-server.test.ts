@@ -126,16 +126,40 @@ describe("Feishu native wire", () => {
     expect(() => encodeFeishuFrame({ ...frame, SeqID: "18446744073709551616" })).toThrow("uint64");
   });
 
-  it("authenticates discovery and upgrade separately, answers native pings, and bounds sockets", async () => {
+  it.each(["secret", "app ID"])(
+    "rejects an invalid discovery %s with a terminal SDK envelope",
+    async (credential) => {
+      const { server, events } = await start({ appId: "cli_0123456789abcdef" });
+      const response = await json(server.manifest.endpoints.discoveryUrl, {
+        AppID: credential === "app ID" ? "cli_ffffffffffffffff" : server.manifest.appId,
+        AppSecret: credential === "secret" ? "wrong" : server.manifest.appSecret,
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        code: 514,
+        msg: "Invalid application credentials",
+        data: { URL: "", ClientConfig: {} },
+      });
+      const tenantToken = await json(
+        `${server.manifest.baseUrl}/open-apis/auth/v3/tenant_access_token/internal`,
+        {
+          app_id: credential === "app ID" ? "cli_ffffffffffffffff" : server.manifest.appId,
+          app_secret: credential === "secret" ? "wrong" : server.manifest.appSecret,
+        },
+      );
+      expect(tenantToken.status).toBe(401);
+      expect(await tenantToken.json()).toEqual({
+        code: 401,
+        msg: "Invalid application credentials",
+      });
+      expect(stages(events, "websocket.discovered")).toHaveLength(0);
+      expect(stages(events, "websocket.connected")).toHaveLength(0);
+      expect(stages(events, "inbound.admitted")).toHaveLength(0);
+    },
+  );
+
+  it("authenticates upgrades, answers native pings, and bounds sockets", async () => {
     const { server, events } = await start({ maxSockets: 1 });
-    expect(
-      (
-        await json(server.manifest.endpoints.discoveryUrl, {
-          AppID: server.manifest.appId,
-          AppSecret: "wrong",
-        })
-      ).status,
-    ).toBe(401);
     const { socket, frames, url } = await connect(server);
     const rejected = new WebSocket(url.replace(/ticket=[^&]+/u, "ticket=wrong"));
     rejected.on("error", () => {});

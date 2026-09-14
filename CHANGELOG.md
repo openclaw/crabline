@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Return Feishu discovery code 514 for invalid application credentials so SDK clients report a terminal authentication failure instead of reconnecting.
+
 - Reject Feishu message IDs that cannot round-trip through native lookup and reply URLs before admission changes retained messages, event IDs, or frame sequences.
 
 - Reject custom Feishu app IDs outside the official SDK's `cli_` plus 16 hexadecimal character format before starting server resources.

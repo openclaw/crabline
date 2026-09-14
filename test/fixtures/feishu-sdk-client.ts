@@ -6,7 +6,13 @@ let release: (() => void) | undefined;
 
 process.on(
   "message",
-  (message: { type: string; appId?: string; appSecret?: string; baseUrl?: string }) => {
+  (message: {
+    type: string;
+    appId?: string;
+    appSecret?: string;
+    baseUrl?: string;
+    rejectCredentials?: boolean;
+  }) => {
     if (message.type === "release") {
       release?.();
       return;
@@ -20,17 +26,50 @@ process.on(
       throw new Error("Invalid SDK fixture command");
     }
     const { appId, appSecret, baseUrl } = message;
+    let discoveryRequests = 0;
     // Keep the SDK's route expansion and response handling; change only the origin.
     Lark.defaultHttpInstance.interceptors.request.use((request) => {
       const url = new URL(request.url!);
       if (url.origin !== "https://open.feishu.cn") {
         throw new Error("Unexpected SDK destination");
       }
+      if (url.pathname === "/callback/ws/endpoint") {
+        discoveryRequests++;
+      }
       request.url = `${baseUrl}${url.pathname}${url.search}`;
       request.proxy = false;
       return request;
     });
     const run = async () => {
+      if (message.rejectCredentials) {
+        // Observe HTTP rejection without converting it into the SDK's terminal error.
+        Lark.defaultHttpInstance.interceptors.response.use(undefined, (error: unknown) => {
+          process.send?.({
+            type: "http-error",
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return Promise.reject(error);
+        });
+        websocket = new Lark.WSClient({
+          appId,
+          appSecret,
+          autoReconnect: true,
+          loggerLevel: Lark.LoggerLevel.error,
+          onReady: () => {
+            process.send?.({ type: "unexpected-ready" });
+          },
+          onError: (error) => {
+            process.send?.({
+              type: "auth-error",
+              message: error.message,
+              status: websocket?.getConnectionStatus(),
+              discoveryRequests,
+            });
+          },
+        });
+        await websocket.start({ eventDispatcher: new Lark.EventDispatcher({}) });
+        return;
+      }
       const client = new Lark.Client({ appId, appSecret, loggerLevel: Lark.LoggerLevel.error });
       for (const [msg_type, content] of [
         ["text", { text: "SDK 文本" }],

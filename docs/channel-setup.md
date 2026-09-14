@@ -286,7 +286,10 @@ Keep the returned manifest private because it includes application credentials.
 
 The manifest exposes `baseUrl`, `endpoints.apiRoot`, `endpoints.discoveryUrl`,
 `endpoints.adminInboundUrl`, and `recorderPath`. Configure the SDK's HTTP origin
-to use this server while preserving its native route expansion. The discovered
+to use this server while preserving its native route expansion. Invalid discovery
+credentials return HTTP 200 with native code `514`, so the SDK reports a terminal
+authentication failure instead of reconnecting. Tenant-token, admin, REST Bearer,
+and WebSocket upgrade authentication keep their HTTP error responses. The discovered
 WebSocket URL carries a server-specific ticket; the admin token only controls
 injection. Post JSON to `endpoints.adminInboundUrl` with the
 `X-Crabline-Admin-Token` header:
