@@ -1,29 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.23 - 2026-09-13
 
-- Preserve Feishu p2p peer/chat identity across admission, user-addressed sends, chat-addressed sends, and replies, with bounded retention and explicit conflict rejection.
-
-- Return HTTP 400 for malformed Feishu message-route encoding while preserving authentication and valid message IDs.
-
-- Return Feishu discovery code 514 for invalid application credentials so SDK clients report a terminal authentication failure instead of reconnecting.
-
-- Reject Feishu message IDs that cannot round-trip through native lookup and reply URLs before admission changes retained messages, event IDs, or frame sequences.
-
-- Reject custom Feishu app IDs outside the official SDK's `cli_` plus 16 hexadecimal character format before starting server resources.
-
-- Start Feishu event ACK deadlines after all fragment writes complete, preserving early ACKs and releasing capacity on failed or closed writes.
-
-- Reject malformed Feishu WebSocket upgrade targets with HTTP 400 instead of allowing URL parsing errors to terminate the server.
-
-- Add a programmatic Feishu native server with optional TLS, SDK-compatible protobuf WebSocket events and acknowledgements, single-client cluster delivery with one ACK slot per event, bounded admin ingress, and text, post, and static-card REST messages.
-
-- Refresh protobufjs, Matrix crypto WASM, retry and source-map dependencies, and deduplicate Rolldown under the seven-day dependency cooldown.
+**Highlights:** Native Matrix state-event queries return stored state, and malformed Unicode IDs are rejected.
 
 - Return stored Matrix state through native state-event queries, including creation events advertised by sync, instead of rejecting valid state types.
-
 - Reject malformed Unicode in scoped Matrix room, event, and historical user IDs while preserving valid astral characters across fixtures, provider APIs, and OpenClaw bridges.
-
+- Refresh protobufjs, Matrix crypto WASM, retry and source-map dependencies, and deduplicate Rolldown under the seven-day dependency cooldown.
 - Pin patched Sharp 0.35.4 in the development dependency graph and refresh Vitest, Matrix client, lint/format tooling, pnpm, and eligible transitive dependencies under the seven-day cooldown.
 - Add Node 24 runtime CI alongside the Node 22 full gate, cancel superseded PR runs, and update the pinned pnpm setup action; workflow validation now requires Go 1.26 with toolchain 1.27.1 so it can use maintained Go dependencies.
 
