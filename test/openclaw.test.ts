@@ -3734,6 +3734,63 @@ describe("OpenClaw local provider bridge", () => {
     }
   });
 
+  it("publishes readiness from the caller-owned adapter without starting or closing another server", async () => {
+    const outputDir = await createTempDir();
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "telegram" });
+    const recorderDir = path.join(outputDir, "artifacts", "crabline");
+    const recorderPath = path.join(recorderDir, "telegram-provider-server.jsonl");
+    await fs.mkdir(recorderDir, { recursive: true });
+    const adapter = await startOpenClawCrablineAdapter({
+      channel: "telegram",
+      recorderPath,
+    });
+    const close = vi.fn(adapter.close.bind(adapter));
+    const startAdapter = vi.fn<typeof startOpenClawCrablineAdapter>();
+    try {
+      if (adapter.manifest.provider !== "telegram") {
+        throw new Error("Expected a Telegram adapter.");
+      }
+      const rejected = await fetch(
+        `${adapter.manifest.endpoints.apiRoot}/bot${adapter.manifest.botToken}/sendMessage`,
+        {
+          body: JSON.stringify({ chat_id: 12_345 }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(rejected.status).toBe(400);
+
+      const result = await runProviderReadinessWithDependencies(
+        {
+          adapter: { ...adapter, close },
+          outputDir,
+          selection,
+        },
+        { startAdapter },
+      );
+
+      expect(startAdapter).not.toHaveBeenCalled();
+      expect(close).not.toHaveBeenCalled();
+      await expect(adapter.probe()).resolves.toMatchObject({ ok: true });
+      await expect(fs.readFile(recorderPath, "utf8")).resolves.toContain('"type":"api"');
+      await expect(fs.readFile(recorderPath, "utf8")).resolves.toContain('"accepted":false');
+      await expect(
+        fs.readFile(
+          path.join(
+            outputDir,
+            OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
+            result.generation,
+            "telegram-provider-server.jsonl",
+          ),
+          "utf8",
+        ),
+      ).resolves.toContain('"type":"api"');
+    } finally {
+      await adapter.close();
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it.each(["committed", "failed"] as const)(
     "syncs the recorder directory after the final %s temporary unlink",
     async (outcome) => {

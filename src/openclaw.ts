@@ -40,6 +40,7 @@ import {
   type OpenClawCrablineProviderAdapter,
   type OpenClawCrablineProviderBridge,
   type OpenClawCrablineProviderBridgeRegistry,
+  type StartedOpenClawCrablineAdapter,
   type StartedOpenClawCrablineCorrelatedAdapter,
   type StartOpenClawCrablineAdapterParams,
 } from "./openclaw/shared.js";
@@ -56,6 +57,7 @@ import {
 } from "./openclaw/provider-readiness-lock.js";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { withServerRecorderSnapshot } from "./servers/recorder.js";
 
 export {
   OPENCLAW_CRABLINE_ARTIFACT_POINTER_PATH,
@@ -111,7 +113,7 @@ function hasStringRecordValues(value: unknown): value is Record<string, string> 
 }
 
 type OpenClawCrablineRecorderEvent = {
-  accepted: true;
+  accepted: boolean;
   at: string;
   method: string;
   path: string;
@@ -122,7 +124,7 @@ type OpenClawCrablineRecorderEvent = {
 function isOpenClawCrablineRecorderEvent(value: unknown): value is OpenClawCrablineRecorderEvent {
   return (
     isRecord(value) &&
-    value.accepted === true &&
+    typeof value.accepted === "boolean" &&
     typeof value.at === "string" &&
     Number.isFinite(Date.parse(value.at)) &&
     typeof value.method === "string" &&
@@ -200,6 +202,7 @@ function assertOpenClawCrablineRecorderEvidence(
       );
     }
     if (
+      event.accepted &&
       event.type === "api" &&
       event.method === expectedRequest.method &&
       event.path === expectedRequest.path
@@ -590,11 +593,15 @@ async function waitForOpenClawCrablineProbeCleanup(probeSettlement: Promise<void
 }
 
 export function runOpenClawCrablineProviderReadiness(params: {
+  /** Caller-owned running adapter. It remains open and its canonical recorder is snapshotted. */
+  adapter?: StartedOpenClawCrablineAdapter;
   outputDir: string;
   selection: OpenClawCrablineChannelDriverSelection;
 }): Promise<OpenClawCrablineProviderReadinessResult>;
 export async function runOpenClawCrablineProviderReadiness(
   params: {
+    /** Caller-owned running adapter. It remains open and its canonical recorder is snapshotted. */
+    adapter?: StartedOpenClawCrablineAdapter;
     outputDir: string;
     selection: OpenClawCrablineChannelDriverSelection;
   },
@@ -624,15 +631,36 @@ export async function runOpenClawCrablineProviderReadiness(
     await artifactsDirectory.assertIdentityAt();
     await recorderDirectory.assertIdentityAt();
     await reclaimOpenClawCrablineRecorderTemporaries(recorderDirectory, providerReadinessLock);
-    recorderPath = path.join(
-      recorderDirectory.directoryPath,
-      `.${params.selection.channel}-provider-server.${randomUUID()}.jsonl.tmp`,
-    );
-    const adapter = await (dependencies.startAdapter ?? startOpenClawCrablineAdapter)({
-      channel: params.selection.channel,
-      openclawConfig: {},
-      recorderPath,
-    });
+    const providedAdapter = params.adapter;
+    if (providedAdapter) {
+      if (providedAdapter.channel !== params.selection.channel) {
+        throw new Error(
+          `OpenClaw Crabline readiness adapter channel "${providedAdapter.channel}" does not match selection "${params.selection.channel}".`,
+        );
+      }
+      const expectedRecorderPath = path.join(
+        recorderDirectory.directoryPath,
+        `${params.selection.channel}-provider-server.jsonl`,
+      );
+      if (path.resolve(providedAdapter.manifest.recorderPath) !== expectedRecorderPath) {
+        throw new Error(
+          "OpenClaw Crabline readiness adapter recorder must be the canonical output artifact.",
+        );
+      }
+      recorderPath = expectedRecorderPath;
+    } else {
+      recorderPath = path.join(
+        recorderDirectory.directoryPath,
+        `.${params.selection.channel}-provider-server.${randomUUID()}.jsonl.tmp`,
+      );
+    }
+    const adapter =
+      providedAdapter ??
+      (await (dependencies.startAdapter ?? startOpenClawCrablineAdapter)({
+        channel: params.selection.channel,
+        openclawConfig: {},
+        recorderPath,
+      }));
     let probe: unknown;
     let probeFailed = false;
     let probeFailure: unknown;
@@ -646,6 +674,8 @@ export async function runOpenClawCrablineProviderReadiness(
     }
     if (probeSettlement) {
       await waitForOpenClawCrablineProbeCleanup(probeSettlement);
+    }
+    if (!providedAdapter && probeSettlement) {
       try {
         await adapter.close();
       } catch (cleanupError) {
@@ -662,7 +692,7 @@ export async function runOpenClawCrablineProviderReadiness(
           throw combinedError;
         }
       }
-    } else {
+    } else if (!providedAdapter) {
       try {
         await adapter.close();
       } catch (cleanupError) {
@@ -688,7 +718,19 @@ export async function runOpenClawCrablineProviderReadiness(
     if (probeFailed) {
       throw probeFailure;
     }
-    const recorderSnapshot = await readOwnedRecorderSnapshot(recorderPath, recorderDirectory);
+    if (!recorderPath || !recorderDirectory) {
+      throw new Error("OpenClaw Crabline recorder was not initialized.");
+    }
+    const snapshotRecorderPath = recorderPath;
+    const snapshotRecorderDirectory = recorderDirectory;
+    const readRecorderSnapshot = async () =>
+      await readOwnedRecorderSnapshot(snapshotRecorderPath, snapshotRecorderDirectory);
+    const recorderSnapshot = providedAdapter
+      ? await withServerRecorderSnapshot({
+          read: readRecorderSnapshot,
+          recorderPath: snapshotRecorderPath,
+        })
+      : await readRecorderSnapshot();
     recorderIdentity = recorderSnapshot.identity;
     const recorderSnapshotContents = recorderSnapshot.contents;
     assertOpenClawCrablineRecorderEvidence(recorderSnapshotContents, adapter.manifest);
@@ -726,17 +768,19 @@ export async function runOpenClawCrablineProviderReadiness(
       providerReadiness,
     });
     let recorderCleanupWarning: string | undefined;
-    try {
-      await removeOwnedRecorderTemporary({
-        directory: recorderDirectory,
-        identity: recorderIdentity,
-        recorderPath,
-        syncParent: syncRecorderParent,
-      });
-      recorderPath = undefined;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      recorderCleanupWarning = `OpenClaw Crabline recorder snapshot committed but temporary cleanup failed: ${detail}`;
+    if (!providedAdapter) {
+      try {
+        await removeOwnedRecorderTemporary({
+          directory: recorderDirectory,
+          identity: recorderIdentity,
+          recorderPath,
+          syncParent: syncRecorderParent,
+        });
+        recorderPath = undefined;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        recorderCleanupWarning = `OpenClaw Crabline recorder snapshot committed but temporary cleanup failed: ${detail}`;
+      }
     }
     outcome = {
       committed: true,
@@ -760,7 +804,7 @@ export async function runOpenClawCrablineProviderReadiness(
     };
   } catch (error) {
     let primaryError = error;
-    if (recorderPath && recorderDirectory) {
+    if (!params.adapter && recorderPath && recorderDirectory) {
       try {
         await removeOwnedRecorderTemporary({
           directory: recorderDirectory,

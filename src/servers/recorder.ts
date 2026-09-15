@@ -1639,6 +1639,46 @@ export async function recordCommittedServerEvent(
   }
 }
 
+/** Runs a read while recorder admissions and cross-process appends are blocked at a record boundary. */
+export async function withServerRecorderSnapshot<T>(params: {
+  read: () => Promise<T>;
+  recorderPath: string;
+}): Promise<T> {
+  const logicalPath = path.resolve(params.recorderPath);
+  const previous = pendingAdmissions.get(logicalPath) ?? Promise.resolve();
+  const current = previous
+    .catch(() => {})
+    .then(async () => {
+      const publicationPath = await resolveRecorderPath(logicalPath);
+      const { release } = await acquireRecorderLock(publicationPath);
+      let result: T;
+      try {
+        result = await params.read();
+      } catch (error) {
+        try {
+          await release();
+        } catch (releaseError) {
+          throw recorderLockReleaseError(logicalPath, error, releaseError);
+        }
+        throw error;
+      }
+      await release();
+      return result;
+    });
+  const tail = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  pendingAdmissions.set(logicalPath, tail);
+  try {
+    return await current;
+  } finally {
+    if (pendingAdmissions.get(logicalPath) === tail) {
+      pendingAdmissions.delete(logicalPath);
+    }
+  }
+}
+
 export type ServerRecorder = {
   record(event: ServerRequestEvent): Promise<void>;
   recordCommitted(event: ServerRequestEvent): Promise<void>;
