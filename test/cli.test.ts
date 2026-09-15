@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram, runCli, waitForShutdown } from "../src/cli/program.js";
 import type { StartCrablineServerParams, StartedCrablineServer } from "../src/servers/index.js";
+import type { StartedSlackServer } from "../src/servers/slack.js";
 import {
   captureWrites,
   createTempDir,
@@ -460,9 +461,13 @@ describe("cli", () => {
     await writeText(credentialsPath, JSON.stringify({ botToken: fdBot }));
     const credentialsFd = openSync(credentialsPath, "r");
     const credentialsIdentity = fstatSync(credentialsFd);
+    const setEventsRequestUrl = vi
+      .fn<StartedSlackServer["setEventsRequestUrl"]>()
+      .mockResolvedValue(undefined);
     const startServer = vi.fn(
       async (_params: StartCrablineServerParams): Promise<StartedCrablineServer> => ({
         async close() {},
+        setEventsRequestUrl,
         manifest: {
           adminToken: "fake",
           baseUrl: "http://127.0.0.1:12345",
@@ -511,6 +516,7 @@ describe("cli", () => {
         signingSecret: "test-token-placeholder",
       }),
     );
+    expect(setEventsRequestUrl).not.toHaveBeenCalled();
   });
 
   it("accepts credential JSON at the exact byte limit", async () => {
@@ -524,8 +530,12 @@ describe("cli", () => {
     await writeText(credentialsPath, document);
     const credentialsFd = openSync(credentialsPath, "r");
     const credentialsIdentity = fstatSync(credentialsFd);
+    const setEventsRequestUrl = vi
+      .fn<StartedSlackServer["setEventsRequestUrl"]>()
+      .mockResolvedValue(undefined);
     const startServer = vi.fn(async (): Promise<StartedCrablineServer> => ({
       async close() {},
+      setEventsRequestUrl,
       manifest: {
         adminToken: "fake",
         baseUrl: "http://127.0.0.1:12345",
@@ -566,6 +576,7 @@ describe("cli", () => {
     }
 
     expect(startServer).toHaveBeenCalledWith(expect.objectContaining({ botToken }));
+    expect(setEventsRequestUrl).not.toHaveBeenCalled();
   });
 
   it("rejects unsupported or non-string credential fields", async () => {
