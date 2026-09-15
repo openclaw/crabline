@@ -57,7 +57,7 @@
     "libsignal": "6.0.0",
     "picocolors": "^1.1.1",
     "proper-lockfile": "4.1.2",
-    "protobufjs": "7.6.5",
+    "protobufjs": "8.8.0",
     "re2js": "2.8.6",
     "ws": "^8.21.3",
     "yaml": "^2.9.0",
