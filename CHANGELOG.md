@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Reject malformed Discord and Mattermost WebSocket upgrade URLs with HTTP 400 instead of terminating the provider server.
+
 ## 0.1.24 - 2026-09-14
 
 **Highlights:** Discord-compatible clients can exercise the full local QA contract, including messages, reactions, threads, attachments, commands, and voice, without live credentials.

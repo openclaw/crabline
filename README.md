@@ -211,6 +211,9 @@ Concurrent and repeated close calls share the same shutdown. All transports are
 closed even if one fails, and the persistence drain includes asynchronous cleanup
 after a failed recorder lock acquisition.
 
+Discord and Mattermost reject malformed WebSocket upgrade URLs with HTTP 400
+and close the connection while continuing to serve other clients.
+
 Recorder files should normally have one filesystem name. If multiple processes
 cannot share the same OS account home, the home is read-only, or they write
 through hardlinks to the same recorder inode, set

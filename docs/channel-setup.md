@@ -409,6 +409,7 @@ and Discord's distributed permission and bucket-allocation systems remain outsid
 the supported subset.
 The server still returns provider-native authentication, JSON error, and basic
 rate-limit headers for its supported routes.
+Malformed Gateway upgrade URLs return HTTP 400 and close only that connection.
 
 This is not the fixture-level Discord local mock. The fixture adapter's
 interactions webhook remains available to Crabline fixture commands; the
@@ -427,6 +428,8 @@ Use the manifest's `baseUrl` and `botToken` as OpenClaw's Mattermost endpoint
 and credential. Because the server is loopback HTTP, trusted QA configuration
 must also set `channels.mattermost.network.dangerouslyAllowPrivateNetwork` to
 `true`. The OpenClaw bridge does this automatically.
+
+Malformed WebSocket upgrade URLs return HTTP 400 and close only that connection.
 
 Admin inbound accepts 26-character lowercase alphanumeric Mattermost
 `channelId` and `senderId` values, `text`, optional `senderName`, `channelType`,

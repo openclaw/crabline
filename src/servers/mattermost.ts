@@ -1005,7 +1005,16 @@ function attachWebSocketServer(params: {
     socket: import("node:stream").Duplex,
     head: Buffer,
   ) => {
-    if (new URL(request.url ?? "/", "http://localhost").pathname !== "/api/v4/websocket") {
+    let url: URL;
+    try {
+      url = new URL(request.url ?? "/", "http://localhost");
+    } catch {
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", () =>
+        socket.destroy(),
+      );
+      return;
+    }
+    if (url.pathname !== "/api/v4/websocket") {
       socket.destroy();
       return;
     }

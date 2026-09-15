@@ -1017,7 +1017,15 @@ function attachGatewayServer(params: {
     noServer: true,
   });
   const onUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    let url: URL;
+    try {
+      url = new URL(request.url ?? "/", "http://127.0.0.1");
+    } catch {
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", () =>
+        socket.destroy(),
+      );
+      return;
+    }
     if (url.pathname !== "/gateway") {
       socket.destroy();
       return;
