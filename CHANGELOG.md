@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add public Slack Gateway callback binding for signed future events without replaying history. One destination retains ownership; abort stops callback work and server close waits for validation and delivery to drain.
 - Reject malformed Discord and Mattermost WebSocket upgrade URLs with HTTP 400 instead of terminating the provider server.
 
 ## 0.1.24 - 2026-09-14

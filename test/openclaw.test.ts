@@ -33,6 +33,7 @@ import {
 } from "../src/openclaw/artifact-generation.js";
 import { MATRIX_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/matrix.js";
 import { SIGNAL_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/signal.js";
+import { SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE } from "../src/openclaw/bridges/slack.js";
 import { TELEGRAM_NATIVE_CHAT_ID_MAX } from "../src/servers/telegram-identity.js";
 import { mattermostId } from "../src/servers/mattermost.js";
 import {
@@ -434,6 +435,10 @@ describe("OpenClaw local provider bridge", () => {
         return null;
       }
 
+      createGatewayEventsRequestUrl() {
+        return `https://${this.label}.test/events`;
+      }
+
       async probe() {
         return this.label;
       }
@@ -450,6 +455,13 @@ describe("OpenClaw local provider bridge", () => {
       "class-adapter",
     );
     expect(adapter.createBinding().channel).toBe("class-adapter");
+    expect(
+      adapter.createGatewayEventsRequestUrl?.({
+        baseUrl: "https://gateway.test",
+        cfg: {},
+        signal: new AbortController().signal,
+      }),
+    ).toBe("https://class-adapter.test/events");
     expect(
       adapter.createInbound({
         conversation: { id: "target", kind: "direct" },
@@ -1092,6 +1104,7 @@ describe("OpenClaw local provider bridge", () => {
     });
     try {
       expect(adapter.channel).toBe("telegram");
+      expect(adapter.bindGateway).toBeUndefined();
       expect(adapter.requiredPluginIds).toEqual(["telegram"]);
       expect(adapter.createGatewayConfig()).toMatchObject({
         channels: {
@@ -1132,6 +1145,75 @@ describe("OpenClaw local provider bridge", () => {
         },
       ),
     ).rejects.toBe(startupError);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [{}, "/slack/events"],
+    [{ webhookPath: " top-level " }, "/top-level"],
+    [
+      { webhookPath: "/top", accounts: { default: { webhookPath: " final/account " } } },
+      "/final/account",
+    ],
+    [{ webhookPath: "/top", accounts: { default: { webhookPath: " " } } }, "/slack/events"],
+    [
+      { webhookPath: "/top", accounts: { " DEFAULT ": { webhookPath: "/case-only" } } },
+      "/case-only",
+    ],
+    [
+      { accounts: { DEFAULT: { webhookPath: "/alias" }, default: { webhookPath: "/exact" } } },
+      "/exact",
+    ],
+  ] as const)(
+    "binds Slack using the final account path and native setter receiver",
+    async (slack, expectedPath) => {
+      const signal = new AbortController().signal;
+      const calls: Array<{ url: string; signal: AbortSignal }> = [];
+      const server = {
+        manifest: slackManifest,
+        close: vi.fn(async () => undefined),
+        async setEventsRequestUrl(params: { url: string; signal: AbortSignal }) {
+          expect(this).toBe(server);
+          calls.push(params);
+        },
+      };
+      const adapter = await startOpenClawCrablineAdapter(
+        { channel: "slack" },
+        { startServer: async () => server },
+      );
+      try {
+        expect(createOpenClawCrablineProviderBinding(slackManifest)).not.toHaveProperty(
+          "bindGateway",
+        );
+        if (!adapter.bindGateway) {
+          throw new Error("Running Slack adapter is missing callback binding.");
+        }
+        await adapter.bindGateway({
+          baseUrl: "http://127.0.0.1:54321/stale?token=unused#fragment",
+          cfg: { channels: { slack } },
+          signal,
+        });
+        expect(calls).toEqual([{ url: `http://127.0.0.1:54321${expectedPath}`, signal }]);
+      } finally {
+        await adapter.close();
+      }
+      expect(server.close).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("closes the native owner when a provider declares callbacks without a native setter", async () => {
+    const close = vi.fn(async () => undefined);
+    await expect(
+      startOpenClawCrablineAdapter(
+        { channel: "slack" },
+        {
+          // A callback provider cannot borrow a server with only the old common contract.
+          startServer: async () => ({ close, manifest }),
+          createProviderAdapter: () =>
+            SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE.createAdapter(slackManifest),
+        },
+      ),
+    ).rejects.toThrow("requires the provider server's Events API setter");
     expect(close).toHaveBeenCalledTimes(1);
   });
 

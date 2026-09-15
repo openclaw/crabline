@@ -55,7 +55,7 @@ type SlackMessage = {
 };
 
 type SlackServerState = {
-  activeEventDeliveries: Set<Promise<void>>;
+  activeEventOperations: Set<Promise<void>>;
   adminToken: string;
   allowLoopbackHttpEvents: boolean;
   botId: string;
@@ -135,6 +135,7 @@ export type SlackServerManifest = {
 export type StartedSlackServer = {
   close(): Promise<void>;
   manifest: SlackServerManifest;
+  setEventsRequestUrl(params: { url: string; signal: AbortSignal }): Promise<void>;
 };
 
 export type StartSlackServerParams = {
@@ -923,10 +924,10 @@ function scheduleSlackEventDelivery(
   }
   const delivery = deliverSlackEvent(state, event, state.deliveryAbortController.signal).finally(
     () => {
-      state.activeEventDeliveries.delete(delivery);
+      state.activeEventOperations.delete(delivery);
     },
   );
-  state.activeEventDeliveries.add(delivery);
+  state.activeEventOperations.add(delivery);
 }
 
 async function handleSlackApi(params: {
@@ -1358,7 +1359,7 @@ export async function startSlackServer(
   const externallyBound = !isLoopbackHost(host);
   const recorderPath = params.recorderPath ?? path.resolve(".crabline", "servers", "slack.jsonl");
   const state: SlackServerState = {
-    activeEventDeliveries: new Set(),
+    activeEventOperations: new Set(),
     adminToken: params.adminToken ?? randomBytes(24).toString("base64url"),
     allowLoopbackHttpEvents: isLoopbackHost(host),
     botId: params.botId ?? "BCRABLINE",
@@ -1404,11 +1405,58 @@ export async function startSlackServer(
   });
   const baseUrl = httpServer.baseUrl;
   const apiRoot = `${baseUrl}/api/`;
+  let removeBindingAbortListener: (() => void) | undefined;
   return {
+    async setEventsRequestUrl({ url, signal }) {
+      const bind = async () => {
+        const targetUrl = new URL(url);
+        const assertBindable = () => {
+          if (state.closing) {
+            throw new Error("Slack Events API binding cannot change after server close.");
+          }
+          signal.throwIfAborted();
+          state.deliveryAbortController.signal.throwIfAborted();
+          if (state.eventsRequestUrl && new URL(state.eventsRequestUrl).href !== targetUrl.href) {
+            throw new Error("Slack Events API request URL is already bound to another target.");
+          }
+        };
+        assertBindable();
+        // Repeating the same target never transfers the first binding's lifetime.
+        if (state.eventsRequestUrl) {
+          return;
+        }
+        const target = await validateWebhookTarget({
+          allowLoopbackHttp: state.allowLoopbackHttpEvents,
+          restrictPrivateAddresses: state.restrictEventTargets,
+          signal: AbortSignal.any([signal, state.deliveryAbortController.signal]),
+          url: targetUrl,
+        });
+        // Validation can yield to cancellation, close, or a competing first binding.
+        assertBindable();
+        if ("error" in target) {
+          throw new SlackEventTargetError(slackTargetRetryReason(target.error), target.error);
+        }
+        if (state.eventsRequestUrl) {
+          return;
+        }
+        state.eventsRequestUrl = targetUrl.href;
+        const onAbort = () => state.deliveryAbortController.abort(signal.reason);
+        signal.addEventListener("abort", onAbort, { once: true });
+        removeBindingAbortListener = () => signal.removeEventListener("abort", onAbort);
+      };
+      const binding = bind();
+      state.activeEventOperations.add(binding);
+      try {
+        await binding;
+      } finally {
+        state.activeEventOperations.delete(binding);
+      }
+    },
     close: createServerClose(state.recorder, async () => {
       state.closing = true;
       state.deliveryAbortController.abort();
-      await Promise.allSettled(state.activeEventDeliveries);
+      removeBindingAbortListener?.();
+      await Promise.allSettled(state.activeEventOperations);
       await httpServer.close();
     }),
     manifest: {

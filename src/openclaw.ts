@@ -504,8 +504,30 @@ export async function startOpenClawCrablineAdapter(
       dependencies.createProviderAdapter ?? createOpenClawCrablineProviderAdapter
     )(server.manifest);
     const binding = providerAdapter.createBinding();
+    const createEventsRequestUrl =
+      providerAdapter.createGatewayEventsRequestUrl?.bind(providerAdapter);
+    const setEventsRequestUrl = server.setEventsRequestUrl?.bind(server);
+    if (createEventsRequestUrl && !setEventsRequestUrl) {
+      throw new Error(
+        "OpenClaw callback binding requires the provider server's Events API setter.",
+      );
+    }
     return {
       ...binding,
+      ...(createEventsRequestUrl && setEventsRequestUrl
+        ? {
+            bindGateway: async (
+              context: Parameters<
+                NonNullable<StartedOpenClawCrablineCorrelatedAdapter["bindGateway"]>
+              >[0],
+            ) => {
+              await setEventsRequestUrl({
+                url: createEventsRequestUrl(context),
+                signal: context.signal,
+              });
+            },
+          }
+        : {}),
       close: server.close,
       createGatewayConfig: (openclawConfig = params.openclawConfig ?? {}) =>
         binding.createGatewayConfig(openclawConfig),

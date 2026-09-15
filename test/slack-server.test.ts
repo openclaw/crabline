@@ -10,6 +10,7 @@ import {
 } from "../src/index.js";
 import { ADMIN_TOKEN_HEADER } from "../src/servers/http.js";
 import { classifySlackRetryReason, postSlackEventToAddresses } from "../src/servers/slack.js";
+import * as webhookTarget from "../src/servers/webhook-target.js";
 import { createTempDir, disposeTempDir, requestHttp } from "./test-helpers.js";
 
 const servers: StartedSlackServer[] = [];
@@ -825,6 +826,168 @@ describe("slack local provider server", () => {
       ok: true,
     });
   });
+
+  it("binds future inbound delivery once without replaying native history or transferring its lifetime", async () => {
+    const server = await startTestSlackServer();
+    const received: Array<{ body: string; signature: string; timestamp: string }> = [];
+    let resolveDelivered: () => void = () => undefined;
+    const delivered = new Promise<void>((resolve) => {
+      resolveDelivered = resolve;
+    });
+    const receiver = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) {
+        chunks.push(Buffer.from(chunk));
+      }
+      received.push({
+        body: Buffer.concat(chunks).toString("utf8"),
+        signature: String(request.headers["x-slack-signature"]),
+        timestamp: String(request.headers["x-slack-request-timestamp"]),
+      });
+      response.end();
+      resolveDelivered();
+    });
+    try {
+      await new Promise<void>((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+      const address = receiver.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Missing callback receiver address.");
+      }
+      const owner = new AbortController();
+      const repeated = new AbortController();
+      const url = `http://127.0.0.1:${address.port}/slack/events`;
+      const postInbound = async (text: string) => {
+        const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json", [ADMIN_TOKEN_HEADER]: "admin-token" },
+          body: JSON.stringify({ channel: "D1234567890", user: "U1234567890", text }),
+        });
+        await expect(response.json()).resolves.toMatchObject({ ok: true, message: { text } });
+      };
+      await postInbound("unbound native history");
+      expect(received).toEqual([]);
+      await server.setEventsRequestUrl({ url, signal: owner.signal });
+      await server.setEventsRequestUrl({ url, signal: owner.signal });
+      await server.setEventsRequestUrl({ url, signal: repeated.signal });
+      repeated.abort();
+      await expect(
+        server.setEventsRequestUrl({ url: `${url}/other`, signal: owner.signal }),
+      ).rejects.toThrow("already bound to another target");
+      await postInbound("bound fresh event");
+      await delivered;
+      expect(received).toHaveLength(1);
+      const event = received[0]!;
+      expect(JSON.parse(event.body)).toMatchObject({ event: { text: "bound fresh event" } });
+      expect(event.signature).toBe(
+        `v0=${createHmac("sha256", server.manifest.signingSecret)
+          .update(`v0:${event.timestamp}:${event.body}`)
+          .digest("hex")}`,
+      );
+      const history = await slackApi(server, "conversations.history", { channel: "D1234567890" });
+      await expect(history.json()).resolves.toMatchObject({
+        messages: [{ text: "bound fresh event" }, { text: "unbound native history" }],
+      });
+      owner.abort(new Error("fixture stopped"));
+      await expect(
+        server.setEventsRequestUrl({ url, signal: new AbortController().signal }),
+      ).rejects.toThrow("fixture stopped");
+      await expect((await slackApi(server, "auth.test")).json()).resolves.toMatchObject({
+        ok: true,
+      });
+    } finally {
+      await Promise.all([
+        server.close(),
+        new Promise<void>((resolve, reject) => {
+          receiver.close((error) => (error ? reject(error) : resolve()));
+        }),
+      ]);
+    }
+  });
+
+  it("preserves startup callback ownership and validates a new target before binding", async () => {
+    const signal = new AbortController().signal;
+    const url = "http://127.0.0.1:2468/slack/events";
+    const startup = await startTestSlackServer({ eventsRequestUrl: url });
+    await startup.setEventsRequestUrl({ url, signal });
+    await expect(startup.setEventsRequestUrl({ url: `${url}/other`, signal })).rejects.toThrow(
+      "already bound to another target",
+    );
+    const unbound = await startTestSlackServer();
+    await expect(
+      unbound.setEventsRequestUrl({ url: "http://example.test/events", signal }),
+    ).rejects.toThrow("https-required");
+    await expect(unbound.setEventsRequestUrl({ url, signal })).resolves.toBeUndefined();
+  });
+
+  it.each(["abort", "close", "conflict"] as const)(
+    "rechecks %s after asynchronous target validation and drains binding on close",
+    async (operation) => {
+      const server = await startTestSlackServer();
+      const owner = new AbortController();
+      let finishValidation: (target: webhookTarget.ValidatedWebhookTarget) => void = () =>
+        undefined;
+      let validationSignal: AbortSignal | undefined;
+      const validation = new Promise<webhookTarget.ValidatedWebhookTarget>((resolve) => {
+        finishValidation = resolve;
+      });
+      vi.spyOn(webhookTarget, "validateWebhookTarget").mockImplementationOnce((params) => {
+        validationSignal = params.signal;
+        return validation;
+      });
+      const binding = server.setEventsRequestUrl({
+        url: "http://127.0.0.1:2468/events",
+        signal: owner.signal,
+      });
+      const rejection = expect(binding).rejects.toThrow(
+        {
+          abort: "binding owner stopped",
+          close: "after server close",
+          conflict: "already bound to another target",
+        }[operation],
+      );
+      let closing: Promise<void> | undefined;
+      let closed = false;
+      try {
+        if (operation === "abort") {
+          owner.abort(new Error("binding owner stopped"));
+        } else if (operation === "close") {
+          closing = server.close().then(() => {
+            closed = true;
+          });
+        } else {
+          await server.setEventsRequestUrl({
+            url: "http://127.0.0.1:2469/winner",
+            signal: new AbortController().signal,
+          });
+        }
+        if (operation !== "conflict") {
+          expect(validationSignal?.aborted).toBe(true);
+        }
+        expect(closed).toBe(false);
+        // A validator settling late cannot publish after cancellation or a competing bind.
+        finishValidation({ addresses: undefined });
+        await rejection;
+        await closing;
+        if (operation === "close") {
+          expect(closed).toBe(true);
+          await expect(
+            server.setEventsRequestUrl({
+              url: "http://127.0.0.1:2468/events",
+              signal: new AbortController().signal,
+            }),
+          ).rejects.toThrow("after server close");
+        } else {
+          await server.setEventsRequestUrl({
+            url: "http://127.0.0.1:2469/winner",
+            signal: new AbortController().signal,
+          });
+        }
+      } finally {
+        finishValidation({ addresses: undefined });
+        await Promise.allSettled([binding, rejection, ...(closing ? [closing] : [])]);
+      }
+    },
+  );
 
   it("delivers authenticated admin inbound through signed Slack Events API requests", async () => {
     type DeliveredEvent = {
