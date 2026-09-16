@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Keep Discord reply history readable by expanding only the immediate referenced message in REST responses, Gateway events, and admin ingress results.
+
 ## 0.1.25 - 2026-09-15
 
 **Highlights:** OpenClaw QA can publish channel readiness evidence from the same running Crabline adapter used by the scenario, without starting a second provider server.

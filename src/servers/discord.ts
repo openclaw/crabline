@@ -594,12 +594,7 @@ function createMessage(params: {
     mention_everyone: /@(everyone|here)\b/u.test(content),
     mention_roles: [...content.matchAll(/<@&(\d{17,20})>/gu)].map((match) => match[1]!),
     mentions: parseMentions(content, params.state),
-    ...(reference
-      ? {
-          message_reference: reference,
-          ...(referencedMessage !== undefined ? { referenced_message: referencedMessage } : {}),
-        }
-      : {}),
+    ...(reference ? { message_reference: reference } : {}),
     ...(typeof params.body.nonce === "string" || typeof params.body.nonce === "number"
       ? { nonce: params.body.nonce }
       : {}),
@@ -794,20 +789,11 @@ function attachmentContentDisposition(filename: string): string {
   return `attachment; filename="${fallback || "attachment"}"; filename*=UTF-8''${encoded}`;
 }
 
-function messageForUser(
+function messageSnapshotForUser(
   message: DiscordMessage,
   user: DiscordUser,
   state: DiscordServerState,
 ): DiscordMessage {
-  const referencedMessage = message.message_reference
-    ? canAccessChannel(state, state.channels.get(message.message_reference.channel_id), user.id)
-      ? (findMessage(
-          state,
-          message.message_reference.channel_id,
-          message.message_reference.message_id,
-        ) ?? null)
-      : null
-    : undefined;
   return {
     ...message,
     attachments: message.attachments.map((attachment) =>
@@ -817,13 +803,32 @@ function messageForUser(
       ...reaction,
       me: state.reactionActors.get(reactionKey(message.id, reaction.emoji))?.has(user.id) ?? false,
     })),
-    ...(referencedMessage !== undefined
-      ? {
-          referenced_message: referencedMessage
-            ? messageForUser(referencedMessage, user, state)
-            : null,
-        }
-      : {}),
+  };
+}
+
+function messageForUser(
+  message: DiscordMessage,
+  user: DiscordUser,
+  state: DiscordServerState,
+): DiscordMessage {
+  const snapshot = messageSnapshotForUser(message, user, state);
+  const reference = message.message_reference;
+  if (!reference) {
+    return snapshot;
+  }
+  const referencedMessage = canAccessChannel(
+    state,
+    state.channels.get(reference.channel_id),
+    user.id,
+  )
+    ? findMessage(state, reference.channel_id, reference.message_id)
+    : undefined;
+  return {
+    ...snapshot,
+    // Expanding ancestors recursively makes a page of replies grow quadratically.
+    referenced_message: referencedMessage
+      ? messageSnapshotForUser(referencedMessage, user, state)
+      : null,
   };
 }
 
@@ -1381,7 +1386,14 @@ async function handleAdminInbound(params: {
     dispatchGatewayEvent(params.state, "CHANNEL_CREATE", channel);
   }
   dispatchMessageGatewayEvent(params.state, "MESSAGE_CREATE", message);
-  return discordJson({ event: { d: message, op: 0, t: "MESSAGE_CREATE" }, message });
+  const serialized = messageForUser(
+    message,
+    directBotUserId === params.state.driverBotUser.id
+      ? params.state.driverBotUser
+      : params.state.botUser,
+    params.state,
+  );
+  return discordJson({ event: { d: serialized, op: 0, t: "MESSAGE_CREATE" }, message: serialized });
 }
 
 async function handleDiscordApi(params: {
