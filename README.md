@@ -272,6 +272,10 @@ voice-state plus TLS WebSocket/UDP voice negotiation. Admin ingress turns an
 injected user message into a normal `MESSAGE_CREATE` Gateway dispatch. Trust the
 voice CA only in the isolated test client process.
 
+Replies include the current immediate parent message, without recursively
+embedding earlier replies. Each parent retains its `message_reference` for
+explicit lookup; deleted parents return `referenced_message: null`.
+
 This local provider server is separate from the fixture-level Discord local
 mock provider listed under Built-In Mock Channels. The fixture adapter models
 Discord interactions directly for Crabline commands; the server lets a real

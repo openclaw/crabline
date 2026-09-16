@@ -3,6 +3,13 @@
 ## Unreleased
 
 - Add public Slack Gateway callback binding for signed future events without replaying history. One destination retains ownership; abort stops callback work and server close waits for validation and delivery to drain.
+- Keep Discord reply history readable by expanding only the immediate referenced message in REST responses, Gateway events, and admin ingress results.
+
+## 0.1.25 - 2026-09-15
+
+**Highlights:** OpenClaw QA can publish channel readiness evidence from the same running Crabline adapter used by the scenario, without starting a second provider server.
+
+- Add an OpenClaw readiness helper for caller-owned adapters and recorder snapshots, preserving adapter lifecycle ownership while requiring accepted provider-native traffic as evidence.
 - Reject malformed Discord and Mattermost WebSocket upgrade URLs with HTTP 400 instead of terminating the provider server.
 
 ## 0.1.24 - 2026-09-14

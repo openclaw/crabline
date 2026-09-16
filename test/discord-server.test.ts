@@ -261,15 +261,11 @@ describe("Discord local provider server", () => {
       bot: { id: server.manifest.driverBotUserId },
       owner: { id: server.manifest.driverBotUserId },
     });
-    const gateway = new WebSocket(server.manifest.endpoints.gatewayUrl);
-    const hello = nextMessage(gateway);
-    await waitForOpen(gateway);
-    await hello;
-    const ready = nextMessage(gateway);
-    gateway.send(
-      JSON.stringify({ d: { intents: 0, token: server.manifest.driverBotToken }, op: 2 }),
-    );
-    await expect(ready).resolves.toMatchObject({
+    const { socket: gateway, ready } = await identifyGateway({
+      server,
+      token: server.manifest.driverBotToken,
+    });
+    expect(ready).toMatchObject({
       d: { user: { id: server.manifest.driverBotUserId } },
       t: "READY",
     });
@@ -832,6 +828,77 @@ describe("Discord local provider server", () => {
     const recorder = await fs.readFile(server.manifest.recorderPath, "utf8");
     expect(recorder).toContain(`/api/v10/channels/${CHANNEL_ID}/messages`);
     expect(recorder).toContain('"accepted":true');
+  });
+
+  it("bounds reply references across REST, admin ingress, and Gateway dispatches", async () => {
+    const server = await startTestServer();
+    const url = `${server.manifest.endpoints.apiRoot}/v10/channels/${CHANNEL_ID}/messages`;
+    const messages: Array<{ id: string }> = [];
+    for (const content of ["root", "parent", "reply"]) {
+      const previous = messages.at(-1);
+      const response = await fetch(url, {
+        body: JSON.stringify({
+          content,
+          ...(previous ? { message_reference: { message_id: previous.id } } : {}),
+        }),
+        headers: auth(server),
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      const message = (await response.json()) as { id: string };
+      expect(message).not.toHaveProperty("referenced_message.referenced_message");
+      messages.push(message);
+    }
+
+    const { socket } = await identifyGateway({ server, token: server.manifest.botToken });
+    const dispatched = nextMessage(socket);
+    const injected = await fetch(server.manifest.endpoints.adminInboundUrl, {
+      body: JSON.stringify({
+        channelId: CHANNEL_ID,
+        content: "injected reply",
+        guildId: GUILD_ID,
+        message_reference: { message_id: messages[2]!.id },
+        senderId: USER_ID,
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-crabline-admin-token": server.manifest.adminToken,
+      },
+      method: "POST",
+    });
+    expect(injected.status).toBe(200);
+    const ingress = (await injected.json()) as Record<string, unknown>;
+    expect(ingress).toMatchObject({
+      message: { referenced_message: { content: "reply", id: messages[2]!.id } },
+    });
+    expect(ingress).not.toHaveProperty("message.referenced_message.referenced_message");
+    expect(ingress).not.toHaveProperty("event.d.referenced_message.referenced_message");
+    const event = await dispatched;
+    expect(event).toMatchObject({
+      d: { referenced_message: { content: "reply", id: messages[2]!.id } },
+      t: "MESSAGE_CREATE",
+    });
+    expect(event).not.toHaveProperty("d.referenced_message.referenced_message");
+
+    const updated = nextMessage(socket);
+    const edit = await fetch(`${url}/${messages[1]!.id}`, {
+      body: JSON.stringify({ content: "edited parent" }),
+      headers: auth(server),
+      method: "PATCH",
+    });
+    expect(edit.status).toBe(200);
+    await updated;
+    const fetched = await fetch(`${url}/${messages[2]!.id}`, { headers: auth(server) });
+    const reply = (await fetched.json()) as Record<string, unknown>;
+    expect(reply).toMatchObject({ referenced_message: { content: "edited parent" } });
+    expect(reply).not.toHaveProperty("referenced_message.referenced_message");
+    const history = await fetch(url, { headers: auth(server) });
+    const entries = (await history.json()) as Array<Record<string, unknown>>;
+    expect(entries).toHaveLength(4);
+    for (const entry of entries) {
+      expect(entry).not.toHaveProperty("referenced_message.referenced_message");
+    }
+    socket.close();
   });
 
   it("resumes a retained Gateway session after a normal disconnect", async () => {

@@ -402,6 +402,11 @@ command registration, voice-state dispatch plus an authenticated TLS WebSocket/U
 voice handshake, and a v10 JSON Gateway with HELLO, IDENTIFY, READY, heartbeat
 acknowledgement, resume, and deterministic shutdown.
 
+Reply payloads include only the immediate `referenced_message`, with current
+content, reactions, and attachment access. Earlier replies remain addressable
+through `message_reference`, but are not recursively embedded in REST, Gateway,
+or admin ingress responses. Deleted parents produce `referenced_message: null`.
+
 Current fidelity limits are one Gateway shard, no transport compression or voice
 media encryption/streaming, and no missed-dispatch replay: resume succeeds only
 from the retained session's latest sequence. Interaction dispatch, audit logs,
