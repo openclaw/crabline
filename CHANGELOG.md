@@ -2,7 +2,12 @@
 
 ## Unreleased
 
+## 0.1.26 - 2026-09-16
+
+**Highlights:** OpenClaw QA readiness publication now accepts mixed provider API and admin-ingress recorder evidence while continuing to require a successful provider API probe.
+
 - Keep Discord reply history readable by expanding only the immediate referenced message in REST responses, Gateway events, and admin ingress results.
+- Accept canonical admin-ingress recorder entries without an `accepted` field when publishing OpenClaw readiness artifacts; an accepted provider API probe remains mandatory.
 
 ## 0.1.25 - 2026-09-15
 
