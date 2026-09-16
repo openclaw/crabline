@@ -99,6 +99,24 @@ export const SLACK_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrablinePro
   provider: "slack",
   createAdapter(slack) {
     return {
+      createGatewayEventsRequestUrl({ baseUrl, cfg }) {
+        const channels = isRecord(cfg.channels) ? cfg.channels : {};
+        const config = isRecord(channels.slack) ? channels.slack : {};
+        const accounts = isRecord(config.accounts) ? config.accounts : {};
+        // OpenClaw preserves account-key spelling; an exact key wins over case-only aliases.
+        const accountKey = Object.hasOwn(accounts, DEFAULT_ACCOUNT_ID)
+          ? DEFAULT_ACCOUNT_ID
+          : Object.keys(accounts).find((key) => key.trim().toLowerCase() === DEFAULT_ACCOUNT_ID);
+        const accountConfig = accountKey === undefined ? undefined : accounts[accountKey];
+        const account = isRecord(accountConfig) ? accountConfig : {};
+        const webhookPath =
+          readString(account.webhookPath ?? config.webhookPath) ?? "/slack/events";
+        const url = new URL(baseUrl);
+        url.pathname = webhookPath.startsWith("/") ? webhookPath : `/${webhookPath}`;
+        url.search = "";
+        url.hash = "";
+        return url.href;
+      },
       async probe(signal) {
         const response = await fetch(`${slack.endpoints.apiRoot}auth.test`, {
           headers: { authorization: `Bearer ${slack.botToken}` },

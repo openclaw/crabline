@@ -71,7 +71,7 @@ export type CrablineServerManifest =
   | WhatsAppServerManifest
   | ZaloServerManifest;
 
-export type StartedCrablineServer =
+export type StartedCrablineServer = (
   | StartedDiscordServer
   | StartedMattermostServer
   | StartedMatrixServer
@@ -79,7 +79,9 @@ export type StartedCrablineServer =
   | StartedSlackServer
   | StartedTelegramServer
   | StartedWhatsAppServer
-  | StartedZaloServer;
+  | StartedZaloServer
+) &
+  Partial<Pick<StartedSlackServer, "setEventsRequestUrl">>;
 
 export type StartCrablineServerParams =
   | (StartDiscordServerParams & { channel: "discord" })

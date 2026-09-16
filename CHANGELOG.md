@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add public Slack Gateway callback binding for signed future events without replaying history. One destination retains ownership; abort stops callback work and server close waits for validation and delivery to drain.
 - Keep Discord reply history readable by expanding only the immediate referenced message in REST responses, Gateway events, and admin ingress results.
 
 ## 0.1.25 - 2026-09-15
