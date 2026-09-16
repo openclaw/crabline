@@ -112,19 +112,19 @@ function hasStringRecordValues(value: unknown): value is Record<string, string> 
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }
 
-type OpenClawCrablineRecorderEvent = {
-  accepted: boolean;
+type OpenClawCrablineRecorderEventBase = {
   at: string;
   method: string;
   path: string;
   query: Record<string, string>;
-  type: "admin" | "api";
 };
+
+type OpenClawCrablineRecorderEvent = OpenClawCrablineRecorderEventBase &
+  ({ accepted: boolean; type: "api" } | { accepted?: boolean; type: "admin" });
 
 function isOpenClawCrablineRecorderEvent(value: unknown): value is OpenClawCrablineRecorderEvent {
   return (
     isRecord(value) &&
-    typeof value.accepted === "boolean" &&
     typeof value.at === "string" &&
     Number.isFinite(Date.parse(value.at)) &&
     typeof value.method === "string" &&
@@ -132,7 +132,9 @@ function isOpenClawCrablineRecorderEvent(value: unknown): value is OpenClawCrabl
     typeof value.path === "string" &&
     value.path.startsWith("/") &&
     hasStringRecordValues(value.query) &&
-    (value.type === "admin" || value.type === "api")
+    ((value.type === "api" && typeof value.accepted === "boolean") ||
+      (value.type === "admin" &&
+        (value.accepted === undefined || typeof value.accepted === "boolean")))
   );
 }
 

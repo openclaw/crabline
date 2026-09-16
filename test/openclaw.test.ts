@@ -3760,6 +3760,20 @@ describe("OpenClaw local provider bridge", () => {
       );
       expect(rejected.status).toBe(400);
 
+      const inbound = adapter.createInbound({
+        input: {
+          conversation: { id: "readiness-group", kind: "group" },
+          senderId: "readiness-sender",
+          text: "mixed recorder evidence",
+        },
+      });
+      const inboundResponse = await fetch(adapter.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify(inbound.providerBody),
+        headers: inbound.providerHeaders,
+        method: "POST",
+      });
+      expect(inboundResponse.status).toBe(200);
+
       const result = await runProviderReadinessWithDependencies(
         {
           adapter: { ...adapter, close },
@@ -3773,6 +3787,7 @@ describe("OpenClaw local provider bridge", () => {
       expect(close).not.toHaveBeenCalled();
       await expect(adapter.probe()).resolves.toMatchObject({ ok: true });
       await expect(fs.readFile(recorderPath, "utf8")).resolves.toContain('"type":"api"');
+      await expect(fs.readFile(recorderPath, "utf8")).resolves.toContain('"type":"admin"');
       await expect(fs.readFile(recorderPath, "utf8")).resolves.toContain('"accepted":false');
       await expect(
         fs.readFile(
