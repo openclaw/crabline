@@ -1,5 +1,7 @@
+import { once } from "node:events";
 import fs from "node:fs/promises";
 import { Agent, ServerResponse } from "node:http";
+import { connect } from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startSignalServer, type StartedSignalServer } from "../src/index.js";
@@ -218,6 +220,49 @@ describe("signal local provider server", () => {
     });
     expect(rejected.status).toBe(400);
   });
+
+  it.each(["//[", "//[]/x", "http://[::1"])(
+    "returns 400 for malformed request-target %s and keeps serving",
+    async (target) => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const server = await startSignalServer({
+        recorderPath: path.join(directory, "signal-invalid-url.jsonl"),
+      });
+      servers.push(server);
+
+      const url = new URL(server.manifest.baseUrl);
+      const raw = connect({ host: url.hostname, port: Number(url.port) });
+      const closed = once(raw, "close");
+      try {
+        await once(raw, "connect");
+        let received = "";
+        raw.on("data", (chunk: Buffer) => {
+          received += chunk.toString("latin1");
+        });
+        let timedOut = false;
+        raw.setTimeout(1_000, () => {
+          timedOut = true;
+          raw.destroy();
+        });
+        raw.write(`GET ${target} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`);
+        await closed;
+        expect(timedOut).toBe(false);
+        expect(received.split("\r\n", 1)[0]).toBe("HTTP/1.1 400 Bad Request");
+        expect(received).toContain('"error":"Invalid request URL"');
+      } finally {
+        raw.destroy();
+        await closed;
+      }
+
+      const stillServing = await requestHttp({
+        method: "GET",
+        url: `${server.manifest.baseUrl}/not-a-signal-route`,
+      });
+      expect(stillServing.status).toBe(404);
+      expect(stillServing.body).toBe("not found");
+    },
+  );
 
   it("serves native RPC and delivers authenticated inbound messages over SSE", async () => {
     const directory = await createTempDir();
