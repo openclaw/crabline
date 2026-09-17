@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.27 - 2026-09-16
+
+**Highlights:** Matrix version discovery now records explicit accepted evidence, allowing OpenClaw QA readiness snapshots to validate mixed recorder output without weakening the shared evidence contract.
+
+- Record successful Matrix `/_matrix/client/versions` discovery requests with `accepted: true` in provider recorder events.
+
 ## 0.1.26 - 2026-09-16
 
 **Highlights:** OpenClaw QA readiness publication now accepts mixed provider API and admin-ingress recorder evidence while continuing to require a successful provider API probe.
