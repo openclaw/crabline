@@ -15,7 +15,7 @@ importers:
     dependencies:
       '@types/node':
         specifier: ^22.20.1
-        version: 22.20.1
+        version: 22.20.2
       commander:
         specifier: ^15.0.0
         version: 15.0.0
@@ -28,12 +28,12 @@ importers:
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
-      protobufjs:
-        specifier: 7.6.5
-        version: 7.6.5
       proper-lockfile:
         specifier: 4.1.2
         version: 4.1.2
+      protobufjs:
+        specifier: 7.6.5
+        version: 7.6.5
       re2js:
         specifier: 2.8.6
         version: 2.8.6
@@ -42,10 +42,10 @@ importers:
         version: 8.21.3
       yaml:
         specifier: ^2.9.0
-        version: 2.9.0
+        version: 2.9.1
       zod:
         specifier: ^4.4.3
-        version: 4.5.4
+        version: 4.6.5
     devDependencies:
       '@larksuiteoapi/node-sdk':
         specifier: 1.73.0
@@ -64,7 +64,7 @@ importers:
         version: 5.0.0(vitest@5.0.0)
       baileys:
         specifier: 7.0.0-rc14
-        version: 7.0.0-rc14(sharp@0.35.4(@types/node@22.20.1))(supports-color@7.2.0)
+        version: 7.0.0-rc14(sharp@0.35.4(@types/node@22.20.2))(supports-color@10.2.2)
       matrix-js-sdk:
         specifier: 42.3.0
         version: 42.3.0
@@ -88,7 +88,7 @@ importers:
         version: '@typescript/typescript6@6.0.2'
       vitest:
         specifier: ^5.0.0
-        version: 5.0.0(@types/node@22.20.1)(@vitest/coverage-v8@5.0.0)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
+        version: 5.0.0(@types/node@22.20.2)(@vitest/coverage-v8@5.0.0)(vite@8.2.2(@types/node@22.20.2)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.1))
 
 packages:
 
@@ -907,8 +907,8 @@ packages:
   '@types/events@3.0.3':
     resolution: {integrity: sha512-trOc4AAUThEz9hapPtSd7wf5tiQKvTtu5b371UxXdTuqzIh0ArcRspRP0i0Viu+LXstIQ1z96t1nsPxT9ol01g==}
 
-  '@types/node@22.20.1':
-    resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
+  '@types/node@22.20.2':
+    resolution: {integrity: sha512-xlvWf4Vs9n1PEVYwP1n4vvG07M6y8WgvJ2t0vbrWTmijsIHp1cS+uJ2kMIRdY3nHZK0nCYKrPeD171+SzF4/zw==}
 
   '@types/proper-lockfile@4.1.4':
     resolution: {integrity: sha512-uo2ABllncSqg9F1D4nugVl9v93RmjxF6LJzQLMLDdPaXCUIDPeOJ21Gbqi43xNKzBi/WQ0Q0dICqufzQbMjipQ==}
@@ -1260,10 +1260,6 @@ packages:
 
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
-
-  has-flag@4.0.0:
-    resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
-    engines: {node: '>=8'}
 
   has-symbols@1.1.0:
     resolution: {integrity: sha512-1cDNdwJ2Jaohmb3sg4OmKaMBwuC48sYni5HUw2DvsC8LjGTLK9h+eb1X6RyuOHe4hT0ULCW68iomhjUoKUqlPQ==}
@@ -1635,10 +1631,6 @@ packages:
     resolution: {integrity: sha512-SS+jx45GF1QjgEXQx4NJZV9ImqmO2NPz5FNsIHrsDjh2YsHnawpan7SNQ1o8NuhrbHZy9AZhIoCUiCeaW/C80g==}
     engines: {node: '>=18'}
 
-  supports-color@7.2.0:
-    resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
-    engines: {node: '>=8'}
-
   thread-stream@3.2.0:
     resolution: {integrity: sha512-zLBvqpwr4Esa0kRjcrzGU6zL25lePWaCLMx0RQFrmteozIfeNdaMLpG5U7PeHzvlFkAWaRKA9/KVW4F60iB+qw==}
 
@@ -1801,13 +1793,13 @@ packages:
       utf-8-validate:
         optional: true
 
-  yaml@2.9.0:
-    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
+  yaml@2.9.1:
+    resolution: {integrity: sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw==}
     engines: {node: '>= 14.6'}
     hasBin: true
 
-  zod@4.5.4:
-    resolution: {integrity: sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==}
+  zod@4.6.5:
+    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
 
 snapshots:
 
@@ -2280,9 +2272,9 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
-  '@tokenizer/inflate@0.4.1(supports-color@7.2.0)':
+  '@tokenizer/inflate@0.4.1(supports-color@10.2.2)':
     dependencies:
-      debug: 4.4.3(supports-color@7.2.0)
+      debug: 4.4.3(supports-color@10.2.2)
       token-types: 6.1.2
     transitivePeerDependencies:
       - supports-color
@@ -2300,7 +2292,7 @@ snapshots:
 
   '@types/events@3.0.3': {}
 
-  '@types/node@22.20.1':
+  '@types/node@22.20.2':
     dependencies:
       undici-types: 6.21.0
 
@@ -2312,7 +2304,7 @@ snapshots:
 
   '@types/ws@8.18.1':
     dependencies:
-      '@types/node': 22.20.1
+      '@types/node': 22.20.2
 
   '@typescript/typescript-aix-ppc64@7.0.2':
     optional: true
@@ -2388,7 +2380,7 @@ snapshots:
       obug: 2.1.4
       std-env: 4.2.0
       tinyrainbow: 3.1.1
-      vitest: 5.0.0(@types/node@22.20.1)(@vitest/coverage-v8@5.0.0)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
+      vitest: 5.0.0(@types/node@22.20.2)(@vitest/coverage-v8@5.0.0)(vite@8.2.2(@types/node@22.20.2)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.1))
 
   '@vitest/istanbul-lib-coverage@1.0.1': {}
 
@@ -2396,14 +2388,14 @@ snapshots:
     dependencies:
       '@vitest/istanbul-lib-coverage': 1.0.1
 
-  '@vitest/mocker@5.0.0(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))':
+  '@vitest/mocker@5.0.0(vite@8.2.2(@types/node@22.20.2)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.1))':
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       '@vitest/spy': 5.0.0
       estree-walker: 3.0.3
       magic-string: 1.2.3
     optionalDependencies:
-      vite: 8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0)
+      vite: 8.2.2(@types/node@22.20.2)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.1)
 
   '@vitest/spy@5.0.0': {}
 
@@ -2441,18 +2433,18 @@ snapshots:
       - debug
       - supports-color
 
-  baileys@7.0.0-rc14(sharp@0.35.4(@types/node@22.20.1))(supports-color@7.2.0):
+  baileys@7.0.0-rc14(sharp@0.35.4(@types/node@22.20.2))(supports-color@10.2.2):
     dependencies:
       '@cacheable/node-cache': 1.7.6
       '@hapi/boom': 9.1.4
       async-mutex: 0.5.0
       libsignal: 6.0.0
       lru-cache: 11.5.2
-      music-metadata: 11.15.0(supports-color@7.2.0)
+      music-metadata: 11.15.0(supports-color@10.2.2)
       p-queue: 9.3.3
       pino: 9.14.0
       protobufjs: 7.6.6
-      sharp: 0.35.4(@types/node@22.20.1)
+      sharp: 0.35.4(@types/node@22.20.2)
       whatsapp-rust-bridge: 0.5.4
       ws: 8.21.3
     transitivePeerDependencies:
@@ -2501,12 +2493,6 @@ snapshots:
       ms: 2.1.3
     optionalDependencies:
       supports-color: 10.2.2
-
-  debug@4.4.3(supports-color@7.2.0):
-    dependencies:
-      ms: 2.1.3
-    optionalDependencies:
-      supports-color: 7.2.0
 
   delayed-stream@1.0.0: {}
 
@@ -2578,9 +2564,9 @@ snapshots:
     optionalDependencies:
       picomatch: 4.0.7
 
-  file-type@21.3.4(supports-color@7.2.0):
+  file-type@21.3.4(supports-color@10.2.2):
     dependencies:
-      '@tokenizer/inflate': 0.4.1(supports-color@7.2.0)
+      '@tokenizer/inflate': 0.4.1(supports-color@10.2.2)
       strtok3: 10.3.5
       token-types: 6.1.2
       uint8array-extras: 1.5.0
@@ -2625,9 +2611,6 @@ snapshots:
   gopd@1.2.0: {}
 
   graceful-fs@4.2.11: {}
-
-  has-flag@4.0.0:
-    optional: true
 
   has-symbols@1.1.0: {}
 
@@ -2773,13 +2756,13 @@ snapshots:
 
   ms@2.1.3: {}
 
-  music-metadata@11.15.0(supports-color@7.2.0):
+  music-metadata@11.15.0(supports-color@10.2.2):
     dependencies:
       '@borewit/text-codec': 0.2.2
       '@tokenizer/token': 0.3.0
       content-type: 2.1.0
-      debug: 4.4.3(supports-color@7.2.0)
-      file-type: 21.3.4(supports-color@7.2.0)
+      debug: 4.4.3(supports-color@10.2.2)
+      file-type: 21.3.4(supports-color@10.2.2)
       media-typer: 2.0.0
       strtok3: 10.3.5
       token-types: 6.1.2
@@ -2912,7 +2895,7 @@ snapshots:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.2
-      '@types/node': 22.20.1
+      '@types/node': 22.20.2
       long: 5.3.2
 
   protobufjs@7.6.6:
@@ -2926,7 +2909,7 @@ snapshots:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.2
-      '@types/node': 22.20.1
+      '@types/node': 22.20.2
       long: 5.3.2
 
   proxy-from-env@2.1.0: {}
@@ -2975,7 +2958,7 @@ snapshots:
 
   semver@7.8.5: {}
 
-  sharp@0.35.4(@types/node@22.20.1):
+  sharp@0.35.4(@types/node@22.20.2):
     dependencies:
       '@img/colour': 1.1.0
       detect-libc: 2.1.2
@@ -3006,7 +2989,7 @@ snapshots:
       '@img/sharp-win32-arm64': 0.35.4
       '@img/sharp-win32-ia32': 0.35.4
       '@img/sharp-win32-x64': 0.35.4
-      '@types/node': 22.20.1
+      '@types/node': 22.20.2
 
   side-channel-list@1.0.1:
     dependencies:
@@ -3056,11 +3039,7 @@ snapshots:
     dependencies:
       '@tokenizer/token': 0.3.0
 
-  supports-color@10.2.2: {}
-
-  supports-color@7.2.0:
-    dependencies:
-      has-flag: 4.0.0
+  supports-color@10.2.2:
     optional: true
 
   thread-stream@3.2.0:
@@ -3125,7 +3104,7 @@ snapshots:
 
   unhomoglyph@1.0.6: {}
 
-  vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0):
+  vite@8.2.2(@types/node@22.20.2)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.1):
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.7
@@ -3133,16 +3112,16 @@ snapshots:
       rolldown: 1.2.7
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 22.20.1
+      '@types/node': 22.20.2
       esbuild: 0.28.2
       fsevents: 2.3.3
       tsx: 4.23.13
-      yaml: 2.9.0
+      yaml: 2.9.1
 
-  vitest@5.0.0(@types/node@22.20.1)(@vitest/coverage-v8@5.0.0)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0)):
+  vitest@5.0.0(@types/node@22.20.2)(@vitest/coverage-v8@5.0.0)(vite@8.2.2(@types/node@22.20.2)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.1)):
     dependencies:
       '@types/chai': 5.2.3
-      '@vitest/mocker': 5.0.0(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
+      '@vitest/mocker': 5.0.0(vite@8.2.2(@types/node@22.20.2)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.1))
       chai: 6.2.2
       es-module-lexer: 2.3.2
       expect-type: 1.4.0
@@ -3153,10 +3132,10 @@ snapshots:
       tinybench: 6.1.4
       tinyexec: 1.3.0
       tinyglobby: 0.2.17
-      vite: 8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0)
+      vite: 8.2.2(@types/node@22.20.2)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.1)
       why-is-node-running: 2.3.0
     optionalDependencies:
-      '@types/node': 22.20.1
+      '@types/node': 22.20.2
       '@vitest/coverage-v8': 5.0.0(vitest@5.0.0)
     transitivePeerDependencies:
       - msw
@@ -3172,6 +3151,6 @@ snapshots:
 
   ws@8.21.3: {}
 
-  yaml@2.9.0: {}
+  yaml@2.9.1: {}
 
-  zod@4.5.4: {}
+  zod@4.6.5: {}
