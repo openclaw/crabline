@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject malformed Signal HTTP request targets with HTTP 400 instead of crashing the provider server. Thanks @SebTardif! #323
+
 ## 0.1.27 - 2026-09-16
 
 **Highlights:** Matrix version discovery now records explicit accepted evidence, allowing OpenClaw QA readiness snapshots to validate mixed recorder output without weakening the shared evidence contract.

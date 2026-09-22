@@ -807,8 +807,9 @@ async function handleRequest(params: {
   request: IncomingMessage;
   response: ServerResponse;
   state: SignalServerState;
+  url: URL;
 }): Promise<void> {
-  const url = new URL(params.request.url ?? "/", "http://localhost");
+  const url = params.url;
   if (url.pathname === "/api/v1/events" && params.request.method === "GET") {
     if (params.state.clients.size + params.state.pendingSseClients >= params.state.maxSseClients) {
       await writeResponse(
@@ -1016,11 +1017,21 @@ export async function startSignalServer(
       ).catch(() => response.destroy());
       return;
     }
-    void handleRequest({ request, response, state }).catch(async (error) => {
+    let url: URL;
+    try {
+      url = new URL(request.url ?? "/", "http://localhost");
+    } catch {
+      drainRequestBody(request);
+      void writeResponse(
+        response,
+        jsonResponse({ error: "Invalid request URL", ok: false }, 400),
+      ).catch(() => response.destroy());
+      return;
+    }
+    void handleRequest({ request, response, state, url }).catch(async (error) => {
       if (!response.headersSent) {
         let errorResponse: Response;
-        const isAdminRequest =
-          new URL(request.url ?? "/", "http://localhost").pathname === "/crabline/signal/inbound";
+        const isAdminRequest = url.pathname === "/crabline/signal/inbound";
         if (error instanceof InvalidJsonBodyError) {
           errorResponse = isAdminRequest
             ? jsonResponse({ error: "Request body is not valid JSON", ok: false }, 400)
