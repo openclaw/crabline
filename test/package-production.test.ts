@@ -635,7 +635,7 @@ describe("production package", () => {
     };
 
     expect(pkg.engines?.node).toBe(">=22");
-    expect(pkg.packageManager).toBe("pnpm@11.25.0");
+    expect(pkg.packageManager).toBe("pnpm@11.27.0");
     expect(pkg.devEngines?.runtime).toEqual({
       name: "node",
       onFail: "error",

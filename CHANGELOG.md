@@ -3,7 +3,25 @@
 ## Unreleased
 
 - Add public Slack Gateway callback binding for signed future events without replaying history. One destination retains ownership; abort stops callback work and server close waits for validation and delivery to drain.
+
+## 0.1.28 - 2026-09-22
+
+**Highlights:** Signal local servers now reject malformed HTTP request targets without crashing, keeping subsequent QA requests available.
+
+- Reject malformed Signal HTTP request targets with HTTP 400 instead of crashing the provider server. Thanks @SebTardif! #323
+
+## 0.1.27 - 2026-09-16
+
+**Highlights:** Matrix version discovery now records explicit accepted evidence, allowing OpenClaw QA readiness snapshots to validate mixed recorder output without weakening the shared evidence contract.
+
+- Record successful Matrix `/_matrix/client/versions` discovery requests with `accepted: true` in provider recorder events.
+
+## 0.1.26 - 2026-09-16
+
+**Highlights:** OpenClaw QA readiness publication now accepts mixed provider API and admin-ingress recorder evidence while continuing to require a successful provider API probe.
+
 - Keep Discord reply history readable by expanding only the immediate referenced message in REST responses, Gateway events, and admin ingress results.
+- Accept canonical admin-ingress recorder entries without an `accepted` field when publishing OpenClaw readiness artifacts; an accepted provider API probe remains mandatory.
 
 ## 0.1.25 - 2026-09-15
 

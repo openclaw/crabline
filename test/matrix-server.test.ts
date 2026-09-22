@@ -29,6 +29,30 @@ function auth(token: string) {
 const ROOM_V10_EVENT_ID = /^\$[A-Za-z0-9_-]{43}$/u;
 
 describe("Matrix local provider server", () => {
+  it("records successful unauthenticated version discovery as accepted API evidence", async () => {
+    const directory = await createTempDir();
+    directories.push(directory);
+    const recorderPath = path.join(directory, "matrix-versions.jsonl");
+    const server = await startMatrixServer({ recorderPath });
+    servers.push(server);
+
+    const response = await fetch(`${server.manifest.baseUrl}/_matrix/client/versions`);
+    expect(response.status).toBe(200);
+
+    const records = (await fs.readFile(recorderPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records).toContainEqual({
+      accepted: true,
+      at: expect.any(String),
+      method: "GET",
+      path: "/_matrix/client/versions",
+      query: {},
+      type: "api",
+    });
+  });
+
   it("scopes generated room-v10 event IDs to the server identity", async () => {
     const directory = await createTempDir();
     directories.push(directory);

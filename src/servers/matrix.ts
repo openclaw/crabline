@@ -154,7 +154,7 @@ function matrixRoomId(value: string, serverName: string): string {
 
 async function appendEvent(
   state: MatrixServerState,
-  event: ServerRequestEvent,
+  event: MatrixRecorderEvent,
   committed = false,
 ): Promise<void> {
   await (committed ? state.recorder.recordCommitted(event) : state.recorder.record(event));
@@ -1169,6 +1169,7 @@ export async function startMatrixServer(
       }
       if (url.pathname === "/_matrix/client/versions" && method === "GET") {
         await appendEvent(state, {
+          accepted: true,
           at: new Date().toISOString(),
           method,
           path: url.pathname,

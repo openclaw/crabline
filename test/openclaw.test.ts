@@ -3842,6 +3842,20 @@ describe("OpenClaw local provider bridge", () => {
       );
       expect(rejected.status).toBe(400);
 
+      const inbound = adapter.createInbound({
+        input: {
+          conversation: { id: "readiness-group", kind: "group" },
+          senderId: "readiness-sender",
+          text: "mixed recorder evidence",
+        },
+      });
+      const inboundResponse = await fetch(adapter.manifest.endpoints.adminInboundUrl, {
+        body: JSON.stringify(inbound.providerBody),
+        headers: inbound.providerHeaders,
+        method: "POST",
+      });
+      expect(inboundResponse.status).toBe(200);
+
       const result = await runProviderReadinessWithDependencies(
         {
           adapter: { ...adapter, close },
@@ -3855,6 +3869,7 @@ describe("OpenClaw local provider bridge", () => {
       expect(close).not.toHaveBeenCalled();
       await expect(adapter.probe()).resolves.toMatchObject({ ok: true });
       await expect(fs.readFile(recorderPath, "utf8")).resolves.toContain('"type":"api"');
+      await expect(fs.readFile(recorderPath, "utf8")).resolves.toContain('"type":"admin"');
       await expect(fs.readFile(recorderPath, "utf8")).resolves.toContain('"accepted":false');
       await expect(
         fs.readFile(
@@ -3867,6 +3882,62 @@ describe("OpenClaw local provider bridge", () => {
           "utf8",
         ),
       ).resolves.toContain('"type":"api"');
+    } finally {
+      await adapter.close();
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("publishes Matrix readiness after native version discovery on the caller-owned adapter", async () => {
+    const outputDir = await createTempDir();
+    const selection = resolveOpenClawCrablineChannelDriverSelection({ channel: "matrix" });
+    const recorderDir = path.join(outputDir, "artifacts", "crabline");
+    const recorderPath = path.join(recorderDir, "matrix-provider-server.jsonl");
+    await fs.mkdir(recorderDir, { recursive: true });
+    const adapter = await startOpenClawCrablineAdapter({ channel: "matrix", recorderPath });
+    const startAdapter = vi.fn<typeof startOpenClawCrablineAdapter>();
+    try {
+      if (adapter.manifest.provider !== "matrix") {
+        throw new Error("Expected a Matrix adapter.");
+      }
+      const versions = await fetch(`${adapter.manifest.baseUrl}/_matrix/client/versions`);
+      expect(versions.status).toBe(200);
+
+      const result = await runProviderReadinessWithDependencies(
+        { adapter, outputDir, selection },
+        { startAdapter },
+      );
+      expect(startAdapter).not.toHaveBeenCalled();
+      const snapshot = (
+        await fs.readFile(
+          path.join(
+            outputDir,
+            OPENCLAW_CRABLINE_ARTIFACT_STORE_DIRECTORY,
+            result.generation,
+            "matrix-provider-server.jsonl",
+          ),
+          "utf8",
+        )
+      )
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(snapshot).toContainEqual(
+        expect.objectContaining({
+          accepted: true,
+          method: "GET",
+          path: "/_matrix/client/versions",
+          type: "api",
+        }),
+      );
+      expect(snapshot).toContainEqual(
+        expect.objectContaining({
+          accepted: true,
+          method: "GET",
+          path: "/_matrix/client/v3/account/whoami",
+          type: "api",
+        }),
+      );
     } finally {
       await adapter.close();
       await fs.rm(outputDir, { recursive: true, force: true });

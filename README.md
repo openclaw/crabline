@@ -384,6 +384,8 @@ The server implements the HTTP surface exposed by `signal-cli daemon --http`:
 `check`, `events`, and the JSON-RPC methods needed for text sends, typing,
 receipts, and reactions. Admin ingress injects text-only receive events. It does
 not replace the `signal-cli` client or pretend to be Signal's public service.
+Malformed HTTP request targets receive HTTP 400, and the server continues
+accepting subsequent requests.
 
 Telegram:
 

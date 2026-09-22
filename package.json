@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/crabline",
-  "version": "0.1.25",
+  "version": "0.1.28",
   "description": "Standalone CLI for deterministic messaging provider E2E tests",
   "homepage": "https://github.com/openclaw/crabline#readme",
   "bugs": {
@@ -57,27 +57,27 @@
     "libsignal": "6.0.0",
     "picocolors": "^1.1.1",
     "proper-lockfile": "4.1.2",
-    "protobufjs": "7.6.5",
+    "protobufjs": "8.8.0",
     "re2js": "2.8.6",
     "ws": "^8.21.3",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@larksuiteoapi/node-sdk": "1.73.0",
+    "@larksuiteoapi/node-sdk": "1.74.0",
     "@types/proper-lockfile": "4.1.4",
     "@types/ws": "^8.18.1",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "@vitest/coverage-v8": "^5.0.0",
+    "@vitest/coverage-v8": "^5.0.1",
     "baileys": "7.0.0-rc14",
     "matrix-js-sdk": "42.3.0",
-    "oxfmt": "^0.66.0",
-    "oxlint": "^1.81.0",
+    "oxfmt": "^0.68.0",
+    "oxlint": "^1.83.0",
     "oxlint-tsgolint": "^7.0.2001",
-    "rolldown": "1.2.7",
-    "tsx": "^4.23.12",
+    "rolldown": "1.2.8",
+    "tsx": "^4.23.13",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.1"
   },
   "devEngines": {
     "runtime": {
@@ -89,5 +89,5 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@11.25.0"
+  "packageManager": "pnpm@11.27.0"
 }

@@ -938,13 +938,12 @@ describe("slack local provider server", () => {
         url: "http://127.0.0.1:2468/events",
         signal: owner.signal,
       });
-      const rejection = expect(binding).rejects.toThrow(
-        {
-          abort: "binding owner stopped",
-          close: "after server close",
-          conflict: "already bound to another target",
-        }[operation],
+      const bindingOutcome = binding.then(
+        () => ({ status: "fulfilled", error: undefined }),
+        (error: unknown) => ({ status: "rejected", error }),
       );
+      const observers = [bindingOutcome];
+      let rebinding: Promise<void> | undefined;
       let closing: Promise<void> | undefined;
       let closed = false;
       try {
@@ -960,31 +959,60 @@ describe("slack local provider server", () => {
             signal: new AbortController().signal,
           });
         }
-        if (operation !== "conflict") {
-          expect(validationSignal?.aborted).toBe(true);
-        }
+        expect(validationSignal?.aborted).toBe(
+          { abort: true, close: true, conflict: false }[operation],
+        );
         expect(closed).toBe(false);
         // A validator settling late cannot publish after cancellation or a competing bind.
         finishValidation({ addresses: undefined });
-        await rejection;
+        const outcome = await bindingOutcome;
+        expect(outcome.status).toBe("rejected");
+        expect(outcome.error).toBeInstanceOf(Error);
+        expect(outcome.error).toMatchObject({
+          message: expect.stringContaining(
+            {
+              abort: "binding owner stopped",
+              close: "after server close",
+              conflict: "already bound to another target",
+            }[operation],
+          ),
+        });
         await closing;
-        if (operation === "close") {
-          expect(closed).toBe(true);
-          await expect(
-            server.setEventsRequestUrl({
-              url: "http://127.0.0.1:2468/events",
-              signal: new AbortController().signal,
+        expect(closed).toBe({ abort: false, close: true, conflict: false }[operation]);
+        rebinding = server.setEventsRequestUrl({
+          url: "http://127.0.0.1:2469/winner",
+          signal: new AbortController().signal,
+        });
+        const rebindOutcome = rebinding.then(
+          () => ({ status: "fulfilled", error: undefined }),
+          (error: unknown) => ({ status: "rejected", error }),
+        );
+        observers.push(rebindOutcome);
+        const rebound = await rebindOutcome;
+        expect(rebound).toEqual(
+          {
+            abort: { status: "fulfilled", error: undefined },
+            close: { status: "rejected", error: expect.any(Error) },
+            conflict: { status: "fulfilled", error: undefined },
+          }[operation],
+        );
+        expect(rebound.error).toEqual(
+          {
+            abort: undefined,
+            close: expect.objectContaining({
+              message: expect.stringContaining("after server close"),
             }),
-          ).rejects.toThrow("after server close");
-        } else {
-          await server.setEventsRequestUrl({
-            url: "http://127.0.0.1:2469/winner",
-            signal: new AbortController().signal,
-          });
-        }
+            conflict: undefined,
+          }[operation],
+        );
       } finally {
         finishValidation({ addresses: undefined });
-        await Promise.allSettled([binding, rejection, ...(closing ? [closing] : [])]);
+        await Promise.allSettled([
+          binding,
+          ...observers,
+          ...(rebinding ? [rebinding] : []),
+          ...(closing ? [closing] : []),
+        ]);
       }
     },
   );

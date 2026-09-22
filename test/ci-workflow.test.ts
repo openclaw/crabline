@@ -74,7 +74,7 @@ describe("CI workflow hardening", () => {
       .flatMap((job) => job.steps ?? [])
       .find((step) => step.uses?.startsWith("pnpm/action-setup@"));
 
-    expect(setupStep?.with?.version).toBe("11.25.0");
+    expect(setupStep?.with?.version).toBe("11.27.0");
   });
 
   it("keeps the dependency graph readable by single-document scanners", async () => {
