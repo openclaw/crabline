@@ -22,6 +22,17 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(disposeTempDir));
 });
 
+async function startTestMatrixServer(
+  params: Parameters<typeof startMatrixServer>[0] = {},
+): Promise<StartedMatrixServer> {
+  const directory = await createTempDir();
+  directories.push(directory);
+  return await startMatrixServer({
+    ...params,
+    recorderPath: path.join(directory, "matrix.jsonl"),
+  });
+}
+
 function auth(token: string) {
   return { authorization: `Bearer ${token}` };
 }
@@ -337,7 +348,7 @@ describe("Matrix local provider server", () => {
   it.each(["1", -1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1])(
     "rejects invalid timeline filter limit %j",
     async (limit) => {
-      const server = await startMatrixServer({ accessToken: "test-token-placeholder" });
+      const server = await startTestMatrixServer({ accessToken: "test-token-placeholder" });
       servers.push(server);
       const filter = encodeURIComponent(JSON.stringify({ room: { timeline: { limit } } }));
       const response = await fetch(`${server.manifest.endpoints.syncUrl}?filter=${filter}`, {
@@ -353,7 +364,7 @@ describe("Matrix local provider server", () => {
   );
 
   it("bounds retained filters by count and aggregate bytes", async () => {
-    const server = await startMatrixServer({ accessToken: "test-token-placeholder" });
+    const server = await startTestMatrixServer({ accessToken: "test-token-placeholder" });
     servers.push(server);
     const filtersUrl = `${server.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent(server.manifest.botUserId)}/filter`;
     const createFilter = (body: Record<string, unknown>) =>
@@ -363,16 +374,19 @@ describe("Matrix local provider server", () => {
         method: "POST",
       });
 
-    expect((await createFilter({ value: "x".repeat(700_000) })).status).toBe(200);
+    const acceptedAggregate = await createFilter({ value: "x".repeat(700_000) });
+    await acceptedAggregate.arrayBuffer();
+    expect(acceptedAggregate.status).toBe(200);
     const oversizedAggregate = await createFilter({ value: "y".repeat(400_000) });
+    const oversizedAggregateBody = await oversizedAggregate.json();
     expect(oversizedAggregate.status).toBe(503);
-    await expect(oversizedAggregate.json()).resolves.toEqual({
+    expect(oversizedAggregateBody).toEqual({
       admin_contact: "mailto:admin@localhost",
       errcode: "M_RESOURCE_LIMIT_EXCEEDED",
       error: "Too many stored filters",
     });
 
-    const countServer = await startMatrixServer();
+    const countServer = await startTestMatrixServer();
     servers.push(countServer);
     const countUrl = `${countServer.manifest.endpoints.clientApiRoot}/user/${encodeURIComponent(countServer.manifest.botUserId)}/filter`;
     for (let index = 0; index < 100; index += 1) {
@@ -384,6 +398,7 @@ describe("Matrix local provider server", () => {
         },
         method: "POST",
       });
+      await response.arrayBuffer();
       expect(response.status).toBe(200);
     }
     const overCount = await fetch(countUrl, {
@@ -394,11 +409,12 @@ describe("Matrix local provider server", () => {
       },
       method: "POST",
     });
+    await overCount.arrayBuffer();
     expect(overCount.status).toBe(503);
   });
 
   it("bounds committed room and user state before mutation", async () => {
-    const server = await startMatrixServer({
+    const server = await startTestMatrixServer({
       accessToken: "fake",
       adminToken: "admin",
       maxCommittedRooms: 2,
@@ -481,7 +497,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("rejects malformed native identifiers before mutating room state", async () => {
-    const server = await startMatrixServer();
+    const server = await startTestMatrixServer();
     servers.push(server);
     for (const body of [
       { roomId: "room", senderId: "@alice:matrix.test", text: "bad room" },
@@ -535,7 +551,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("accepts version-specific domainless room and event identifiers", async () => {
-    const server = await startMatrixServer();
+    const server = await startTestMatrixServer();
     servers.push(server);
     const roomId = `!${Buffer.alloc(32, 0xab).toString("base64url")}`;
     const threadId = `$${Buffer.alloc(32, 0xff).toString("base64").replace(/=+$/u, "")}`;
@@ -570,7 +586,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("accepts historical user localparts for inbound event senders", async () => {
-    const server = await startMatrixServer();
+    const server = await startTestMatrixServer();
     servers.push(server);
     const roomId = "!room name:matrix.test";
     const threadId = "$event root:matrix.test";
@@ -635,13 +651,13 @@ describe("Matrix local provider server", () => {
       );
     }
 
-    const server = await startMatrixServer({ botUserId: "@open+claw:matrix.test" });
+    const server = await startTestMatrixServer({ botUserId: "@open+claw:matrix.test" });
     servers.push(server);
     expect(server.manifest.botUserId).toBe("@open+claw:matrix.test");
   });
 
   it("accepts numeric DNS-form Matrix server names", async () => {
-    const server = await startMatrixServer();
+    const server = await startTestMatrixServer();
     servers.push(server);
 
     const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
@@ -668,7 +684,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("accepts five-digit Matrix ports", async () => {
-    const server = await startMatrixServer();
+    const server = await startTestMatrixServer();
     servers.push(server);
 
     const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
@@ -695,7 +711,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("accepts Matrix IPv4 server names with leading-zero octets", async () => {
-    const server = await startMatrixServer();
+    const server = await startTestMatrixServer();
     servers.push(server);
 
     const response = await fetch(server.manifest.endpoints.adminInboundUrl, {
@@ -1035,7 +1051,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("canonicalizes decoded transaction keys and rejects malformed path encoding", async () => {
-    const server = await startMatrixServer({
+    const server = await startTestMatrixServer({
       accessToken: "test-token-placeholder",
       roomId: "!canonical:matrix.test",
     });
@@ -1150,7 +1166,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("publishes typing and receipt updates through room ephemeral sync", async () => {
-    const server = await startMatrixServer({
+    const server = await startTestMatrixServer({
       accessToken: "test-token-placeholder",
       roomId: "!ephemeral:matrix.test",
     });
@@ -1263,7 +1279,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("updates membership state when an inbound sender is renamed", async () => {
-    const server = await startMatrixServer({
+    const server = await startTestMatrixServer({
       accessToken: "test-token-placeholder",
       adminToken: "test-auth-token",
     });
@@ -1328,7 +1344,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("includes omitted state changes when an incremental timeline is limited", async () => {
-    const server = await startMatrixServer({
+    const server = await startTestMatrixServer({
       accessToken: "test-token-placeholder",
       adminToken: "test-auth-token",
     });
@@ -1386,7 +1402,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("omits unchanged rooms from incremental syncs", async () => {
-    const server = await startMatrixServer({
+    const server = await startTestMatrixServer({
       accessToken: "test-token-placeholder",
       adminToken: "test-auth-token",
       roomId: "!quiet:matrix.test",
@@ -1573,7 +1589,7 @@ describe("Matrix local provider server", () => {
   }, 30_000);
 
   it("bounds sync responses without skipping the newest deliverable event", async () => {
-    const server = await startMatrixServer({
+    const server = await startTestMatrixServer({
       accessToken: "test-token-placeholder",
       maxSyncResponseBytes: 2_500,
       roomId: "!sync-budget:matrix.test",
@@ -1620,7 +1636,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("returns a native resource-limit error when the newest sync event cannot fit", async () => {
-    const server = await startMatrixServer({
+    const server = await startTestMatrixServer({
       accessToken: "test-token-placeholder",
       maxSyncResponseBytes: 1_500,
       roomId: "!sync-too-large:matrix.test",
@@ -1651,7 +1667,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("does not advance past the sole deliverable event when room framing exceeds the limit", async () => {
-    const server = await startMatrixServer({
+    const server = await startTestMatrixServer({
       accessToken: "test-token-placeholder",
       maxSyncResponseBytes: 1_200,
       roomId: "!sync-framing-limit:matrix.test",
@@ -1682,7 +1698,7 @@ describe("Matrix local provider server", () => {
   });
 
   it("reserves sync capacity for later rooms before adding optional history", async () => {
-    const server = await startMatrixServer({
+    const server = await startTestMatrixServer({
       accessToken: "test-token-placeholder",
       adminToken: "test-auth-token",
       maxSyncResponseBytes: 4_000,
