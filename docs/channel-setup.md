@@ -537,8 +537,43 @@ The admin ingress accepts JSON like:
 }
 ```
 
-OpenClaw consumes that message through Slack Events API shape; outbound adapter
-sends are recorded through Slack `chat.postMessage`. Outbound direct sends may
+Admin ingress commits the message to native Slack history. To deliver new messages
+to an OpenClaw Gateway, start the public adapter, start the Gateway with the
+adapter's channel config and runtime environment, then bind its final address:
+
+```ts
+const lifecycle = new AbortController();
+if (!adapter.bindGateway) {
+  throw new Error("This adapter does not support Gateway callback binding.");
+}
+await adapter.bindGateway({
+  baseUrl: gateway.baseUrl,
+  cfg: gateway.cfg,
+  signal: lifecycle.signal,
+});
+```
+
+`startOpenClawCrablineAdapter({ channel: "slack" })` exposes this optional public
+binding method. Check that it is present before calling it. The binding uses the
+final default account's `webhookPath` and sends signed Slack Events API requests.
+The native `startSlackServer` API exposes the corresponding
+`setEventsRequestUrl({ url, signal })` method; its startup `eventsRequestUrl` option
+continues to work and retains its server-owned lifetime. Only one destination
+can own callback delivery. Rebinding the same URL does not transfer lifetime
+ownership; a different URL is rejected.
+Messages committed before binding are not replayed.
+
+Abort the binding signal before stopping the Gateway, then close the adapter.
+Cancellation stops callback work while the native Web API remains available for
+Gateway shutdown. Closing the adapter also aborts and drains binding validation
+and in-flight callback delivery.
+
+The callback roundtrip fixture uses explicit nonstreaming replies. Default
+streaming is a separate diagnostic: a successful `chat.postMessage` roundtrip
+does not qualify `chat.update` or native streaming APIs.
+
+Outbound adapter sends are recorded through Slack `chat.postMessage`.
+Outbound direct sends may
 use native user IDs beginning with `U` or `W`; Crabline opens the corresponding
 DM conversation before posting. Admin inbound still requires a conversation ID
 beginning with `C`, `D`, or `G` plus a sender user ID beginning with `U` or `W`.

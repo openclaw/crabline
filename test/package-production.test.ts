@@ -327,6 +327,77 @@ describe("production package", () => {
       );
       expect(JSON.parse(importOutput) as string[]).toEqual(PUBLIC_RUNTIME_EXPORTS);
 
+      const { stdout: callbackOutput } = await execFileAsync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `
+          import assert from "node:assert/strict";
+          import { createHmac } from "node:crypto";
+          import { createServer } from "node:http";
+          import { startOpenClawCrablineAdapter } from "@openclaw/crabline";
+          const adapter = await startOpenClawCrablineAdapter({ channel: "slack" });
+          const controller = new AbortController();
+          const errors = [];
+          let deliver;
+          const delivered = new Promise(resolve => { deliver = resolve; });
+          const receiver = createServer(async (request, response) => {
+            const chunks = [];
+            for await (const chunk of request) chunks.push(Buffer.from(chunk));
+            const body = Buffer.concat(chunks).toString("utf8");
+            response.end();
+            deliver({ body, headers: request.headers, path: request.url });
+          });
+          try {
+            await new Promise(resolve => receiver.listen(0, "127.0.0.1", resolve));
+            const address = receiver.address();
+            assert(address && typeof address === "object");
+            assert.equal(typeof adapter.bindGateway, "function");
+            await adapter.bindGateway({
+              baseUrl: "http://127.0.0.1:" + address.port,
+              cfg: { channels: { slack: { accounts: { default: { webhookPath: "/installed/callback" } } } } },
+              signal: controller.signal,
+            });
+            const inbound = adapter.createInbound({ input: {
+              conversation: { id: "D1234567890", kind: "direct" },
+              senderId: "U1234567890", text: "installed public callback",
+            } });
+            const response = await fetch(inbound.providerUrl, {
+              method: "POST", headers: inbound.providerHeaders,
+              body: JSON.stringify(inbound.providerBody),
+            });
+            assert.equal(response.status, 200);
+            assert.equal((await response.json()).ok, true);
+            const event = await delivered;
+            assert.equal(event.path, "/installed/callback");
+            assert.equal(JSON.parse(event.body).event.text, "installed public callback");
+            const timestamp = event.headers["x-slack-request-timestamp"];
+            const signature = "v0=" + createHmac("sha256", adapter.manifest.signingSecret)
+              .update("v0:" + timestamp + ":" + event.body).digest("hex");
+            assert.equal(event.headers["x-slack-signature"], signature);
+            console.log(JSON.stringify({ callback: "signed", path: event.path }));
+          } catch (error) {
+            errors.push(error);
+          } finally {
+            controller.abort();
+            for (const close of [
+              () => adapter.close(),
+              () => new Promise((resolve, reject) => receiver.close(error => error ? reject(error) : resolve())),
+            ]) {
+              try { await close(); } catch (error) { errors.push(error); }
+            }
+          }
+          if (errors.length) throw new AggregateError(errors, "Installed callback consumer failed");
+        `,
+        ],
+        { cwd: consumerDirectory, timeout: 20_000 },
+      );
+      expect(JSON.parse(callbackOutput)).toEqual({
+        callback: "signed",
+        path: "/installed/callback",
+      });
+
       const declarationFiles = files.filter(
         (file) => file.startsWith("dist/src/") && file.endsWith(".d.ts"),
       );
@@ -348,6 +419,15 @@ describe("production package", () => {
           "const start: typeof startCrablineServer = startCrablineServer;",
           `type PublicTypes = [${PUBLIC_TYPE_EXPORTS.join(", ")}];`,
           "declare const publicTypes: PublicTypes;",
+          "declare const adapter: StartedOpenClawCrablineAdapter;",
+          "declare const slack: StartedSlackServer;",
+          "declare const server: StartedCrablineServer;",
+          "const signal = new AbortController().signal;",
+          "const context = { baseUrl: 'http://127.0.0.1:2468', cfg: {}, signal };",
+          "const optionalBinding: Promise<void> | undefined = adapter.bindGateway?.(context);",
+          "const nativeBinding: Promise<void> = slack.setEventsRequestUrl({ url: context.baseUrl, signal });",
+          "const optionalNativeBinding: Promise<void> | undefined = server.setEventsRequestUrl?.({ url: context.baseUrl, signal });",
+          "void optionalBinding; void nativeBinding; void optionalNativeBinding;",
           "void start;",
           "void publicTypes;",
           "",

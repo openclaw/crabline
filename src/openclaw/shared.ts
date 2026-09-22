@@ -121,6 +121,11 @@ export type StartOpenClawCrablineAdapterParams = {
 };
 
 export type StartedOpenClawCrablineAdapter = OpenClawCrablineGatewayBinding & {
+  bindGateway?(params: {
+    baseUrl: string;
+    cfg: Record<string, unknown>;
+    signal: AbortSignal;
+  }): Promise<void>;
   close(): Promise<void>;
   createAgentDelivery(params: {
     target: string;
@@ -204,6 +209,9 @@ export function createProviderIdRegistry(params: {
 }
 
 export type OpenClawCrablineProviderAdapter = {
+  createGatewayEventsRequestUrl?(
+    params: Parameters<NonNullable<StartedOpenClawCrablineAdapter["bindGateway"]>>[0],
+  ): string;
   createAgentDelivery(parsed: ParsedQaTarget): OpenClawCrablineCorrelatedAgentDelivery;
   createBinding(): OpenClawCrablineGatewayBinding;
   createInbound(input: OpenClawCrablineInboundInput): OpenClawCrablineInbound;
@@ -270,6 +278,9 @@ export function createOpenClawCrablineProviderBridge<
         ? {
             resolveInboundProviderTargetKey: adapter.resolveInboundProviderTargetKey.bind(adapter),
           }
+        : {}),
+      ...(adapter.createGatewayEventsRequestUrl
+        ? { createGatewayEventsRequestUrl: adapter.createGatewayEventsRequestUrl.bind(adapter) }
         : {}),
     };
   };
