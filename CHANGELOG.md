@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.28 - 2026-09-22
+
+**Highlights:** Signal local servers now reject malformed HTTP request targets without crashing, keeping subsequent QA requests available.
+
 - Reject malformed Signal HTTP request targets with HTTP 400 instead of crashing the provider server. Thanks @SebTardif! #323
 
 ## 0.1.27 - 2026-09-16
