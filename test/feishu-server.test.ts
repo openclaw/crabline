@@ -839,13 +839,16 @@ describe("Feishu native wire", () => {
     await connect(server);
     const original = WebSocket.prototype.send;
     let releaseWrite: (() => void) | undefined;
-    vi.spyOn(WebSocket.prototype, "send").mockImplementationOnce(
-      function (this: WebSocket, data, options, callback) {
-        original.call(this, data, options, (error) => {
-          releaseWrite = () => callback?.(error);
-        });
-      },
-    );
+    vi.spyOn(WebSocket.prototype, "send").mockImplementationOnce(function (
+      this: WebSocket,
+      data,
+      options,
+      callback,
+    ) {
+      original.call(this, data, options, (error) => {
+        releaseWrite = () => callback?.(error);
+      });
+    });
     const response = json(
       server.manifest.endpoints.adminInboundUrl,
       { chatId: "oc_write", senderId: "ou_write", text: "写入" },
@@ -963,17 +966,20 @@ describe("Feishu native wire", () => {
         },
       });
       await connect(server);
-      vi.spyOn(WebSocket.prototype, "send").mockImplementationOnce(
-        function (this: WebSocket, _data, _options, callback) {
-          if (failure === "callback") {
-            callback?.(new Error("Fixture write failure"));
-          } else if (failure === "throw") {
-            throw new Error("Fixture send failure");
-          } else if (failure === "close") {
-            this.terminate();
-          }
-        },
-      );
+      vi.spyOn(WebSocket.prototype, "send").mockImplementationOnce(function (
+        this: WebSocket,
+        _data,
+        _options,
+        callback,
+      ) {
+        if (failure === "callback") {
+          callback?.(new Error("Fixture write failure"));
+        } else if (failure === "throw") {
+          throw new Error("Fixture send failure");
+        } else if (failure === "close") {
+          this.terminate();
+        }
+      });
       expect(
         (
           await json(
