@@ -214,7 +214,6 @@ describe("release workflow", () => {
     expect(publishStep).toContain('" because npm latest is newer at " +');
     expect(publishStep).toContain("Downloaded npm tarball does not match expected integrity");
     expect(publishStep).toContain('npm publish "$PACKAGE_TARBALL" --access public --provenance');
-    expect(publishStep).toContain("for delay in 2 4 8 16; do");
     expect(releaseStep).toContain('gh release view "$RELEASE_TAG"');
     expect(releaseStep).toContain("--json isDraft,isPrerelease");
     expect(releaseStep).toContain("--verify-tag");
@@ -514,6 +513,23 @@ describe("release workflow", () => {
     );
   }, 20_000);
 
+  it("waits for delayed registry visibility without publishing twice", async () => {
+    const workflow = await readWorkflow();
+    const publishStep = jobSteps(workflow, "publish").find(
+      (step) => step.name === "Publish package with npm provenance",
+    )?.run;
+    if (!publishStep) {
+      throw new Error("Release workflow is missing its npm publish step.");
+    }
+
+    const calls = await runPublishStep(publishStep, {
+      MOCK_VIEW_DELAY_SECONDS: "90",
+      MOCK_VIEW_RESULT: "after-publish",
+    });
+    expect(calls.filter((call) => call.startsWith("publish "))).toHaveLength(1);
+    expect(calls).toContain("audit signatures --json --include-attestations=true");
+  });
+
   it("rejects a downloaded tarball whose bytes do not match the verified SRI", async () => {
     const workflow = await readWorkflow();
     const publishStep = jobSteps(workflow, "publish").find(
@@ -770,6 +786,7 @@ async function runPublishStep(
   const binDir = path.join(tempDir, "bin");
   const logPath = path.join(tempDir, "npm.log");
   const publishedPath = path.join(tempDir, "published");
+  const elapsedPath = path.join(tempDir, "elapsed");
   const provenanceCountPath = path.join(tempDir, "provenance-count");
   const provenanceDir = path.join(tempDir, "provenance");
   const racePath = path.join(tempDir, "tag-raced");
@@ -847,6 +864,15 @@ view_result="\${MOCK_VIEW_RESULT:-missing}"
 if [[ "$view_result" == *"after-publish" && ! -f "$MOCK_PUBLISHED" ]]; then
   exit 1
 fi
+if [[ "$view_result" == "after-publish" ]]; then
+  elapsed=0
+  if [[ -f "$MOCK_ELAPSED" ]]; then
+    elapsed="$(cat "$MOCK_ELAPSED")"
+  fi
+  if [[ "$elapsed" -lt "\${MOCK_VIEW_DELAY_SECONDS:-0}" ]]; then
+    exit 1
+  fi
+fi
 if [[ "$3" == "version" ]]; then
   case "\${MOCK_VERSION_RESULT:-matching}" in
     matching) echo "$RELEASE_VERSION" ;;
@@ -875,7 +901,17 @@ printf '%s\\trefs/tags/v1.2.3\\n' "dddddddddddddddddddddddddddddddddddddddd"
 printf '%s\\trefs/tags/v1.2.3^{}\\n' "$remote_commit"
 `,
       ),
-      writeExecutable(path.join(binDir, "sleep"), "#!/usr/bin/env bash\nexit 0\n"),
+      writeExecutable(
+        path.join(binDir, "sleep"),
+        `#!/usr/bin/env bash
+set -euo pipefail
+elapsed=0
+if [[ -f "$MOCK_ELAPSED" ]]; then
+  elapsed="$(cat "$MOCK_ELAPSED")"
+fi
+echo "$((elapsed + $1))" > "$MOCK_ELAPSED"
+`,
+      ),
     ]);
 
     await execFileWithOutput("bash", ["-c", script], {
@@ -885,6 +921,7 @@ printf '%s\\trefs/tags/v1.2.3^{}\\n' "$remote_commit"
         GITHUB_EVENT_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         GITHUB_REPOSITORY: "openclaw/crabline",
         GITHUB_SERVER_URL: "https://github.com",
+        MOCK_ELAPSED: elapsedPath,
         MOCK_LOG: logPath,
         MOCK_PUBLISHED: publishedPath,
         MOCK_PROVENANCE_COUNT: provenanceCountPath,
