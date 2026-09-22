@@ -370,15 +370,17 @@ describe("whatsapp local provider server", () => {
     const port = await resolveFreePort();
     const originalOn = WebSocketServer.prototype.on;
     let rejectedConnectionHandler = false;
-    const onSpy = vi
-      .spyOn(WebSocketServer.prototype, "on")
-      .mockImplementation(function (this: WebSocketServer, event, listener) {
-        if (!rejectedConnectionHandler && event === "connection") {
-          rejectedConnectionHandler = true;
-          throw new Error("injected WebSocket attachment failure");
-        }
-        return Reflect.apply(originalOn, this, [event, listener]);
-      });
+    const onSpy = vi.spyOn(WebSocketServer.prototype, "on").mockImplementation(function (
+      this: WebSocketServer,
+      event,
+      listener,
+    ) {
+      if (!rejectedConnectionHandler && event === "connection") {
+        rejectedConnectionHandler = true;
+        throw new Error("injected WebSocket attachment failure");
+      }
+      return Reflect.apply(originalOn, this, [event, listener]);
+    });
 
     await expect(startWhatsAppServer({ port })).rejects.toThrow(
       "injected WebSocket attachment failure",
