@@ -402,7 +402,8 @@ jobs:
 
           verify_published_package() {
             local delay existing_status
-            for delay in 2 4 8 16; do
+            # npm processing can delay metadata and attestations for several minutes.
+            for delay in 2 4 8 16 30 60 60 60 60 60; do
               sleep "$delay"
               if check_existing_package; then
                 return 0
