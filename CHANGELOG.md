@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh Node 22 declarations, Matrix client test coverage, lint/format tooling, Rolldown, tsx, and CodeQL under the seven-day dependency cooldown. Thanks @dependabot! #329 #330 #331
+
 - Add public Slack Gateway callback binding for signed future events without replaying history. One destination retains ownership; abort stops callback work and server close waits for validation and delivery to drain.
 
 ## 0.1.28 - 2026-09-22
