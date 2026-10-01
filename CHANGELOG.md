@@ -2,9 +2,13 @@
 
 ## Unreleased
 
-- Refresh Node 22 declarations, Matrix client test coverage, lint/format tooling, Rolldown, tsx, and CodeQL under the seven-day dependency cooldown. Thanks @dependabot! #329 #330 #331
+## 0.2.0 - 2026-10-01
+
+**Highlights:** Bind Slack Gateway callbacks through the public adapter to deliver signed future events with explicit destination ownership and orderly shutdown.
 
 - Add public Slack Gateway callback binding for signed future events without replaying history. One destination retains ownership; abort stops callback work and server close waits for validation and delivery to drain.
+- Refresh Node 22 declarations, Matrix client test coverage, lint/format tooling, Rolldown, tsx, and CodeQL under the seven-day dependency cooldown. Thanks @dependabot! #329 #330 #331
+- Update pnpm to 11.27.1, Rolldown to 1.2.10, Vite to 8.3.0, and the Go workflow validator's doublestar dependency while preserving the seven-day dependency cooldown and Node 22 runtime floor.
 
 ## 0.1.28 - 2026-09-22
 
