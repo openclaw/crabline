@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.29 - 2026-10-01
+
+**Highlights:** Slack QA can bind signed future Gateway callbacks through the public adapter without replaying stored history, while one destination retains callback lifecycle ownership.
+
 - Refresh Node 22 declarations, Matrix client test coverage, lint/format tooling, Rolldown, tsx, and CodeQL under the seven-day dependency cooldown. Thanks @dependabot! #329 #330 #331
 
 - Add public Slack Gateway callback binding for signed future events without replaying history. One destination retains ownership; abort stops callback work and server close waits for validation and delivery to drain.
