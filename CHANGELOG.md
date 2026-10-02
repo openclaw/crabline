@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Use one shared autoreview installation from `openclaw/agent-skills`; repository entrypoints now receive upstream fixes without copied helpers or test suites.
+
 - Update pnpm to 11.27.1, Rolldown to 1.2.10, Vite to 8.3.0, and the Go workflow validator's doublestar dependency while preserving the seven-day dependency cooldown and Node 22 runtime floor.
 
 ## 0.1.29 - 2026-10-01

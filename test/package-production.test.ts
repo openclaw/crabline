@@ -614,19 +614,6 @@ describe("production package", () => {
     }
   });
 
-  it("runs autoreview Python tests in the verify gate", async () => {
-    const [pkgContents, launcher] = await Promise.all([
-      fs.readFile("package.json", "utf8"),
-      fs.readFile("tools/run-autoreview-tests.mjs", "utf8"),
-    ]);
-    const pkg = JSON.parse(pkgContents) as { scripts?: Record<string, string> };
-
-    expect(pkg.scripts?.["test:autoreview"]).toContain("node tools/run-autoreview-tests.mjs");
-    expect(pkg.scripts?.verify).toContain("pnpm test:autoreview");
-    expect(launcher).toContain("sys.version_info >= (3, 10)");
-    expect(launcher).toContain("Python 3.10 or newer is required");
-  });
-
   it("keeps the published and development Node floors distinct", async () => {
     const pkg = JSON.parse(await fs.readFile("package.json", "utf8")) as {
       devEngines?: { runtime?: { name?: string; onFail?: string; version?: string } };
@@ -644,9 +631,8 @@ describe("production package", () => {
   });
 
   it("lints repository tooling with the type-aware gate", async () => {
-    const [pkgContents, launcher, tsconfigContents] = await Promise.all([
+    const [pkgContents, tsconfigContents] = await Promise.all([
       fs.readFile("package.json", "utf8"),
-      fs.readFile("tools/run-autoreview-tests.mjs", "utf8"),
       fs.readFile("tsconfig.test.json", "utf8"),
     ]);
     const pkg = JSON.parse(pkgContents) as { scripts?: Record<string, string> };
@@ -658,9 +644,6 @@ describe("production package", () => {
         "--tsconfig tsconfig.test.json src test tools vitest.config.ts",
     );
     expect(tsconfig.include).toEqual(["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]);
-    expect(launcher).toContain(
-      "oxlint-disable-next-line no-console -- This CLI failure must be visible on stderr.",
-    );
   });
 
   it("documents source-checkout and user-supplied script bridge commands", async () => {
