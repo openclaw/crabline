@@ -70,10 +70,10 @@
     "@vitest/coverage-v8": "^5.0.1",
     "baileys": "7.0.0-rc14",
     "matrix-js-sdk": "42.4.0",
-    "oxfmt": "^0.70.0",
+    "oxfmt": "^0.71.0",
     "oxlint": "^1.83.0",
     "oxlint-tsgolint": "^7.0.2001",
-    "rolldown": "1.2.10",
+    "rolldown": "1.2.11",
     "tsx": "^4.23.13",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vitest": "^5.0.1"
