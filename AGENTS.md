@@ -32,3 +32,9 @@
   `docs/channel-setup.md` in the same change.
 - Keep `README.md`, `src/config/schema.ts`, `src/providers/catalog.ts`, and
   `fixtures/examples/*.yaml` aligned with the setup walkthrough.
+
+## Autoreview priority
+
+Use `--max-priority P3` with the shared autoreview helper to preserve this
+repository's existing P0–P3 review gate. Follow the
+[shared skill setup](.agents/skills/autoreview/SKILL.md) before running it.
