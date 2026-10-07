@@ -915,10 +915,19 @@ function normalizeSignalHost(value: string): string {
     .replace(/^\[(.*)\]$/u, "$1")
     .toLowerCase()
     .replace(/\.$/u, "");
+  // isIP accepts IPv6 zone IDs, but WHATWG URL rejects them.
+  if (normalized.includes("%")) {
+    return "";
+  }
   if (isIP(normalized) !== 6) {
     return normalized;
   }
-  const canonical = new URL(`http://[${normalized}]`).hostname.slice(1, -1);
+  let canonical: string;
+  try {
+    canonical = new URL(`http://[${normalized}]`).hostname.slice(1, -1);
+  } catch {
+    return "";
+  }
   const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/u.exec(canonical);
   if (!mapped?.[1] || !mapped[2]) {
     return canonical;

@@ -610,6 +610,9 @@ sends are recorded through its `send` JSON-RPC method. The local server also
 accepts typing, receipt, and reaction RPCs. OpenClaw-specific config and target
 mapping live in Crabline's OpenClaw bridge, outside the provider server.
 
+Signal rejects malformed or disallowed `Host` headers with HTTP 400, including
+IPv6 zone IDs such as `[::1%lo0]`. The server continues handling later requests.
+
 Telegram:
 
 ```bash

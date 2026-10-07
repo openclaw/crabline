@@ -209,6 +209,48 @@ describe("signal local provider server", () => {
     expect(check.status).toBe(200);
   });
 
+  it.each(["[::1%lo0]", "[::1%25lo0]:80", "[::ffff:127.0.0.1%lo0]"])(
+    "returns 400 for an IPv6 zone id Host %s and keeps serving",
+    async (host) => {
+      const directory = await createTempDir();
+      directories.push(directory);
+      const server = await startSignalServer({
+        recorderPath: path.join(directory, "signal-zone-host.jsonl"),
+      });
+      servers.push(server);
+
+      const url = new URL(server.manifest.baseUrl);
+      const raw = connect({ host: url.hostname, port: Number(url.port) });
+      const closed = once(raw, "close");
+      try {
+        await once(raw, "connect");
+        let received = "";
+        raw.on("data", (chunk: Buffer) => {
+          received += chunk.toString("latin1");
+        });
+        let timedOut = false;
+        raw.setTimeout(1_000, () => {
+          timedOut = true;
+          raw.destroy();
+        });
+        raw.write(`GET /api/v1/check HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`);
+        await closed;
+        expect(timedOut).toBe(false);
+        expect(received.split("\r\n", 1)[0]).toBe("HTTP/1.1 400 Bad Request");
+        expect(received).toContain('"error":"Host header is not allowed"');
+      } finally {
+        raw.destroy();
+        await closed;
+      }
+
+      const stillServing = await requestHttp({
+        method: "GET",
+        url: `${server.manifest.baseUrl}/api/v1/check`,
+      });
+      expect(stillServing.status).toBe(200);
+    },
+  );
+
   it("rejects unlisted Host headers on the default loopback binding", async () => {
     const server = await startSignalServer();
     servers.push(server);
