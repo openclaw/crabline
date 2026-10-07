@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Refresh ws, Vitest, lint/format tooling, Rolldown, and CodeQL while preserving the seven-day dependency cooldown and Node 22 support. Thanks @dependabot! #337 #338 #339
+- Refresh ws, Vitest, lint/format tooling, Rolldown, and CodeQL, and update sharp to address its librsvg vulnerability, while preserving the seven-day dependency cooldown and Node 22 support. Thanks @dependabot! #337 #338 #339
 - Reject Signal Host headers containing IPv6 zone IDs with HTTP 400 instead of crashing the server; preserve subsequent health checks. Thanks @SebTardif! #336
 - Use one shared autoreview installation from `openclaw/agent-skills`; repository entrypoints now receive upstream fixes without copied helpers or test suites.
 
