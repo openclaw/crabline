@@ -213,7 +213,7 @@ Non-watch commands must write exactly one JSON value to stdout:
 - `send`: `{ "accepted": boolean, "messageId": string, "threadId": string }`
 - `waitForInbound`: either `{ "timeout": true }` or
   `{ "message": { "author": "assistant" | "system" | "user", "id": string,
-"sentAt": string, "text": string, "threadId": string, "raw"?: unknown } }`
+  "sentAt": string, "text": string, "threadId": string, "raw"?: unknown } }`
 
 `watch` writes one message object per JSONL line using the same message schema.
 Blank lines are ignored. Non-watch stdout plus stderr is limited to 1 MiB.
