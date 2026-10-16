@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Pin patched music-metadata and source-map-js dependencies, and refresh pnpm 11, Rolldown, Vite, PostCSS, Go workflow tooling, and eligible transitive dependencies while preserving the seven-day cooldown and consumer runtime minimums. Build workflow tools with Go 1.27.2 while retaining the Go 1.26 minimum.
+- Add a Release workflow dry run that verifies and packs the current commit without publishing or creating a release.
+
 - Refresh ws, Vitest, lint/format tooling, Rolldown, and CodeQL, and update sharp to address its librsvg vulnerability, while preserving the seven-day dependency cooldown and Node 22 support. Thanks @dependabot! #337 #338 #339
 - Reject Signal Host headers containing IPv6 zone IDs with HTTP 400 instead of crashing the server; preserve subsequent health checks. Thanks @SebTardif! #336
 - Use one shared autoreview installation from `openclaw/agent-skills`; repository entrypoints now receive upstream fixes without copied helpers or test suites.
