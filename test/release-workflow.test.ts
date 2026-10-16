@@ -109,7 +109,7 @@ function createAuditResult(
 }
 
 describe("release workflow", () => {
-  it("only accepts stable tags and checks out the exact tag ref", async () => {
+  it("only accepts stable tags and checks out the immutable workflow commit", async () => {
     const workflow = await readWorkflow();
     const steps = jobSteps(workflow, "verify");
     const resolveStep = steps.find((step) => step.name === "Resolve release tag")?.run;
@@ -119,7 +119,6 @@ describe("release workflow", () => {
     )?.run;
 
     await expect(runResolveTag(resolveStep, "v1.2.3")).resolves.toEqual({
-      checkout_ref: "refs/tags/v1.2.3",
       tag: "v1.2.3",
       version: "1.2.3",
     });
@@ -130,7 +129,6 @@ describe("release workflow", () => {
         refType: "tag",
       }),
     ).resolves.toEqual({
-      checkout_ref: "refs/tags/v1.2.3",
       tag: "v1.2.3",
       version: "1.2.3",
     });
@@ -149,7 +147,7 @@ describe("release workflow", () => {
     await expect(
       runResolveTag(resolveStep, "v1.2.3", { refName: "v1.2.2", refType: "tag" }),
     ).rejects.toThrow(/Command failed/u);
-    expect(checkoutStep?.with?.ref).toBe("${{ steps.release.outputs.checkout_ref }}");
+    expect(checkoutStep?.with?.ref).toBe("${{ github.sha }}");
     expect(verifyCheckoutStep).toContain("refs/tags/${RELEASE_TAG}^{commit}");
     expect(verifyCheckoutStep).toContain('"$release_commit" == "$GITHUB_EVENT_SHA"');
     expect(workflow.jobs?.verify?.outputs?.commit).toBe(
@@ -170,7 +168,6 @@ describe("release workflow", () => {
         dryRun: true,
       }),
     ).resolves.toEqual({
-      checkout_ref: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       tag: "v1.2.3",
       version: "1.2.3",
     });
@@ -185,6 +182,10 @@ describe("release workflow", () => {
     expect(workflow.jobs?.publish?.if).toBe("${{ !inputs.dry_run }}");
     expect(workflow.jobs?.["github-release"]?.if).toBe("${{ !inputs.dry_run }}");
     expect(workflow.jobs?.verify?.permissions).toEqual({ contents: "read" });
+    expect(
+      jobSteps(workflow, "verify").find((step) => step.uses?.startsWith("actions/checkout@"))?.with
+        ?.ref,
+    ).toBe("${{ github.sha }}");
   });
 
   it("rejects a dry-run checkout that differs from the workflow commit", async () => {
