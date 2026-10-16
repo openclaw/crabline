@@ -6,9 +6,13 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Existing release tag to publish, for example v0.1.0
+        description: Existing release tag to publish, or current version tag for a dry run
         required: true
         type: string
+      dry_run:
+        description: Verify and pack the selected commit without publishing
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -36,28 +40,41 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_EVENT_SHA: ${{ github.sha }}
           INPUT_TAG: ${{ inputs.tag_name }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$GITHUB_REF_TYPE" == "tag" ]]
-          [[ "$GITHUB_REF_NAME" == "$tag" ]]
+          if [[ "${INPUT_DRY_RUN:-false}" == "true" ]]; then
+            [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
+            echo "checkout_ref=$GITHUB_EVENT_SHA" >> "$GITHUB_OUTPUT"
+          else
+            [[ "$GITHUB_REF_TYPE" == "tag" ]]
+            [[ "$GITHUB_REF_NAME" == "$tag" ]]
+            echo "checkout_ref=refs/tags/$tag" >> "$GITHUB_OUTPUT"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: refs/tags/${{ steps.release.outputs.tag }}
+          ref: ${{ steps.release.outputs.checkout_ref }}
       - name: Verify checked out release tag
         id: release-commit
         env:
           GITHUB_EVENT_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          release_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          if [[ "${INPUT_DRY_RUN:-false}" == "true" ]]; then
+            release_commit="$(git rev-parse HEAD)"
+          else
+            release_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          fi
           [[ "$release_commit" == "$(git rev-parse HEAD)" ]]
           [[ "$release_commit" == "$GITHUB_EVENT_SHA" ]]
           echo "commit=$release_commit" >> "$GITHUB_OUTPUT"
@@ -95,7 +112,7 @@ jobs:
           NODE
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
-          version: 11.27.1
+          version: 11.28.5
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -233,6 +250,7 @@ jobs:
           retention-days: 1
 
   publish:
+    if: ${{ !inputs.dry_run }}
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -524,6 +542,7 @@ jobs:
           exit 1
 
   github-release:
+    if: ${{ !inputs.dry_run }}
     needs: [verify, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -35,6 +35,7 @@ type ReleaseWorkflow = {
   jobs?: Record<
     string,
     {
+      if?: string;
       needs?: string | string[];
       outputs?: Record<string, string>;
       permissions?: Record<string, string>;
@@ -118,6 +119,7 @@ describe("release workflow", () => {
     )?.run;
 
     await expect(runResolveTag(resolveStep, "v1.2.3")).resolves.toEqual({
+      checkout_ref: "refs/tags/v1.2.3",
       tag: "v1.2.3",
       version: "1.2.3",
     });
@@ -128,6 +130,7 @@ describe("release workflow", () => {
         refType: "tag",
       }),
     ).resolves.toEqual({
+      checkout_ref: "refs/tags/v1.2.3",
       tag: "v1.2.3",
       version: "1.2.3",
     });
@@ -146,12 +149,78 @@ describe("release workflow", () => {
     await expect(
       runResolveTag(resolveStep, "v1.2.3", { refName: "v1.2.2", refType: "tag" }),
     ).rejects.toThrow(/Command failed/u);
-    expect(checkoutStep?.with?.ref).toBe("refs/tags/${{ steps.release.outputs.tag }}");
+    expect(checkoutStep?.with?.ref).toBe("${{ steps.release.outputs.checkout_ref }}");
     expect(verifyCheckoutStep).toContain("refs/tags/${RELEASE_TAG}^{commit}");
     expect(verifyCheckoutStep).toContain('"$release_commit" == "$GITHUB_EVENT_SHA"');
     expect(workflow.jobs?.verify?.outputs?.commit).toBe(
       "${{ steps.release-commit.outputs.commit }}",
     );
+  });
+
+  it("pins a manual dry run to its commit and skips both publication jobs", async () => {
+    const workflow = await readWorkflow();
+    const resolveStep = jobSteps(workflow, "verify").find(
+      (step) => step.name === "Resolve release tag",
+    )?.run;
+    await expect(
+      runResolveTag(resolveStep, "v1.2.3", {
+        eventName: "workflow_dispatch",
+        refName: "main",
+        refType: "branch",
+        dryRun: true,
+      }),
+    ).resolves.toEqual({
+      checkout_ref: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      tag: "v1.2.3",
+      version: "1.2.3",
+    });
+    await expect(
+      runResolveTag(resolveStep, "v1.2.3", {
+        eventName: "push",
+        refName: "main",
+        refType: "branch",
+        dryRun: true,
+      }),
+    ).rejects.toThrow(/Command failed/u);
+    expect(workflow.jobs?.publish?.if).toBe("${{ !inputs.dry_run }}");
+    expect(workflow.jobs?.["github-release"]?.if).toBe("${{ !inputs.dry_run }}");
+    expect(workflow.jobs?.verify?.permissions).toEqual({ contents: "read" });
+  });
+
+  it("rejects a dry-run checkout that differs from the workflow commit", async () => {
+    const workflow = await readWorkflow();
+    const script = jobSteps(workflow, "verify").find(
+      (step) => step.name === "Verify checked out release tag",
+    )?.run;
+    expect(script).toBeDefined();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-dry-run-checkout-"));
+    const commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    try {
+      await writeExecutable(
+        path.join(tempDir, "git"),
+        `#!/usr/bin/env bash
+[[ "$*" == "rev-parse HEAD" ]] || exit 1
+echo "${commit}"
+`,
+      );
+      const env = {
+        ...process.env,
+        PATH: `${tempDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GITHUB_EVENT_SHA: commit,
+        GITHUB_OUTPUT: path.join(tempDir, "outputs"),
+        INPUT_DRY_RUN: "true",
+        RELEASE_TAG: "v1.2.3",
+      };
+      await execFileWithOutput("bash", ["-c", script!], { env });
+      expect(await fs.readFile(env.GITHUB_OUTPUT, "utf8")).toBe(`commit=${commit}\n`);
+      await expect(
+        execFileWithOutput("bash", ["-c", script!], {
+          env: { ...env, GITHUB_EVENT_SHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+        }),
+      ).rejects.toThrow(/Command failed/u);
+    } finally {
+      await fs.rm(tempDir, { force: true, recursive: true });
+    }
   });
 
   it("pins tooling and makes package and GitHub publication retry-safe", async () => {
@@ -182,7 +251,7 @@ describe("release workflow", () => {
     ).toBe(22);
     expect(
       verifySteps.find((step) => step.uses?.startsWith("pnpm/action-setup@"))?.with?.version,
-    ).toBe("11.27.1");
+    ).toBe("11.28.5");
     expect(commands).toContain("npm install -g npm@12.0.2");
     for (const jobName of ["verify", "publish"]) {
       const jobCommands = jobSteps(workflow, jobName)
@@ -623,7 +692,7 @@ async function runMetadataCheck(script: string, changelog: string): Promise<void
 async function runResolveTag(
   script: string | undefined,
   tag: string,
-  ref: { eventName?: string; refName: string; refType: string } = {
+  ref: { dryRun?: boolean; eventName?: string; refName: string; refType: string } = {
     refName: tag,
     refType: "tag",
   },
@@ -638,10 +707,12 @@ async function runResolveTag(
       env: {
         ...process.env,
         GITHUB_EVENT_NAME: ref.eventName ?? "push",
+        GITHUB_EVENT_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         GITHUB_OUTPUT: outputPath,
         GITHUB_REF_NAME: ref.refName,
         GITHUB_REF_TYPE: ref.refType,
         INPUT_TAG: tag,
+        INPUT_DRY_RUN: String(ref.dryRun ?? false),
       },
     });
     return Object.fromEntries(
