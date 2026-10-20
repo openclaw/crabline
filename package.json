@@ -56,14 +56,14 @@
     "libsignal": "6.0.0",
     "picocolors": "^1.1.1",
     "proper-lockfile": "4.1.2",
-    "protobufjs": "8.8.0",
+    "protobufjs": "8.8.1",
     "re2js": "2.8.6",
     "ws": "^8.21.3",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@larksuiteoapi/node-sdk": "1.74.0",
+    "@larksuiteoapi/node-sdk": "1.75.0",
     "@types/proper-lockfile": "4.1.4",
     "@types/ws": "^8.18.1",
     "@typescript/native": "npm:typescript@^7.0.2",
