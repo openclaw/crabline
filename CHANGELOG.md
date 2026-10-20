@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh protobufjs and Zod parsing fixes, the Feishu client test SDK, Vitest, type-aware lint tooling, and GitHub Actions while preserving the seven-day dependency cooldown and Node 22 support. Thanks @dependabot! #346 #347 #348
+
 ## 0.1.30 - 2026-10-16
 
 **Highlights:** Signal rejects IPv6 zone IDs in Host headers without crashing; dependency security fixes patch Sharp/librsvg, music-metadata, and source-map-js.
