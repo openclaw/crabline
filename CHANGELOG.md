@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.31 - 2026-10-20
+
+**Highlights:** Updated protobufjs and Zod bring parsing fixes while preserving Node 22 support.
+
 - Refresh protobufjs and Zod parsing fixes, the Feishu client test SDK, Vitest, type-aware lint tooling, and GitHub Actions while preserving the seven-day dependency cooldown and Node 22 support. Thanks @dependabot! #346 #347 #348
 
 ## 0.1.30 - 2026-10-16
