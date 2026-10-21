@@ -69,7 +69,7 @@ pnpm verify
 
 That enforces formatting, typecheck, type-aware lint, and Vitest coverage.
 CI runs the full gate on Node 22 and the runtime tests on Node 24. Workflow
-validation uses Go 1.26 or newer, with Go 1.27.2 pinned in `tools/go.mod`.
+validation uses Go 1.26 or newer, with Go 1.27.3 pinned in `tools/go.mod`.
 
 The Release workflow supports a manual `dry_run: true` on `main`. Set
 `tag_name` to the current package version with a `v` prefix (for example,
