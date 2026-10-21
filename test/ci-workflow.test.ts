@@ -52,6 +52,7 @@ describe("CI workflow hardening", () => {
       uses: "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
       with: {
         "cache-dependency-path": "tools/go.sum",
+        "go-version": "1.27.3",
         "go-version-file": "tools/go.mod",
       },
     });
