@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Build Go workflow tools with Go 1.27.3 to include the GO-2026-6809 crypto/x509 security fix while retaining the Go 1.26 minimum.
+
 ## 0.1.31 - 2026-10-20
 
 **Highlights:** Updated protobufjs and Zod bring parsing fixes while preserving Node 22 support.
