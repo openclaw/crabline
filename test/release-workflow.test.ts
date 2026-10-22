@@ -249,7 +249,7 @@ echo "${commit}"
       verifySteps.find((step) => step.uses?.startsWith("actions/setup-node@"))?.with?.[
         "node-version"
       ],
-    ).toBe(22);
+    ).toBe("22.23.4");
     expect(
       verifySteps.find((step) => step.uses?.startsWith("pnpm/action-setup@"))?.with?.version,
     ).toBe("11.28.5");
