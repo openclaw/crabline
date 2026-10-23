@@ -546,6 +546,36 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.commit }}
+      - name: Prepare release notes
+        env:
+          RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+          PACKAGE_NAME: ${{ needs.verify.outputs.name }}
+          PACKAGE_INTEGRITY: ${{ needs.verify.outputs.integrity }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const version = process.env.RELEASE_VERSION;
+          const sections = fs.readFileSync("CHANGELOG.md", "utf8").split(/^## /mu);
+          const matches = sections.filter((section) => section.startsWith(`${version} - `));
+          if (matches.length !== 1) {
+            throw new Error(`Expected exactly one changelog section for ${version}.`);
+          }
+          const section = matches[0].slice(matches[0].indexOf("\n") + 1).trim();
+          if (!section) throw new Error(`Empty changelog section for ${version}.`);
+          const name = process.env.PACKAGE_NAME;
+          const tarball = `https://registry.npmjs.org/${name}/-/${name.split("/").at(-1)}-${version}.tgz`;
+          const notes = `${section}\n\n### npm package\n\n` +
+            `- [${name}@${version}](https://www.npmjs.com/package/${name}/v/${version})\n` +
+            `- [Registry tarball](${tarball})\n` +
+            `- Integrity: \`${process.env.PACKAGE_INTEGRITY}\`\n` +
+            `- [Release workflow](https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})\n`;
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/release-notes.md`, notes);
+          NODE
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -605,5 +635,5 @@ jobs:
           revalidate_release_tag
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --generate-notes \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             --verify-tag
