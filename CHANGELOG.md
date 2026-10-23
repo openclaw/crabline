@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `--version` (`-V`) to print the CLI's package version without loading a config file.
+- Refresh Zod, Vitest, lint tooling, and transitive dependencies within the seven-day cooldown while preserving declared dependency minimums and Node 22 support.
 - Pin workflow validation explicitly to Go 1.27.3 so setup-go cannot select the older language minimum.
 - Build Go workflow tools with Go 1.27.3 to include the GO-2026-6809 crypto/x509 security fix while retaining the Go 1.26 minimum.
 

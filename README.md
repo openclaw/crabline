@@ -57,6 +57,9 @@ The source checkout does not link its own `crabline` bin into
 `pnpm exec crabline`. An installed package exposes the `crabline` command used
 in the examples below.
 
+Run `crabline --version` (or `crabline -V`) to print the installed package
+version. In a source checkout, use `pnpm dev --version`.
+
 Node.js consumers can bundle the package with its dependencies, including under
 pnpm's isolated linker. WhatsApp's crypto dependency uses static imports so it
 remains available when the bundle runs outside the original installation.

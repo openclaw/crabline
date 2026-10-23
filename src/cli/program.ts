@@ -5,6 +5,7 @@ import {
   type ReadyFileIdentity,
 } from "./ready-file.js";
 import { Command, CommanderError, Option } from "commander";
+import packageJson from "#package.json" with { type: "json" };
 import { createReadStream } from "node:fs";
 import { finished } from "node:stream/promises";
 import { loadManifest } from "../config/load.js";
@@ -424,6 +425,7 @@ export function createProgram(
     .exitOverride()
     .name("crabline")
     .description("Deterministic CLI harness for messaging provider E2E tests")
+    .version(packageJson.version)
     .option("-c, --config <path>", "Config file path")
     .option("--json", "Machine-readable output", false)
     .showHelpAfterError();
