@@ -364,6 +364,52 @@ echo "${commit}"
     );
   });
 
+  it("publishes the exact versioned changelog with npm verification links", async () => {
+    const workflow = await readWorkflow();
+    const steps = jobSteps(workflow, "github-release");
+    const checkout = steps.find((step) => step.uses?.startsWith("actions/checkout@"));
+    expect(checkout?.with?.ref).toBe("${{ needs.verify.outputs.commit }}");
+    const script = extractNodeHeredoc(
+      steps.find((step) => step.name === "Prepare release notes")?.run,
+    );
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-release-notes-"));
+    const section = "**Highlights:** New version flag.\n\n- Add --version.\n- Security fix.";
+    const run = async (changelog: string): Promise<void> => {
+      await fs.writeFile(path.join(tempDir, "CHANGELOG.md"), changelog);
+      await execFileWithOutput(process.execPath, ["--input-type=module", "--eval", script], {
+        cwd: tempDir,
+        env: {
+          ...process.env,
+          RELEASE_VERSION: "1.2.3",
+          PACKAGE_NAME: "@openclaw/crabline",
+          PACKAGE_INTEGRITY: PUBLISH_PACKAGE_INTEGRITY,
+          RUNNER_TEMP: tempDir,
+        },
+      });
+    };
+    try {
+      await run(
+        `# Changelog\n\n## Unreleased\n\n## 1.2.3 - 2026-10-23\n\n${section}\n\n## 1.2.2 - 2026-10-01\n\n- Older fix.\n`,
+      );
+      const notes = await fs.readFile(path.join(tempDir, "release-notes.md"), "utf8");
+      expect(notes).toBe(
+        `${section}\n\n### npm package\n\n` +
+          "- [@openclaw/crabline@1.2.3](https://www.npmjs.com/package/@openclaw/crabline/v/1.2.3)\n" +
+          "- [Registry tarball](https://registry.npmjs.org/@openclaw/crabline/-/crabline-1.2.3.tgz)\n" +
+          `- Integrity: \`${PUBLISH_PACKAGE_INTEGRITY}\`\n`,
+      );
+      await expect(run("## Unreleased\n\n- Pending.\n")).rejects.toThrow(
+        "Expected exactly one changelog section",
+      );
+      await expect(run("## 1.2.3 - 2026-10-23\n\n")).rejects.toThrow("Empty changelog");
+      await expect(
+        run("## 1.2.3 - 2026-10-23\n\n- One.\n\n## 1.2.3 - 2026-10-23\n\n- Two.\n"),
+      ).rejects.toThrow("Expected exactly one changelog section");
+    } finally {
+      await fs.rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
   it("pins privileged release actions to immutable revisions", async () => {
     const workflow = await readWorkflow();
     const steps = Object.values(workflow.jobs ?? {}).flatMap((job) => job.steps ?? []);
