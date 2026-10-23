@@ -572,7 +572,8 @@ jobs:
           const notes = `${section}\n\n### npm package\n\n` +
             `- [${name}@${version}](https://www.npmjs.com/package/${name}/v/${version})\n` +
             `- [Registry tarball](${tarball})\n` +
-            `- Integrity: \`${process.env.PACKAGE_INTEGRITY}\`\n`;
+            `- Integrity: \`${process.env.PACKAGE_INTEGRITY}\`\n` +
+            `- [Release workflow](https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})\n`;
           fs.writeFileSync(`${process.env.RUNNER_TEMP}/release-notes.md`, notes);
           NODE
       - name: Create GitHub release

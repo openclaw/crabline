@@ -383,6 +383,8 @@ echo "${commit}"
           RELEASE_VERSION: "1.2.3",
           PACKAGE_NAME: "@openclaw/crabline",
           PACKAGE_INTEGRITY: PUBLISH_PACKAGE_INTEGRITY,
+          GITHUB_REPOSITORY: "openclaw/crabline",
+          GITHUB_RUN_ID: "123",
           RUNNER_TEMP: tempDir,
         },
       });
@@ -396,7 +398,8 @@ echo "${commit}"
         `${section}\n\n### npm package\n\n` +
           "- [@openclaw/crabline@1.2.3](https://www.npmjs.com/package/@openclaw/crabline/v/1.2.3)\n" +
           "- [Registry tarball](https://registry.npmjs.org/@openclaw/crabline/-/crabline-1.2.3.tgz)\n" +
-          `- Integrity: \`${PUBLISH_PACKAGE_INTEGRITY}\`\n`,
+          `- Integrity: \`${PUBLISH_PACKAGE_INTEGRITY}\`\n` +
+          "- [Release workflow](https://github.com/openclaw/crabline/actions/runs/123)\n",
       );
       await expect(run("## Unreleased\n\n- Pending.\n")).rejects.toThrow(
         "Expected exactly one changelog section",
