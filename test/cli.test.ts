@@ -103,6 +103,18 @@ const createConfig = async (): Promise<string> => {
 };
 
 describe("cli", () => {
+  it.each(["--version", "-V"])("prints the package version with %s", async (flag) => {
+    const pkg = JSON.parse(
+      await fs.readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+    const captured = await captureWrites(async () => {
+      expect(await runCli(["node", "crabline", flag])).toBe(0);
+    });
+
+    expect(captured.stdout.join("")).toBe(`${pkg.version}\n`);
+    expect(captured.stderr.join("")).toBe("");
+  });
+
   it("lists providers and fixtures", async () => {
     const configPath = await createConfig();
     const captured = await captureWrites(async () => {
@@ -280,6 +292,7 @@ describe("cli", () => {
       try {
         expect(await runCli(["node", "crabline", "not-a-command"])).toBe(1);
         expect(await runCli(["node", "crabline", "--help"])).toBe(0);
+        expect(await runCli(["node", "crabline", "--version"])).toBe(0);
       } finally {
         exit.mockRestore();
       }

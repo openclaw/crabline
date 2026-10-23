@@ -310,6 +310,14 @@ describe("production package", () => {
       ) as typeof pkg;
       expect(installedPackage.version).toBe(pkg.version);
       expect(installedPackage.exports).toEqual(pkg.exports);
+      const installedCli = path.join(installedRoot, cliPath!);
+      const { stdout: installedVersion, stderr: installedVersionError } = await execFileAsync(
+        process.execPath,
+        [installedCli, "--version"],
+        { cwd: consumerDirectory },
+      );
+      expect(installedVersion).toBe(`${pkg.version}\n`);
+      expect(installedVersionError).toBe("");
       for (const packageName of DEV_ONLY_RUNTIME_PACKAGES) {
         await expect(
           fs.stat(path.join(consumerDirectory, "node_modules", packageName)),
