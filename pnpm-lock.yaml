@@ -68,8 +68,8 @@ importers:
         specifier: 7.0.0-rc14
         version: 7.0.0-rc14(sharp@0.35.5(@types/node@22.20.5))(supports-color@10.2.2)
       matrix-js-sdk:
-        specifier: 43.0.0
-        version: 43.0.0
+        specifier: 44.0.0
+        version: 44.0.0
       oxfmt:
         specifier: ^0.72.0
         version: 0.72.0
@@ -1416,8 +1416,8 @@ packages:
   matrix-events-sdk@0.0.1:
     resolution: {integrity: sha512-1QEOsXO+bhyCroIe2/A5OwaxHvBm7EsSQ46DEDn8RBIfQwN5HWBpFvyWWR4QY0KHPPnnJdI99wgRiAl7Ad5qaA==}
 
-  matrix-js-sdk@43.0.0:
-    resolution: {integrity: sha512-d2w/VPJoMgE9g015sAsHFqODe+B7KJ8zdm077i8luKTwG4PQrchCd74r65IiPqR5t97ZYz/8FZyujvamgB/7qQ==}
+  matrix-js-sdk@44.0.0:
+    resolution: {integrity: sha512-5wjcYMIX1aqhJC9hSUGjfSW+7SWEaLC8NUaek0xH5KGXqAO11M4Z5Mk7Voodsk+16Jm9PYB8/wMtyqIKFm0VAQ==}
     engines: {node: '>=22.0.0'}
 
   matrix-widget-api@1.20.0:
@@ -2729,7 +2729,7 @@ snapshots:
 
   matrix-events-sdk@0.0.1: {}
 
-  matrix-js-sdk@43.0.0:
+  matrix-js-sdk@44.0.0:
     dependencies:
       '@babel/runtime': 8.0.7
       '@matrix-org/matrix-sdk-crypto-wasm': 18.9.0
