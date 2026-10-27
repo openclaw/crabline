@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh RE2, Matrix and Feishu client test SDKs, formatting/build tooling, and CodeQL while preserving Node 22 support and the seven-day dependency cooldown. Thanks @dependabot! #356 #357 #358 #359
+
 ## 0.2.0 - 2026-10-23
 
 **Highlights:** Inspect the installed CLI version with `--version` or `-V`; refreshed dependencies and Go workflow tooling include the GO-2026-6809 crypto/x509 security fix.
