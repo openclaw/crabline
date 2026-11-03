@@ -12,6 +12,7 @@ type WorkflowStep = {
 };
 
 type Workflow = {
+  concurrency?: { group?: string; "cancel-in-progress"?: string };
   jobs?: Record<
     string,
     {
@@ -24,6 +25,8 @@ type Workflow = {
   on?: {
     pull_request?: { paths?: string[] };
     push?: { paths?: string[] };
+    schedule?: { cron: string }[];
+    workflow_dispatch?: { inputs?: { profile?: { options?: string[] } } };
   };
 };
 
@@ -227,9 +230,23 @@ describe("CI workflow hardening", () => {
     expect(codeowners).toContain("/.github/pull_request_template.md @openclaw/openclaw-secops");
     expect(codeowners).toContain("/AGENTS.md @openclaw/openclaw-secops");
     expect(codeowners).toContain("/tools/ @openclaw/openclaw-secops");
-    expect(codeqlWorkflow.on?.push?.paths).toContain(".github/actions/**");
+    expect(codeqlWorkflow.on?.push).toBeUndefined();
+    expect(codeqlWorkflow.on?.pull_request?.paths).toContain(".gitattributes");
+    expect(codeqlWorkflow.on?.pull_request?.paths).toContain("**/.gitattributes");
     expect(codeqlWorkflow.on?.pull_request?.paths).toContain(".github/actions/**");
-    expect(codeqlWorkflow.on?.push?.paths).toContain("tools/**");
+    expect(codeqlWorkflow.on?.schedule).toEqual([{ cron: "23 7 * * 1" }]);
+    expect(codeqlWorkflow.on?.workflow_dispatch?.inputs?.profile?.options).toEqual([
+      "all",
+      "typescript",
+      "actions",
+    ]);
+    expect(codeqlWorkflow.concurrency?.group).toBe(
+      "codeql-${{ github.workflow }}-${{ github.event_name }}-" +
+        "${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}",
+    );
+    expect(codeqlWorkflow.concurrency?.["cancel-in-progress"]).toBe(
+      "${{ github.event_name == 'pull_request' }}",
+    );
     expect(codeqlWorkflow.on?.pull_request?.paths).toContain("tools/**");
     expect(actionsConfig.paths).toContain(".github/actions");
     expect(typescriptConfig.paths).toContain("tools");
