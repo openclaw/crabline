@@ -186,15 +186,29 @@ describe("release workflow", () => {
           `commit=${fixture.commit}\ntag_object=${await fixture.git("rev-parse", "v1.2.3")}\n`,
         );
       }
-      await expect(verify({ GITHUB_EVENT_SHA: fixture.otherCommit })).rejects.toThrow();
+      await expect(verify({ GITHUB_EVENT_SHA: fixture.otherCommit })).rejects.toThrow(
+        "does not match the workflow event commit",
+      );
       await fixture.git("tag", "-f", "v1.2.3", fixture.commit);
-      await expect(verify()).rejects.toThrow();
+      await expect(verify()).rejects.toThrow(/must be an annotated SSH-signed tag/iu);
       await fixture.git("tag", "-f", "-a", "v1.2.3", fixture.commit, "-m", "unsigned");
-      await expect(verify()).rejects.toThrow();
+      await expect(verify()).rejects.toThrow("must end with an SSH signature");
+      for (const format of ["PGP SIGNATURE", "SIGNED MESSAGE"]) {
+        await fixture.git(
+          "tag",
+          "-f",
+          "-a",
+          "v1.2.3",
+          fixture.commit,
+          "-m",
+          `-----BEGIN ${format}-----\nZmFrZQ==\n-----END ${format}-----`,
+        );
+        await expect(verify()).rejects.toThrow("must end with an SSH signature");
+      }
       await fixture.sign(fixture.unknownKey);
-      await expect(verify()).rejects.toThrow();
+      await expect(verify()).rejects.toThrow(/No principal matched/iu);
       await fixture.sign(fixture.key, fixture.otherCommit);
-      await expect(verify()).rejects.toThrow();
+      await expect(verify()).rejects.toThrow(/does not match the checked out commit/iu);
       await fixture.sign(fixture.key);
       const payload = (await fixture.git("cat-file", "tag", "v1.2.3")).replace(
         "release fixture",
@@ -204,21 +218,21 @@ describe("release workflow", () => {
       await fs.writeFile(payloadPath, `${payload}\n`);
       const tampered = await fixture.git("hash-object", "-t", "tag", "-w", payloadPath);
       await fixture.git("update-ref", "refs/tags/v1.2.3", tampered);
-      await expect(verify()).rejects.toThrow();
+      await expect(verify()).rejects.toThrow(/signature/iu);
       await fixture.sign(fixture.key);
       const policy = path.join(fixture.cwd, ".github/release-allowed-signers");
       const allowed = await fs.readFile(policy, "utf8");
       await fs.writeFile(policy, "");
-      await expect(verify()).rejects.toThrow();
+      await expect(verify()).rejects.toThrow(/nonempty regular file/iu);
       await fs.rm(policy);
-      await expect(verify()).rejects.toThrow();
+      await expect(verify()).rejects.toThrow(/nonempty regular file/iu);
       const alternate = path.join(fixture.cwd, "allowed-signers");
       await fs.writeFile(alternate, allowed);
       await fs.symlink(alternate, policy);
-      await expect(verify()).rejects.toThrow();
+      await expect(verify()).rejects.toThrow(/nonempty regular file/iu);
       await fs.rm(policy);
       await fs.writeFile(policy, allowed.replaceAll('namespaces="git"', 'namespaces="file"'));
-      await expect(verify()).rejects.toThrow();
+      await expect(verify()).rejects.toThrow(/namespace/iu);
       await fixture.git("tag", "-d", "v1.2.3");
       await fs.rm(policy);
       await fs.writeFile(output, "");
@@ -243,24 +257,30 @@ describe("release workflow", () => {
         const guard = /revalidate_release_tag\(\) \{[\s\S]*?\n\}/u.exec(step?.run ?? "")?.[0];
         expect(guard).toBeDefined();
         const verify = (overrides: Record<string, string> = {}) =>
-          execFileWithOutput("/bin/bash", ["-c", `set -euo pipefail\n${guard}\nrevalidate_release_tag`], {
-            cwd: fixture.cwd,
-            env: {
-              ...fixture.env,
-              GITHUB_EVENT_SHA: fixture.commit,
-              GITHUB_REPOSITORY: "remote",
-              GITHUB_SERVER_URL: fixture.cwd,
-              RELEASE_TAG: "v1.2.3",
-              VERIFIED_COMMIT: fixture.commit,
-              VERIFIED_TAG_OBJECT: frozenObject,
-              ...overrides,
+          execFileWithOutput(
+            "/bin/bash",
+            ["-c", `set -euo pipefail\n${guard}\nrevalidate_release_tag`],
+            {
+              cwd: fixture.cwd,
+              env: {
+                ...fixture.env,
+                GITHUB_EVENT_SHA: fixture.commit,
+                GITHUB_REPOSITORY: "remote",
+                GITHUB_SERVER_URL: fixture.cwd,
+                RELEASE_TAG: "v1.2.3",
+                VERIFIED_COMMIT: fixture.commit,
+                VERIFIED_TAG_OBJECT: frozenObject,
+                ...overrides,
+              },
             },
-          });
+          );
         await fixture.git("update-ref", "refs/tags/v1.2.3", frozenObject);
         await publishTag();
         await verify();
-        await expect(verify({ VERIFIED_TAG_OBJECT: "" })).rejects.toThrow();
-        await expect(verify({ GITHUB_EVENT_SHA: fixture.otherCommit })).rejects.toThrow();
+        await expect(verify({ VERIFIED_TAG_OBJECT: "" })).rejects.toThrow("object is");
+        await expect(verify({ GITHUB_EVENT_SHA: fixture.otherCommit })).rejects.toThrow(
+          "does not match verified commit",
+        );
         await fixture.sign(fixture.secondKey);
         await publishTag();
         await expect(verify()).rejects.toThrow("object is");
@@ -271,7 +291,7 @@ describe("release workflow", () => {
         await publishTag();
         await expect(verify()).rejects.toThrow("object is");
         await fixture.git("push", remote, ":refs/tags/v1.2.3");
-        await expect(verify()).rejects.toThrow();
+        await expect(verify()).rejects.toThrow(/Command failed/u);
       }
     });
   });
@@ -339,7 +359,7 @@ echo "${commit}"
         execFileWithOutput("bash", ["-c", script!], {
           env: { ...env, GITHUB_EVENT_SHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
         }),
-      ).rejects.toThrow(/Command failed/u);
+      ).rejects.toThrow("does not match the workflow event commit");
     } finally {
       await fs.rm(tempDir, { force: true, recursive: true });
     }
@@ -422,9 +442,10 @@ echo "${commit}"
     expect(publishSteps.some((step) => step.name === "Revalidate release tag commit")).toBe(false);
     expect(releaseSteps.some((step) => step.name === "Revalidate release tag commit")).toBe(false);
     for (const steps of [publishSteps, releaseSteps]) {
-      expect(steps.find((step) => step.run?.includes("revalidate_release_tag()"))?.env?.VERIFIED_TAG_OBJECT).toBe(
-        "${{ needs.verify.outputs.tag_object }}",
-      );
+      expect(
+        steps.find((step) => step.run?.includes("revalidate_release_tag()"))?.env
+          ?.VERIFIED_TAG_OBJECT,
+      ).toBe("${{ needs.verify.outputs.tag_object }}");
     }
     for (const script of [publishStep, releaseStep]) {
       expect(script).toContain('"$GITHUB_EVENT_SHA" != "$VERIFIED_COMMIT"');
@@ -871,7 +892,9 @@ type ReleaseTagFixture = {
   sign: (key: string, target?: string) => Promise<string>;
 };
 
-async function withReleaseTagFixture(run: (fixture: ReleaseTagFixture) => Promise<void>): Promise<void> {
+async function withReleaseTagFixture(
+  run: (fixture: ReleaseTagFixture) => Promise<void>,
+): Promise<void> {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-signed-release-"));
   try {
     const globalConfig = path.join(cwd, "empty-gitconfig");
@@ -897,8 +920,9 @@ async function withReleaseTagFixture(run: (fixture: ReleaseTagFixture) => Promis
     const [key, secondKey, unknownKey] = keys as [string, string, string];
     await fs.mkdir(path.join(cwd, ".github"));
     const allowed = await Promise.all(
-      [key, secondKey].map(async (signer, index) =>
-        `signer-${index} namespaces="git" ${await fs.readFile(`${signer}.pub`, "utf8")}`,
+      [key, secondKey].map(
+        async (signer, index) =>
+          `signer-${index} namespaces="git" ${await fs.readFile(`${signer}.pub`, "utf8")}`,
       ),
     );
     await fs.writeFile(path.join(cwd, ".github/release-allowed-signers"), allowed.join(""));
@@ -909,7 +933,17 @@ async function withReleaseTagFixture(run: (fixture: ReleaseTagFixture) => Promis
     const otherCommit = await git("rev-parse", "HEAD");
     await git("checkout", "--detach", commit);
     const sign = (signer: string, target = commit) =>
-      git("-c", `user.signingkey=${signer}`, "tag", "-f", "-s", "v1.2.3", target, "-m", "release fixture");
+      git(
+        "-c",
+        `user.signingkey=${signer}`,
+        "tag",
+        "-f",
+        "-s",
+        "v1.2.3",
+        target,
+        "-m",
+        "release fixture",
+      );
     await sign(key);
     await run({ cwd, env, commit, otherCommit, key, secondKey, unknownKey, git, sign });
   } finally {

@@ -73,14 +73,33 @@ jobs:
             release_commit="$(git rev-parse HEAD)"
           else
             policy=.github/release-allowed-signers
-            [[ -f "$policy" && ! -L "$policy" && -s "$policy" ]]
+            [[ -f "$policy" && ! -L "$policy" && -s "$policy" ]] || {
+              echo "::error::$policy must be a nonempty regular file."
+              exit 1
+            }
             tag_object="$(git rev-parse "refs/tags/${RELEASE_TAG}")"
-            [[ "$(git cat-file -t "$tag_object")" == tag ]]
+            [[ "$(git cat-file -t "$tag_object")" == tag ]] || {
+              echo "::error::$RELEASE_TAG must be an annotated SSH-signed tag."
+              exit 1
+            }
+            # Git chooses its verification backend from the signature, not gpg.format.
+            tag_contents="$(git cat-file tag "$tag_object")"
+            ssh_signature=$'(^|\n)-----BEGIN SSH SIGNATURE-----\n[A-Za-z0-9+/=\n]+\n-----END SSH SIGNATURE-----$'
+            [[ "$tag_contents" =~ $ssh_signature ]] || {
+              echo "::error::$RELEASE_TAG must end with an SSH signature."
+              exit 1
+            }
             release_commit="$(git rev-parse "${tag_object}^{commit}")"
             git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$policy" verify-tag "$tag_object"
           fi
-          [[ "$release_commit" == "$(git rev-parse HEAD)" ]]
-          [[ "$release_commit" == "$GITHUB_EVENT_SHA" ]]
+          [[ "$release_commit" == "$(git rev-parse HEAD)" ]] || {
+            echo "::error::Release tag commit does not match the checked out commit."
+            exit 1
+          }
+          [[ "$release_commit" == "$GITHUB_EVENT_SHA" ]] || {
+            echo "::error::Release commit does not match the workflow event commit."
+            exit 1
+          }
           echo "commit=$release_commit" >> "$GITHUB_OUTPUT"
           echo "tag_object=$tag_object" >> "$GITHUB_OUTPUT"
       - name: Verify release metadata
