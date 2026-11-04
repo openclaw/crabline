@@ -78,8 +78,10 @@ The Release workflow supports a manual `dry_run: true` on `main`. Set
 `tag_name` to the current package version with a `v` prefix (for example,
 `v0.1.29`). This verifies and packs the selected commit, checks its version and
 changelog, and uploads the package artifact without publishing to npm or
-creating a GitHub release. Normal releases still require an existing matching
-stable tag.
+creating a GitHub release. Normal releases require an existing matching stable, SSH-signed annotated tag
+authorized by `.github/release-allowed-signers`. The workflow verifies the tag
+and freezes its object and commit before building, then checks both again before
+npm and GitHub publication. Replacing a tag at the same commit is rejected.
 
 ## Config
 

@@ -19,6 +19,7 @@ const PROVENANCE_MISMATCH_ERROR =
   "::error::Published @openclaw/crabline@1.2.3 has provenance that does not match the repository, workflow, tag, commit, or package integrity.";
 
 type WorkflowStep = {
+  env?: Record<string, string>;
   id?: string;
   name?: string;
   run?: string;
@@ -148,11 +149,151 @@ describe("release workflow", () => {
       runResolveTag(resolveStep, "v1.2.3", { refName: "v1.2.2", refType: "tag" }),
     ).rejects.toThrow(/Command failed/u);
     expect(checkoutStep?.with?.ref).toBe("${{ github.sha }}");
-    expect(verifyCheckoutStep).toContain("refs/tags/${RELEASE_TAG}^{commit}");
+    expect(verifyCheckoutStep).toContain("${tag_object}^{commit}");
     expect(verifyCheckoutStep).toContain('"$release_commit" == "$GITHUB_EVENT_SHA"');
+    expect(workflow.jobs?.verify?.outputs?.tag_object).toBe(
+      "${{ steps.release-commit.outputs.tag_object }}",
+    );
     expect(workflow.jobs?.verify?.outputs?.commit).toBe(
       "${{ steps.release-commit.outputs.commit }}",
     );
+  });
+
+  it("verifies real SSH tag signatures against the frozen signer policy", async () => {
+    const workflow = await readWorkflow();
+    const script = jobSteps(workflow, "verify").find(
+      (step) => step.name === "Verify checked out release tag",
+    )?.run;
+    expect(script).toBeDefined();
+    await withReleaseTagFixture(async (fixture) => {
+      const output = path.join(fixture.cwd, "outputs");
+      const verify = (overrides: Record<string, string> = {}) =>
+        execFileWithOutput("/bin/bash", ["-c", script!], {
+          cwd: fixture.cwd,
+          env: {
+            ...fixture.env,
+            GITHUB_EVENT_SHA: fixture.commit,
+            GITHUB_OUTPUT: output,
+            RELEASE_TAG: "v1.2.3",
+            ...overrides,
+          },
+        });
+      for (const key of [fixture.key, fixture.secondKey]) {
+        await fixture.sign(key);
+        await fs.writeFile(output, "");
+        await verify();
+        expect(await fs.readFile(output, "utf8")).toBe(
+          `commit=${fixture.commit}\ntag_object=${await fixture.git("rev-parse", "v1.2.3")}\n`,
+        );
+      }
+      await expect(verify({ GITHUB_EVENT_SHA: fixture.otherCommit })).rejects.toThrow(
+        "does not match the workflow event commit",
+      );
+      await fixture.git("tag", "-f", "v1.2.3", fixture.commit);
+      await expect(verify()).rejects.toThrow(/must be an annotated SSH-signed tag/iu);
+      await fixture.git("tag", "-f", "-a", "v1.2.3", fixture.commit, "-m", "unsigned");
+      await expect(verify()).rejects.toThrow("must end with an SSH signature");
+      for (const format of ["PGP SIGNATURE", "SIGNED MESSAGE"]) {
+        await fixture.git(
+          "tag",
+          "-f",
+          "-a",
+          "v1.2.3",
+          fixture.commit,
+          "-m",
+          `-----BEGIN ${format}-----\nZmFrZQ==\n-----END ${format}-----`,
+        );
+        await expect(verify()).rejects.toThrow("must end with an SSH signature");
+      }
+      await fixture.sign(fixture.unknownKey);
+      await expect(verify()).rejects.toThrow(/No principal matched/iu);
+      await fixture.sign(fixture.key, fixture.otherCommit);
+      await expect(verify()).rejects.toThrow(/does not match the checked out commit/iu);
+      await fixture.sign(fixture.key);
+      const payload = (await fixture.git("cat-file", "tag", "v1.2.3")).replace(
+        "release fixture",
+        "tampered fixture",
+      );
+      const payloadPath = path.join(fixture.cwd, "tampered-tag");
+      await fs.writeFile(payloadPath, `${payload}\n`);
+      const tampered = await fixture.git("hash-object", "-t", "tag", "-w", payloadPath);
+      await fixture.git("update-ref", "refs/tags/v1.2.3", tampered);
+      await expect(verify()).rejects.toThrow(/signature/iu);
+      await fixture.sign(fixture.key);
+      const policy = path.join(fixture.cwd, ".github/release-allowed-signers");
+      const allowed = await fs.readFile(policy, "utf8");
+      await fs.writeFile(policy, "");
+      await expect(verify()).rejects.toThrow(/nonempty regular file/iu);
+      await fs.rm(policy);
+      await expect(verify()).rejects.toThrow(/nonempty regular file/iu);
+      const alternate = path.join(fixture.cwd, "allowed-signers");
+      await fs.writeFile(alternate, allowed);
+      await fs.symlink(alternate, policy);
+      await expect(verify()).rejects.toThrow(/nonempty regular file/iu);
+      await fs.rm(policy);
+      await fs.writeFile(policy, allowed.replaceAll('namespaces="git"', 'namespaces="file"'));
+      await expect(verify()).rejects.toThrow(/namespace/iu);
+      await fixture.git("tag", "-d", "v1.2.3");
+      await fs.rm(policy);
+      await fs.writeFile(output, "");
+      await verify({ INPUT_DRY_RUN: "true" });
+      expect(await fs.readFile(output, "utf8")).toBe(`commit=${fixture.commit}\ntag_object=\n`);
+    });
+  });
+
+  it("binds both publication guards to the real verified tag object and commit", async () => {
+    const workflow = await readWorkflow();
+    await withReleaseTagFixture(async (fixture) => {
+      const remote = path.join(fixture.cwd, "remote.git");
+      await fixture.git("init", "--bare", remote);
+      const frozenObject = await fixture.git("rev-parse", "v1.2.3");
+      const publishTag = () => fixture.git("push", "--force", remote, "refs/tags/v1.2.3");
+      await publishTag();
+      for (const [job, name] of [
+        ["publish", "Publish package with npm provenance"],
+        ["github-release", "Create GitHub release"],
+      ]) {
+        const step = jobSteps(workflow, job!).find((candidate) => candidate.name === name);
+        const guard = /revalidate_release_tag\(\) \{[\s\S]*?\n\}/u.exec(step?.run ?? "")?.[0];
+        expect(guard).toBeDefined();
+        const verify = (overrides: Record<string, string> = {}) =>
+          execFileWithOutput(
+            "/bin/bash",
+            ["-c", `set -euo pipefail\n${guard}\nrevalidate_release_tag`],
+            {
+              cwd: fixture.cwd,
+              env: {
+                ...fixture.env,
+                GITHUB_EVENT_SHA: fixture.commit,
+                GITHUB_REPOSITORY: "remote",
+                GITHUB_SERVER_URL: fixture.cwd,
+                RELEASE_TAG: "v1.2.3",
+                VERIFIED_COMMIT: fixture.commit,
+                VERIFIED_TAG_OBJECT: frozenObject,
+                ...overrides,
+              },
+            },
+          );
+        await fixture.git("update-ref", "refs/tags/v1.2.3", frozenObject);
+        await publishTag();
+        await verify();
+        await expect(verify({ VERIFIED_TAG_OBJECT: "" })).rejects.toThrow("object is");
+        await expect(verify({ GITHUB_EVENT_SHA: fixture.otherCommit })).rejects.toThrow(
+          "does not match verified commit",
+        );
+        await fixture.sign(fixture.secondKey);
+        await publishTag();
+        await expect(verify()).rejects.toThrow("object is");
+        await fixture.sign(fixture.key, fixture.otherCommit);
+        await publishTag();
+        await expect(verify()).rejects.toThrow("object is");
+        await fixture.git("tag", "-f", "v1.2.3", fixture.commit);
+        await publishTag();
+        await expect(verify()).rejects.toThrow("object is");
+        await fixture.git("push", remote, ":refs/tags/v1.2.3");
+        await expect(verify()).rejects.toThrow(/Command failed/u);
+      }
+    });
   });
 
   it("pins a manual dry run to its commit and skips both publication jobs", async () => {
@@ -213,12 +354,12 @@ echo "${commit}"
         RELEASE_TAG: "v1.2.3",
       };
       await execFileWithOutput("bash", ["-c", script!], { env });
-      expect(await fs.readFile(env.GITHUB_OUTPUT, "utf8")).toBe(`commit=${commit}\n`);
+      expect(await fs.readFile(env.GITHUB_OUTPUT, "utf8")).toBe(`commit=${commit}\ntag_object=\n`);
       await expect(
         execFileWithOutput("bash", ["-c", script!], {
           env: { ...env, GITHUB_EVENT_SHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
         }),
-      ).rejects.toThrow(/Command failed/u);
+      ).rejects.toThrow("does not match the workflow event commit");
     } finally {
       await fs.rm(tempDir, { force: true, recursive: true });
     }
@@ -300,10 +441,17 @@ echo "${commit}"
 
     expect(publishSteps.some((step) => step.name === "Revalidate release tag commit")).toBe(false);
     expect(releaseSteps.some((step) => step.name === "Revalidate release tag commit")).toBe(false);
+    for (const steps of [publishSteps, releaseSteps]) {
+      expect(
+        steps.find((step) => step.run?.includes("revalidate_release_tag()"))?.env
+          ?.VERIFIED_TAG_OBJECT,
+      ).toBe("${{ needs.verify.outputs.tag_object }}");
+    }
     for (const script of [publishStep, releaseStep]) {
       expect(script).toContain('"$GITHUB_EVENT_SHA" != "$VERIFIED_COMMIT"');
       expect(script).toContain("git ls-remote --exit-code");
       expect(script).toContain('"$remote_commit" != "$VERIFIED_COMMIT"');
+      expect(script).toContain('"$remote_tag_object" != "$VERIFIED_TAG_OBJECT"');
     }
     expect(publishStep).toMatch(/revalidate_release_tag\n\s*if npm publish "\$PACKAGE_TARBALL"/u);
     expect(releaseStep).toMatch(/revalidate_release_tag\n\s*gh release create "\$RELEASE_TAG"/u);
@@ -329,6 +477,38 @@ echo "${commit}"
         MOCK_TAG_RACE_AFTER_LOOKUP: "1",
       }),
     ).rejects.toThrow("resolves to bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+  });
+
+  it("rejects same-commit tag replacements on new and existing publication paths", async () => {
+    const workflow = await readWorkflow();
+    const publish = jobSteps(workflow, "publish").find(
+      (step) => step.name === "Publish package with npm provenance",
+    )?.run;
+    const release = jobSteps(workflow, "github-release").find(
+      (step) => step.name === "Create GitHub release",
+    )?.run;
+    const replacement = "object is eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    await expect(
+      runPublishStep(publish ?? "", {
+        MOCK_TAG_OBJECT_RACE: "1",
+        MOCK_TAG_RACE_AFTER_LOOKUP: "1",
+      }),
+    ).rejects.toThrow(replacement);
+    await expect(
+      runPublishStep(publish ?? "", {
+        MOCK_TAG_OBJECT_RACE: "1",
+        MOCK_TAG_RACE_AFTER_EXISTING: "1",
+        MOCK_VIEW_RESULT: "matching",
+      }),
+    ).rejects.toThrow(replacement);
+    for (const state of ["missing", "stable"]) {
+      await expect(
+        runGithubReleaseStep(release ?? "", state, {
+          MOCK_TAG_OBJECT_RACE: "1",
+          MOCK_TAG_RACE_AFTER_LOOKUP: "1",
+        }),
+      ).rejects.toThrow(replacement);
+    }
   });
 
   it("accepts only published stable GitHub releases as existing", async () => {
@@ -700,6 +880,77 @@ echo "${commit}"
   });
 });
 
+type ReleaseTagFixture = {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  commit: string;
+  otherCommit: string;
+  key: string;
+  secondKey: string;
+  unknownKey: string;
+  git: (...args: string[]) => Promise<string>;
+  sign: (key: string, target?: string) => Promise<string>;
+};
+
+async function withReleaseTagFixture(
+  run: (fixture: ReleaseTagFixture) => Promise<void>,
+): Promise<void> {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crabline-signed-release-"));
+  try {
+    const globalConfig = path.join(cwd, "empty-gitconfig");
+    await fs.writeFile(globalConfig, "");
+    const env = {
+      PATH: process.env.PATH,
+      HOME: cwd,
+      GIT_CONFIG_GLOBAL: globalConfig,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_TERMINAL_PROMPT: "0",
+    };
+    const git = async (...args: string[]): Promise<string> =>
+      (await execFileAsync("git", args, { cwd, env })).stdout.trim();
+    await git("init", "-q");
+    await git("config", "user.name", "Release fixture");
+    await git("config", "user.email", "release@example.invalid");
+    await git("config", "core.hooksPath", "/dev/null");
+    await git("config", "gpg.format", "ssh");
+    const keys = ["first", "second", "unknown"].map((name) => path.join(cwd, name));
+    for (const key of keys) {
+      await execFileAsync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], { cwd, env });
+    }
+    const [key, secondKey, unknownKey] = keys as [string, string, string];
+    await fs.mkdir(path.join(cwd, ".github"));
+    const allowed = await Promise.all(
+      [key, secondKey].map(
+        async (signer, index) =>
+          `signer-${index} namespaces="git" ${await fs.readFile(`${signer}.pub`, "utf8")}`,
+      ),
+    );
+    await fs.writeFile(path.join(cwd, ".github/release-allowed-signers"), allowed.join(""));
+    await git("add", ".github/release-allowed-signers");
+    await git("commit", "-m", "fixture target");
+    const commit = await git("rev-parse", "HEAD");
+    await git("commit", "--allow-empty", "-m", "other target");
+    const otherCommit = await git("rev-parse", "HEAD");
+    await git("checkout", "--detach", commit);
+    const sign = (signer: string, target = commit) =>
+      git(
+        "-c",
+        `user.signingkey=${signer}`,
+        "tag",
+        "-f",
+        "-s",
+        "v1.2.3",
+        target,
+        "-m",
+        "release fixture",
+      );
+    await sign(key);
+    await run({ cwd, env, commit, otherCommit, key, secondKey, unknownKey, git, sign });
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+}
+
 async function readWorkflow(): Promise<ReleaseWorkflow> {
   const contents = await fs.readFile(
     path.join(process.cwd(), ".github/workflows/release.yml"),
@@ -815,10 +1066,15 @@ fi
 set -euo pipefail
 echo "git $*" >> "$MOCK_LOG"
 remote_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+remote_object="dddddddddddddddddddddddddddddddddddddddd"
 if [[ -f "$MOCK_TAG_RACE" ]]; then
-  remote_commit="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  if [[ "\${MOCK_TAG_OBJECT_RACE:-0}" -eq 1 ]]; then
+    remote_object="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  else
+    remote_commit="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  fi
 fi
-printf '%s\\trefs/tags/v1.2.3\\n' "dddddddddddddddddddddddddddddddddddddddd"
+printf '%s\\trefs/tags/v1.2.3\\n' "$remote_object"
 printf '%s\\trefs/tags/v1.2.3^{}\\n' "$remote_commit"
 `,
       ),
@@ -838,6 +1094,7 @@ printf '%s\\trefs/tags/v1.2.3^{}\\n' "$remote_commit"
         RELEASE_TAG: "v1.2.3",
         RUNNER_TEMP: tempDir,
         VERIFIED_COMMIT: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        VERIFIED_TAG_OBJECT: "dddddddddddddddddddddddddddddddddddddddd",
       },
     });
     return (await fs.readFile(logPath, "utf8")).trim().split("\n");
@@ -1015,10 +1272,15 @@ esac
 set -euo pipefail
 echo "git $*" >> "$MOCK_LOG"
 remote_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+remote_object="dddddddddddddddddddddddddddddddddddddddd"
 if [[ -f "$MOCK_TAG_RACE" ]]; then
-  remote_commit="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  if [[ "\${MOCK_TAG_OBJECT_RACE:-0}" -eq 1 ]]; then
+    remote_object="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  else
+    remote_commit="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  fi
 fi
-printf '%s\\trefs/tags/v1.2.3\\n' "dddddddddddddddddddddddddddddddddddddddd"
+printf '%s\\trefs/tags/v1.2.3\\n' "$remote_object"
 printf '%s\\trefs/tags/v1.2.3^{}\\n' "$remote_commit"
 `,
       ),
@@ -1055,6 +1317,7 @@ echo "$((elapsed + $1))" > "$MOCK_ELAPSED"
         RELEASE_VERSION: "1.2.3",
         RUNNER_TEMP: tempDir,
         VERIFIED_COMMIT: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        VERIFIED_TAG_OBJECT: "dddddddddddddddddddddddddddddddddddddddd",
         ...overrides,
       },
     });

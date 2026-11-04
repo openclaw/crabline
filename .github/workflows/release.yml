@@ -29,6 +29,7 @@ jobs:
       contents: read
     outputs:
       commit: ${{ steps.release-commit.outputs.commit }}
+      tag_object: ${{ steps.release-commit.outputs.tag_object }}
       integrity: ${{ steps.package.outputs.integrity }}
       name: ${{ steps.package.outputs.name }}
       tag: ${{ steps.release.outputs.tag }}
@@ -67,14 +68,40 @@ jobs:
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
+          tag_object=
           if [[ "${INPUT_DRY_RUN:-false}" == "true" ]]; then
             release_commit="$(git rev-parse HEAD)"
           else
-            release_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+            policy=.github/release-allowed-signers
+            [[ -f "$policy" && ! -L "$policy" && -s "$policy" ]] || {
+              echo "::error::$policy must be a nonempty regular file."
+              exit 1
+            }
+            tag_object="$(git rev-parse "refs/tags/${RELEASE_TAG}")"
+            [[ "$(git cat-file -t "$tag_object")" == tag ]] || {
+              echo "::error::$RELEASE_TAG must be an annotated SSH-signed tag."
+              exit 1
+            }
+            # Git chooses its verification backend from the signature, not gpg.format.
+            tag_contents="$(git cat-file tag "$tag_object")"
+            ssh_signature=$'(^|\n)-----BEGIN SSH SIGNATURE-----\n[A-Za-z0-9+/=\n]+\n-----END SSH SIGNATURE-----$'
+            [[ "$tag_contents" =~ $ssh_signature ]] || {
+              echo "::error::$RELEASE_TAG must end with an SSH signature."
+              exit 1
+            }
+            release_commit="$(git rev-parse "${tag_object}^{commit}")"
+            git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$policy" verify-tag "$tag_object"
           fi
-          [[ "$release_commit" == "$(git rev-parse HEAD)" ]]
-          [[ "$release_commit" == "$GITHUB_EVENT_SHA" ]]
+          [[ "$release_commit" == "$(git rev-parse HEAD)" ]] || {
+            echo "::error::Release tag commit does not match the checked out commit."
+            exit 1
+          }
+          [[ "$release_commit" == "$GITHUB_EVENT_SHA" ]] || {
+            echo "::error::Release commit does not match the workflow event commit."
+            exit 1
+          }
           echo "commit=$release_commit" >> "$GITHUB_OUTPUT"
+          echo "tag_object=$tag_object" >> "$GITHUB_OUTPUT"
       - name: Verify release metadata
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
@@ -273,6 +300,7 @@ jobs:
           RELEASE_TAG: ${{ needs.verify.outputs.tag }}
           RELEASE_VERSION: ${{ needs.verify.outputs.version }}
           VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
+          VERIFIED_TAG_OBJECT: ${{ needs.verify.outputs.tag_object }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -433,7 +461,7 @@ jobs:
           }
 
           revalidate_release_tag() {
-            local remote_commit remote_refs
+            local remote_commit remote_refs remote_tag_object
             if [[ "$GITHUB_EVENT_SHA" != "$VERIFIED_COMMIT" ]]; then
               echo "::error::Release run commit $GITHUB_EVENT_SHA does not match verified commit $VERIFIED_COMMIT."
               return 1
@@ -444,13 +472,17 @@ jobs:
                 "refs/tags/$RELEASE_TAG" \
                 "refs/tags/$RELEASE_TAG^{}"
             )"
-            remote_commit="$(
-              awk -v direct="refs/tags/$RELEASE_TAG" -v peeled="refs/tags/$RELEASE_TAG^{}" '
-                $2 == peeled { peeled_sha = $1 }
-                $2 == direct { direct_sha = $1 }
-                END { print (peeled_sha != "" ? peeled_sha : direct_sha) }
-              ' <<< "$remote_refs"
+            remote_tag_object="$(
+              awk -v direct="refs/tags/$RELEASE_TAG" '$2 == direct { print $1 }' <<< "$remote_refs"
             )"
+            remote_commit="$(
+              awk -v peeled="refs/tags/$RELEASE_TAG^{}" '$2 == peeled { print $1 }' <<< "$remote_refs"
+            )"
+            # Bind publication to the signed object, not a replacement at the same commit.
+            if [[ -z "$VERIFIED_TAG_OBJECT" || "$remote_tag_object" != "$VERIFIED_TAG_OBJECT" ]]; then
+              echo "::error::Release tag $RELEASE_TAG object is ${remote_tag_object:-<missing>}, expected $VERIFIED_TAG_OBJECT."
+              return 1
+            fi
             if [[ -z "$remote_commit" || "$remote_commit" != "$VERIFIED_COMMIT" ]]; then
               echo "::error::Release tag $RELEASE_TAG resolves to ${remote_commit:-<missing>}, expected $VERIFIED_COMMIT."
               return 1
@@ -582,10 +614,11 @@ jobs:
           GITHUB_EVENT_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ needs.verify.outputs.tag }}
           VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
+          VERIFIED_TAG_OBJECT: ${{ needs.verify.outputs.tag_object }}
         run: |
           set -euo pipefail
           revalidate_release_tag() {
-            local remote_commit remote_refs
+            local remote_commit remote_refs remote_tag_object
             if [[ "$GITHUB_EVENT_SHA" != "$VERIFIED_COMMIT" ]]; then
               echo "::error::Release run commit $GITHUB_EVENT_SHA does not match verified commit $VERIFIED_COMMIT."
               return 1
@@ -596,13 +629,17 @@ jobs:
                 "refs/tags/$RELEASE_TAG" \
                 "refs/tags/$RELEASE_TAG^{}"
             )"
-            remote_commit="$(
-              awk -v direct="refs/tags/$RELEASE_TAG" -v peeled="refs/tags/$RELEASE_TAG^{}" '
-                $2 == peeled { peeled_sha = $1 }
-                $2 == direct { direct_sha = $1 }
-                END { print (peeled_sha != "" ? peeled_sha : direct_sha) }
-              ' <<< "$remote_refs"
+            remote_tag_object="$(
+              awk -v direct="refs/tags/$RELEASE_TAG" '$2 == direct { print $1 }' <<< "$remote_refs"
             )"
+            remote_commit="$(
+              awk -v peeled="refs/tags/$RELEASE_TAG^{}" '$2 == peeled { print $1 }' <<< "$remote_refs"
+            )"
+            # Bind publication to the signed object, not a replacement at the same commit.
+            if [[ -z "$VERIFIED_TAG_OBJECT" || "$remote_tag_object" != "$VERIFIED_TAG_OBJECT" ]]; then
+              echo "::error::Release tag $RELEASE_TAG object is ${remote_tag_object:-<missing>}, expected $VERIFIED_TAG_OBJECT."
+              return 1
+            fi
             if [[ -z "$remote_commit" || "$remote_commit" != "$VERIFIED_COMMIT" ]]; then
               echo "::error::Release tag $RELEASE_TAG resolves to ${remote_commit:-<missing>}, expected $VERIFIED_COMMIT."
               return 1

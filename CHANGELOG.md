@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require authorized SSH-signed annotated release tags and reject tag replacements before npm and GitHub publication, including replacements at the same commit.
+
 - Keep full weekly CodeQL analysis without duplicate main-push scans, isolate scheduled and manual runs, and scan PRs that change checkout attributes.
 
 - Refresh RE2, Matrix and Feishu client test SDKs, formatting/build tooling, and CodeQL while preserving Node 22 support and the seven-day dependency cooldown. Thanks @dependabot! #356 #357 #358 #359
