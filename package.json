@@ -60,7 +60,7 @@
     "picocolors": "^1.1.1",
     "proper-lockfile": "4.1.2",
     "protobufjs": "8.8.1",
-    "re2js": "2.8.8",
+    "re2js": "2.9.0",
     "ws": "^8.21.3",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
@@ -73,10 +73,10 @@
     "@vitest/coverage-v8": "^5.0.1",
     "baileys": "7.0.0-rc14",
     "matrix-js-sdk": "44.0.0",
-    "oxfmt": "^0.73.0",
-    "oxlint": "^1.83.0",
-    "oxlint-tsgolint": "^7.0.2001",
-    "rolldown": "1.2.14",
+    "oxfmt": "^0.74.0",
+    "oxlint": "^1.90.0",
+    "oxlint-tsgolint": "^7.0.2005",
+    "rolldown": "1.2.15",
     "tsx": "^4.23.13",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vitest": "^5.0.1"

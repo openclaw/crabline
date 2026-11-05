@@ -2109,8 +2109,10 @@ describe("OpenClaw provider readiness lock cleanup", () => {
                 const commitClaim = (await fs.readdir(outputDir)).find((entry) =>
                   entry.includes(".lock.commit."),
                 );
-                expect(commitClaim).toBeDefined();
-                const ownerPath = path.join(outputDir, commitClaim!, "owner.json");
+                if (!commitClaim) {
+                  throw new Error("Expected an active commit claim during heartbeat drain.");
+                }
+                const ownerPath = path.join(outputDir, commitClaim, "owner.json");
                 const owner = JSON.parse(await fs.readFile(ownerPath, "utf8"));
                 await fs.writeFile(
                   ownerPath,

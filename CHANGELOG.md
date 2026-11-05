@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Patch follow-redirects credential forwarding and refresh RE2, formatting/build tooling, and CodeQL within the seven-day dependency cooldown. Thanks @dependabot! #361 #362 #363
+
 - Require authorized SSH-signed annotated release tags and reject tag replacements before npm and GitHub publication, including replacements at the same commit.
 
 - Keep full weekly CodeQL analysis without duplicate main-push scans, isolate scheduled and manual runs, and scan PRs that change checkout attributes.
