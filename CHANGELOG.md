@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-11-05
+
+**Highlights:** Patch follow-redirects credential forwarding and require authorized, immutable SSH-signed release tags.
+
 - Patch follow-redirects credential forwarding and refresh RE2, formatting/build tooling, and CodeQL within the seven-day dependency cooldown. Thanks @dependabot! #361 #362 #363
 
 - Require authorized SSH-signed annotated release tags and reject tag replacements before npm and GitHub publication, including replacements at the same commit.
