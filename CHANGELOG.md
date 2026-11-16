@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-11-15
+
+**Highlights:** Refresh CLI, WebSocket, YAML, validation, and RE2 runtime dependencies while retaining Node 22 support.
+
 - Refresh Matrix client test coverage to SDK 45, RE2, CLI and test tooling, Go workflow-tool dependencies, and CI actions within the seven-day dependency cooldown while retaining Node 22 support. Thanks @dependabot! #369 #370 #371
 
 ## 0.2.1 - 2026-11-05
