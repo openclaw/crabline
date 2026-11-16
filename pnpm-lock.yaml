@@ -42,7 +42,7 @@ importers:
         version: 2.9.1
       ws:
         specifier: ^8.22.1
-        version: 8.22.1
+        version: 8.22.2
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
@@ -1916,8 +1916,8 @@ packages:
   win-guid@0.2.1:
     resolution: {integrity: sha512-gEIQU4mkgl2OPeoNrWflcJFJ3Ae2BPd4eCsHHA/XikslkIVms/nHhvnvzIZV7VLmBvtFlDOzLt9rrZT+n6D67A==}
 
-  ws@8.22.1:
-    resolution: {integrity: sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g==}
+  ws@8.22.2:
+    resolution: {integrity: sha512-/rEZ2ejown2N5gxVTHUu9bVVC7ttu0/Tgzf5hbTOixR3Fs7mbbXgn2DbdbcKgJOmpQMtrIUWivtYuVMnp/W/yA==}
     engines: {node: '>=10.0.0'}
     peerDependencies:
       bufferutil: ^4.0.1
@@ -2211,7 +2211,7 @@ snapshots:
       lodash.pickby: 4.6.0
       protobufjs: 7.6.6
       qs: 6.17.1
-      ws: 8.22.1
+      ws: 8.22.2
     transitivePeerDependencies:
       - bufferutil
       - debug
@@ -2663,7 +2663,7 @@ snapshots:
       protobufjs: 7.6.6
       sharp: 0.35.5(@types/node@22.20.5)
       whatsapp-rust-bridge: 0.5.4
-      ws: 8.22.1
+      ws: 8.22.2
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -3376,7 +3376,7 @@ snapshots:
 
   win-guid@0.2.1: {}
 
-  ws@8.22.1: {}
+  ws@8.22.2: {}
 
   yaml@2.9.1: {}
 
