@@ -656,6 +656,15 @@ Admin-injected message entities preserve native `url`, `user`, `language`, and
 `custom_emoji_id` metadata. Calls addressed to `@username` return a numeric
 `Chat.id`, as Telegram does.
 
+Set `replyToMessageId` (or `reply_to_message_id`) on admin ingress to quote a
+previously sent or accepted inbound text message in the same chat and thread.
+Accepted send events expose the assigned numeric `messageId`; use it to name
+the reply target. Quotes include current edited text and only the immediate
+message, as required by the [Telegram Message contract](https://core.telegram.org/bots/api#message).
+Unknown, invalid, or cross-chat/thread targets return HTTP 400 without consuming
+message or update IDs. The OpenClaw bridge forwards its optional `replyToId`
+to this field. Message history lasts for the provider-server process.
+
 WhatsApp:
 
 ```bash

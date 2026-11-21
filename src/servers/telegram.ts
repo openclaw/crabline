@@ -118,6 +118,7 @@ const TELEGRAM_CHAT_UPDATE_FIELDS = [
 
 type TelegramServerEvent = {
   accepted?: boolean | undefined;
+  messageId?: number;
   at: string;
   body?: unknown;
   method: string;
@@ -148,6 +149,7 @@ type TelegramServerState = {
   closing: boolean;
   inboundAdmission: Promise<void>;
   maxPendingInboundEvents: number;
+  messages: Map<string, TelegramMessage>;
   nextMessageIds: Map<string, number>;
   nextUpdateId: number;
   recorder: ServerRecorder;
@@ -242,6 +244,7 @@ type TelegramMessage = {
   };
   message_id: number;
   message_thread_id?: number;
+  reply_to_message?: TelegramMessage;
   photo?: Array<{
     file_id: string;
     file_unique_id: string;
@@ -1066,6 +1069,38 @@ function nextTelegramMessageId(state: TelegramServerState, chatId: number): numb
   return state.nextMessageIds.get(telegramChatKey(chatId)) ?? 1;
 }
 
+function telegramMessageKey(chatId: number, messageId: number): string {
+  return `${telegramChatKey(chatId)}:${messageId}`;
+}
+
+function rememberTelegramMessage(
+  state: TelegramServerState,
+  message: TelegramMessage,
+): TelegramMessage {
+  const stored = { ...message };
+  // Telegram quotes only the immediate message, never its own reply chain.
+  delete stored.reply_to_message;
+  state.messages.set(telegramMessageKey(message.chat.id, message.message_id), stored);
+  return message;
+}
+
+function resolveTelegramReplyToMessage(
+  state: TelegramServerState,
+  body: Record<string, unknown>,
+): TelegramMessage | null | undefined {
+  const replyId = explicitTelegramId(body, ["replyToMessageId", "reply_to_message_id"]);
+  if (!replyId) {
+    return null;
+  }
+  if (!replyId.present) {
+    return undefined;
+  }
+  const chat = resolveTelegramChat(state, body.chatId ?? body.chat_id);
+  const message = chat && state.messages.get(telegramMessageKey(chat.id, replyId.value));
+  const threadId = telegramMessageThreadId(body.messageThreadId ?? body.message_thread_id);
+  return message && message.message_thread_id === threadId ? message : null;
+}
+
 function takeNextTelegramMessageId(state: TelegramServerState, chatId: number): number | undefined {
   const messageId = nextTelegramMessageId(state, chatId);
   if (messageId >= Number.MAX_SAFE_INTEGER) {
@@ -1199,10 +1234,12 @@ function createEditedMessage(
   if (parsedThreadId !== undefined && !canTargetTelegramTopic(state, chat)) {
     return undefined;
   }
+  const previous = state.messages.get(telegramMessageKey(chat.id, messageId));
   return {
+    ...previous,
     chat,
-    date: Math.floor(Date.now() / 1000),
-    from: createBotUser(state),
+    date: previous?.date ?? Math.floor(Date.now() / 1000),
+    from: previous?.from ?? createBotUser(state),
     message_id: messageId,
     ...(parsedThreadId !== undefined ? { message_thread_id: parsedThreadId } : {}),
     text,
@@ -1212,6 +1249,7 @@ function createEditedMessage(
 function createInboundUpdate(
   state: TelegramServerState,
   body: Record<string, unknown>,
+  replyToMessage: TelegramMessage | undefined,
 ): TelegramUpdate | undefined {
   const chat = resolveTelegramChat(state, body.chatId ?? body.chat_id);
   const text = body.text;
@@ -1277,6 +1315,7 @@ function createInboundUpdate(
       message_id: messageId ?? nextTelegramMessageId(state, chat.id),
       ...(entities && entities.length > 0 ? { entities } : {}),
       ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
+      ...(replyToMessage ? { reply_to_message: replyToMessage } : {}),
       text,
     },
     update_id: updateId ?? state.nextUpdateId,
@@ -1811,7 +1850,11 @@ async function handleTelegramAdminInbound(params: {
     ) {
       return telegramError("Bad Request: explicit IDs must be valid and monotonic");
     }
-    const update = createInboundUpdate(params.state, params.body);
+    const replyToMessage = resolveTelegramReplyToMessage(params.state, params.body);
+    if (replyToMessage === null) {
+      return telegramError("Bad Request: message to be replied not found");
+    }
+    const update = createInboundUpdate(params.state, params.body, replyToMessage);
     params.state.nextUpdateId = nextUpdateId;
     if (
       update &&
@@ -1893,6 +1936,7 @@ async function handleTelegramAdminInbound(params: {
       throw error;
     }
     registerTelegramChat(params.state, update.message.chat);
+    rememberTelegramMessage(params.state, update.message);
     params.state.updates.push(update);
     params.state.updates.sort((left, right) => left.update_id - right.update_id);
     if (params.state.webhook) {
@@ -2347,7 +2391,7 @@ async function handleTelegramApi(params: {
       }
       const message = createEditedMessage(params.state, params.body, text!);
       return message
-        ? telegramOk(message)
+        ? telegramOk(rememberTelegramMessage(params.state, message))
         : telegramError("Bad Request: chat_id, message_id, and text are required");
     }
     case "sendmessage": {
@@ -2364,7 +2408,7 @@ async function handleTelegramApi(params: {
       }
       const message = createOutboundMessage(params.state, params.body, text!);
       return message
-        ? telegramOk(message)
+        ? telegramOk(rememberTelegramMessage(params.state, message))
         : telegramError("Bad Request: chat_id and text are required");
     }
     case "sendanimation":
@@ -2391,7 +2435,7 @@ async function handleTelegramApi(params: {
       }
       const message = createOutboundMediaMessage(params.state, params.body, mediaKind, caption);
       return message
-        ? telegramOk(message)
+        ? telegramOk(rememberTelegramMessage(params.state, message))
         : telegramError(`Bad Request: chat_id and ${mediaKind} are required`);
     }
     case "getupdates":
@@ -2590,6 +2634,15 @@ async function handleRequest(params: { request: IncomingMessage; state: Telegram
       state: params.state,
     });
     event.accepted = response.ok;
+    if (response.ok) {
+      const payload: unknown = await response.clone().json();
+      if (isJsonObject(payload) && isJsonObject(payload.result)) {
+        const messageId = toIntegerValue(payload.result.message_id);
+        if (messageId !== undefined) {
+          event.messageId = messageId;
+        }
+      }
+    }
     try {
       await appendEvent(params.state, event);
     } catch (error) {
@@ -2672,6 +2725,7 @@ export async function startTelegramServer(
     chatsByUsername: new Map(),
     inboundAdmission: Promise.resolve(),
     maxPendingInboundEvents: resolveMaxPendingInboundEvents(params.maxPendingInboundEvents),
+    messages: new Map(),
     nextMessageIds: new Map(),
     nextUpdateId: 1,
     recorder: createServerRecorder({ recorderPath, onEvent: params.onEvent }),
