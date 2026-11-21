@@ -77,6 +77,8 @@ export type OpenClawCrablineCorrelatedAgentDelivery = OpenClawCrablineAgentDeliv
 
 export type OpenClawCrablineInboundInput = {
   attachments?: OpenClawCrablineInboundAttachment[] | undefined;
+  /** Provider-native message ID; Telegram delivers the quote as reply_to_message. */
+  replyToId?: string | undefined;
   conversation: {
     id: string;
     kind: "direct" | "group";

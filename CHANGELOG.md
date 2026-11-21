@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve Telegram reply context for sent, edited and inbound messages; record assigned send IDs and forward bridge reply IDs, rejecting missing or cross-chat/thread targets without consuming IDs. Thanks @amittell! #377
+- Refresh WebSocket, RE2, Matrix, lint and build dependencies within the seven-day cooldown, and use Go 1.27.4 for workflow tooling while retaining Node 22 support. Thanks @dependabot!
+
 ## 0.2.2 - 2026-11-15
 
 **Highlights:** Refresh CLI, WebSocket, YAML, validation, and RE2 runtime dependencies while retaining Node 22 support.

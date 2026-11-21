@@ -272,6 +272,7 @@ export const TELEGRAM_OPENCLAW_CRABLINE_PROVIDER_BRIDGE = createOpenClawCrabline
               ? { chatType: "supergroup", isForum: true }
               : {}),
             ...(threadId !== undefined ? { messageThreadId: threadId } : {}),
+            ...(input.replyToId !== undefined ? { replyToMessageId: input.replyToId } : {}),
             ...(input.nativeCommand
               ? {
                   entities: [telegramBotCommandEntity(input.text, input.nativeCommand.name)],

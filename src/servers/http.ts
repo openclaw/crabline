@@ -6,6 +6,7 @@ import { CrablineError } from "../core/errors.js";
 
 export type ServerRequestEvent = {
   at: string;
+  messageId?: number;
   body?: unknown;
   method: string;
   path: string;
